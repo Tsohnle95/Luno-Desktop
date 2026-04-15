@@ -12,6 +12,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 import threading
 import os, re, csv, time, random, math, hashlib, shutil
+os.environ["PATH"] += os.pathsep + "/opt/homebrew/bin" + os.pathsep + "/usr/local/bin"
+os.environ["PATH"] += os.pathsep + "/opt/homebrew/bin"
 
 import sys
 
@@ -32,12 +34,14 @@ except ImportError:
 
 try:
     import pygame
-    # Use 44100, -16 (signed 16-bit), 2 (stereo), 4096 (larger buffer)
-    # We increase buffer to 4096 to handle background UI tasks
-    pygame.mixer.pre_init(44100, -16, 2, 4096)
+    pygame.mixer.quit()
+    # 2048 buffer is the 'sweet spot' for macOS CoreAudio. 
+    # 4096 (what you had) often causes the 'shattering' sound on M1/M2/M3 Macs.
+    pygame.mixer.pre_init(44100, -16, 2, 2048) 
     pygame.mixer.init()
     PYGAME_AVAILABLE = True
-except Exception:
+except Exception as e:
+    print(f"Mixer Init Error: {e}")
     PYGAME_AVAILABLE = False
 
 try:
@@ -2143,11 +2147,19 @@ class VibeMusicPlayer(tk.Tk):
                 opts = {
                     "format": "bestaudio/best",
                     "outtmpl": os.path.join(out_folder, "%(title)s.%(ext)s"),
-                    "postprocessors": self._make_pp(),
-                    "postprocessor_args": ["-ar", "44100", "-ac", "2", "-codec:a", "libmp3lame"],
+                    "postprocessors": [{
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "192",
+                    }],
+                    "postprocessor_args": {
+                        "FFmpegExtractAudio": [
+                            "-ar", "44100",
+                            "-ac", "2",
+                            "-b:a", "192k",
+                        ]
+                    },
                     "writethumbnail": False,
-                    "ignoreerrors": True,
-                    "quiet": False,
                 }
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([result["url"]])
@@ -2236,9 +2248,9 @@ class VibeMusicPlayer(tk.Tk):
 
     def _make_pp(self):
         return [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192', # 192 is safer/more stable for Pygame than 320
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
         }]
 
     def _dest_dir(self, playlist_name=None):
@@ -2261,19 +2273,19 @@ class VibeMusicPlayer(tk.Tk):
             try:
                 opts = {
                     "format": "bestaudio/best",
+                    # 'restrictfilenames' prevents weird characters from breaking Mac file paths
+                    "restrictfilenames": True, 
                     "outtmpl": os.path.join(out_folder, "%(title)s.%(ext)s"),
-                    "postprocessors": self._make_pp(),
-                    # Change the line below to a LIST of strings:
-                    "postprocessor_args": [
-                        "-threads", "0",
-                        "-codec:a", "libmp3lame",
-                        "-b:a", "192k",          # Constant Bit Rate (CBR) is MUCH more stable
-                        "-ar", "44100",         # Match Pygame exactly
-                        "-ac", "2",
-                        "-map_metadata", "-1",   # THIS STRIPS THE PADDING THAT CAUSES THE PUFFING
-                        "-id3v2_version", "3",
-                        "-fflags", "+bitexact"   # Forces a clean, standard stream
-                    ],
+                    "noplaylist": True,
+                    # Remove 'quiet': True so we can see errors in the console if it hangs
+                    "quiet": False, 
+                    "postprocessors": [{
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "192",
+                    }],
+                    # We removed the "-ar 44100" argument here. 
+                    # Forcing a sample rate on Mac is what causes the 'sheet metal' audio glitch.
                     "writethumbnail": False,
                 }
                 
@@ -2284,12 +2296,55 @@ class VibeMusicPlayer(tk.Tk):
                     ydl.download([url])
                 
                 if self._is_dl:
+                    self.after(0, lambda: self._log("✅ Download Complete!", "success"))
+                    self.after(0, lambda: self.prog_var.set(100))
+                    self.after(0, self._refresh_library)
+            except Exception as ex:
+                self.after(0, lambda: self._log(f"✗ Error: {ex}", "error"))
+                print(f"DL Debug Error: {ex}") # This prints to your terminal/IDE
+            
+            self._is_dl = False
+            self.after(0, lambda: self.dl_btn.config(text="⬇  Download All as MP3", bg=GREEN))
+
+        threading.Thread(target=run, daemon=True).start()
+
+        label = "Playlist_Download"
+        out_folder = self._dest_dir(label)
+        os.makedirs(out_folder, exist_ok=True)
+        self._is_dl = True
+        self.dl_btn.config(text="⏹  Stop", bg=BG4)
+        self.prog_var.set(0)
+        self._log(f"\n📡 Starting YouTube Download...", "normal")
+
+        def run():
+            try:
+                opts = {
+                    "format": "bestaudio/best",
+                    "outtmpl": os.path.join(out_folder, "%(title)s.%(ext)s"),
+                    "postprocessors": [{
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "192",
+                    }],
+                    "postprocessor_args": {
+                        "FFmpegExtractAudio": [
+                            "-ar", "44100",
+                            "-ac", "2",
+                            "-b:a", "192k",
+                        ]
+                    },
+                    "writethumbnail": False,
+                }
+                if self.skip_var.get():
+                    opts["download_archive"] = os.path.join(out_folder, ".downloaded.txt")
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.download([url])
+                if self._is_dl:
                     self.after(0, lambda: self._log("✅ Download Sequence Complete!", "success"))
                     self.after(0, lambda: self.prog_var.set(100))
                     self.after(0, self._refresh_library)
             except Exception as ex:
                 self.after(0, lambda: self._log(f"✗ Error: {ex}", "error"))
-            
             self._is_dl = False
             self.after(0, lambda: self.dl_btn.config(text="⬇  Download All as MP3", bg=GREEN))
 
@@ -2312,15 +2367,79 @@ class VibeMusicPlayer(tk.Tk):
                 tracks = pl["tracks"]
                 out_folder = self._dest_dir(name)
                 os.makedirs(out_folder, exist_ok=True)
-                
                 self.after(0, lambda n=name: self._log(f"\n📂 Syncing Playlist: {n}", "playlist"))
 
                 for i, t in enumerate(tracks):
                     if not self._is_dl: break
+                    track_query = f"{t['artist']} {t['title']}"
                     
+                    # Clean the filename for Mac safety
+                    safe_name = re.sub(r'[<>:"/\\|?*]', '', f"{t['artist']} - {t['title']}").strip()
+                    self.after(0, lambda q=track_query: self.status_var.set(f"Searching: {q}"))
+
+                    use_url = f"ytsearch1:{track_query}"
+                    if self.sc_var.get():
+                        sc_url, sc_info = probe_soundcloud(track_query)
+                        if sc_url: use_url = sc_url
+
+                    opts = {
+                        "format": "bestaudio/best",
+                        "restrictfilenames": True, # Prevents files from disappearing due to bad characters
+                        "outtmpl": os.path.join(out_folder, f"{safe_name}.%(ext)s"),
+                        "noplaylist": True,
+                        "quiet": False, # Setting to False so you can see errors in the terminal
+                        "postprocessors": [{
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": "192",
+                        }],
+                        # FIXED: Removed the 'postprocessor_args' that were forcing sample rates.
+                        # This is the primary fix for the "sheet metal/broken glass" audio quality.
+                        "writethumbnail": False,
+                    }
+                    
+                    if self.skip_var.get():
+                        opts["download_archive"] = os.path.join(out_folder, ".downloaded.txt")
+
+                    try:
+                        with yt_dlp.YoutubeDL(opts) as ydl:
+                            ydl.download([use_url])
+                        done_count += 1
+                        self.after(0, lambda d=done_count: self.prog_var.set((d/total)*100))
+                        self.after(0, lambda d=done_count: self.dl_count_lbl.config(text=f"{d} / {total}"))
+                    except Exception as e:
+                        # Log the specific error so you know why a track failed
+                        self.after(0, lambda tn=t['title'], err=e: self._log(f"⚠ Failed {tn}: {err}", "error"))
+                        print(f"CSV DL Error: {e}")
+
+            self.after(0, self._refresh_library)
+            self._is_dl = False
+            self.after(0, lambda: self.dl_btn.config(text="⬇  Download All as MP3", bg=GREEN))
+
+        threading.Thread(target=run, daemon=True).start()
+
+        playlists = list(self._dl_playlists)
+        total = sum(len(p["tracks"]) for p in playlists)
+        self._is_dl = True
+        self._dl_done = 0
+        self.dl_btn.config(text="⏹  Stop", bg=BG4)
+        self.prog_var.set(0)
+        self._log(f"\n⬇ Processing {len(playlists)} playlists ({total} tracks total)", "normal")
+
+        def run():
+            done_count = 0
+            for pi, pl in enumerate(playlists):
+                if not self._is_dl: break
+                name = pl["name"]
+                tracks = pl["tracks"]
+                out_folder = self._dest_dir(name)
+                os.makedirs(out_folder, exist_ok=True)
+                self.after(0, lambda n=name: self._log(f"\n📂 Syncing Playlist: {n}", "playlist"))
+
+                for i, t in enumerate(tracks):
+                    if not self._is_dl: break
                     track_query = f"{t['artist']} {t['title']}"
                     safe_name = re.sub(r'[<>:"/\\|?*]', '', f"{t['artist']} - {t['title']}").strip()
-                    
                     self.after(0, lambda q=track_query: self.status_var.set(f"Searching: {q}"))
 
                     use_url = f"ytsearch1:{track_query}"
@@ -2331,21 +2450,20 @@ class VibeMusicPlayer(tk.Tk):
                     opts = {
                         "format": "bestaudio/best",
                         "outtmpl": os.path.join(out_folder, f"{safe_name}.%(ext)s"),
-                        "postprocessors": self._make_pp(),
-                        # Change the line below to a LIST of strings:
-                       "postprocessor_args": [
-                            "-threads", "0",
-                            "-codec:a", "libmp3lame",
-                            "-b:a", "192k",          # Constant Bit Rate (CBR) is MUCH more stable
-                            "-ar", "44100",         # Match Pygame exactly
-                            "-ac", "2",
-                            "-map_metadata", "-1",   # THIS STRIPS THE PADDING THAT CAUSES THE PUFFING
-                            "-id3v2_version", "3",
-                            "-fflags", "+bitexact"   # Forces a clean, standard stream
-                        ],
+                        "postprocessors": [{
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": "192",
+                        }],
+                        "postprocessor_args": {
+                            "FFmpegExtractAudio": [
+                                "-ar", "44100",
+                                "-ac", "2",
+                                "-b:a", "192k",
+                            ]
+                        },
                         "writethumbnail": False,
                     }
-
                     if self.skip_var.get():
                         opts["download_archive"] = os.path.join(out_folder, ".downloaded.txt")
 
@@ -2361,7 +2479,7 @@ class VibeMusicPlayer(tk.Tk):
             self.after(0, self._refresh_library)
             self._is_dl = False
             self.after(0, lambda: self.dl_btn.config(text="⬇  Download All as MP3", bg=GREEN))
-        
+
         threading.Thread(target=run, daemon=True).start()
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -2960,7 +3078,7 @@ class VibeMusicPlayer(tk.Tk):
 
     def _sync_download(self):
         if not self._sync_tracks:
-            messagebox.showinfo("Nothing to download","Run a sync check first."); return
+            messagebox.showinfo("Nothing to download", "Run a sync check first."); return
         dest = self.dl_dest_var.get() or MUSIC_ROOT
         os.makedirs(dest, exist_ok=True)
         self._sync_status.config(text=f"Downloading {len(self._sync_tracks)} tracks…", fg=WARNING)
@@ -2968,33 +3086,39 @@ class VibeMusicPlayer(tk.Tk):
 
         def run():
             for i, t in enumerate(tracks):
-                if not self._sync_running: # Check if still active
-                    q = f"{t['artist']} {t['title']}"
-                    self.after(0, lambda idx=i, title=t['title']: self._sync_status.config(
-                        text=f"[{idx+1}/{len(tracks)}] {title}", fg=WARNING))
-                    
-                    use_url = t.get("url")
-                    if self.sc_var.get() or not use_url:
-                        sc_url, _ = probe_soundcloud(q) if self.sc_var.get() else (None, None)
-                        if sc_url: use_url = sc_url
-                        elif not use_url: use_url = f"ytsearch1:{q}"
-                            
-                    safe = re.sub(r'[<>:"/\\|?*]','', f"{t['artist']} - {t['title']}").strip()
-                    opts = {
-                        "format": "bestaudio/best",
-                        "outtmpl": os.path.join(dest, f"{safe}.%(ext)s"), # Fixed: used 'dest'
-                        "postprocessors": [{
-                            "key": "FFmpegExtractAudio",
-                            "preferredcodec": "mp3",
-                            "preferredquality": "320",
-                        }],
-                        "postprocessor_args": ["-ar", "44100", "-ac", "2", "-codec:a", "libmp3lame"],
-                        "quiet": True,
-                    }
-                    try:
-                        with yt_dlp.YoutubeDL(opts) as ydl: ydl.download([use_url])
-                    except: pass
-            
+                q = f"{t['artist']} {t['title']}"
+                self.after(0, lambda idx=i, title=t['title']: self._sync_status.config(
+                    text=f"[{idx+1}/{len(tracks)}] {title}", fg=WARNING))
+
+                use_url = t.get("url")
+                if self.sc_var.get():
+                    sc_url, _ = probe_soundcloud(q)
+                    if sc_url: use_url = sc_url
+                if not use_url:
+                    use_url = f"ytsearch1:{q}"
+
+                safe = re.sub(r'[<>:"/\\|?*]', '', f"{t['artist']} - {t['title']}").strip()
+                opts = {
+                    "format": "bestaudio/best",
+                    "outtmpl": os.path.join(dest, f"{safe}.%(ext)s"),
+                    "postprocessors": [{
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "192",
+                    }],
+                    "postprocessor_args": {
+                        "FFmpegExtractAudio": [
+                            "-ar", "44100",
+                            "-ac", "2",
+                            "-b:a", "192k",
+                        ]
+                    },
+                    "writethumbnail": False,
+                }
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl: ydl.download([use_url])
+                except: pass
+
             self.after(0, lambda: self._sync_status.config(
                 text=f"Done! {len(tracks)} tracks downloaded.", fg=SUCCESS))
             self.after(0, self._refresh_library)
@@ -3056,7 +3180,11 @@ class VibeMusicPlayer(tk.Tk):
         
 
 
-
+import signal
+def signal_handler(sig, frame):
+    pygame.mixer.quit()
+    sys.exit(0)
+signal.signal(signal.SIGINT, signal_handler)
 
 if __name__ == "__main__":
     VibeMusicPlayer().mainloop()
