@@ -7,6 +7,11 @@ Vibe Music Player v4
 - Duplicate song detection and management
 - Gradient playlist art headers
 build command: pyinstaller --noconsole --windowed --noconfirm --clean --name "Vibe" music_player.py
+pyinstaller --noconsole --windowed --noconfirm --clean 
+  --name "DevTunes" 
+  --icon "icon.icns" 
+  music_player.py
+
 """
 
 
