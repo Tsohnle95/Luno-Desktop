@@ -6,7 +6,10 @@ Vibe Music Player v4
 - Modern thin scrubber and volume slider via Canvas (not ttk Scale)
 - Duplicate song detection and management
 - Gradient playlist art headers
+build command: pyinstaller --noconsole --windowed --noconfirm --clean --name "Vibe" music_player.py
 """
+
+
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
@@ -435,7 +438,14 @@ class VibeMusicPlayer(tk.Tk):
             self._show_add_to_playlist_dialog(paths, f"Add {len(paths)} songs to...")
     def __init__(self):
         super().__init__()
-        self.title("Vibe")
+        # 1. This happens the second you open the app
+        self.title("DevTunes") 
+        
+        try:
+            self.create_command('tkAboutDialog', self._show_about)
+        except:
+            pass 
+
         self.geometry("1180x800")
         self.minsize(960, 660)
         self.configure(bg=BG)
@@ -461,9 +471,9 @@ class VibeMusicPlayer(tk.Tk):
         self._queue_playlist_name  = None
         self._queue_playlist_paths = []
         self._selected_playlist    = None
-        self._lib_searching        = False  # flag to suppress trace during placeholder
-        self._recently_played      = []     # list of paths, max 50
-        self._crossfade_ms         = 0      # 0 = off, else ms overlap
+        self._lib_searching        = False
+        self._recently_played      = []
+        self._crossfade_ms         = 0
         self._crossfade_secs       = 0
         self._sleep_after_id       = None
         self._viz_enabled          = False
@@ -491,6 +501,9 @@ class VibeMusicPlayer(tk.Tk):
         if not PYGAME_AVAILABLE: self._log("⚠ pygame not available","warning")
         if not YT_DLP_AVAILABLE: self._log("⚠ yt-dlp not found — brew install yt-dlp","warning")
 
+    def _show_about(self):
+        # 2. This ONLY happens if you click "About Dev Tunes" in the menu
+        messagebox.showinfo("DevTunes", "DevTunes v4\nProfessional Music Player")
     def _configure_styles(self):
         s = ttk.Style(self)
         s.theme_use("clam")
@@ -539,7 +552,7 @@ class VibeMusicPlayer(tk.Tk):
     def _build_sidebar(self, parent):
         logo_f = tk.Frame(parent, bg=SIDEBAR)
         logo_f.pack(fill="x", padx=24, pady=(28,24))
-        tk.Label(logo_f, text="vibe", font=("Helvetica Neue",24,"bold"),
+        tk.Label(logo_f, text="DevTunes", font=("Helvetica Neue",24,"bold"),
                  fg=TEXT, bg=SIDEBAR).pack(side="left")
         tk.Label(logo_f, text="▮", font=("Helvetica Neue",9),
                  fg=GREEN, bg=SIDEBAR).pack(side="left", padx=(3,0), pady=(10,0))
