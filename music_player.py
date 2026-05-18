@@ -836,6 +836,11 @@ lder."""
         # Click handlers
         def play_from_q(pt=path, qi=q_idx):
             if qi is not None:
+                diff = qi - self.engine.queue_idx
+                if diff > 0 and diff <= getattr(self.engine, 'user_queue_count', 0):
+                    self.engine.user_queue_count -= diff
+                else:
+                    self.engine.user_queue_count = 0
                 self.engine.queue_idx = qi
                 self.engine.play_current()
             else:
@@ -1448,6 +1453,9 @@ lder."""
             if found:
                 card_frame.pack(fill="x", pady=1)
 
+        # Scroll to top to see search results if scrolled down
+        self._pl_scroll_canvas.yview_moveto(0)
+
     def _get_sel_paths(self):
         tab = self._current_tab
         if tab == "library" and "library" in self._frames:
@@ -1467,13 +1475,60 @@ lder."""
         if p: self._play_with_context(p[0])
 
     def _ctx_play_next(self):
-        for path in reversed(self._get_sel_paths()):
+        paths = self._get_sel_paths()
+        if not paths: return
+        
+        if not self.engine.queue:
+            self.engine.queue = list(paths)
+            self.engine.queue_idx = 0
+            self.engine.user_queue_count = len(paths) - 1
+            self.engine._original_queue = list(paths)
+            self._update_queue()
+            self.engine.play_current()
+            return
+
+        for path in reversed(paths):
             ins = self.engine.queue_idx + 1 if self.engine.queue_idx >= 0 else 0
             self.engine.queue.insert(ins, path)
+            self.engine.user_queue_count = getattr(self.engine, 'user_queue_count', 0) + 1
+            if hasattr(self.engine, '_original_queue') and self.engine._original_queue:
+                try:
+                    curr = self.engine.queue[self.engine.queue_idx]
+                    orig_idx = self.engine._original_queue.index(curr)
+                    self.engine._original_queue.insert(orig_idx + 1, path)
+                except ValueError:
+                    self.engine._original_queue.insert(ins, path)
+
         self._update_queue()
 
     def _ctx_add_queue(self):
-        for p in self._get_sel_paths(): self.engine.queue.append(p)
+        paths = self._get_sel_paths()
+        if not paths: return
+        
+        if not self.engine.queue:
+            self.engine.queue = list(paths)
+            self.engine.queue_idx = 0
+            self.engine.user_queue_count = len(paths) - 1
+            self.engine._original_queue = list(paths)
+            self._update_queue()
+            self.engine.play_current()
+            return
+            
+        for path in paths:
+            ins = self.engine.queue_idx + 1 + getattr(self.engine, 'user_queue_count', 0)
+            if ins > len(self.engine.queue): ins = len(self.engine.queue)
+            
+            self.engine.queue.insert(ins, path)
+            self.engine.user_queue_count = getattr(self.engine, 'user_queue_count', 0) + 1
+            
+            if hasattr(self.engine, '_original_queue') and self.engine._original_queue:
+                try:
+                    curr = self.engine.queue[self.engine.queue_idx]
+                    orig_idx = self.engine._original_queue.index(curr)
+                    self.engine._original_queue.insert(orig_idx + self.engine.user_queue_count, path)
+                except ValueError:
+                    self.engine._original_queue.append(path)
+                    
         self._update_queue()
 
 

@@ -92,6 +92,7 @@ Persisted across sessions: `music_root`, `lastfm_key`, `auto_discovery`, `volume
 
 ### 5. Session State
 `VibeEngine` manages the live `queue`, `queue_idx`, `_original_queue` (for shuffle restore), and playback status (`playing`, `paused`).
+**Queue Architecture**: The system uses a flat `queue` list, but tracks a `user_queue_count` integer to behave like a modern "Up Next" queue. "Play Next" inserts immediately after the current `queue_idx`. "Add to Queue" appends to `queue_idx + 1 + user_queue_count`, ensuring manually queued items play before the rest of the playlist context. `user_queue_count` decrements naturally during track progression and resets on hard skips/context changes.
 
 ### 6. Exclusion Management
 Allowed duplicates are identified by normalized keys (derived via `_normalize_for_dupe`) and persisted in `.vibe_allowed_dups.json` within the Master Library root. **Portable Backups** (JSON) can be exported/imported manually.

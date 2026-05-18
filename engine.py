@@ -207,6 +207,7 @@ class VibeEngine:
         # State
         self.queue = []
         self.queue_idx = -1
+        self.user_queue_count = 0
         self.playing = False
         self.paused = False
         self.duration = 0.0
@@ -225,31 +226,7 @@ class VibeEngine:
         # Start Poll
         self.poll()
 
-    def toggle_shuffle(self):
-        """Intelligently toggles shuffle and re-orders the current queue to match."""
-        self.shuffle = not self.shuffle
-        if not self.playing or not self.queue:
-            return
-            
-        current_path = self.queue[self.queue_idx]
-        
-        if self.shuffle:
-            # Scramble future tracks
-            # Keep history as is? Or scramble everything except current?
-            # Standard behavior: Scramble the future (everything except current)
-            others = [p for p in self._original_queue if p != current_path]
-            random.shuffle(others)
-            self.queue = [current_path] + others
-            self.queue_idx = 0
-        else:
-            # Restore original sequence
-            self.queue = list(self._original_queue)
-            try:
-                self.queue_idx = self.queue.index(current_path)
-            except ValueError:
-                self.queue_idx = 0
-                
-        self.c._update_queue()
+
 
     def play_with_context(self, path, context_list=None):
         """Plays a track and attempts to build a queue from its playlist context or provided list."""
@@ -264,6 +241,7 @@ class VibeEngine:
                     break
         
         # Always refresh queue to the intended playlist context
+        self.user_queue_count = 0
         self.queue = list(self.c._queue_playlist_paths)
         self._original_queue = list(self.queue)
         
@@ -387,6 +365,9 @@ class VibeEngine:
     def next_track(self):
         if not self.queue: return
         
+        if getattr(self, 'user_queue_count', 0) > 0:
+            self.user_queue_count -= 1
+        
         nxt = self.queue_idx + 1
         
         if nxt < len(self.queue):
@@ -411,6 +392,7 @@ class VibeEngine:
 
     def prev_track(self):
         if not self.queue: return
+        self.user_queue_count = 0
         self.queue_idx = max(0, self.queue_idx - 1)
         self.play_current()
 
@@ -458,6 +440,7 @@ class VibeEngine:
     def clear_queue(self):
         self.queue = []
         self.queue_idx = -1
+        self.user_queue_count = 0
         self.playing = False
         if PYGAME_AVAILABLE: pygame.mixer.music.stop()
         self.c.play_btn.set_text("▶")

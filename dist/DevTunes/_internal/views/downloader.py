@@ -100,6 +100,7 @@ class DownloadView(tk.Frame):
         self._tab_btns = {}
         for tab_id, label in [("search", "⌕  Search"),
                                ("playlist", "📋  YT / CSV"),
+                               ("sync", "🔗  Sync"),
                                ("dupes", "⚠ Duplicates"),
                                ("allowed", "✓ Allowed Dups")]:
             btn = tk.Label(tab_bar_f, text=label, font=("Helvetica Neue", 11, "bold"),
@@ -206,6 +207,8 @@ class DownloadView(tk.Frame):
         self.results_tree.tag_configure("yt",   foreground=TEXT2)
         self.results_tree.tag_configure("sc",   foreground=SC_COLOR)
         self.results_tree.bind("<Double-Button-1>", lambda e: self._on_tree_double_click())
+        self.results_tree.bind("<Return>", lambda e: self._download_selected())
+        self.results_tree.bind("<KP_Enter>", lambda e: self._download_selected())
 
         # ── ROW 6: ACTION BAR (buttons + inline download status) ─────────────
         row_idx = 6
@@ -303,10 +306,12 @@ class DownloadView(tk.Frame):
                                      highlightthickness=0, highlightbackground=BG3, highlightcolor=BG3)
         self.search_entry.pack(side="left", fill="x", expand=True)
         self.search_entry.bind("<Return>", lambda e: self.do_search())
+        self.search_entry.bind("<KP_Enter>", lambda e: self.do_search())
 
         s_btn = tk.Label(bar, text="SEARCH", font=("Helvetica Neue", 9, "bold"),
                          fg=SIDEBAR, bg=GREEN, padx=18, pady=8, cursor="hand2")
         s_btn.pack(side="right")
+        s_btn.bind("<Button-1>", lambda e: self.do_search())
         s_btn.bind("<Enter>", lambda e: s_btn.config(bg=GREEN_HOVER))
         s_btn.bind("<Leave>", lambda e: s_btn.config(bg=GREEN))
 
@@ -335,6 +340,7 @@ class DownloadView(tk.Frame):
                                    highlightthickness=0, highlightbackground=BG3, highlightcolor=BG3)
         self.sync_entry.pack(side="left", fill="x", expand=True)
         self.sync_entry.bind("<Return>", lambda e: self._sync_check())
+        self.sync_entry.bind("<KP_Enter>", lambda e: self._sync_check())
 
         c_btn = tk.Label(bar, text="CHECK SYNC", font=("Helvetica Neue", 9, "bold"),
                          fg=SIDEBAR, bg=GREEN, padx=14, pady=8, cursor="hand2")
@@ -360,6 +366,8 @@ class DownloadView(tk.Frame):
                                     relief="flat", font=("Helvetica Neue", 11), bd=8,
                                     highlightthickness=0, highlightbackground=BG3, highlightcolor=BG3)
         self.pl_yt_entry.pack(side="left", fill="x", expand=True)
+        self.pl_yt_entry.bind("<Return>", lambda e: self._preview_yt_playlist())
+        self.pl_yt_entry.bind("<KP_Enter>", lambda e: self._preview_yt_playlist())
 
         preview_btn = tk.Label(yt_bar, text="PREVIEW", font=("Helvetica Neue", 9, "bold"),
                                fg=SIDEBAR, bg=GREEN, padx=14, pady=8, cursor="hand2")

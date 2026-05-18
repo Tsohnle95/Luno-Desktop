@@ -55,7 +55,7 @@
  [],
  False,
  False,
- 1776791336,
+ 1777087765,
  [('runw',
    '/Users/ty/musicPlayer/.venv/lib/python3.12/site-packages/PyInstaller/bootloader/Darwin-64bit/runw',
    'EXECUTABLE')],
