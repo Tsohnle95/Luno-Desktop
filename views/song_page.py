@@ -31,57 +31,44 @@ class SongPageView(tk.Frame):
         self.back_btn.bind("<Leave>", lambda e: self.back_btn.config(fg=TEXT2))
 
         # 2. Main Centered Content
-        # Anchor top-left, fill horizontally so grid can manage resizing properly
         self.main_f = tk.Frame(self.content, bg=BG)
-        self.main_f.pack(anchor="nw", padx=60, pady=80, fill="x", expand=True) 
+        self.main_f.pack(anchor="n", pady=30, fill="x", expand=True)
         
-        self.main_f.columnconfigure(1, weight=1) # allow right column to expand/shrink flexibly
-        
-        # Left column: Artwork
-        self.left_col = tk.Frame(self.main_f, bg=BG)
-        self.left_col.grid(row=0, column=0, padx=(0, 40), sticky="nw")
+        self.main_f.columnconfigure(0, weight=1)
         
         # FIXED SIZE CONTAINER FOR ART (Ensures pixels, not characters)
-        self.art_container = tk.Frame(self.left_col, bg=BG2, width=320, height=320, 
+        self.art_container = tk.Frame(self.main_f, bg=BG2, width=480, height=480, 
                                        highlightthickness=2, highlightbackground="#000")
-        self.art_container.pack_propagate(False) # Force 320x320
-        self.art_container.pack()
+        self.art_container.pack_propagate(False) # Force pixel sizes
+        self.art_container.grid(row=0, column=0, pady=(0, 20))
         
         self.art_lbl = tk.Label(self.art_container, text="♫", font=("Helvetica", 80),
                                  fg=TEXT3, bg=BG2)
         self.art_lbl.pack(fill="both", expand=True)
         
-        # Right column: Info & Controls
-        self.right_col = tk.Frame(self.main_f, bg=BG)
-        self.right_col.grid(row=0, column=1, sticky="nsew") # grid respects boundaries!
-        
-        # Spacer to push text down to look balanced
-        tk.Frame(self.right_col, bg=BG, height=60).pack()
-        
         # Typography
-        self.title_lbl = tk.Label(self.right_col, text="Song Title", 
-                                   font=("Helvetica Neue", 52, "bold"),
-                                   fg=TEXT, bg=BG, anchor="w", justify="left")
-        self.title_lbl.pack(anchor="w", pady=(0, 10), fill="x", expand=True)
+        self.title_lbl = tk.Label(self.main_f, text="Song Title", 
+                                   font=("Helvetica Neue", 42, "bold"),
+                                   fg=TEXT, bg=BG, justify="center")
+        self.title_lbl.grid(row=1, column=0, pady=(0, 10))
         
-        # Dynamic text wrapping so shrinking the window won't force text to overlap art
-        def _on_right_col_resize(e):
+        def _on_main_resize(e):
             if e.width > 50:
-                self.title_lbl.config(wraplength=e.width - 20) # 20px buffer
-        self.right_col.bind("<Configure>", _on_right_col_resize)
+                self.title_lbl.config(wraplength=e.width - 40)
+        self.main_f.bind("<Configure>", _on_main_resize)
         
-        self.artist_lbl = tk.Label(self.right_col, text="Artist Name",
+        self.artist_lbl = tk.Label(self.main_f, text="Artist Name",
                                     font=("Helvetica Neue", 20),
-                                    fg=TEXT2, bg=BG, anchor="w")
-        self.artist_lbl.pack(anchor="w", pady=(0, 30))
+                                    fg=TEXT2, bg=BG, justify="center")
+        self.artist_lbl.grid(row=2, column=0, pady=(0, 20))
         
         # Controls Frame
-        self.ctrl_f = tk.Frame(self.right_col, bg=BG)
-        self.ctrl_f.pack(anchor="w")
+        self.ctrl_f = tk.Frame(self.main_f, bg=BG)
+        self.ctrl_f.grid(row=3, column=0)
         
         # Controls row
         self.btn_row = tk.Frame(self.ctrl_f, bg=BG)
-        self.btn_row.pack(anchor="w")
+        self.btn_row.pack(anchor="center")
         
         def icon_lbl(text, cmd, size=20, fg=TEXT2):
             l = tk.Label(self.btn_row, text=text, font=("Helvetica Neue", size),
@@ -105,8 +92,8 @@ class SongPageView(tk.Frame):
         self.rep_lbl.pack(side="left")
 
         # Scrubber
-        sc_f = tk.Frame(self.right_col, bg=BG)
-        sc_f.pack(fill="x", pady=(30, 0))
+        sc_f = tk.Frame(self.ctrl_f, bg=BG)
+        sc_f.pack(fill="x", pady=(20, 0), ipadx=40)
         
         self.scrub = SlimSlider(sc_f, from_=0, to=100,
                                 command=lambda v: self.controller.engine.on_scrub_moved(v),
@@ -132,45 +119,26 @@ class SongPageView(tk.Frame):
         h = self.winfo_height()
         if w < 10 or h < 10: return
         
-        # Start Responsive Layout Adjustments
-        is_mobile = w < 768
-        if is_mobile:
-            self.main_f.pack_configure(padx=20, pady=40, anchor="n")
-            self.left_col.grid(row=0, column=0, padx=0, pady=(0, 20), sticky="n")
-            self.right_col.grid(row=1, column=0, sticky="nsew")
-            self.main_f.columnconfigure(0, weight=1)
-            self.main_f.columnconfigure(1, weight=0)
-            
-            # Reduce art size
-            art_size = min(w - 60, 240) # Scale down if too narrow
-            self.art_container.config(width=art_size, height=art_size)
-            
-            # Center typography & controls
-            self.title_lbl.config(font=("Helvetica Neue", 32, "bold"), justify="center")
-            self.title_lbl.pack_configure(anchor="center")
+        # Center horizontally dynamically
+        self.canvas.itemconfig(self.canvas_window, width=w)
+        
+        # Responsive Layout Adjustments
+        max_h = h - 260 # Buffer for controls, text, and padding (reduced from 340)
+        max_w = w - 60
+        art_size = min(max_h, max_w, 800) # Increased max size from 540 to 800
+        if art_size < 200: art_size = 200 # Minimum size
+        
+        # Quantize art size to 20px increments to prevent spamming ArtCache thread pool during rapid window resize
+        art_size = (int(art_size) // 20) * 20
+        
+        self.art_container.config(width=art_size, height=art_size)
+        
+        if w < 600:
+            self.title_lbl.config(font=("Helvetica Neue", 32, "bold"))
             self.artist_lbl.config(font=("Helvetica Neue", 16))
-            self.artist_lbl.pack_configure(anchor="center", pady=(0, 20))
-            self.ctrl_f.pack_configure(anchor="center")
-            self.btn_row.pack_configure(anchor="center")
         else:
-            self.main_f.pack_configure(padx=60, pady=80, anchor="nw", fill="x", expand=True)
-            self.left_col.grid(row=0, column=0, padx=(0, 40), sticky="nw")
-            self.right_col.grid(row=0, column=1, sticky="nsew")
-            self.main_f.columnconfigure(0, weight=0)
-            self.main_f.columnconfigure(1, weight=1)
-            
-            # Reset art size
-            art_size = 320
-            self.art_container.config(width=art_size, height=art_size)
-            
-            # Left align typography & controls
-            self.title_lbl.config(font=("Helvetica Neue", 52, "bold"), justify="left")
-            self.title_lbl.pack_configure(anchor="w")
+            self.title_lbl.config(font=("Helvetica Neue", 42, "bold"))
             self.artist_lbl.config(font=("Helvetica Neue", 20))
-            self.artist_lbl.pack_configure(anchor="w", pady=(0, 30))
-            self.ctrl_f.pack_configure(anchor="w")
-            self.btn_row.pack_configure(anchor="w")
-        # End Responsive Layout Adjustments
         
         # Resize canvas window to fill self
         self.canvas.config(width=w, height=h)
