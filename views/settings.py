@@ -191,7 +191,7 @@ class SettingsView(tk.Frame):
         # Global Media Keys Toggle
         row_keys = tk.Frame(viz_box, bg=BG)
         row_keys.pack(fill="x", pady=(20, 0))
-        tk.Label(row_keys, text="Global Media Keys (Requires Permissions)", font=("Helvetica Neue", 11), fg=TEXT2, bg=BG).pack(side="left")
+        tk.Label(row_keys, text="Global Media Keys (macOS Remote Commands)", font=("Helvetica Neue", 11), fg=TEXT2, bg=BG).pack(side="left")
         
         keys_cb = tk.Checkbutton(row_keys, variable=self.controller.global_keys_var,
                                  bg=BG, activebackground=BG, selectcolor=BG2, relief="flat",

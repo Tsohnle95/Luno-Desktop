@@ -47,7 +47,7 @@ class SlimSlider(tk.Canvas):
     """
     def __init__(self, parent, from_=0, to=100, command=None,
                  track_color=BG4, fill_color=TEXT2, thumb_color=TEXT,
-                 height=20, **kw):
+                 height=20, accent_color=GREEN, **kw):
         super().__init__(parent, height=height, highlightthickness=0, bd=0,
                          bg=kw.pop("bg", PLAYER_BG), cursor="hand2")
         self._from    = from_
@@ -57,6 +57,7 @@ class SlimSlider(tk.Canvas):
         self._track   = track_color
         self._fill    = fill_color
         self._thumb   = thumb_color
+        self._accent  = accent_color
         self._hover   = False
         self._drag    = False
         self._h       = height
@@ -75,6 +76,10 @@ class SlimSlider(tk.Canvas):
         self._draw()
         if trigger and self._command:
             self._command(self._value)
+
+    def set_accent(self, color):
+        self._accent = color
+        self._draw()
 
     def _set_hover(self, v):
         self._hover = v; self._draw()
@@ -105,7 +110,7 @@ class SlimSlider(tk.Canvas):
         # Filled portion
         fw = pad + int((w - 2*pad) * self._pct())
         if fw > pad:
-            fill = GREEN if self._hover else TEXT3
+            fill = self._accent if self._hover else TEXT3
             self._rrect(pad, cy-r, fw, cy+r, r, fill=fill)
 
         # Thumb (only on hover)

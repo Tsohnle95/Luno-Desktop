@@ -1,4 +1,5 @@
 import tkinter as tk
+import math
 from theme import BG, BG3, BG4, TEXT, TEXT2, TEXT3, GREEN, GREEN_HOVER, SIDEBAR, BORDER
 from utils import draw_gradient_rect, split_track_name, hex_to_rgb, rgb_to_hex
 from widgets import playlist_gradient
@@ -11,6 +12,8 @@ class RecentView(tk.Frame):
         self.recent_hover = None
         self._sel_indices = []
         self._sel_anchor = None
+        self._pulse_frame = 0
+        self.after(500, self._start_pulse)
 
         # Context menu
         self.ctx_menu = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT,
@@ -80,18 +83,37 @@ class RecentView(tk.Frame):
         self.recent_canvas.bind("<Motion>", self._on_recent_hover)
         self.recent_canvas.bind("<Leave>",  lambda e: self._set_recent_hover(None))
 
+    def _start_pulse(self):
+        if getattr(self, '_pulse_running', False) or not hasattr(self.controller, 'engine'):
+            return
+        self._pulse_running = True
+        self._pulse_tick()
+
+    def _pulse_tick(self):
+        if not getattr(self, '_pulse_running', False) or not hasattr(self.controller, 'engine'):
+            self._pulse_running = False
+            return
+        cur_path = self.controller.engine.queue[self.controller.engine.queue_idx] if 0 <= self.controller.engine.queue_idx < len(self.controller.engine.queue) else ""
+        has_playing = cur_path and cur_path in self.controller._recently_played
+        if has_playing:
+            self._pulse_frame = (self._pulse_frame + 1) % 100
+            self.redraw()
+        self.after(80, self._pulse_tick)
+
     def redraw(self):
         c = self.recent_canvas
         c.delete("all")
         w = c.winfo_width()
         if w < 10 or not self.controller._recently_played: return
-        rh = 52
+        rh = 56
         canvas_h = c.winfo_height()
         full_h = max(len(self.controller._recently_played) * rh, canvas_h, 10)
         c.configure(scrollregion=(0,0,w,full_h))
         try:
             top = max(0, c.canvasy(0)); bot = c.canvasy(canvas_h)
         except: top,bot = 0,full_h
+
+        cur_path = self.controller.engine.queue[self.controller.engine.queue_idx] if 0 <= self.controller.engine.queue_idx < len(self.controller.engine.queue) else ""
         
         for i, path in enumerate(self.controller._recently_played):
             y0 = i*rh; y1 = y0+rh
@@ -100,23 +122,47 @@ class RecentView(tk.Frame):
             pl = next((pl for pl,tracks in self.controller._library.items() if path in tracks), "")
             is_h = (i == self.recent_hover)
             is_s = (i in self._sel_indices)
+            is_playing = (path == cur_path)
             
             bg = BG4 if is_s else (BG3 if is_h else (BG if i%2==0 else "#161616"))
             c.create_rectangle(0,y0,w,y1, fill=bg, outline="")
             
-            c1c,c2c = playlist_gradient(pl or title)
-            r1g,g1g,b1g = hex_to_rgb(c1c); r2g,g2g,b2g = hex_to_rgb(c2c)
-            for si in range(36):
-                t = si/36
-                c.create_rectangle(12, y0+8+si, 48, y0+9+si,
-                    fill=rgb_to_hex(int(r1g+(r2g-r1g)*t),
-                                    int(g1g+(g2g-g1g)*t),
-                                    int(b1g+(b2g-b1g)*t)), outline="")
-            c.create_text(30, y0+26, text="♫", font=("Helvetica Neue",11,"bold"),
-                          fill="#ffffff", anchor="center")
-            c.create_text(60, y0+rh//2-8, text=title[:55],
-                          font=("Helvetica Neue",11,"bold"), fill=TEXT, anchor="w")
-            c.create_text(60, y0+rh//2+10, text=artist[:50],
+            # Art strip: 44px
+            art_size = 44
+            art_half = art_size // 2
+            art_x = 30
+            art_yc = y0 + rh // 2
+            img = self.controller.art_cache.get(path, art_size, lambda p: self.after(0, self.redraw))
+            if img:
+                c.create_image(art_x, art_yc, image=img)
+            else:
+                c1c,c2c = playlist_gradient(pl or title)
+                r1g,g1g,b1g = hex_to_rgb(c1c); r2g,g2g,b2g = hex_to_rgb(c2c)
+                for si in range(art_size):
+                    t = si/art_size
+                    c.create_rectangle(art_x - art_half, y0+8+si, art_x + art_half, y0+9+si,
+                        fill=rgb_to_hex(int(r1g+(r2g-r1g)*t),
+                                        int(g1g+(g2g-g1g)*t),
+                                        int(b1g+(b2g-b1g)*t)), outline="")
+                c.create_text(art_x, art_yc, text="♫", font=("Helvetica Neue",12,"bold"),
+                              fill="#ffffff", anchor="center")
+            
+            # Playing indicator
+            bar_x = art_x + art_half + 10
+            if is_playing:
+                import math
+                pulse = getattr(self, '_pulse_frame', 0) or 0
+                bar_h = 14; bar_w = 3; gap = 2; n_bars = 4
+                for bi in range(n_bars):
+                    h_off = int(abs(math.sin((pulse / 20.0) + bi * 1.5)) * (bar_h - 4) + 4)
+                    cy = art_yc + bar_h//2
+                    c.create_rectangle(bar_x + bi*(bar_w+gap), cy - h_off//2,
+                                       bar_x + bi*(bar_w+gap) + bar_w, cy + h_off//2,
+                                       fill=GREEN, outline="")
+
+            c.create_text(bar_x + 30, y0+rh//2-8, text=title[:55],
+                          font=("Helvetica Neue",11,"bold"), fill=GREEN if is_playing else TEXT, anchor="w")
+            c.create_text(bar_x + 30, y0+rh//2+10, text=artist[:50],
                           font=("Helvetica Neue",9), fill=TEXT3, anchor="w")
             c.create_text(w-16, y0+rh//2, text=pl[:22],
                           font=("Helvetica Neue",9), fill=TEXT3, anchor="e")
@@ -124,7 +170,7 @@ class RecentView(tk.Frame):
 
     def _on_recent_click(self, event):
         cy = self.recent_canvas.canvasy(event.y)
-        idx = int(cy // 52)
+        idx = int(cy // 56)
         if 0 <= idx < len(self.controller._recently_played):
             if (event.state & 0x0004) or (event.state & 0x0008): 
                 if idx in self._sel_indices: self._sel_indices.remove(idx)
@@ -144,14 +190,14 @@ class RecentView(tk.Frame):
 
     def _on_recent_dbl(self, event):
         cy = self.recent_canvas.canvasy(event.y)
-        idx = int(cy // 52)
+        idx = int(cy // 56)
         if 0 <= idx < len(self.controller._recently_played):
             self.controller._play_with_context(self.controller._recently_played[idx], 
                                                 context_list=list(self.controller._recently_played))
 
     def _on_recent_right(self, event):
         cy = self.recent_canvas.canvasy(event.y)
-        idx = int(cy // 52)
+        idx = int(cy // 56)
         if 0 <= idx < len(self.controller._recently_played):
             if idx not in self._sel_indices:
                 self._sel_indices = [idx]
@@ -164,7 +210,7 @@ class RecentView(tk.Frame):
 
     def _on_recent_hover(self, event):
         cy = self.recent_canvas.canvasy(event.y)
-        self._set_recent_hover(int(cy // 52))
+        self._set_recent_hover(int(cy // 56))
 
     def _set_recent_hover(self, idx):
         if self.recent_hover != idx:

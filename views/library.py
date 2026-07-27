@@ -1,5 +1,7 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
+from urllib.parse import urlparse
+import math
 from theme import BG, BG2, BG3, BG4, BORDER, GREEN, GREEN_HOVER, TEXT, TEXT2, TEXT3, WARNING, SIDEBAR
 from utils import split_track_name, hex_to_rgb, rgb_to_hex
 from widgets import PlaylistArt
@@ -15,6 +17,8 @@ class LibraryView(tk.Frame):
         self._track_sel_idx = []
         self._sel_anchor = None
         self._track_hover_idx = None
+        self._pulse_frame = 0
+        self._pulse_running = False
         
         # Context menu
         self.ctx_menu = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT,
@@ -105,15 +109,28 @@ class LibraryView(tk.Frame):
         recs_btn.bind("<Enter>", lambda e: recs_btn.config(fg="#F1C40F"))
         recs_btn.bind("<Leave>", lambda e: recs_btn.config(fg=TEXT3))
 
-        dupes_btn = tk.Label(act, text="⚠  Check Duplicates", font=("Helvetica Neue",10),
-                             fg=TEXT3, bg=BG, cursor="hand2")
-        dupes_btn.pack(side="right")
-        dupes_btn.bind("<Button-1>", lambda e: self.controller._check_playlist_duplicates(
-                                        self.controller._selected_playlist))
-        dupes_btn.bind("<Enter>", lambda e: dupes_btn.config(fg=WARNING))
-        dupes_btn.bind("<Leave>", lambda e: dupes_btn.config(fg=TEXT3))
+        self._actions_popup = None
 
-        tk.Frame(act, bg=BG3, height=1).pack(side="bottom", fill="x")
+        self.pl_actions_btn = tk.Label(act, text="⚙  Playlist", font=("Helvetica Neue",10),
+                                       fg=TEXT3, bg=BG, cursor="hand2")
+        self.pl_actions_btn.pack(side="right")
+        self.pl_actions_btn.bind("<Button-1>", lambda e: self._show_playlist_actions())
+        self.pl_actions_btn.bind("<Enter>", lambda e: self.pl_actions_btn.config(fg=TEXT))
+        self.pl_actions_btn.bind("<Leave>", lambda e: self.pl_actions_btn.config(fg=TEXT3))
+
+        # Outside-click handler registered once (not inside _show_playlist_actions)
+        self.controller.bind_all("<Button-1>", self._on_app_click, add="+")
+
+        # Thin green progress bar for playlist sync (hidden by default)
+        self._sync_prog_frame = tk.Frame(act, bg=BG, height=3)
+        self._sync_prog_bar = ttk.Progressbar(self._sync_prog_frame,
+            variable=self.controller.prog_var, maximum=100,
+            style="Green.Horizontal.TProgressbar")
+        self._sync_prog_bar.pack(fill="x")
+        self._sync_prog_frame.pack_forget()
+
+        self._act_sep = tk.Frame(act, bg=BG3, height=1)
+        self._act_sep.pack(side="bottom", fill="x")
 
         # In-playlist search bar
         search_row = tk.Frame(self, bg=BG)
@@ -160,7 +177,7 @@ class LibraryView(tk.Frame):
         
         def _lib_wheel(event):
             # Only scroll if content exceeds the viewport
-            rh = 52
+            rh = 56
             total_h = len(self._track_items) * rh
             canvas_h = self._track_canvas.winfo_height()
             if total_h <= canvas_h:
@@ -182,6 +199,163 @@ class LibraryView(tk.Frame):
         self._track_canvas.bind("<Motion>", self._on_track_hover)
         self._track_canvas.bind("<Leave>",  lambda e: self._set_track_hover(None))
 
+    # ── Sync Progress Bar ──────────────────────────────────────────────────
+    def show_sync_progress(self):
+        self.controller.prog_var.set(0)
+        self._sync_prog_frame.pack(side="bottom", fill="x", before=self._act_sep)
+
+    def hide_sync_progress(self):
+        self._sync_prog_frame.pack_forget()
+
+    # ── Playlist Actions Dropdown ────────────────────────────────────────────
+    def _on_app_click(self, e):
+        if self._actions_popup is None:
+            return
+        if e.widget == self.pl_actions_btn:
+            return
+        if getattr(self, '_popup_just_opened', False):
+            return
+        try:
+            wx = self._actions_popup.winfo_rootx()
+            wy = self._actions_popup.winfo_rooty()
+            ww = self._actions_popup.winfo_width()
+            wh = self._actions_popup.winfo_height()
+            if not (wx <= e.x_root <= wx + ww and wy <= e.y_root <= wy + wh):
+                self._close_actions_popup()
+        except:
+            self._close_actions_popup()
+
+    def _close_actions_popup(self):
+        if self._actions_popup:
+            # Auto-save URL before destroying
+            entry = getattr(self, '_popup_url_entry', None)
+            if entry and entry.winfo_exists():
+                url = entry.get().strip()
+                dest = getattr(self, '_popup_dest_var', None)
+                if dest:
+                    self.controller._set_playlist_url(dest.get(), url)
+            try: self._actions_popup.destroy()
+            except: pass
+            self._actions_popup = None
+            self._popup_url_entry = None
+            self._popup_dest_var = None
+            self.focus_set()
+
+    def _filter_dest_combobox(self, event, combobox, all_playlists):
+        typed = combobox.get().lower()
+        if not typed:
+            combobox["values"] = all_playlists
+        else:
+            combobox["values"] = [p for p in all_playlists if typed in p.lower()]
+        combobox.event_generate("<Down>")
+
+    def _show_playlist_actions(self):
+        """Show the playlist actions dropdown popup. Toggle close if already open."""
+        if self._actions_popup:
+            self._close_actions_popup()
+            return
+
+        pl_name = self.controller._selected_playlist
+        all_playlists = [p for p in sorted(self.controller._library.keys())
+                         if p not in ("Unsorted", "All Music")]
+
+        popup = tk.Toplevel(self)
+        popup.title("")
+        popup.configure(bg=BG2)
+        popup.resizable(False, False)
+        popup.overrideredirect(True)
+
+        # Position below the actions button
+        btn_x = self.pl_actions_btn.winfo_rootx()
+        btn_y = self.pl_actions_btn.winfo_rooty()
+        btn_h = self.pl_actions_btn.winfo_height()
+        popup.geometry(f"420x310+{btn_x}+{btn_y + btn_h + 4}")
+
+        popup.columnconfigure(0, weight=1)
+
+        # ── URL Row ──
+        tk.Label(popup, text="🔗  Playlist URL", font=("Helvetica Neue", 9, "bold"),
+                 fg=TEXT2, bg=BG2, anchor="w").grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 4))
+
+        url_frame = tk.Frame(popup, bg=BG3, highlightbackground=BG4, highlightthickness=1)
+        url_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 8))
+        current_url = self.controller._get_playlist_url(pl_name) or ""
+        url_entry = tk.Entry(url_frame, bg=BG3, fg=TEXT, insertbackground=TEXT,
+                             relief="flat", font=("Helvetica Neue", 10), bd=6,
+                             highlightthickness=0)
+        url_entry.pack(side="left", fill="x", expand=True)
+        if current_url:
+            url_entry.insert(0, current_url)
+
+        # ── Destination Row ──
+        tk.Label(popup, text="📁  Destination Playlist", font=("Helvetica Neue", 9, "bold"),
+                 fg=TEXT2, bg=BG2, anchor="w").grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 4))
+
+        dest_var = tk.StringVar(value=pl_name if pl_name in all_playlists else (all_playlists[0] if all_playlists else ""))
+        dest_combo = ttk.Combobox(popup, textvariable=dest_var, values=all_playlists,
+                                   font=("Helvetica Neue", 10), state="normal", width=30)
+        dest_combo.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 12))
+        dest_combo.bind("<KeyRelease>", lambda e: self._filter_dest_combobox(e, dest_combo, all_playlists))
+
+        # Store on instance so _close_actions_popup can auto-save
+        self._popup_url_entry = url_entry
+        self._popup_dest_var = dest_var
+
+        # ── Action Buttons ──
+        btn_f = tk.Frame(popup, bg=BG2)
+        btn_f.grid(row=4, column=0, sticky="ew", padx=16, pady=(4, 4))
+        btn_f.columnconfigure((0, 1), weight=1)
+
+        def do_check_dupes():
+            dest = dest_var.get()
+            self._close_actions_popup()
+            self.controller._check_playlist_duplicates(dest)
+
+        def do_sync():
+            url = url_entry.get().strip()
+            dest = dest_var.get()
+            self._close_actions_popup()
+            if url:
+                parsed = urlparse(url)
+                if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+                    messagebox.showwarning("Invalid URL", "Must be a valid http/https URL.")
+                    return
+                self.controller._set_playlist_url(dest, url)
+            else:
+                self.controller._set_playlist_url(dest, "")
+            self.controller._sync_playlist(dest, url=url if url else None)
+
+        dupes_btn = tk.Label(btn_f, text="⚠  Check Duplicates",
+                             font=("Helvetica Neue", 10, "bold"),
+                             fg=TEXT2, bg=BG3, padx=10, pady=6, cursor="hand2")
+        dupes_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        dupes_btn.bind("<Button-1>", lambda e: do_check_dupes())
+        dupes_btn.bind("<Enter>", lambda e: dupes_btn.config(fg=TEXT, bg=BG4))
+        dupes_btn.bind("<Leave>", lambda e: dupes_btn.config(fg=TEXT2, bg=BG3))
+
+        sync_btn = tk.Label(btn_f, text="⬇  Sync Now",
+                            font=("Helvetica Neue", 10, "bold"),
+                            fg=SIDEBAR, bg=GREEN, padx=10, pady=6, cursor="hand2")
+        sync_btn.grid(row=0, column=1, padx=(4, 0), sticky="ew")
+        sync_btn.bind("<Button-1>", lambda e: do_sync())
+        sync_btn.bind("<Enter>", lambda e: sync_btn.config(bg=GREEN_HOVER))
+        sync_btn.bind("<Leave>", lambda e: sync_btn.config(bg=GREEN))
+
+        # ── Close button at bottom ──
+        close_btn = tk.Label(popup, text="✕  Close", font=("Helvetica Neue", 10),
+                             fg=TEXT3, bg=BG2, pady=6, cursor="hand2")
+        close_btn.grid(row=5, column=0, sticky="ew", padx=16, pady=(0, 12))
+        close_btn.bind("<Button-1>", lambda e: self._close_actions_popup())
+        close_btn.bind("<Enter>", lambda e: close_btn.config(fg=TEXT, bg=BG3))
+        close_btn.bind("<Leave>", lambda e: close_btn.config(fg=TEXT3, bg=BG2))
+
+        # Close on Escape
+        popup.bind("<Escape>", lambda e: self._close_actions_popup())
+
+        self._actions_popup = popup
+        self._popup_just_opened = True
+        self.after(150, lambda: setattr(self, '_popup_just_opened', False))
+
     # ── Playlist search helpers ──────────────────────────────────────────────
     def _update_placeholder(self):
         if not self._pl_search_entry.get():
@@ -202,6 +376,23 @@ class LibraryView(tk.Frame):
         self._update_placeholder()
         q = self._pl_search_entry.get()
         self.populate_track_list(q)
+
+    def _start_pulse(self):
+        if self._pulse_running or not hasattr(self.controller, 'engine'):
+            return
+        self._pulse_running = True
+        self._pulse_tick()
+
+    def _pulse_tick(self):
+        if not self._pulse_running or not hasattr(self.controller, 'engine'):
+            self._pulse_running = False
+            return
+        cur_path = self.controller.engine.queue[self.controller.engine.queue_idx] if 0 <= self.controller.engine.queue_idx < len(self.controller.engine.queue) else ""
+        has_playing = any(path == cur_path for path, _, _, _ in self._track_items)
+        if has_playing:
+            self._pulse_frame = (self._pulse_frame + 1) % 100
+            self._redraw_track_list()
+        self.after(80, self._pulse_tick)
 
     def on_shuffle_changed(self, is_shuffled):
         """Callback from controller to sync shuffle icon color."""
@@ -300,6 +491,7 @@ class LibraryView(tk.Frame):
                     continue
                 self._track_items.append((path, title, artist, pl_name))
         self._track_sel_idx = []
+        self.after(2000, self._start_pulse)
         self._redraw_track_list()
 
     def get_selected_track_path(self):
@@ -326,7 +518,7 @@ class LibraryView(tk.Frame):
         w = c.winfo_width()
         if w < 10: return
         
-        rh = 52 # Height of one row
+        rh = 56 # Height of one row
         total_items = len(self._track_items)
         canvas_h = c.winfo_height()
         content_h = total_items * rh
@@ -353,6 +545,11 @@ class LibraryView(tk.Frame):
 
         cur_path = self.controller.engine.queue[self.controller.engine.queue_idx] if 0 <= self.controller.engine.queue_idx < len(self.controller.engine.queue) else ""
 
+        # Playing animation frame: pulse the indicator slightly
+        pulse = 0
+        if hasattr(self, '_pulse_frame'):
+            pulse = self._pulse_frame or 0
+        
         for i in range(start_idx, end_idx):
             path, title, artist, pl_name = self._track_items[i]
             y0, y1 = i * rh, (i + 1) * rh
@@ -364,25 +561,41 @@ class LibraryView(tk.Frame):
             bg = BG4 if is_sel else (BG3 if is_hover else (BG if i % 2 == 0 else "#161616"))
             c.create_rectangle(0, y0, w, y1, fill=bg, outline="", tags="row")
 
-            img = self.controller.art_cache.get(path, 36, self._on_art_loaded)
+            # Art strip: 44px instead of 36px
+            art_size = 44
+            art_half = art_size // 2
+            art_x = 30
+            art_yc = y0 + rh // 2
+            img = self.controller.art_cache.get(path, art_size, self._on_art_loaded)
             if img:
-                c.create_image(30, y0+26, image=img, tags="row")
+                c.create_image(art_x, art_yc, image=img, tags="row")
             else:
                 c1, _ = playlist_gradient(pl_name)
-                c.create_rectangle(12, y0+8, 48, y0+44, fill=c1, outline="", tags="row")
-                c.create_text(30, y0+26, text="♫", font=("Helvetica", 12), fill="white", tags="row")
+                c.create_rectangle(art_x - art_half, art_yc - art_half, art_x + art_half, art_yc + art_half, fill=c1, outline="", tags="row")
+                c.create_text(art_x, art_yc, text="♫", font=("Helvetica", 14), fill="white", tags="row")
 
-            txt_col = GREEN if is_playing else TEXT3
-            c.create_text(70, y0+26, text="▶" if is_playing else str(i+1), font=("Helvetica", 10), fill=txt_col, tags="row")
+            # Playing indicator: animated bars
+            bar_x = art_x + art_half + 10
+            if is_playing:
+                bar_h = 14
+                bar_w = 3
+                gap = 2
+                n_bars = 4
+                for bi in range(n_bars):
+                    h_off = int(abs(math.sin((pulse / 20.0) + bi * 1.5)) * (bar_h - 4) + 4)
+                    cy = art_yc + bar_h//2
+                    c.create_rectangle(bar_x + bi*(bar_w+gap), cy - h_off//2,
+                                       bar_x + bi*(bar_w+gap) + bar_w, cy + h_off//2,
+                                       fill=GREEN, outline="", tags="row")
+            else:
+                c.create_text(bar_x, art_yc, text=str(i+1), font=("Helvetica", 10), fill=TEXT3, tags="row")
 
             # Calculate available width for title/artist to prevent overflow into the playlist column
             # Playlist name column is anchored 'e' at w - 25.
-            # We want the text to cleanly stop well before the playlist names.
-            # Using w - 320 ensures generous padding between the title and the playlist info.
-            max_text_w = max(100, w - 320)
+            # Using w - 340 to account for larger art
+            max_text_w = max(100, w - 340)
             
             def truncate_text(s, available_w, font_size=11, is_bold=False):
-                # A more conservative character width estimate for proportional fonts
                 char_w = font_size * (0.85 if is_bold else 0.7)
                 limit = int(available_w // char_w)
                 if len(s) > limit and limit > 3:
@@ -393,15 +606,15 @@ class LibraryView(tk.Frame):
             artist_disp = truncate_text(artist, max_text_w, 9)
             pl_disp = truncate_text(pl_name, 120, 9)
 
-            c.create_text(95, y0+18, text=title_disp, font=("Helvetica Neue", 11, "bold"), fill=GREEN if is_playing else TEXT, anchor="w", tags="row")
-            c.create_text(95, y0+36, text=artist_disp, font=("Helvetica Neue", 9), fill=TEXT3, anchor="w", tags="row")
+            c.create_text(bar_x + 30, y0+18, text=title_disp, font=("Helvetica Neue", 11, "bold"), fill=GREEN if is_playing else TEXT, anchor="w", tags="row")
+            c.create_text(bar_x + 30, y0+36, text=artist_disp, font=("Helvetica Neue", 9), fill=TEXT3, anchor="w", tags="row")
 
-            c.create_text(w - 25, y0+26, text=pl_disp, font=("Helvetica Neue", 9), fill=TEXT3, anchor="e", tags="row")
+            c.create_text(w - 25, y0+rh//2, text=pl_disp, font=("Helvetica Neue", 9), fill=TEXT3, anchor="e", tags="row")
             c.create_line(12, y1-1, w-12, y1-1, fill=BORDER, tags="row")
 
     def _row_at_y(self, y):
         cy = self._track_canvas.canvasy(y)
-        idx = int(cy // 52)
+        idx = int(cy // 56)
         return idx if 0 <= idx < len(self._track_items) else None
 
     def _set_track_hover(self, idx):

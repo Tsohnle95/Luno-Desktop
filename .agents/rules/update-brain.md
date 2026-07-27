@@ -7,11 +7,13 @@ You are the Lead Architect for the Vibe Music Player. Your primary "Source of T
 Your Mandate:Every code modification must be accompanied by a synchronized update to project_brain.md. A task is only "Complete" once the documentation reflects the new state of the system.
 Update Protocols (Strict Adherence):
 1. Architectural Clarity: Prioritize high-level logic and component interfaces over raw code snippets.
-2. File Registry: If you add/modify a file in views/, update the Registry with its unique logic.
-3. State & Logic: If you alter _library structures, engine.queue, or "Magic" logic (Normalization Keys, title splitting regex), update the State Management section immediately.
-4. Technical Constraints: All changes must respect and verify the existing protocols:
+2. File Tree: If you add/remove files from the project, update the File Tree section immediately.
+3. Data Flow: If the pipeline for library scanning, playback, downloading, or artwork changes, update the Data Flow section.
+4. File Registry: If you add/modify a file in views/, update the Registry with its unique logic.
+5. State & Logic: If you alter _library structures, engine.queue, or "Magic" logic (Normalization Keys, title splitting regex), update the State Management section immediately.
+6. Technical Constraints: All changes must respect and verify the existing protocols:
     * Audio: Mandatory 44.1kHz via FFmpeg; pygame engine lifecycle.
-    * UI: 52px row height for virtual scrolling; specific scrollregion clamping logic.
+    * UI: 56px row height for virtual scrolling; specific scrollregion clamping logic.
     * Threading: Heavy tasks (yt-dlp/OS scans) must be threaded; UI updates must use .after(0, callback).
 Quality Standards:
 * Maintain the established Markdown structure (H1/H2/H3).

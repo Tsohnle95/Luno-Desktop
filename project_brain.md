@@ -3,20 +3,74 @@
 > [!IMPORTANT]
 > **MAINTENANCE INSTRUCTIONS FOR AI/HUMANS:**
 > When updating this document, prioritize **architectural clarity** over code snippets.
-> 1. **Add New Views**: When a file is added to `views/`, add it to the "File Registry" with a 1-sentence summary of its unique logic.
-> 2. **Update State Patterns**: If the structure of `_library` or `engine.queue` changes, update the "State Management" section immediately.
-> 3. **Document "Magic" Logic**: If a new comparison logic (regex), parsing rule (splitting strings), or binary dependency is added, record it in the "Logic" or "Dependencies" sections.
-> 4. **Keep it High-Level**: Do not document every method. Only document component interfaces (e.g., how the Controller broadcasts to Views).
-> 5. **Verify Constraints**: Always ensure the "Technical Protocols" (44.1kHz, Threading) reflect the current reality of the engine.
+> 1. **File Tree**: Keep the File Tree section accurate — every file in the repo must appear there or be explicitly marked as dead/orphaned.
+> 2. **Data Flow**: If the pipeline for library scanning, playback, downloading, or artwork changes, update the "Data Flow" section immediately.
+> 3. **Add New Views**: When a file is added to `views/`, add it to the "File Registry" with a 1-sentence summary of its unique logic.
+> 4. **Update State Patterns**: If the structure of `_library` or `engine.queue` changes, update the "State Management" section immediately.
+> 5. **Document "Magic" Logic**: If a new comparison logic (regex), parsing rule (splitting strings), or binary dependency is added, record it in the "Logic" or "Dependencies" sections.
+> 6. **Keep it High-Level**: Do not document every method. Only document component interfaces (e.g., how the Controller broadcasts to Views).
+> 7. **Verify Constraints**: Always ensure the "Technical Protocols" (44.1kHz, Threading) reflect the current reality of the engine.
 
 This document is a high-level architectural map for the **Vibe Music Player**. It provides the technical context needed for an AI assistant to understand the codebase, state flows, and logic without ingesting every file.
 
 ---
 
+## 📁 File Tree
+
+```
+├── music_player.py           # Main entry point — Controller (VibeMusicPlayer)
+├── engine.py                 # Audio engine + Discovery + Library scanning
+├── downloader.py             # yt-dlp download wrapper (Downloader class)
+├── theme.py                  # Color palette + playlist gradient system
+├── utils.py                  # Shared helpers (resource_path, format_time, split_track_name, etc.)
+├── widgets.py                # Custom Canvas widgets (RoundButton, SlimSlider, PlaylistArt, ModernScrollbar)
+├── icon.icns                 # macOS app icon
+├── DevTunes.spec             # PyInstaller spec for macOS build
+├── project_brain.md          # This document
+│
+├── .opencode/                # Project-local deterministic AI delivery workflow
+│   ├── plugins/
+│   │   └── feature-pipeline.ts       # Scripted stage orchestration and fail-closed validation
+│   ├── agents/
+│   │   ├── feature-workflow.md       # Tool-only UI agent for the scripted pipeline
+│   │   └── pipeline-reviewer-backup.md # Independent backup when review output is invalid/empty
+│   └── commands/
+│       └── feature.md                # `/feature` command entry point
+│
+├── views/                    # View modules (all inherit tk.Frame)
+│   ├── __init__.py           # Empty — required for PyInstaller package recognition
+│   ├── library.py            # Main library view (virtual scrolling, visualizer, search)
+│   ├── downloader.py         # Downloader hub view (Search, YT/CSV, Sync, Duplicates, Allowed)
+│   ├── recent.py             # Recently played tracks
+│   ├── artists.py            # Artist browser with sidebar filter
+│   ├── discover.py           # Last.fm discovery hub
+│   ├── settings.py           # Settings panel (API keys, audio, storage)
+│   ├── song_page.py          # Now Playing full-screen detail view
+│   └── error_log.py          # Debug log viewer
+│
+├── test_media_keys.py        # Deterministic mocked unit tests for media key logic
+├── test_audio_flet.py        # Ad-hoc test scripts (not part of the app)
+├── test_audio_flet2.py
+├── test_dl.py
+├── test_focus.py
+├── test_label_ph.py
+│
+├── buildozer.spec            # Android build config (not in scope)
+├── main.py                   # Flet entry point (not in scope)
+├── music_player_flet.py      # Flet mobile port (not in scope)
+└── requirements.txt          # Flet dependencies (not in scope)
+```
+
+Files marked **"not in scope"** belong to the Flet mobile port and are not part of the desktop app architecture.
+
+---
+
 ## 📦 Build & Packaging (PyInstaller)
 To bundle the application as a standalone executable (`.app` on macOS or `.exe` on Windows), follow these protocols:
-- **macOS Build Command**: Use `python -m PyInstaller --noconsole --windowed --noconfirm --clean --name "DevTunes" --icon "icon.icns" --add-data "views:views" music_player.py`.
-- **Windows Build Command**: Use `python -m PyInstaller --noconsole --windowed --noconfirm --clean --name "DevTunes" --icon "icon.ico" --add-data "views;views" music_player.py`. **Note:** This *must* be run on a Windows OS. Windows uses a semicolon `;` as a path separator and requires an `.ico` icon file.
+- **macOS Build Command**: Use `python -m PyInstaller --noconsole --windowed --noconfirm --clean --name "BoomTunes" --icon "icon.icns" --add-data "views:views" music_player.py`.
+- **macOS Bundle Identifier**: The `DevTunes.spec` file sets `bundle_identifier='com.ty.boomtunes'`. This was changed from `DevTunes` / `com.ty.devTunes` to avoid TCC permission confusion after the rename.
+- **PyInstaller hiddenimports**: The spec includes `'Foundation', 'objc', 'Quartz', 'AppKit'` to ensure PyObjC bridges resolve `True` at runtime in the bundled app.
+- **Windows Build Command**: Use `python -m PyInstaller --noconsole --windowed --noconfirm --clean --name "BoomTunes" --icon "icon.ico" --add-data "views;views" music_player.py`. **Note:** This *must* be run on a Windows OS. Windows uses a semicolon `;` as a path separator and requires an `.ico` icon file.
 - **Package Integrity**: The `views/` directory must contain an `__init__.py` to be correctly recognized as a package during bundling.
 - **Path Handling**: Always use `utils.resource_path()` for assets to ensure they are found within the `sys._MEIPASS` temporary directory at runtime.
 - **Environment**: Always run the build from within the `.venv` to ensure all dependencies (`pygame`, `yt-dlp`, `requests`, etc.) are linked. If you add a new dependency, you MUST `pip install` it inside the `.venv` before building.
@@ -51,23 +105,60 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 
 ---
 
+## 🔀 Data Flow
+
+### Library Scan → UI
+1. `_refresh_library()` spawns a thread calling standalone `scan_library(roots)` (imported from `engine.py`)
+2. Returns `dict[playlist_name → list[file_paths]]`
+3. `_finalize_library_update(new_lib)` hashes the result, stores it in `self._library`
+4. Calls `_populate_sidebar()` → rebuilds sidebar cards
+5. Calls `_populate_track_list("")` → rebuilds track list
+6. Broadcasts `on_library_updated()` to all views
+
+### Playback
+1. User clicks track → `engine.play_with_context(path, context_list)`
+2. Sets `queue` to `context_list` (or the playlist containing `path`)
+3. Sets `queue_idx` to track's position
+4. Calls `play_current()` → loads `pygame.mixer.music`, starts playback
+5. `poll()` loop (400ms) → updates scrubber, detects track end → calls `next_track()`
+
+### Download Pipeline
+1. `DownloadView._download_selected()` or `DownloadView._download_all()` → `Downloader.download_youtube_url(url, ...)`
+2. `Downloader._create_opts()` → yt-dlp options: 44.1kHz, 192k MP3, loudnorm, EmbedThumbnail
+3. Progress hook → `controller.after(0, ...)` → UI update
+4. On complete → `_refresh_library()` → library scan
+
+### Artwork Fetching
+1. `PlaylistArt` or `SongPageView` requests art → `ArtCache.get(path, size, callback)`
+2. `ArtCache` checks in-memory cache → if miss, submits to `ThreadPoolExecutor`
+3. Worker reads `mutagen.mp3.MP3` → extracts `APIC` frame → resizes via `PIL.Image`
+4. Returns `ImageTk.PhotoImage` via `controller.after(0, ...)` callback
+
+---
+
 ## 📂 File Registry & Responsibilities
 
 ### 🛰 Core Support
 - **`theme.py`**: The design system. Defines the full color palette (`BG`, `BG2`, `BG3`, `BG4`, `SIDEBAR`, `PLAYER_BG`, `GREEN`, `TEXT`, `TEXT2`, `TEXT3`, etc.), the `PLAYLIST_GRADIENTS` list (10 curated pairs), and the `playlist_gradient(name)` function which deterministically maps a playlist name to a gradient pair via MD5 hashing.
 - **`widgets.py`**: Custom Canvas components: `RoundButton`, `SlimSlider`, `PlaylistArt` (Spotify-style dynamic 4-quadrant thumbnails via `ArtCache`, with performance-optimized rendering — see Protocols), and **`ModernScrollbar`**.
-- **`downloader.py`**: Interface for `yt-dlp`. Forces **44.1kHz**; provides real-time progress stats (Speed/ETA). Supports full **playlist extraction**.
+- **`engine.py`**: The audio engine and supporting services. Contains:
+  - `VibeEngine`: Wraps `pygame.mixer`. Manages `queue` (list of paths), `queue_idx`, `user_queue_count` (Up Next behavior), `_original_queue` (shuffle restore), `shuffle`, `repeat`, `crossfade_secs`. Methods: `play_with_context()`, `play_current()`, `toggle_play()`, `next_track()`, `prev_track()`, `toggle_shuffle()`, `on_scrub_moved()`, `on_volume_moved()`, `poll()`.
+  - `DiscoveryService`: Last.fm API client. Two-stage: `track.getSimilar` → `artist.getTopTracks` fallback. Cache limited to 10 entries.
+  - `scan_library(roots)`: Walks directories, returns `dict[playlist → paths]`.
+  - `find_duplicates(library, allowed_keys)`: Groups tracks by `_normalize_for_dupe`.
+  - `probe_soundcloud(query)`, `parse_exportify_csv(filepath)`: Supporting utilities.
+- **`downloader.py`** (root `downloader.py` — not the view): The `Downloader` class — wraps `yt-dlp` for downloading audio. Static methods: `download_single()`, `download_youtube_url()`, `download_csv_tracks()`, `download_sync_tracks()`. Forces 44.1kHz, 192k MP3, EBU R 128 loudnorm. Uses `EmbedThumbnail` postprocessor. All methods spawn daemon threads. *Note: `views/downloader.py` is the UI view that calls this module.*
 - **`utils.py`**: Helpers: `resource_path` (PyInstaller asset resolution), `format_time`, `split_track_name`, `hex_to_rgb`, `rgb_to_hex`, and `draw_gradient_rect`.
 
 ### 🖼 View Modules (`views/`)
-- **`library.py`**: Virtual scrolling canvas (52px rows). Header displays playlist title, dynamic album art (via `PlaylistArt`), and a live **Audio Visualizer** with a premium `〰` toggle switch at the top right for on-demand control. Includes an **in-playlist search bar** (`Filter tracks…`) using a `tk.Label` overlay with `rely=0.5` vertical centering. Track text is strictly truncated dynamically (`char_w = 0.85`) to ensure long titles never overflow (`w - 320` boundary).
-- **`downloader.py`**: **Scrollable canvas layout** wrapping all content. Sync, YT, and Duplicates tabs are managed in a unified hub. Uses a dynamic `_search_limit` state to enable **Load More** functionality in YouTube/SoundCloud search. The **⚠ Duplicates** tab features displays **Playlist** and **Filename** columns. Action buttons support **bulk-exclusion** of entire duplicate sets; **double-clicking a group header** plays the first track. The **✓ Allowed Dups** tab includes **💾 Export** and **📂 Import** buttons for portable JSON backups of exclusions.
-- **`recent.py`**: Gradient header with "Recently Played" title. Displays recently played tracks in a styled list.
+- **`library.py`**: Virtual scrolling canvas (56px rows). Header displays playlist title, dynamic album art (via `PlaylistArt`), and a live **Audio Visualizer** with a premium `〰` toggle switch at the top right for on-demand control. Includes an **in-playlist search bar** (`Filter tracks…`) using a `tk.Label` overlay with `rely=0.5` vertical centering. Track text is strictly truncated dynamically (`char_w = 0.85`) to ensure long titles never overflow (`w - 340` boundary).
+- **`downloader.py`**: **Scrollable canvas layout** wrapping all content. Five tabs (Search, YT/CSV, Sync, Duplicates, Allowed Dups) are managed in a unified hub. Uses a dynamic `_search_limit` state to enable **Load More** functionality in YouTube/SoundCloud search. The **⚠ Duplicates** tab features displays **Playlist** and **Filename** columns. Action buttons support **bulk-exclusion** of entire duplicate sets; **double-clicking a group header** plays the first track. The **✓ Allowed Dups** tab includes **💾 Export** and **📂 Import** buttons for portable JSON backups of exclusions.
+- **`recent.py`**: Recently Played view. Gradient header with "Recently Played" title. Displays `controller._recently_played` (max 100) in a virtual scrolling canvas (56px rows). Multi-selection via Shift+Click / Cmd+Click. Context menu integration. "Play All" and "Clear History" actions.
 - **`artists.py`**: Gradient header with "Artists" title. Features an **in-app search filter** in the sidebar to dynamically narrow the artist keys. Groupings by artist name with expandable sections.
 - **`settings.py`**: Premium Spotify-style UI with clean section headers, borderless inputs, and consistent padding. Includes step-by-step instructions for Last.fm API setup and manages audio visualizer, storage paths, and Discovery keys.
 - **`discover.py`**: Discovery Hub view. Displays recommended tracks from Last.fm based on current listening; features one-click "Add to Library" download integration. Logic includes **Context-Aware Shuffle**: Shuffling now respects the user's current view (All Music, Artists, Recently Played) instead of being limited to physical disk folders. The controller passes a flattened `context_list` to the engine, allowing global randomization.
-- **`song_page.py`**: Premium Song Detail view. Displayed when clicking the player bar track info. Mimics Spotify's "Now Playing" aesthetic with a dynamic full-screen gradient and integrated controls. Implements a unified, centered, stacked layout across all screen sizes with a large centerpiece artwork (up to 800x800) that dynamically scales based on available window dimensions.
-- **`error_log.py`**: Dedicated debug console for viewing app logs.
+- **`song_page.py`**: Premium Song Detail view. Displayed when clicking the player bar track info. Mimics Spotify's "Now Playing" aesthetic with a glassmorphism background (blurred album art overlay) and integrated controls. Implements a unified, centered, stacked layout across all screen sizes with a large centerpiece artwork (up to 800x800) that dynamically scales based on available window dimensions.
+- **`error_log.py`**: Debug log viewer. Displays `controller._error_logs` (list of strings) in a read-only `tk.Text` widget with `ModernScrollbar`. "Clear Logs" button resets the list.
 
 ---
 
@@ -115,12 +206,13 @@ Allowed duplicates are identified by normalized keys (derived via `_normalize_fo
 - **Sash Interaction**: Draggable vertical boundary between nav and playlists marked by a visual `BG4` row handle.
 - **Text Truncation Policy**: Global policy to prevent UI overlap. Library header title and track list rows use dynamic truncation placeholders (`...`) based on available canvas/frame width. Queue items use a fixed character limit (approx 26-32 chars) for single-line consistency.
 - **Instant Input Feedback**: Slider widgets (`SlimSlider`) trigger commands during both `B1-Motion` and `ButtonRelease-1`, ensuring instantaneous audio/UI feedback.
-- **Downloader Hub Strategy**: Uses `restrictfilenames: False` and `ignoreerrors: True`. The unified Downloader view is **wrapped in a scrollable canvas** for spacing. Uses a **tabbed source panel** (Search / Sync / YT+CSV) with a **conditional thin progress bar** that only appears during active downloads. YT/CSV tab uses a **PREVIEW** workflow: fetch metadata → populate tree → then download via action buttons. Download status is shown **inline** (`Downloading {title} — x/y`) using yellow/green cycling. A collapsible download log at the bottom provides full history. **"+ New"** button next to SAVE TO combo enables in-place playlist creation.
+- **Downloader Hub Strategy**: Uses `restrictfilenames: False` and `ignoreerrors: True`. The unified Downloader view is **wrapped in a scrollable canvas** for spacing. Uses a **tabbed source panel** (Search / YT+CSV / Sync / Duplicates / Allowed Dups) with a **conditional thin progress bar** that only appears during active downloads. YT/CSV tab uses a **PREVIEW** workflow: fetch metadata → populate tree → then download via action buttons. Download status is shown **inline** (`Downloading {title} — x/y`) using yellow/green cycling. A collapsible download log at the bottom provides full history. **"+ New"** button next to SAVE TO combo enables in-place playlist creation.
 - **Default Download Destination**: All downloads default to **Unsorted** (MUSIC_ROOT) unless the user explicitly selects a destination from the "SAVE TO" dropdown (Strict Prioritization). No auto-created subfolders.
 - **URL Sanitization**: Validates that inputs start with `http` before processing to prevent terminal noise or garbage text from triggering engine errors.
 - **Playlist Persistence**: Forced parsing of `list=` parameters in YouTube URLs to ensure full playlist extraction even when pointing to a specific video.
 - **Discovery Protocol**: Employs **Last.fm `track.getSimilar`** API for Spotify-style recommendations with an **`artist.getTopTracks` fallback** for niche tracks. Features a **Discovery Hub** (`views/discover.py`) with a dedicated navigation tab. Supports both **Automatic** (trigger on track start) and **Manual** (trigger via "✨ Get Similar Tracks" button in Library—now with **Smart Selection** that targets active library rows if nothing is playing). Implements a **query cache** to minimize API redundancy. **Duplicate Check**: All recommendations are cross-referenced against a normalized index of the user's library (`artist - title`) and filtered out to ensure only new music is shown.
-- **Background Media Keys**: Integrated via a daemon thread triggering a native macOS `CGEventTap` (with a `pynput` fallback for Windows). Handles Play/Pause, Next, and Previous globally even when the app is backgrounded. To prevent PyInstaller freezing issues and macOS Kernel SIGTRAPS, the listener runs in a completely separate subprocess invoked by a `VIBE_RUN_LISTENER=1` environment variable hook at application startup. Errors (such as missing macOS Accessibility permissions) are piped directly to the internal error log.
+- **Background Media Keys (macOS)**: Uses `MPRemoteCommandCenter` in the primary app process (no subprocess listener). When PyObjC and MediaPlayer are available, `playCommand`, `pauseCommand`, `togglePlayPauseCommand`, `nextTrackCommand`, and `previousTrackCommand` are registered with retained handler blocks/tokens via `addTargetWithHandler_`. Callbacks only enqueue onto a thread-safe `queue.SimpleQueue` and return `MPRemoteCommandHandlerStatus.Success` promptly. A Tk `after` timer (`_poll_media_commands`, 50 ms) drains the queue and dispatches to `_media_play`/`_media_pause`/`_media_toggle_play`/`engine.next_track`/`engine.prev_track`. Feature-detects PyObjC/MediaPlayer and degrades gracefully when unavailable. Global keys toggle (`global_keys_var`) registers/unregisters handlers via `removeTarget_`. Now Playing metadata (title, artist, duration, elapsed, playback rate) is published truthfully from engine state. Rate is 1.0 when actively playing, 0.0 when paused/stopped. Elapsed carries through pause/resume and updates after seek. Periodically refreshes at ~2 s cadence during `_poll_media_commands`. Metadata is cleared on explicit unregister/shutdown. No `defaults write com.apple.Music`, no subprocess, no `VIBE_RUN_LISTENER`, no `_listen.py`. **Persistence requirement**: The `MPRemoteCommandCenter` instance and all handler/token registrations must be stored as instance attributes (e.g. `self._mp_command_center`) — never as local variables — to prevent PyObjC from garbage-collecting the ObjC→Python bridge wrapper, which would cause a native segfault on media key press.
+- **Media-Key Readiness Guard (`_media_ready()`)**: A centralized gate added to prevent startup/shutdown crashes when media keys arrive before or after the playback system is ready. `_media_ready()` returns `True` only when `_closing` is `False`, the engine exists, and `engine.mixer_ready` is `True`. Every media-key entry point — XF86 keyboard bindings, `MPRemoteCommandCenter` handlers, `_poll_media_commands`, `_media_play`, `_media_pause`, and `_media_toggle_play` — checks `_media_ready()` before proceeding. `engine.play_current()` also guards against `_closing` to prevent Tk widget access after window destruction, while `engine.next_track()`, `prev_track()`, `toggle_play()`, and `stop()` all check `mixer_ready`. Any media-key event that arrives before full initialization or after shutdown begins is silently ignored — no crash, no queued stale commands.
 - **Decoupled Search Pattern**: The sidebar search strictly filters playlist cards, while the center search bar handles in-playlist track filtering. This prevents state-bleeding between navigation and content discovery.
 - **Entry UI Standards**: All `tk.Entry` widgets must use `highlightthickness=0` and matching background colors to eliminate native focus borders.
 - **Global Multi-Selection Logic**: Standardized across All Music, Recent, and Artists views. Implements **Anchor-Based Range Selection** (Shift+Click) and **Individual Toggling** (Cmd/Ctrl+Click). The controller tracks the active tab to transparently hand off batch selection paths to single-track actions like "Add to Queue" or "Delete from Library".
@@ -145,5 +237,6 @@ Allowed duplicates are identified by normalized keys (derived via `_normalize_fo
 ---
 
 ## ⚠️ Known Code Smells
-- **Duplicate `toggle_shuffle`**: `engine.py` contains two `def toggle_shuffle(self):` methods (lines ~228 and ~349). The second silently overrides the first. Only the second is active at runtime.
-- **Dead sidebar rebuild**: `music_player.py` `_finalize_library_update` contains an orphaned block (~20 lines after `self._dest_options = options`) that duplicates the `_populate_sidebar` logic. This code runs but is immediately overwritten by the real `_populate_sidebar` call above it.
+- **`music_player.py` orphaned inline sidebar rebuild** (`_finalize_library_update`, lines 1397–1449): After calling `_populate_sidebar()`, the function has a second block of orphaned code that destroys and rebuilds the sidebar cards again. The first `_populate_sidebar()` call is effectively overwritten. Should be removed.
+- **`views/artists.py` uninitialized attributes**: `_sel_indices`, `_sel_anchor`, and `artist_tracks` are not initialized in `__init__` — only set in `populate()` / `_on_artist_select()`. Accessing before selection causes an `AttributeError`.
+- **`views/song_page.py` thread leak**: `_load_blur_bg` spawns a new thread on every `update_view()` call (e.g., during window resize) with no cancellation mechanism for previous threads.

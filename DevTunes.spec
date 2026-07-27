@@ -1,12 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
 a = Analysis(
     ['music_player.py'],
-    pathex=[],
+    pathex=['/Users/ty/boombastic/.venv/lib/python3.12/site-packages'],
     binaries=[],
     datas=[('views', 'views')],
-    hiddenimports=[],
+    hiddenimports=[
+        'Foundation', 'objc',
+        'Quartz', 'AppKit', 'ApplicationServices', 'MediaPlayer', 'AVFoundation',
+        'requests', 'urllib3',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -14,6 +17,7 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -21,7 +25,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='DevTunes',
+    name='BoomTunes',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -41,11 +45,11 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='DevTunes',
+    name='BoomTunes',
 )
 app = BUNDLE(
     coll,
-    name='DevTunes.app',
+    name='BoomTunes.app',
     icon='icon.icns',
-    bundle_identifier=None,
+    bundle_identifier='com.ty.boomtunes',
 )

@@ -1,14 +1,16 @@
 import tkinter as tk
 from theme import BG, BG2, BG3, BG4, TEXT, TEXT2, TEXT3, GREEN, GREEN_HOVER, PLAYER_BG, SIDEBAR
-from utils import draw_gradient_rect, split_track_name, hex_to_rgb, rgb_to_hex, format_time
+from utils import draw_gradient_rect, split_track_name, hex_to_rgb, rgb_to_hex
 from theme import playlist_gradient
-from widgets import RoundButton, SlimSlider
 import os
+import threading
 
 class SongPageView(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg=BG)
         self.controller = controller
+        self._bg_photo = None
+        self._bg_loading = False
         
         self._build_ui()
         
@@ -32,15 +34,17 @@ class SongPageView(tk.Frame):
 
         # 2. Main Centered Content
         self.main_f = tk.Frame(self.content, bg=BG)
-        self.main_f.pack(anchor="n", pady=30, fill="x", expand=True)
+        self.main_f.pack(fill="both", expand=True)
         
         self.main_f.columnconfigure(0, weight=1)
+        self.main_f.grid_rowconfigure(0, weight=1)  # top spacer
+        self.main_f.grid_rowconfigure(4, weight=1)  # bottom spacer
         
         # FIXED SIZE CONTAINER FOR ART (Ensures pixels, not characters)
         self.art_container = tk.Frame(self.main_f, bg=BG2, width=480, height=480, 
                                        highlightthickness=2, highlightbackground="#000")
         self.art_container.pack_propagate(False) # Force pixel sizes
-        self.art_container.grid(row=0, column=0, pady=(0, 20))
+        self.art_container.grid(row=1, column=0, pady=(0, 20))
         
         self.art_lbl = tk.Label(self.art_container, text="♫", font=("Helvetica", 80),
                                  fg=TEXT3, bg=BG2)
@@ -50,7 +54,7 @@ class SongPageView(tk.Frame):
         self.title_lbl = tk.Label(self.main_f, text="Song Title", 
                                    font=("Helvetica Neue", 42, "bold"),
                                    fg=TEXT, bg=BG, justify="center")
-        self.title_lbl.grid(row=1, column=0, pady=(0, 10))
+        self.title_lbl.grid(row=2, column=0, pady=(0, 10))
         
         def _on_main_resize(e):
             if e.width > 50:
@@ -60,53 +64,7 @@ class SongPageView(tk.Frame):
         self.artist_lbl = tk.Label(self.main_f, text="Artist Name",
                                     font=("Helvetica Neue", 20),
                                     fg=TEXT2, bg=BG, justify="center")
-        self.artist_lbl.grid(row=2, column=0, pady=(0, 20))
-        
-        # Controls Frame
-        self.ctrl_f = tk.Frame(self.main_f, bg=BG)
-        self.ctrl_f.grid(row=3, column=0)
-        
-        # Controls row
-        self.btn_row = tk.Frame(self.ctrl_f, bg=BG)
-        self.btn_row.pack(anchor="center")
-        
-        def icon_lbl(text, cmd, size=20, fg=TEXT2):
-            l = tk.Label(self.btn_row, text=text, font=("Helvetica Neue", size),
-                         fg=fg, bg=BG, cursor="hand2", padx=20)
-            l.bind("<Button-1>", lambda e: cmd())
-            l.bind("<Enter>",    lambda e: l.config(fg=TEXT))
-            l.bind("<Leave>",    lambda e: l.config(fg=fg))
-            return l
-
-        self.shuf_lbl = icon_lbl("⇄", lambda: self.controller._toggle_shuffle_ui(), 18)
-        self.shuf_lbl.pack(side="left")
-        
-        icon_lbl("⏮", lambda: self.controller.engine.prev_track(), 26).pack(side="left")
-        
-        self.play_btn = RoundButton(self.btn_row, 64, lambda: self.controller.engine.toggle_play(), bg=BG)
-        self.play_btn.pack(side="left", padx=20)
-        
-        icon_lbl("⏭", lambda: self.controller.engine.next_track(), 26).pack(side="left")
-        
-        self.rep_lbl = icon_lbl("↺", lambda: self.controller._toggle_repeat_ui(), 18)
-        self.rep_lbl.pack(side="left")
-
-        # Scrubber
-        sc_f = tk.Frame(self.ctrl_f, bg=BG)
-        sc_f.pack(fill="x", pady=(20, 0), ipadx=40)
-        
-        self.scrub = SlimSlider(sc_f, from_=0, to=100,
-                                command=lambda v: self.controller.engine.on_scrub_moved(v),
-                                track_color=BG4, fill_color=GREEN,
-                                thumb_color=TEXT, height=22, bg=BG)
-        self.scrub.pack(fill="x", expand=True)
-        
-        time_f = tk.Frame(sc_f, bg=BG)
-        time_f.pack(fill="x", pady=5)
-        self.time_cur = tk.Label(time_f, text="0:00", font=("Menlo", 10), fg=TEXT3, bg=BG)
-        self.time_cur.pack(side="left")
-        self.time_tot = tk.Label(time_f, text="0:00", font=("Menlo", 10), fg=TEXT3, bg=BG)
-        self.time_tot.pack(side="right")
+        self.artist_lbl.grid(row=3, column=0, pady=(0, 60))
 
     def populate(self):
         """Called when this tab is shown."""
@@ -119,13 +77,13 @@ class SongPageView(tk.Frame):
         h = self.winfo_height()
         if w < 10 or h < 10: return
         
-        # Center horizontally dynamically
-        self.canvas.itemconfig(self.canvas_window, width=w)
+        # Fill the canvas both directions to allow vertical centering
+        self.canvas.itemconfig(self.canvas_window, width=w, height=h)
         
-        # Responsive Layout Adjustments
-        max_h = h - 260 # Buffer for controls, text, and padding (reduced from 340)
+        # Responsive Layout Adjustments (more vertical space with controls removed)
+        max_h = h - 170
         max_w = w - 60
-        art_size = min(max_h, max_w, 800) # Increased max size from 540 to 800
+        art_size = min(max_h, max_w, 1000)
         if art_size < 200: art_size = 200 # Minimum size
         
         # Quantize art size to 20px increments to prevent spamming ArtCache thread pool during rapid window resize
@@ -140,10 +98,7 @@ class SongPageView(tk.Frame):
             self.title_lbl.config(font=("Helvetica Neue", 42, "bold"))
             self.artist_lbl.config(font=("Helvetica Neue", 20))
         
-        # Resize canvas window to fill self
         self.canvas.config(width=w, height=h)
-        # If content goes beyond height on mobile, update canvas window to still expand
-        self.canvas.itemconfig(self.canvas_window, width=w)
         
         # Get current track
         path = ""
@@ -153,17 +108,13 @@ class SongPageView(tk.Frame):
         if not path:
             self.title_lbl.config(text="Nothing playing")
             self.artist_lbl.config(text="")
-            self._draw_background(BG, BG2)
+            self._draw_background(None)
             return
 
         title, artist = split_track_name(path)
         self.title_lbl.config(text=title)
         self.artist_lbl.config(text=artist or "Unknown Artist")
         
-        # Scrubber state sync
-        if hasattr(self.controller, 'scrub_var'):
-            self.scrub.set(self.controller.scrub_var.get())
-
         # Artwork Fetching
         img = self.controller.art_cache.get(path, art_size, lambda p: self.after(0, self.update_view))
         if img:
@@ -171,50 +122,108 @@ class SongPageView(tk.Frame):
         else:
             self.art_lbl.config(image="", text="♫", bg=BG2)
             
-        # Background Gradient
-        pl = self.controller._selected_playlist or title
-        c1, _ = playlist_gradient(pl)
-        self._draw_background(c1, BG)
+        # Glassmorphism background
+        if path:
+            if not self._bg_loading:
+                self._bg_loading = True
+                threading.Thread(target=self._load_blur_bg, args=(path,), daemon=True).start()
+        else:
+            self._draw_background(None)
 
-    def _draw_background(self, color1, color2):
-        self.canvas.delete("all") # Clear canvas except the window (which is managed by itemid)
-        # Re-create window item if cleared by delete("all")
-        self.canvas_window = self.canvas.create_window(0, 0, window=self.content, anchor="nw")
-        
+    def _load_blur_bg(self, path):
+        """Load and blur album art for the glass background (in thread)."""
+        try:
+            from mutagen.mp3 import MP3
+            from mutagen.id3 import ID3
+            from PIL import Image, ImageTk, ImageFilter
+            import io
+            audio = MP3(path, ID3=ID3)
+            img_data = None
+            if audio.tags:
+                for tag in audio.tags.values():
+                    if getattr(tag, 'FrameID', None) == 'APIC':
+                        img_data = tag.data
+                        break
+            if not img_data:
+                self.controller.after(0, lambda: self._draw_background(None))
+                return
+
+            img = Image.open(io.BytesIO(img_data)).convert("RGB")
+            w, h = self.winfo_width(), self.winfo_height()
+            if w < 10 or h < 10:
+                w, h = 1200, 800
+            # Resize to fill the window
+            img = img.resize((w, h), Image.Resampling.LANCZOS)
+            # Apply strong blur for glassmorphism effect
+            blurred = img.filter(ImageFilter.GaussianBlur(radius=40))
+            dimmed = blurred.point(lambda p: int(p * 0.45))
+
+            # Darken edges with a gradient
+            from PIL import ImageDraw
+            overlay = Image.new("RGB", (w, h), (0, 0, 0))
+            for y in range(h):
+                t = y / h
+                alpha = int(0.65 * 255)  # constant darkening
+                overlay.putpixel((0, y), (0, 0, 0))
+            dimmed = Image.blend(dimmed, overlay, 0.35)
+
+            pi = ImageTk.PhotoImage(dimmed)
+            self.controller.after(0, lambda: [self._draw_background(pi), setattr(self, '_bg_loading', False)])
+        except Exception:
+            self.controller.after(0, lambda: [self._draw_background(None), setattr(self, '_bg_loading', False)])
+
+    def _draw_background(self, bg_img_or_path):
+        self.canvas.delete("all")
         w = self.winfo_width()
         h = self.winfo_height()
         if w < 10 or h < 10: return
         
-        # Re-sync content size
-        self.canvas.itemconfig(self.canvas_window, width=w)
-        
-        # Dynamic height to cover whatever is larger, the window or the content
-        content_h = self.content.winfo_reqheight()
-        bg_h = max(h, content_h)
+        # Re-create window item
+        self.canvas_window = self.canvas.create_window(0, 0, window=self.content, anchor="nw")
+        self.canvas.itemconfig(self.canvas_window, width=w, height=h)
 
-        r1, g1, b1 = hex_to_rgb(color1)
-        r1, g1, b1 = r1*0.35, g1*0.35, b1*0.35 # Moodier shade
-        r2, g2, b2 = hex_to_rgb(color2)
-        
-        steps = 60
-        for i in range(steps):
-            t = (i / steps)**1.5 # Subtle curve
-            r, g, b = r1 + (r2 - r1) * t, \
-                      g1 + (g2 - g1) * t, \
-                      b1 + (b2 - b1) * t
-            
-            y0 = int(bg_h * i / steps)
-            y1 = int(bg_h * (i + 1) / steps)
-            self.canvas.create_rectangle(0, y0, w, y1, fill=rgb_to_hex(r, g, b), outline="")
-        
+        if bg_img_or_path is not None:
+            self._bg_photo = bg_img_or_path
+            # Draw glass background
+            self.canvas.create_image(0, 0, image=self._bg_photo, anchor="nw")
+            # Dark vignette overlay: darker at bottom for readability
+            overlay_steps = 50
+            for i in range(overlay_steps):
+                t = (i / overlay_steps) ** 1.5
+                val = int(10 + (30 - 10) * t)
+                c = rgb_to_hex(val, val, val)
+                y0 = int(h * i / overlay_steps)
+                y1 = int(h * (i + 1) / overlay_steps)
+                self.canvas.create_rectangle(0, y0, w, y1, fill=c, outline="")
+            # Bottom edge fade to PLAYER_BG color
+            fade_steps = 20
+            fade_start = int(h * 0.7)
+            for i in range(fade_steps):
+                t = i / fade_steps
+                r, g, b = 0x12 + int((0x18 - 0x12) * t), 0x12 + int((0x18 - 0x12) * t), 0x12 + int((0x18 - 0x12) * t)
+                y0 = fade_start + int((h - fade_start) * i / fade_steps)
+                y1 = fade_start + int((h - fade_start) * (i + 1) / fade_steps)
+                self.canvas.create_rectangle(0, y0, w, y1, fill=rgb_to_hex(r, g, b), outline="")
+        else:
+            # Fallback: dark gradient
+            r1, g1, b1 = 0x12, 0x12, 0x12
+            r2, g2, b2 = 0x08, 0x08, 0x08
+            steps = 30
+            for i in range(steps):
+                t = (i / steps) ** 1.5
+                r, g, b = r1 + (r2 - r1) * t, g1 + (g2 - g1) * t, b1 + (b2 - b1) * t
+                y0 = int(h * i / steps)
+                y1 = int(h * (i + 1) / steps)
+                self.canvas.create_rectangle(0, y0, w, y1, fill=rgb_to_hex(r, g, b), outline="")
+
         self.canvas.tag_lower("all")
-        
-        # Sync background colors across UI
-        top_color = rgb_to_hex(r1, g1, b1)
-        self.content.config(bg=top_color)
-        self.main_f.config(bg=top_color)
-        self._recursive_bg(self.main_f, top_color)
-        self.back_btn.config(bg=top_color)
+
+        # Sync UI backgrounds to dark
+        dark_bg = "#0f0f0f"
+        self.content.config(bg=dark_bg)
+        self.main_f.config(bg=dark_bg)
+        self._recursive_bg(self.main_f, dark_bg)
+        self.back_btn.config(bg=dark_bg)
 
     def _recursive_bg(self, parent, color):
         parent.config(bg=color)

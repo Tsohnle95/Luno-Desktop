@@ -196,13 +196,16 @@ class VibeEngine:
         self.c = controller
         
         # Audio Initialization
+        self.mixer_ready = False
         if PYGAME_AVAILABLE:
             try:
                 pygame.mixer.quit()
                 pygame.mixer.pre_init(44100, -16, 2, 2048) 
                 pygame.mixer.init()
+                self.mixer_ready = True
             except Exception as e:
                 self.c._log_error("engine", f"Mixer Init Error: {e}")
+                self.mixer_ready = False
         
         # State
         self.queue = []
@@ -223,8 +226,13 @@ class VibeEngine:
         self.allowed_dupe_keys = set()
         self._load_allowed_dupes()
         
+        # Completion latch: set True before advance/repeat, reset in play_current,
+        # checked in _poll to prevent dual-firing across ticks.
+        self._completion_dispatched = False
+        
         # Start Poll
-        self.poll()
+        self._poll_after_id = None
+        self._poll()
 
 
 
@@ -261,8 +269,12 @@ class VibeEngine:
         self.play_current()
 
     def play_current(self):
+        if getattr(self.c, '_closing', False):
+            return
         if not PYGAME_AVAILABLE or self.queue_idx < 0 or self.queue_idx >= len(self.queue):
             return
+        # Reset completion latch so poll knows a new track generation is active
+        self._completion_dispatched = False
         path = self.queue[self.queue_idx]
         if not os.path.exists(path):
             self.consecutive_fails += 1
@@ -300,6 +312,7 @@ class VibeEngine:
             self.c.play_btn.set_text("⏸")
             self.c.time_tot.config(text=format_time(self.duration))
             self.c.update_player_art(path)
+            self.c._update_now_playing_info(title, artist, self.duration)
             
             # Sync Song Page if active
             sp = self.c._frames.get("song_page")
@@ -347,7 +360,7 @@ class VibeEngine:
         self.c._update_queue()
 
     def toggle_play(self):
-        if not PYGAME_AVAILABLE: return
+        if not PYGAME_AVAILABLE or not self.mixer_ready: return
         if not self.playing and self.queue:
             if self.queue_idx < 0: self.queue_idx = 0
             self.play_current()
@@ -356,6 +369,9 @@ class VibeEngine:
             self.paused = False
             self.track_start = time.time() - self.seek_pos
             self.c.play_btn.set_text("⏸")
+            if self.queue and 0 <= self.queue_idx < len(self.queue):
+                title, artist = split_track_name(self.queue[self.queue_idx])
+                self.c._update_now_playing_info(title, artist, self.duration)
         elif self.playing:
             pygame.mixer.music.pause()
             self.paused = True
@@ -363,7 +379,7 @@ class VibeEngine:
             self.c.play_btn.set_text("▶")
 
     def next_track(self):
-        if not self.queue: return
+        if not self.queue or not self.mixer_ready: return
         
         if getattr(self, 'user_queue_count', 0) > 0:
             self.user_queue_count -= 1
@@ -391,10 +407,20 @@ class VibeEngine:
             self.play_current()
 
     def prev_track(self):
-        if not self.queue: return
+        if not self.queue or not self.mixer_ready: return
         self.user_queue_count = 0
         self.queue_idx = max(0, self.queue_idx - 1)
         self.play_current()
+
+    def stop(self):
+        if not PYGAME_AVAILABLE or not self.mixer_ready: return
+        if self.playing or self.paused:
+            pygame.mixer.music.stop()
+            self.playing = False
+            self.paused = False
+            self.seek_pos = 0
+            self.track_start = 0
+            self.c.play_btn.set_text("▶")
 
     def on_scrub_moved(self, val):
         if not PYGAME_AVAILABLE or self.duration <= 0: return
@@ -408,10 +434,10 @@ class VibeEngine:
         self.volume = float(val) / 100
         if PYGAME_AVAILABLE: pygame.mixer.music.set_volume(self.volume)
 
-    def poll(self):
-        """Internal playback watchdog."""
+    def _poll(self):
+        """Internal playback watchdog with generation latch and mixer guard."""
         try:
-            if self.playing and not self.paused:
+            if self.playing and not self.paused and self.mixer_ready:
                 elapsed = time.time() - self.track_start
                 if self.duration > 0:
                     pct = min((elapsed / self.duration) * 100, 100)
@@ -426,16 +452,27 @@ class VibeEngine:
                         if hasattr(sp, "time_tot"): sp.time_tot.config(text=format_time(self.duration))
                         if hasattr(sp, "play_btn"): sp.play_btn.set_text("⏸")
                     
+                    # Completion latch: at most one advance per track generation.
+                    if self._completion_dispatched:
+                        return  # wait for play_current to reset
+                    
+                    # Track completion detection
                     if elapsed >= self.duration:
+                        self._completion_dispatched = True
                         if self.repeat: self.play_current()
                         else: self.next_track()
-                
-                if not pygame.mixer.music.get_busy():
-                    if self.repeat: self.play_current()
-                    else: self.next_track()
+                        return  # next _poll handles new state
+                    elif not pygame.mixer.music.get_busy() and elapsed > 0.5:
+                        # get_busy false before duration (short track, error, end).
+                        # 0.5s startup grace avoids transient idle after load().
+                        self._completion_dispatched = True
+                        if self.repeat: self.play_current()
+                        else: self.next_track()
+                        return
         except:
             pass
-        self.c.after(400, self.poll)
+        if not getattr(self.c, '_closing', False):
+            self._poll_after_id = self.c.after(400, self._poll)
 
     def clear_queue(self):
         self.queue = []
@@ -449,6 +486,7 @@ class VibeEngine:
         self.c.update_player_art("")
         self.c.scrub.set(0)
         self.c.time_cur.config(text="0:00")
+        self.c._clear_now_playing()
         self.c._update_queue()
 
     def _load_allowed_dupes(self):

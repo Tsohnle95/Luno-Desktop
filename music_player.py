@@ -19,7 +19,9 @@ pyinstaller --noconsole --windowed --noconfirm --clean
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 import threading
+import queue
 import os, re, csv, time, random, math, hashlib, shutil, traceback, json
+from urllib.parse import urlparse
 from datetime import datetime
 os.environ["PATH"] += os.pathsep + "/opt/homebrew/bin" + os.pathsep + "/usr/local/bin"
 os.environ["PATH"] += os.pathsep + "/opt/homebrew/bin"
@@ -59,10 +61,34 @@ CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".vibe_config.json")
 
 from concurrent.futures import ThreadPoolExecutor
 
+try:
+    import objc
+    from Foundation import NSObject
+    _HAS_PYOBJC = True
+except ImportError:
+    _HAS_PYOBJC = False
+
+try:
+    from MediaPlayer import (
+        MPNowPlayingInfoCenter,
+        MPMediaItemPropertyTitle,
+        MPMediaItemPropertyArtist,
+        MPMediaItemPropertyPlaybackDuration,
+        MPNowPlayingInfoPropertyPlaybackRate,
+        MPNowPlayingInfoPropertyElapsedPlaybackTime,
+        MPRemoteCommandCenter,
+        MPRemoteCommandHandlerStatus,
+    )
+    _HAS_MEDIAPLAYER = True
+except ImportError:
+    _HAS_MEDIAPLAYER = False
+
 class ArtCache:
     def __init__(self, app):
         self.app = app
         self.cache = {}
+        self._color_cache = {}
+        self._color_fetching = set()
         self.fetching = set()
         self.executor = ThreadPoolExecutor(max_workers=4)
 
@@ -77,6 +103,38 @@ class ArtCache:
             self.fetching.add(key)
             self.executor.submit(self._fetch, path, size, callback)
         return None
+
+    def get_dominant_color(self, path, fallback="#1DB954"):
+        if not path:
+            return fallback
+        if path in self._color_cache:
+            return self._color_cache[path]
+        if path not in self._color_fetching:
+            self._color_fetching.add(path)
+            self.executor.submit(self._fetch_color, path)
+        return fallback
+
+    def _fetch_color(self, path):
+        try:
+            from mutagen.mp3 import MP3
+            from mutagen.id3 import ID3
+            from PIL import Image
+            import io
+            audio = MP3(path, ID3=ID3)
+            if audio.tags:
+                for tag in audio.tags.values():
+                    if getattr(tag, 'FrameID', None) == 'APIC':
+                        img = Image.open(io.BytesIO(tag.data)).convert("RGB")
+                        tiny = img.resize((1, 1), Image.Resampling.LANCZOS)
+                        color = tiny.getpixel((0, 0))
+                        hex_color = rgb_to_hex(*color)
+                        self._color_cache[path] = hex_color
+                        self._color_fetching.discard(path)
+                        self.app.after(0, lambda: self.app._update_player_accent(path))
+                        return
+            self._color_fetching.discard(path)
+        except Exception:
+            self._color_fetching.discard(path)
 
     def _fetch(self, path, size, callback):
         try:
@@ -101,6 +159,16 @@ class ArtCache:
                 img = img.crop((left, top, left+min_dim, top+min_dim))
                 img = img.resize((size, size), Image.Resampling.LANCZOS)
                 
+                # Extract dominant color for player bar accent
+                try:
+                    rgb_img = img.convert("RGB")
+                    tiny = rgb_img.resize((1, 1), Image.Resampling.LANCZOS)
+                    color = tiny.getpixel((0, 0))
+                    self._color_cache[path] = rgb_to_hex(*color)
+                    self._color_fetching.discard(path)
+                except Exception:
+                    pass
+                
                 def _done(i=img, p=path, s=size, cb=callback):
                     # Must be created in main thread
                     try:
@@ -108,6 +176,7 @@ class ArtCache:
                         self.cache[(p, s)] = pi
                         self.fetching.discard((p, s))
                         cb(p)
+                        self.app._update_player_accent(p)
                     except Exception:
                         self.fetching.discard((p, s))
                 self.app.after(0, _done)
@@ -116,8 +185,32 @@ class ArtCache:
         except Exception:
             self.fetching.discard((path, size))
 
-# ── Main App ──────────────────────────────────────────────────────────────────
+# ── Main App ──────────────────────────────────────────────────────────────
 class VibeMusicPlayer(tk.Tk):
+    def _ctx_set_playlist_url(self, pl_name):
+        """Prompt user to set or remove a playlist URL."""
+        current = self._get_playlist_url(pl_name) or ""
+        new_url = simpledialog.askstring(
+            "Playlist URL",
+            f"Enter YouTube playlist URL for '{pl_name}':\n\nLeave empty and press OK to remove the current URL.",
+            parent=self,
+            initialvalue=current
+        )
+        if new_url is None:
+            return  # cancelled
+        new_url = new_url.strip()
+        if new_url:
+            parsed = urlparse(new_url)
+            if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+                messagebox.showwarning("Invalid URL", "Must be a valid http/https URL.")
+                return
+        self._set_playlist_url(pl_name, new_url)
+        if new_url:
+            messagebox.showinfo("Saved", f"Playlist URL saved for '{pl_name}'.")
+        else:
+            messagebox.showinfo("Removed", f"Playlist URL removed for '{pl_name}'.")
+        self._populate_sidebar()
+
     def _ctx_dump_playlist(self, source_pl_name):
         """Copies all songs from one playlist folder to another."""
         if source_pl_name == "All Music":
@@ -225,7 +318,7 @@ lder."""
         self.MUSIC_ROOT = MUSIC_ROOT
         
         # 1. This happens the second you open the app
-        self.title("DevTunes") 
+        self.title("BoomTunes") 
         
         try:
             self.create_command('tkAboutDialog', self._show_about)
@@ -257,6 +350,10 @@ lder."""
         self._viz_enabled          = False
         self._viz_after_id         = None
         self._sync_running         = False
+        self._playlist_urls        = {}
+        self._media_command_queue  = queue.SimpleQueue()
+        self._closing = False
+        self._poll_after_id = None
 
         self.vol_var        = tk.DoubleVar(value=70)
         self.scrub_var      = tk.DoubleVar(value=0)
@@ -276,13 +373,15 @@ lder."""
         # Last.fm Discovery State
         self.lastfm_key_var     = tk.StringVar(value="")
         self.auto_discovery_var = tk.BooleanVar(value=False)
-        self.global_keys_var    = tk.BooleanVar(value=False)
+        self.global_keys_var    = tk.BooleanVar(value=True)
         self.discovery          = DiscoveryService(logger=self._log_error)
         
         self.art_cache          = ArtCache(self)
+        self._np_poll_counter = 0
 
         # 2. LOAD PERSISTENT CONFIG
         self._load_config()
+        self._load_playlist_meta()
         
         # 3. CONFIGURE UI & ENGINE
         self._configure_styles()
@@ -301,7 +400,7 @@ lder."""
         self.auto_discovery_var.trace_add("write", lambda *a: self._save_config())
         self._cf_var.trace_add("write", lambda *a: self._save_config())
         self._sleep_var.trace_add("write", lambda *a: self._save_config())
-        self.global_keys_var.trace_add("write", lambda *a: self._save_config())
+        self.global_keys_var.trace_add("write", lambda *a: (self._save_config(), self._on_global_keys_changed()))
         
         # Close Protocol
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -309,16 +408,21 @@ lder."""
         # Initial sidebar sash placement (40/60 split)
         self.after(500, self._set_initial_sidebar_sash)
         
-        # 4. INITIALIZE GLOBAL MEDIA KEYS (Background)
-        # Delay significantly to avoid conflict with UI event loop and permission alerts
-        self.after(3000, self._init_global_keys)
+        # 4. Media key handling: MPRemoteCommandCenter in-process registration.
+        #    No subprocess, no 'defaults write' — command callbacks enqueue onto
+        #    _media_command_queue and return promptly; _poll_media_commands drains it.
+        self._init_remote_commands()
+        self._poll_after_id = None
+        if self.global_keys_var.get():
+            self.after(1500, self._start_media_key_listener)
+        self.after(100, self._poll_media_commands)
 
         if not PYGAME_AVAILABLE: self._log("⚠ pygame not available","warning")
         if not YT_DLP_AVAILABLE: self._log("⚠ yt-dlp not found — brew install yt-dlp","warning")
 
     def _show_about(self):
         # 2. This ONLY happens if you click "About Dev Tunes" in the menu
-        messagebox.showinfo("DevTunes", "DevTunes v4\nProfessional Music Player")
+        messagebox.showinfo("BoomTunes", "BoomTunes v4\nProfessional Music Player")
 
     def _fetch_missing_artwork(self, on_progress, on_complete):
         """Batch process to fetch missing album art for entire library"""
@@ -546,7 +650,7 @@ lder."""
         # 1. Logo area (always top)
         logo_f = tk.Frame(parent, bg=SIDEBAR)
         logo_f.pack(fill="x", padx=24, pady=(28,24))
-        tk.Label(logo_f, text="DevTunes", font=("Helvetica Neue",24,"bold"),
+        tk.Label(logo_f, text="BoomTunes", font=("Helvetica Neue",24,"bold"),
                  fg=TEXT, bg=SIDEBAR).pack(side="left")
         tk.Label(logo_f, text="▮", font=("Helvetica Neue",9),
                  fg=GREEN, bg=SIDEBAR).pack(side="left", padx=(3,0), pady=(10,0))
@@ -906,9 +1010,15 @@ lder."""
     def _build_player(self, parent):
         parent.grid_columnconfigure(1, weight=1)
 
+        # Accent line at top of player bar
+        self._player_accent = tk.Canvas(parent, height=2, highlightthickness=0, bd=0,
+                                         bg=PLAYER_BG)
+        self._player_accent.grid(row=0, column=0, columnspan=3, sticky="ew")
+        self._player_accent._accent_id = None
+
         # Track info + mini art
         info = tk.Frame(parent, bg=PLAYER_BG, width=300)
-        info.grid(row=0, column=0, sticky="nsew", padx=(20,0))
+        info.grid(row=1, column=0, sticky="nsew", padx=(20,0))
         info.grid_propagate(False)
         info.grid_rowconfigure(0, weight=1)
         info.grid_columnconfigure(1, weight=1)
@@ -936,7 +1046,7 @@ lder."""
 
         # Controls
         ctrl = tk.Frame(parent, bg=PLAYER_BG)
-        ctrl.grid(row=0, column=1, sticky="nsew", padx=10)
+        ctrl.grid(row=1, column=1, sticky="nsew", padx=10)
 
         btn_row = tk.Frame(ctrl, bg=PLAYER_BG)
         btn_row.pack(pady=(8,4))
@@ -978,7 +1088,7 @@ lder."""
 
         # Volume
         vol_frame = tk.Frame(parent, bg=PLAYER_BG, width=220)
-        vol_frame.grid(row=0, column=2, sticky="e", padx=(0,20))
+        vol_frame.grid(row=1, column=2, sticky="e", padx=(0,20))
         vol_frame.grid_propagate(False)
         vi = tk.Frame(vol_frame, bg=PLAYER_BG)
         vi.pack(side="right", pady=26)
@@ -995,6 +1105,7 @@ lder."""
     def update_player_art(self, path):
         if not path:
             self.player_art_lbl.config(image="", text="♫", width=4, height=2, bg=BG3)
+            self._update_player_accent(path)
             return
             
         def _on_p_art_loaded(p):
@@ -1009,6 +1120,18 @@ lder."""
             self.player_art_lbl.config(image=img, text="", width=60, height=60, bg=PLAYER_BG)
         else:
             self.player_art_lbl.config(image="", text="♫", width=4, height=2, bg=BG3)
+        self._update_player_accent(path)
+
+    def _update_player_accent(self, path):
+        color = self.art_cache.get_dominant_color(path, fallback=GREEN)
+        accent = self._player_accent
+        accent.delete("all")
+        w = accent.winfo_width()
+        if w > 2:
+            r, g, b = hex_to_rgb(color)
+            accent.create_rectangle(0, 0, w, 2, fill=color, outline="")
+            accent.create_rectangle(0, 2, w, 2, fill=PLAYER_BG, outline="")
+        self.scrub.set_accent(color)
 
     def _on_sidebar_wheel(self, event):
         # Only scroll if content exceeds the viewport
@@ -1264,59 +1387,6 @@ lder."""
             # Specific updates for download view
             if name == "download" and hasattr(frame, "update_dest_combo"):
                 frame.update_dest_combo(self._dest_options)
-        """Clears and rebuilds the playlist cards in the sidebar."""
-        for w in self._pl_inner.winfo_children():
-            w.destroy()
-
-        total_songs = sum(len(v) for v in self._library.values())
-        entries = [("All Music", total_songs)]
-        if "Unsorted" in self._library:
-            entries.append(("Unsorted", len(self._library["Unsorted"])))
-        
-        for name in sorted(self._library.keys()):
-            if name not in ["Unsorted", "All Music"]:
-                entries.append((name, len(self._library[name])))
-
-        for idx, (name, count) in enumerate(entries):
-            card = tk.Frame(self._pl_inner, bg=SIDEBAR, cursor="hand2")
-            card.pack(fill="x", pady=1)
-            inner = tk.Frame(card, bg=SIDEBAR, cursor="hand2")
-            inner.pack(fill="x", padx=8, pady=3)
-            
-            pl_paths = []
-            if name == "All Music":
-                for t in self._library.values(): pl_paths.extend(t)
-            else:
-                pl_paths = self._library.get(name, [])
-            
-            art = PlaylistArt(inner, 42, name, app=self, paths=pl_paths, bg=SIDEBAR)
-            art.pack(side="left", padx=(0, 10))
-            
-            txt_f = tk.Frame(inner, bg=SIDEBAR)
-            txt_f.pack(side="left", fill="both", expand=True)
-            
-            nl = tk.Label(txt_f, text=name, font=("Helvetica Neue", 11, "bold"), fg=TEXT, bg=SIDEBAR, anchor="w")
-            nl.pack(anchor="w")
-            cl = tk.Label(txt_f, text=f"{count} songs", font=("Helvetica Neue", 9), fg=TEXT3, bg=SIDEBAR, anchor="w")
-            cl.pack(anchor="w")
-
-            def show_context(e, pl_name=name):
-                m = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT, font=("Helvetica Neue", 12))
-                if pl_name != "All Music":
-                    m.add_command(label=f"Dump '{pl_name}' elsewhere...", command=lambda: self._ctx_dump_playlist(pl_name))
-                    m.add_separator()
-                    m.add_command(label=f"🧹 Empty Playlist", command=lambda: self._ctx_clear_playlist_contents(pl_name))
-                    if pl_name != "Unsorted":
-                        m.add_command(label=f"🗑 Delete Folder", command=lambda: self._ctx_delete_playlist_folder(pl_name))
-                m.post(e.x_root, e.y_root)
-
-            for w in [card, inner, art, nl, cl, txt_f]:
-                w.bind("<Button-1>", lambda e, n=name, i=idx: self._select_playlist_card(i, n))
-                w.bind("<Button-2>", show_context)
-                w.bind("<Button-3>", show_context)
-                w.bind("<MouseWheel>", self._on_sidebar_wheel)
-                w.bind("<Enter>", lambda e, c=card, inn=inner, n=nl, cll=cl, tx=txt_f: [x.config(bg=BG3) for x in [c,inn,n,cll,tx]])
-                w.bind("<Leave>", lambda e, c=card, inn=inner, n=nl, cll=cl, tx=txt_f: [x.config(bg=SIDEBAR) for x in [c,inn,n,cll,tx]])
 
     def _populate_sidebar(self):
         """Redraws sidebar cards with right-click menu restored."""
@@ -1352,13 +1422,19 @@ lder."""
             txt_f.pack(side="left", fill="both", expand=True)
             nl = tk.Label(txt_f, text=name, font=("Helvetica Neue", 11, "bold"), fg=TEXT, bg=SIDEBAR, anchor="w")
             nl.pack(anchor="w")
-            cl = tk.Label(txt_f, text=f"{count} songs", font=("Helvetica Neue", 9), fg=TEXT3, bg=SIDEBAR, anchor="w")
+            has_url = bool(self._get_playlist_url(name))
+            url_indicator = "  🔗" if has_url else ""
+            cl = tk.Label(txt_f, text=f"{count} songs{url_indicator}", font=("Helvetica Neue", 9), fg=TEXT3, bg=SIDEBAR, anchor="w")
             cl.pack(anchor="w")
 
             def show_context(e, pl_name=name):
                 m = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT, font=("Helvetica Neue", 12))
                 if pl_name != "All Music":
                     m.add_command(label=f"Dump '{pl_name}' elsewhere...", command=lambda: self._ctx_dump_playlist(pl_name))
+                    m.add_separator()
+                    m.add_command(label="🔗 Set Playlist URL...", command=lambda: self._ctx_set_playlist_url(pl_name))
+                    if self._get_playlist_url(pl_name):
+                        m.add_command(label="⬇ Sync Now", command=lambda: self._sync_playlist(pl_name))
                     m.add_separator()
                     m.add_command(label=f"🧹 Empty Playlist", command=lambda: self._ctx_clear_playlist_contents(pl_name))
                     if pl_name != "Unsorted":
@@ -1371,7 +1447,7 @@ lder."""
                 w.bind("<Button-3>", show_context)
                 w.bind("<Enter>", lambda e, c=card, inn=inner, n=nl, cll=cl, tx=txt_f: [x.config(bg=BG3) for x in [c,inn,n,cll,tx]])
                 w.bind("<Leave>", lambda e, c=card, inn=inner, n=nl, cll=cl, tx=txt_f: [x.config(bg=SIDEBAR) for x in [c,inn,n,cll,tx]])
-                # WE REMOVED THE DIRECT MOUSEWHEEL BIND HERE TO PREVENT MULTI-SCROLL BUGS
+                w.bind("<MouseWheel>", self._on_sidebar_wheel, add="+")
 
     def _select_playlist_card(self, idx, name):
         self._pl_selected_idx = idx
@@ -1566,6 +1642,146 @@ lder."""
             # Optionally we could pass the filtered list to the downloader, 
             # but for now we'll just open the hub as requested.
 
+    # ── PLAYLIST URL SYNC ──────────────────────────────────────────────────
+    def _sync_playlist(self, pl_name, url=None, on_done=None, batch_mode=False,
+                       on_track_log=None, on_playlist_msg=None, on_progress_update=None):
+        """Sync a YT playlist URL to a local playlist folder.
+
+        If url is None, looks up the stored URL for pl_name.
+        Delegates to Downloader.download_playlist_sync for fetch/compare/download.
+        When batch_mode=True, suppresses the completion messagebox.
+        on_track_log: optional callback (title, is_success, err) for per-track log messages.
+        on_playlist_msg: optional callback (msg) for informational playlist messages.
+        """
+        if not url:
+            url = self._get_playlist_url(pl_name)
+        if not url:
+            if batch_mode:
+                self._log_error("Sync Batch", f"✗ No URL configured for '{pl_name}'")
+                if on_done: on_done(False, 0, 0)
+            else:
+                messagebox.showwarning("No URL", f"No playlist URL configured for '{pl_name}'.\n\nSet one via the playlist actions dropdown or right-click the playlist in the sidebar.")
+            return
+
+        dest = self._find_playlist_dir(pl_name)
+        if not dest:
+            if batch_mode:
+                self._log_error("Sync Batch", f"✗ '{pl_name}' — folder not found on disk")
+                if on_done: on_done(False, 0, 0)
+            else:
+                messagebox.showerror("Not Found", f"Playlist folder '{pl_name}' not found on disk.")
+            return
+
+        self._sync_running = True
+        self.status_var.set(f"Syncing {pl_name}…")
+        lib = self._frames.get("library")
+        if lib: lib.show_sync_progress()
+
+        from downloader import Downloader
+        attempted = [0]
+        succeeded = [0]
+
+        def on_progress(idx, tot, title):
+            pct = (idx / max(tot, 1)) * 100
+            if on_progress_update:
+                self.after(0, lambda p=pct: on_progress_update(p))
+            if title:
+                attempted[0] += 1
+                self.after(0, lambda: self.status_var.set(f"Syncing {pl_name}: {title} ({idx+1}/{tot})"))
+            else:
+                if not on_progress_update:
+                    self.after(0, lambda p=pct: self.prog_var.set(p))
+
+        def on_log(title, is_success, err):
+            if err == "already have":
+                msg = f"  ↻ {title}"
+                inc = False
+            else:
+                msg = f"  {'✓' if is_success else '✗'} {title}"
+                if err: msg += f" — {err}"
+                inc = is_success
+            self._log_error("Sync", msg)
+            if inc:
+                succeeded[0] += 1
+            if on_track_log:
+                self.after(0, lambda: on_track_log(title, is_success, err))
+
+        def _on_playlist_msg(msg):
+            self._log_error("Sync Playlist", msg)
+            if on_playlist_msg:
+                self.after(0, lambda: on_playlist_msg(msg))
+
+        def on_complete():
+            self.after(0, self._refresh_library)
+            count = succeeded[0]
+            if attempted[0] == 0:
+                msg = f"'{pl_name}' is up to date! ✓"
+            elif count == attempted[0]:
+                msg = f"Downloaded {count} new track(s) to '{pl_name}'."
+            else:
+                msg = f"Downloaded {count}/{attempted[0]} new track(s) to '{pl_name}'."
+            if on_progress_update:
+                self.after(0, lambda: on_progress_update(100))
+            else:
+                self.after(0, lambda: self.prog_var.set(100))
+            self.after(0, lambda: self.status_var.set(msg))
+            if batch_mode:
+                self.after(0, lambda: self._log_error("Sync Batch", msg))
+                self.after(0, lambda: setattr(self, '_sync_running', False))
+            else:
+                self.after(0, lambda: [
+                    messagebox.showinfo("Sync Complete", msg),
+                    setattr(self, '_sync_running', False),
+                    self._frames["library"].focus_set() if "library" in self._frames else None
+                ])
+            self.after(500, lambda: (
+                self._frames["library"].hide_sync_progress()
+                if "library" in self._frames else None
+            ))
+            if on_done: self.after(0, lambda: on_done(True, succeeded[0], attempted[0]))
+
+        Downloader.download_playlist_sync(
+            url, dest, self.skip_var.get(),
+            self.sc_var.get(), on_progress, on_log, on_complete,
+            lambda: not self._sync_running, on_playlist_msg=_on_playlist_msg)
+
+    def _sync_all_playlists(self, urls_and_names, on_all_done=None,
+                            on_playlist_start=None, on_playlist_done=None,
+                            on_track_log=None, on_playlist_msg=None,
+                            on_batch_progress=None):
+        """Sync a list of (name, url) tuples sequentially."""
+        total = len(urls_and_names)
+        total_new = [0]
+        total_attempted = [0]
+        def process_next(idx):
+            if idx >= total:
+                if on_batch_progress:
+                    on_batch_progress(100)
+                if on_all_done: on_all_done(total_new[0], total_attempted[0])
+                return
+            name, url = urls_and_names[idx]
+            if on_batch_progress:
+                on_batch_progress((idx / max(total, 1)) * 100)
+            self._log_error("Sync Batch", f"▶ Syncing '{name}' [{idx+1}/{total}]...")
+            if on_playlist_start:
+                on_playlist_start(name, idx + 1, total)
+            def _done(success=True, count=0, attempted_count=0):
+                total_new[0] += count
+                total_attempted[0] += attempted_count
+                if on_playlist_done:
+                    on_playlist_done(name, success, count, attempted_count)
+                if on_batch_progress:
+                    on_batch_progress(((idx + 1) / max(total, 1)) * 100)
+                process_next(idx + 1)
+            def _playlist_progress(pct):
+                if on_batch_progress:
+                    on_batch_progress(((idx + (pct / 100)) / max(total, 1)) * 100)
+            self._sync_playlist(pl_name=name, url=url, on_done=_done,
+                                batch_mode=True, on_track_log=on_track_log,
+                                on_playlist_msg=on_playlist_msg,
+                                on_progress_update=_playlist_progress)
+        process_next(0)
+
     def _ctx_remove_from_library(self):
         paths = self._get_sel_paths()
         if not paths: return
@@ -1672,7 +1888,15 @@ lder."""
     def _play_with_context(self, path, context_list=None):
         self.engine.play_with_context(path, context_list=context_list)
 
+    def _play_recent_all(self):
+        if not self._recently_played:
+            return
+        self._play_with_context(self._recently_played[0],
+                                context_list=list(self._recently_played))
 
+    def _clear_recent(self):
+        self._recently_played.clear()
+        self._frames["recent"].redraw()
 
     def _play_all(self):
         paths = [item[0] for item in self._frames["library"]._track_items]
@@ -1821,128 +2045,229 @@ lder."""
     # KEYBOARD SHORTCUTS
     # ═══════════════════════════════════════════════════════════════════════════
     def _bind_keys(self):
-        self.bind("<XF86AudioPlay>",         lambda e: self.engine.toggle_play())
-        self.bind("<XF86AudioNext>",         lambda e: self.engine.next_track())
-        self.bind("<XF86AudioPrev>",         lambda e: self.engine.prev_track())
+        self.bind("<XF86AudioPlay>",         lambda e: self._media_toggle_play() if hasattr(self, 'engine') and self.engine is not None and getattr(self.engine, 'mixer_ready', False) else None)
+        self.bind("<XF86AudioNext>",         lambda e: self.engine.next_track() if hasattr(self, 'engine') and self.engine is not None and getattr(self.engine, 'mixer_ready', False) else None)
+        self.bind("<XF86AudioPrev>",         lambda e: self.engine.prev_track() if hasattr(self, 'engine') and self.engine is not None and getattr(self.engine, 'mixer_ready', False) else None)
         self.bind("<Up>",             lambda e: self._change_volume(0.05))
         self.bind("<Down>",           lambda e: self._change_volume(-0.05))
 
-    def _init_global_keys(self):
-        """Starts a background daemon thread that manages a separate listener process."""
-        if not self.global_keys_var.get():
+
+    def _should_handle_media_keys(self):
+        return self.global_keys_var.get()
+
+    def _on_global_keys_changed(self):
+        if self.global_keys_var.get():
+            self.after(0, self._start_media_key_listener)
+        else:
+            self._stop_media_key_listener()
+
+    def _media_ready(self):
+        """Returns True if the playback system is fully initialized and ready for commands."""
+        if self._closing:
+            return False
+        if not hasattr(self, 'engine') or self.engine is None:
+            return False
+        if not getattr(self.engine, 'mixer_ready', False):
+            return False
+        return True
+
+    def _media_play(self):
+        if not self._media_ready():
+            return
+        if self.engine.playing and not self.engine.paused:
+            return
+        if self.engine.paused or self.engine.queue:
+            self.engine.toggle_play()
+            return
+        self._play_all()
+
+    def _media_pause(self):
+        if not self._media_ready():
+            return
+        if self.engine.playing and not self.engine.paused:
+            self.engine.toggle_play()
+
+    def _media_toggle_play(self):
+        if not self._media_ready():
+            return
+        if not self.engine.playing and not self.engine.queue:
+            self._play_all()
+            return
+        self.engine.toggle_play()
+
+    def _enqueue_media_command(self, command):
+        if self._closing:
+            return
+        if not hasattr(self, 'engine') or self.engine is None:
+            return
+        if not getattr(self.engine, 'mixer_ready', False):
+            return
+        self._media_command_queue.put(command)
+
+    def _start_media_key_listener(self):
+        """Register MPRemoteCommandCenter handlers directly (no subprocess).
+        Register togglePlayPauseCommand instead of separate play/pause to avoid
+        macOS routing a single physical press to multiple commands."""
+        if not self._should_handle_media_keys():
+            return
+        if not hasattr(self, 'engine') or self.engine is None:
+            return
+        if not (_HAS_PYOBJC and _HAS_MEDIAPLAYER):
+            return
+        if getattr(self, "_mp_registered", False):
             return
 
-        def run_listener():
-            import subprocess
-            try:
-                # Delay start to ensure GUI loaded cleanly
-                time.sleep(2)
-                if not self.global_keys_var.get(): return
-                
-                # We spawn a totally detached process because importing pynput without 
-                # macOS Accessibility permissions triggers an instantaneous Kernel SIGTRAP.
-                # Running it in a subprocess safeguards the main player GUI from crashing.
-                # Native macOS CGEventTap directly hooked to NX_SYSDEFINED events.
-                # If unavailable, safely falls back to standard pynput listener logic.
-                script = '''
-import sys, os
-try:
-    if sys.platform != "darwin": raise Exception("Use pynput wrapper on Windows")
-    import Quartz
-    from AppKit import NSEvent
-    
-    def cg_event_callback(proxy, type_id, event, refcon):
-        if type_id == 14: # NSSystemDefined
-            try:
-                nsevent = NSEvent.eventWithCGEvent_(event)
-                if nsevent and nsevent.subtype() == 8: # NX_SUBTYPE_AUX_CONTROL_BUTTONS
-                    data = nsevent.data1()
-                    keyCode = (data & 0xFFFF0000) >> 16
-                    state = ((data & 0x0000FFFF) & 0xFF00) >> 8
-                    if state == 0x0a: # Key Down
-                        if keyCode == 16: print("NAME:media_play_pause")
-                        elif keyCode == 17: print("NAME:media_next")
-                        elif keyCode == 18: print("NAME:media_previous")
-                        elif keyCode == 0: print("NAME:media_volume_up")
-                        elif keyCode == 1: print("NAME:media_volume_down")
-                        sys.stdout.flush()
-            except: pass
-        return event
+        try:
+            self._mp_command_center = MPRemoteCommandCenter.sharedCommandCenter()
+            tokens = []
+            handlers = []
 
-    mask = Quartz.CGEventMaskBit(14)
-    tap = Quartz.CGEventTapCreate(
-        Quartz.kCGSessionEventTap, Quartz.kCGHeadInsertEventTap, 
-        Quartz.kCGEventTapOptionDefault, mask, cg_event_callback, None
-    )
-    if not tap: 
-        print("ERROR:macOS Accessibility / Input Monitoring permissions missing! Please grant them in System Settings.")
-        sys.exit(1)
-    
-    runLoopSource = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
-    Quartz.CFRunLoopAddSource(Quartz.CFRunLoopGetCurrent(), runLoopSource, Quartz.kCFRunLoopCommonModes)
-    Quartz.CGEventTapEnable(tap, True)
-    Quartz.CFRunLoopRun()
-except Exception as e:
-    try:
-        from pynput import keyboard
-        def on_press(k):
+            def _make_handler(cmd_name):
+                def handler(_event):
+                    try:
+                        self._enqueue_media_command(cmd_name)
+                    except BaseException:
+                        pass
+                    return 0   # MPRemoteCommandHandlerStatus.Success
+                return handler
+
+            command_map = [
+                ("toggle",   self._mp_command_center.togglePlayPauseCommand),
+                ("next",     self._mp_command_center.nextTrackCommand),
+                ("previous", self._mp_command_center.previousTrackCommand),
+            ]
+
+            for name, getter in command_map:
+                cmd = getter()
+                handler = _make_handler(name)
+                token = cmd.addTargetWithHandler_(handler)
+                handlers.append(handler)
+                tokens.append((cmd, token))
+
+            self._mp_handlers = handlers
+            self._mp_tokens = tokens
+            self._mp_registered = True
+            self._log_error("GlobalKeys", "Media key handlers registered")
+        except Exception as e:
+            self._log_error("GlobalKeys", f"Failed to register media keys: {e}")
+
+    def _stop_media_key_listener(self):
+        """Unregister MPRemoteCommandCenter handlers and clear Now Playing."""
+        if not (_HAS_PYOBJC and _HAS_MEDIAPLAYER):
+            return
+        if not getattr(self, "_mp_registered", False):
+            return
+        try:
+            for cmd, token in getattr(self, '_mp_tokens', []):
+                try:
+                    if hasattr(cmd, 'removeTarget_') and token is not None:
+                        cmd.removeTarget_(token)
+                    # Disable the command to avoid stale system target
+                    if hasattr(cmd, 'setEnabled_'):
+                        cmd.setEnabled_(False)
+                except Exception:
+                    pass
+            self._mp_tokens = []
+            self._mp_handlers = []
+            self._mp_registered = False
+            self._mp_command_center = None
+            # Clear Now Playing info
+            self._clear_now_playing()
+            self._log_error("GlobalKeys", "Media key handlers unregistered")
+        except Exception as e:
+            self._log_error("GlobalKeys", f"Failed to unregister media keys: {e}")
+
+    def _poll_media_commands(self):
+        actions = {
+            "play": self._media_play,
+            "pause": self._media_pause,
+            "toggle": self._media_toggle_play,
+            "next": self.engine.next_track,
+            "previous": self.engine.prev_track,
+            "stop": self.engine.stop,
+            "volume_up": lambda: self._change_volume(0.05),
+            "volume_down": lambda: self._change_volume(-0.05),
+        }
+        while True:
             try:
-                name = getattr(k, "name", None); vk = getattr(k, "vk", None)
-                if name: print(f"NAME:{name}")
-                elif vk: print(f"VK:<{vk}>")
-                else: print(f"STR:{str(k)}")
-                sys.stdout.flush()
-            except: pass
-        with keyboard.Listener(on_press=on_press) as l: l.join()
-    except Exception as ie: print(f"ERROR:pynput generic fallback failed: {str(e)} / {str(ie)}")
-'''
-                env = os.environ.copy()
-                env["VIBE_RUN_LISTENER"] = "1"
-                
-                if getattr(sys, 'frozen', False):
-                    # Pyinstaller executable runs itself with flag
-                    proc = subprocess.Popen(
-                        [sys.executable], 
-                        env=env,
-                        stdout=subprocess.PIPE, 
-                        stderr=subprocess.DEVNULL, 
-                        universal_newlines=True
-                    )
-                else:    
-                    proc = subprocess.Popen(
-                        [sys.executable, "-c", script], 
-                        stdout=subprocess.PIPE, 
-                        stderr=subprocess.DEVNULL, 
-                        universal_newlines=True
-                    )
-                
-                for line in proc.stdout:
-                    if not self.global_keys_var.get():
-                        proc.terminate()
+                command = self._media_command_queue.get_nowait()
+            except queue.Empty:
+                break
+            action = actions.get(command)
+            if action:
+                try:
+                    if not self._media_ready():
                         break
-                        
-                    line = line.strip()
-                    if not line: continue
-                    
-                    if line in ["NAME:media_play_pause", "VK:<179>", "VK:<269025047>"]:
-                        self.after(0, self.engine.toggle_play)
-                    elif line in ["NAME:media_next", "VK:<176>", "VK:<269025046>"]:
-                        self.after(0, self.engine.next_track)
-                    elif line in ["NAME:media_previous", "VK:<177>", "VK:<269025044>"]:
-                        self.after(0, self.engine.prev_track)
-                    elif line == "NAME:media_volume_up":
-                        self.after(0, lambda: self._change_volume(0.05))
-                    elif line == "NAME:media_volume_down":
-                        self.after(0, lambda: self._change_volume(-0.05))
-                    elif line.startswith("ERROR:"):
-                        self.after(0, lambda l=line: self._log_error("GlobalKeys", l))
-                    else:
-                        self.after(0, lambda l=line: self._log_error("GlobalKeys", f"Unrecognized key: {l}"))
-                        
-            except Exception as e:
-                self.after(0, lambda e=e: self._log_error("GlobalKeys", f"Subprocess manager failed: {e}"))
+                    action()
+                except Exception as e:
+                    self._log_error("GlobalKeys", f"Media command failed: {e}")
 
-        threading.Thread(target=run_listener, daemon=True).start()
+        # Periodic Now Playing elapsed/rate update (~every 2 s)
+        self._np_poll_counter += 1
+        if self._np_poll_counter % 40 == 0:
+            self._refresh_now_playing()
+
+        if not self._closing:
+            self._poll_after_id = self.after(50, self._poll_media_commands)
+
+
+
+    def _init_remote_commands(self):
+        """Set up Now Playing info center key strings (called once at startup).
+        Command handler registration happens in _start_media_key_listener."""
+        if getattr(self, "_remote_commands_ready", False):
+            return
+        if not (_HAS_PYOBJC and _HAS_MEDIAPLAYER):
+            return
+        try:
+            self._mp_title_key = MPMediaItemPropertyTitle
+            self._mp_artist_key = MPMediaItemPropertyArtist
+            self._mp_duration_key = MPMediaItemPropertyPlaybackDuration
+            self._mp_rate_key = MPNowPlayingInfoPropertyPlaybackRate
+            self._mp_elapsed_key = MPNowPlayingInfoPropertyElapsedPlaybackTime
+            self._mp_info_center = MPNowPlayingInfoCenter.defaultCenter()
+            self._mp_info_center.setNowPlayingInfo_({self._mp_title_key: "BoomTunes"})
+            self._remote_commands_ready = True
+        except Exception as e:
+            self._log_error("GlobalKeys", f"Now Playing setup failed: {e}")
+
+    def _update_now_playing_info(self, title="", artist="", duration=0.0):
+        """Publish truthful Now Playing metadata/state from engine.
+        Rate is 1 when playing, 0 when paused/stopped.
+        Elapsed is computed from track_start or seek_pos."""
+        if not hasattr(self, '_mp_info_center'):
+            return
+        try:
+            rate = 1.0 if (self.engine.playing and not self.engine.paused) else 0.0
+            elapsed = 0.0
+            if self.engine.playing and not self.engine.paused:
+                elapsed = time.time() - self.engine.track_start
+            elif self.engine.paused:
+                elapsed = self.engine.seek_pos
+
+            now_playing = {
+                self._mp_title_key: title or "",
+                self._mp_artist_key: artist or "",
+                self._mp_duration_key: duration,
+                self._mp_rate_key: rate,
+                self._mp_elapsed_key: elapsed,
+            }
+            self._mp_info_center.setNowPlayingInfo_(now_playing)
+        except Exception as e:
+            print(f"[GK] NowPlaying update failed: {e}", flush=True)
+
+    def _refresh_now_playing(self):
+        """Periodic refresh of elapsed/rate without changing metadata."""
+        if not hasattr(self, '_mp_info_center') or not getattr(self, "_remote_commands_ready", False):
+            return
+        if not self.engine.queue or self.engine.queue_idx < 0:
+            return
+        try:
+            path = self.engine.queue[self.engine.queue_idx]
+            title, artist = split_track_name(path)
+            self._update_now_playing_info(title, artist, self.engine.duration)
+        except Exception:
+            pass
 
     def _change_volume(self, delta):
         new_vol = max(0, min(1, self.engine.volume + delta))
@@ -1973,6 +2298,7 @@ except Exception as e:
         if settings and hasattr(settings, "master_path_lbl"):
             settings.master_path_lbl.config(text=new_dir)
             
+        self._load_playlist_meta()
         self._refresh_library()
         
     # ── PERSISTENCE ────────────────────────────────────────────────────────
@@ -2037,9 +2363,59 @@ except Exception as e:
         except Exception as e:
             print(f"Failed to save config: {e}")
 
+    # ── PLAYLIST URL PERSISTENCE ─────────────────────────────────────────────
+    def _playlist_meta_path(self):
+        return os.path.join(self.MUSIC_ROOT, ".vibe_playlist_urls.json")
+
+    def _load_playlist_meta(self):
+        path = self._playlist_meta_path()
+        if os.path.exists(path):
+            try:
+                with open(path, "r") as f:
+                    self._playlist_urls = json.load(f)
+            except Exception:
+                self._playlist_urls = {}
+
+    def _save_playlist_meta(self):
+        path = self._playlist_meta_path()
+        try:
+            with open(path, "w") as f:
+                json.dump(self._playlist_urls, f, indent=4)
+        except Exception as e:
+            print(f"Failed to save playlist URLs: {e}")
+
+    def _get_playlist_url(self, name):
+        return self._playlist_urls.get(name)
+
+    def _set_playlist_url(self, name, url):
+        if url:
+            self._playlist_urls[name] = url
+        else:
+            self._playlist_urls.pop(name, None)
+        self._save_playlist_meta()
+
+    def _clear_now_playing(self):
+        """Clear Now Playing info (empty dict publishes no-track state)."""
+        if hasattr(self, '_mp_info_center'):
+            try:
+                self._mp_info_center.setNowPlayingInfo_({})
+            except Exception:
+                pass
+
     def _on_closing(self):
         """Cleanly saves config and quits."""
+        self._closing = True
+        # Cancel scheduled poll callbacks
+        if getattr(self, "_poll_after_id", None):
+            try:
+                self.after_cancel(self._poll_after_id)
+            except Exception:
+                pass
+            self._poll_after_id = None
         self._save_config()
+        self._save_playlist_meta()
+        self._stop_media_key_listener()
+        self._clear_now_playing()
         if hasattr(self, "engine"):
             if PYGAME_AVAILABLE:
                 pygame.mixer.quit()
@@ -2055,59 +2431,5 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 if __name__ == "__main__":
-    if os.environ.get("VIBE_RUN_LISTENER") == "1":
-        # We are the global keys subprocess! Execute the native listener script and exit.
-        script = '''
-import sys, os
-try:
-    if sys.platform != "darwin": raise Exception("Use pynput wrapper on Windows")
-    import Quartz
-    from AppKit import NSEvent
-    def cg_event_callback(proxy, type_id, event, refcon):
-        if type_id == 14:
-            try:
-                nsevent = NSEvent.eventWithCGEvent_(event)
-                if nsevent and nsevent.subtype() == 8:
-                    data = nsevent.data1()
-                    keyCode = (data & 0xFFFF0000) >> 16
-                    state = ((data & 0x0000FFFF) & 0xFF00) >> 8
-                    if state == 0x0a:
-                        if keyCode == 16: print("NAME:media_play_pause")
-                        elif keyCode == 17: print("NAME:media_next")
-                        elif keyCode == 18: print("NAME:media_previous")
-                        elif keyCode == 0: print("NAME:media_volume_up")
-                        elif keyCode == 1: print("NAME:media_volume_down")
-                        sys.stdout.flush()
-            except: pass
-        return event
-
-    mask = Quartz.CGEventMaskBit(14)
-    tap = Quartz.CGEventTapCreate(Quartz.kCGSessionEventTap, Quartz.kCGHeadInsertEventTap, Quartz.kCGEventTapOptionDefault, mask, cg_event_callback, None)
-    if not tap: 
-        print("ERROR:macOS Accessibility / Input Monitoring permissions missing! Please grant them in System Settings.")
-        sys.exit(1)
-    
-    runLoopSource = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
-    Quartz.CFRunLoopAddSource(Quartz.CFRunLoopGetCurrent(), runLoopSource, Quartz.kCFRunLoopCommonModes)
-    Quartz.CGEventTapEnable(tap, True)
-    Quartz.CFRunLoopRun()
-except Exception as e:
-    try:
-        from pynput import keyboard
-        def on_press(k):
-            try:
-                name = getattr(k, "name", None); vk = getattr(k, "vk", None)
-                if name: print(f"NAME:{name}")
-                elif vk: print(f"VK:<{vk}>")
-                else: print(f"STR:{str(k)}")
-                sys.stdout.flush()
-            except: pass
-        with keyboard.Listener(on_press=on_press) as l: l.join()
-    except Exception as ie: print(f"ERROR:pynput generic fallback failed: {str(e)} / {str(ie)}")
-'''
-        exec(script)
-        sys.exit(0)
-
-    # Standard app lifecycle
     app = VibeMusicPlayer()
     app.mainloop()

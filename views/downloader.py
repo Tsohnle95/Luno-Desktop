@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
 import os, re
+from urllib.parse import urlparse
 from theme import BG, BG2, BG3, BG4, BORDER, GREEN, GREEN_HOVER, TEXT, TEXT2, TEXT3, SUCCESS, WARNING, RED, SC_COLOR, BLUE, SIDEBAR
 from utils import draw_gradient_rect, split_track_name, format_time
 from engine import probe_soundcloud, parse_exportify_csv
@@ -101,6 +102,7 @@ class DownloadView(tk.Frame):
         for tab_id, label in [("search", "⌕  Search"),
                                ("playlist", "📋  YT / CSV"),
                                ("sync", "🔗  Sync"),
+                               ("urlqueue", "📋 URL Queue"),
                                ("dupes", "⚠ Duplicates"),
                                ("allowed", "✓ Allowed Dups")]:
             btn = tk.Label(tab_bar_f, text=label, font=("Helvetica Neue", 11, "bold"),
@@ -131,6 +133,7 @@ class DownloadView(tk.Frame):
         self._build_search_tab()
         self._build_sync_tab()
         self._build_playlist_tab()
+        self._build_urlqueue_tab()
         self._build_dupes_tab()
         self._build_allowed_tab()
 
@@ -349,6 +352,16 @@ class DownloadView(tk.Frame):
         c_btn.bind("<Enter>", lambda e: c_btn.config(bg=GREEN_HOVER))
         c_btn.bind("<Leave>", lambda e: c_btn.config(bg=GREEN))
 
+        tk.Frame(f, bg=BG3, height=1).pack(fill="x", pady=(10, 6))
+
+        self.sync_all_btn = tk.Label(f, text="⬇  Sync All Playlists",
+            font=("Helvetica Neue", 10, "bold"),
+            fg=SIDEBAR, bg=GREEN, padx=14, pady=8, cursor="hand2")
+        self.sync_all_btn.pack(anchor="w")
+        self.sync_all_btn.bind("<Button-1>", lambda e: self._do_sync_all())
+        self.sync_all_btn.bind("<Enter>", lambda e: self.sync_all_btn.config(bg=GREEN_HOVER))
+        self.sync_all_btn.bind("<Leave>", lambda e: self.sync_all_btn.config(bg=GREEN))
+
     def _build_playlist_tab(self):
         f = tk.Frame(self._tab_content, bg=BG)
         self._tab_frames["playlist"] = f
@@ -395,6 +408,233 @@ class DownloadView(tk.Frame):
                               fg=TEXT3, bg=BG4, padx=12, pady=6, cursor="hand2")
         csv_dl_btn.pack(side="right")
         csv_dl_btn.bind("<Button-1>", lambda e: self._start_csv_dl())
+
+    def _build_urlqueue_tab(self):
+        f = tk.Frame(self._tab_content, bg=BG)
+        self._tab_frames["urlqueue"] = f
+
+        tk.Label(f, text="Queue multiple YouTube playlist URLs to sync & download sequentially.",
+                 font=("Helvetica Neue", 10), fg=TEXT3, bg=BG, wraplength=700).pack(anchor="w", pady=(0, 10))
+
+        # URL input area
+        tk.Label(f, text="Paste URLs (one per line):", font=("Helvetica Neue", 9, "bold"),
+                 fg=TEXT2, bg=BG, anchor="w").pack(anchor="w", pady=(0, 4))
+        url_text_frame = tk.Frame(f, bg=BG3, highlightbackground=BG4, highlightthickness=1)
+        url_text_frame.pack(fill="x", pady=(0, 6))
+        self.uq_url_text = tk.Text(url_text_frame, bg=BG3, fg=TEXT, insertbackground=TEXT,
+                                    relief="flat", font=("Helvetica Neue", 10), bd=4,
+                                    highlightthickness=0, height=4, wrap="word")
+        self.uq_url_text.pack(side="left", fill="x", expand=True, padx=4, pady=4)
+
+        # Action row
+        uq_act = tk.Frame(f, bg=BG)
+        uq_act.pack(fill="x", pady=(0, 10))
+
+        fetch_btn = tk.Label(uq_act, text="Fetch Names", font=("Helvetica Neue", 9, "bold"),
+                             fg=SIDEBAR, bg=GREEN, padx=12, pady=5, cursor="hand2")
+        fetch_btn.pack(side="left")
+        fetch_btn.bind("<Button-1>", lambda e: self._uq_fetch_urls())
+        fetch_btn.bind("<Enter>", lambda e: fetch_btn.config(bg=GREEN_HOVER))
+        fetch_btn.bind("<Leave>", lambda e: fetch_btn.config(bg=GREEN))
+
+        clear_btn = tk.Label(uq_act, text="Clear", font=("Helvetica Neue", 9),
+                             fg=TEXT3, bg=BG, padx=10, pady=5, cursor="hand2")
+        clear_btn.pack(side="left", padx=(8, 0))
+        clear_btn.bind("<Button-1>", lambda e: self._uq_clear())
+        clear_btn.bind("<Enter>", lambda e: clear_btn.config(fg=TEXT))
+        clear_btn.bind("<Leave>", lambda e: clear_btn.config(fg=TEXT3))
+
+        # Queued items display
+        tk.Label(f, text="Queued Playlists:", font=("Helvetica Neue", 9, "bold"),
+                 fg=TEXT2, bg=BG, anchor="w").pack(anchor="w", pady=(0, 4))
+        self._uq_queue_frame = tk.Frame(f, bg=BG2, highlightbackground=BORDER, highlightthickness=1)
+        self._uq_queue_frame.pack(fill="x", pady=(0, 10))
+        self._uq_items = []  # list of {"url": ..., "title": ..., "count": ..., "dest": ...}
+        self._uq_lock = threading.Lock()
+
+        self._uq_status_lbl = tk.Label(f, text="No URLs queued.", font=("Helvetica Neue", 10),
+                                       fg=TEXT3, bg=BG, anchor="w")
+        self._uq_status_lbl.pack(anchor="w", pady=(0, 6))
+
+        # Destination override row
+        dest_row = tk.Frame(f, bg=BG)
+        dest_row.pack(fill="x", pady=(0, 12))
+        tk.Label(dest_row, text="Destination:", font=("Helvetica Neue", 9, "bold"),
+                 fg=TEXT2, bg=BG).pack(side="left", padx=(0, 8))
+        self.uq_dest_var = tk.StringVar(value="Auto (match by playlist name)")
+        uq_dest_options = ["Auto (match by playlist name)"]
+        self.uq_dest_combo = ttk.Combobox(dest_row, textvariable=self.uq_dest_var,
+                                           values=uq_dest_options, font=("Helvetica Neue", 10),
+                                           state="readonly", width=30)
+        self.uq_dest_combo.pack(side="left")
+
+        # Process button
+        self.uq_process_btn = tk.Label(f, text="▶  Sync & Download All Sequentially",
+                                       font=("Helvetica Neue", 10, "bold"),
+                                       fg=SIDEBAR, bg=GREEN, padx=16, pady=8, cursor="hand2")
+        self.uq_process_btn.pack(anchor="w")
+        self.uq_process_btn.bind("<Button-1>", lambda e: self._uq_process_all())
+        self.uq_process_btn.bind("<Enter>", lambda e: self.uq_process_btn.config(bg=GREEN_HOVER))
+        self.uq_process_btn.bind("<Leave>", lambda e: self.uq_process_btn.config(bg=GREEN))
+
+        self._uq_running = False
+
+    def _uq_redraw_list(self):
+        for w in self._uq_queue_frame.winfo_children():
+            w.destroy()
+        with self._uq_lock:
+            items = list(self._uq_items)
+        if not items:
+            self._uq_status_lbl.config(text="No URLs queued.")
+            return
+        self._uq_status_lbl.config(text=f"{len(items)} playlist(s) queued")
+        for i, item in enumerate(items):
+            title = item.get("title") or item["url"][:50]
+            count = item.get("count", "?")
+            row = tk.Frame(self._uq_queue_frame, bg=BG2)
+            row.pack(fill="x", padx=8, pady=2)
+            lbl = tk.Label(row, text=f"  {title}  ({count} tracks)", font=("Helvetica Neue", 10),
+                           fg=TEXT, bg=BG2, anchor="w")
+            lbl.pack(side="left", fill="x", expand=True)
+            rm_btn = tk.Label(row, text="✕", font=("Helvetica Neue", 10),
+                              fg=TEXT3, bg=BG2, padx=8, cursor="hand2")
+            rm_btn.pack(side="right")
+            def _remove(idx=i):
+                with self._uq_lock:
+                    self._uq_items.pop(idx)
+                self._uq_redraw_list()
+            rm_btn.bind("<Button-1>", lambda e, idx=i: _remove())
+            rm_btn.bind("<Enter>", lambda e: rm_btn.config(fg=RED))
+            rm_btn.bind("<Leave>", lambda e: rm_btn.config(fg=TEXT3))
+
+    def _uq_clear(self):
+        with self._uq_lock:
+            self._uq_items = []
+        self.uq_url_text.delete("1.0", "end")
+        self._uq_redraw_list()
+        self._uq_status_lbl.config(text="Cleared.")
+
+    def _uq_fetch_urls(self):
+        text = self.uq_url_text.get("1.0", "end").strip()
+        if not text:
+            messagebox.showwarning("No URLs", "Paste one or more playlist URLs first.")
+            return
+        urls = [line.strip() for line in text.splitlines() if line.strip()]
+        if not urls:
+            return
+
+        self._uq_status_lbl.config(text=f"Fetching {len(urls)} playlist(s)...", fg=WARNING)
+
+        def run():
+            import yt_dlp
+            for url in urls:
+                try:
+                    with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": "in_playlist",
+                                            "ignoreerrors": True,
+                                            "socket_timeout": 30}) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                    title = info.get("title", "Unknown Playlist")
+                    count = len(info.get("entries") or [])
+                    with self._uq_lock:
+                        if not any(item["url"] == url for item in self._uq_items):
+                            self._uq_items.append({"url": url, "title": title, "count": count})
+                except Exception as ex:
+                    with self._uq_lock:
+                        self._uq_items.append({"url": url, "title": f"❌ {url[:50]}", "count": 0})
+                    self._log(f"Failed to fetch {url}: {ex}", "error")
+                self.after(0, self._uq_redraw_list)
+            self.after(0, lambda: self._uq_status_lbl.config(text=f"Fetched {len(urls)} playlist(s).", fg=TEXT3))
+            self.after(0, self._refresh_dest_options)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _refresh_dest_options(self):
+        """Populate destination combo with all playlist names."""
+        options = ["Auto (match by playlist name)"]
+        if hasattr(self.controller, '_library'):
+            for name in sorted(self.controller._library.keys()):
+                if name not in ("Unsorted", "All Music"):
+                    options.append(name)
+        self.uq_dest_combo["values"] = options
+        if self.uq_dest_var.get() not in options:
+            self.uq_dest_var.set("Auto (match by playlist name)")
+
+    def _uq_process_all(self):
+        if self._uq_running:
+            messagebox.showwarning("Busy", "Already processing.")
+            return
+        if not self._uq_items:
+            messagebox.showwarning("Empty", "No playlists queued.")
+            return
+
+        self._uq_running = True
+        self.uq_process_btn.config(fg=TEXT3, bg=BG4)
+        self._show_progress()
+        self._show_log()
+        self._log("▶ Starting URL queue batch...", "normal")
+        self._uq_process_next(0)
+
+    def _uq_process_next(self, idx):
+        if idx >= len(self._uq_items):
+            self._uq_running = False
+            self.after(0, lambda: self.uq_process_btn.config(fg=SIDEBAR, bg=GREEN))
+            self._log("✅ All playlist syncs complete!", "success")
+            self.after(0, self.controller._refresh_library)
+            self._hide_progress()
+            return
+
+        item = self._uq_items[idx]
+        url = item["url"]
+        title = item.get("title", "Playlist")
+        dest_mode = self.uq_dest_var.get()
+
+        # Determine destination folder
+        if dest_mode == "Auto (match by playlist name)":
+            dest_name = item.get("dest_name") or title
+            dest = self.controller._find_playlist_dir(dest_name)
+            if not dest:
+                # Try creating it
+                safe_name = re.sub(r'[<>:"/\\|?*]', '', dest_name).strip()
+                if safe_name:
+                    dest = os.path.join(self.controller.MUSIC_ROOT, safe_name)
+                    os.makedirs(dest, exist_ok=True)
+        else:
+            dest_name = dest_mode
+            dest = self.controller._find_playlist_dir(dest_name)
+
+        if not dest:
+            self._log(f"✗ No destination for '{title}' — skipping.", "error")
+            self.after(0, lambda: self._uq_process_next(idx + 1))
+            return
+
+        os.makedirs(dest, exist_ok=True)
+        total_items = len(self._uq_items)
+        self._set_dl_status(f"Processing playlist {idx+1}/{total_items}: {title}", WARNING)
+        self._log(f"▶ [{idx+1}/{total_items}] Syncing '{title}'...", "normal")
+
+        def on_progress(track_idx, track_total, track_name):
+            if track_name:
+                self._set_dl_status(f"[{idx+1}/{total_items}] {title}: downloading {track_name} ({track_idx+1}/{track_total})", WARNING)
+            else:
+                self.after(0, lambda ti=track_idx: self.controller.prog_var.set((ti / max(track_total, 1)) * 100))
+
+        def on_log(track_name, is_success, err):
+            if is_success:
+                self.after(0, lambda: self._log(f"  ✓ {track_name}", "success"))
+            else:
+                self.after(0, lambda: self._log(f"  ✗ {track_name}: {err}", "error"))
+
+        def on_complete():
+            self._log(f"✓ [{idx+1}/{total_items}] '{title}' done", "success")
+            self.after(0, lambda: self._uq_process_next(idx + 1))
+
+        from downloader import Downloader
+        Downloader.download_playlist_sync(
+            url, dest, self.controller.skip_var.get(),
+            self.controller.sc_var.get(), on_progress, on_log, on_complete,
+            lambda: not self._uq_running,
+            on_playlist_msg=lambda msg: self._log(
+                f"  · {msg}", "normal"))
 
     def _build_dupes_tab(self):
         f = tk.Frame(self._tab_content, bg=BG)
@@ -574,6 +814,13 @@ class DownloadView(tk.Frame):
             self.action_f.grid_remove()
             self._tab_frames["allowed"].pack(fill="both", expand=True)
             self._populate_allowed()
+        elif tab_id == "urlqueue":
+            self.ctrl_f.grid_remove()
+            self.results_f.grid_remove()
+            self.action_f.grid_remove()
+            self._tab_frames["urlqueue"].pack(fill="both", expand=True)
+            self._uq_redraw_list()
+            self._refresh_dest_options()
         else:
             self.ctrl_f.grid()
             self.results_f.grid()
@@ -858,7 +1105,8 @@ class DownloadView(tk.Frame):
             if url:
                 try:
                     with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": "in_playlist",
-                                           "ignoreerrors": True}) as ydl:
+                                            "ignoreerrors": True,
+                                            "socket_timeout": 30}) as ydl:
                         info = ydl.extract_info(url, download=False)
                     for e in (info.get("entries") or []):
                         t_full = e.get("title", "")
@@ -904,6 +1152,56 @@ class DownloadView(tk.Frame):
             self.after(0, update_ui)
         threading.Thread(target=run, daemon=True).start()
 
+    def _do_sync_all(self):
+        """Sync every playlist in the library that has a URL configured."""
+        urls = self.controller._playlist_urls
+        lib = self.controller._library
+        pairs = [(name, url) for name, url in urls.items() if name in lib]
+        if not pairs:
+            messagebox.showwarning("No URLs",
+                "No playlists have URLs configured.\n\n"
+                "Set a URL via the playlist actions dropdown or "
+                "right-click a playlist in the sidebar.")
+            return
+        self.sync_all_btn.config(fg=TEXT3, bg=BG4)
+        self._show_progress()
+        self._show_log()
+        self._log(f"▶ Starting batch sync of {len(pairs)} playlist(s)...", "normal")
+        self.controller._sync_all_playlists(
+            pairs,
+            on_track_log=lambda title, is_success, err: self._log(
+                f"    {'↻' if err == 'already have' else '✓' if is_success else '✗'} {title}"
+                + (f" — {err}" if err and err != "already have" else ""),
+                "normal" if err == "already have" else "success" if is_success else "error"),
+            on_playlist_msg=lambda msg: self._log(
+                f"  · {msg}", "normal"),
+            on_playlist_start=lambda name, i, total: self._log(
+                f"▶ Syncing '{name}'  [{i}/{total} batch]...", "normal"),
+            on_playlist_done=lambda name, success, count, attempted: self._log(
+                f"  {'✓' if success else '✗'} '{name}'"
+                + (f" — {count} new" if attempted and count == attempted else
+                   f" — {count}/{attempted} new" if attempted else
+                   f" {'done' if success else '— skipped'}."),
+                "success" if success else "warning"),
+            on_all_done=lambda new_count, attempted: self.after(0, lambda: [
+                self.sync_all_btn.config(fg=SIDEBAR, bg=GREEN),
+                self._hide_progress(),
+                self._log(
+                    f"✅ All playlist syncs complete. ({new_count} new)"
+                    if attempted and new_count == attempted else
+                    f"✅ All playlist syncs complete. ({new_count}/{attempted} new)"
+                    if attempted else "✅ All playlist syncs complete — up to date.",
+                    "success"),
+                self.controller.status_var.set(
+                    f"All playlists synced ✓ ({new_count} new)"
+                    if attempted and new_count == attempted else
+                    f"All playlists synced ✓ ({new_count}/{attempted} new)"
+                    if attempted else "All playlists synced ✓"),
+                self.controller._refresh_library(),
+            ]),
+            on_batch_progress=lambda pct: self.after(0, lambda p=pct: self.controller.prog_var.set(p))
+        )
+
     # ═════════════════════════════════════════════════════════════════════════
     # YT/CSV PREVIEW (fetch metadata → populate tree → then download)
     # ═════════════════════════════════════════════════════════════════════════
@@ -914,8 +1212,9 @@ class DownloadView(tk.Frame):
         if not url:
             messagebox.showwarning("No URL", "Enter a YouTube playlist URL.")
             return
-        if not url.startswith("http"):
-            messagebox.showwarning("Invalid", "URL must start with http.")
+        parsed = urlparse(url)
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            messagebox.showwarning("Invalid", "Must be a valid http/https URL.")
             return
 
         # Force playlist extraction
@@ -938,7 +1237,8 @@ class DownloadView(tk.Frame):
             source_tracks = []
             try:
                 with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": "in_playlist",
-                                       "ignoreerrors": True}) as ydl:
+                                        "ignoreerrors": True,
+                                        "socket_timeout": 30}) as ydl:
                     info = ydl.extract_info(url, download=False)
                 for e in (info.get("entries") or []):
                     if not e: continue
@@ -1216,6 +1516,7 @@ class DownloadView(tk.Frame):
         self.dest_combo["values"] = options
         if self.dest_combo_var.get() not in options:
             self.dest_combo_var.set("— choose playlist —")
+        self._refresh_dest_options()
 
     # ═════════════════════════════════════════════════════════════════════════
     # ALLOWED DUPLICATES HUB
@@ -1264,4 +1565,3 @@ class DownloadView(tk.Frame):
         tree_f.grid_columnconfigure(0, weight=1)
         self.allowed_tree.grid(row=0, column=0, sticky="nsew")
         sb.grid(row=0, column=1, sticky="ns")
-
