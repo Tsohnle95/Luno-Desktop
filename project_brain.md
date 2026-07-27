@@ -29,6 +29,8 @@ This document is a high-level architectural map for the **Vibe Music Player**. I
 ├── DevTunes.spec             # PyInstaller spec for macOS build
 ├── .gitignore                # Ignores local envs, Python caches, build/dist artifacts, and OS metadata
 ├── project_brain.md          # This document
+├── mobile-app/               # Native Android app; see mobile-app/project_brain.md for its full architecture/context
+│   └── project_brain.md      # Mobile brain (source of truth for Android work)
 │
 ├── views/                    # View modules (all inherit tk.Frame)
 │   ├── __init__.py           # Empty — required for PyInstaller package recognition

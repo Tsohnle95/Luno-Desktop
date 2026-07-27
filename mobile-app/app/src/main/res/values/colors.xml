@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary_background">#FF101010</color>
+    <color name="surface_dark">#FF202020</color>
+    <color name="surface_elevated">#FF292929</color>
+    <color name="primary_text">#FFFFFFFF</color>
+    <color name="secondary_text">#FFB3B3B3</color>
+    <color name="accent_green">#FF1ED760</color>
+    <color name="ic_launcher_background">#FF101010</color>
+    <color name="ic_launcher_foreground">#FF1ED760</color>
+</resources>

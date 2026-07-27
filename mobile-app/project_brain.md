@@ -1,0 +1,816 @@
+# 🧠 Project Brain: BoomBastic Native Android App
+
+> [!IMPORTANT]
+> **MAINTENANCE INSTRUCTIONS FOR AI/HUMANS:**
+> This document is the authoritative knowledge base for the **implemented** BoomBastic native Android app under `mobile-app/`, including its planned extensions. It must be updated whenever settled decisions change.
+>
+> **Authority policy (descending):**
+> 1. **Source code + tests + config** in this repo (highest truth)
+> 2. **Desktop `project_brain.md`** and cited shared source modules (engine.py, downloader.py, theme.py)
+> 3. **Confirmed product decisions** recorded in this document
+> 4. **Readable screenshots** — only if images are readable to the agent
+> 5. **Labeled proposals / open decisions** — never presented as implemented fact
+>
+> **Golden rule:** Never turn aspiration into implemented fact. Statements about Kotlin, Compose, Media3, Room, and SAF are now **supported by source files** in `mobile-app/`. WorkManager, downloader, Last.fm discovery, and other deferred features remain **planned** unless source exists. Distinguish current Flet/Pygame prototype facts from native Android implementation.
+>
+> **When selecting file-format/output-codec decisions, the planner/coder MUST**
+> 1. Inspect the actual desktop `downloader.py` source
+> 2. Verify what `yt-dlp` + `FFmpeg` produce on the desktop side
+> 3. Research what is legally/technically feasible on Android with a permitted alternative (e.g., android-youtube-dl / NewPipe extractor / ExoPlayer/Media3 extractors) if `yt-dlp`/FFmpeg cannot run on-device
+> 4. Document the supported-source-format table before coding
+>
+> **Image-reader requirement:** Any agent relying on visual mockups MUST immediately declare whether images are readable. If not readable, fall back to the exact hex/contract spec in this document.
+
+---
+
+## Product Direction
+
+BoomBastic is a **native Android offline-first music player** in the same monorepo as the desktop Vibe Music Player and its Flet mobile/desktop-capable port. The architecture is **Kotlin + Jetpack Compose + Media3**. **As of this writing Kotlin, Compose, Media3, and Room source exist** under `mobile-app/` — the native stack foundation is implemented. The `mobile-app/` directory is tracked in the repo but not yet committed (git status shows `?? mobile-app/`).
+
+**Current repo state (desktop/Flet legacy alongside native):**
+- `music_player_flet.py` — Flet-based mobile/desktop prototype using **Pygame** audio backend, 3-tab responsive layout (Library/Player/Settings), mini-player, bottom nav on mobile, sidebar layout on desktop ([source](../music_player_flet.py))
+- `main.py` — Flet entry point that runs `music_player_flet.main` via `ft.run()` ([source](../main.py))
+- `buildozer.spec` — Buildozer Android build config for the Flet prototype; target API 33, min API 21, `arm64-v8a + armeabi-v7a`, permissions `INTERNET, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, MANAGE_EXTERNAL_STORAGE` ([source](../buildozer.spec))
+- `engine.py` — Desktop audio engine (`pygame.mixer`), shared `DiscoveryService`, `scan_library`, `find_duplicates`, `_normalize_for_dupe` ([source](../engine.py); verification at lines 107–507)
+- `downloader.py` — Desktop yt-dlp wrapper (`bestaudio/best` → FFmpegExtractAudio MP3 192k 44.1kHz with loudnorm I=-14:LRA=11:TP=-1.5) ([source](../downloader.py); verification at lines 58–96)
+- `music_player.py` — Desktop Tkinter app (Controller-View-Engine pattern)
+- `views/` — Desktop Tkinter view modules (library, downloader, settings, etc.)
+
+**Target device baseline:** Samsung Galaxy S20 FE, Android 13 (API 33). Min SDK set to **API 29**, target/compile SDK **35**. **No iOS implementation** is planned now, though a platform-neutral manifest format may be designed for eventual compatibility.
+
+---
+
+## 📁 Repository Map (mobile-app relevant)
+
+```
+boomtastic/
+├── mobile-app/                          # ← THIS DOCUMENT lives here
+│   ├── project_brain.md                 # This file
+│   ├── build.gradle.kts                 # Root Gradle build (plugin declarations)
+│   ├── settings.gradle.kts              # Project settings (single :app module)
+│   ├── gradle.properties                # JVM args, AndroidX, Kotlin style
+│   ├── gradle/
+│   │   ├── libs.versions.toml           # Version catalog (AGP 8.5.2, Media3 1.3.1, Room 2.6.1, etc.)
+│   │   └── wrapper/
+│   │       ├── gradle-wrapper.jar
+│   │       └── gradle-wrapper.properties
+│   ├── gradlew / gradlew.bat            # Gradle wrapper scripts
+│   │
+│   ├── app/
+│   │   ├── build.gradle.kts             # App module: compileSdk 35, minSdk 29, targetSdk 35
+│   │   ├── proguard-rules.pro           # Keep Room entity annotations
+│   │   ├── schemas/
+│   │   │   └── com.boombastic.mobile.data.db.AppDatabase/1.json
+│   │   └── src/
+│   │       ├── main/
+│   │       │   ├── AndroidManifest.xml  # FOREGROUND_SERVICE, POST_NOTIFICATIONS, MusicService
+│   │       │   ├── res/
+│   │       │   │   ├── drawable/        # 8 vector icons (home, search, library, discover, create, play, pause, music_note, launcher foreground/background)
+│   │       │   │   ├── mipmap-anydpi-v26/ic_launcher.xml
+│   │       │   │   └── values/
+│   │       │   │       ├── colors.xml   # Mobile palette: #101010, #202020, #292929, #1ED760
+│   │       │   │       ├── strings.xml  # App name, nav labels, dialog strings
+│   │       │   │       └── themes.xml   # Theme.BoomBastic (Material NoActionBar)
+│   │       │   └── java/com/boombastic/mobile/
+│   │       │       ├── BoomBasticApp.kt          # Application class, manual DI singletons
+│   │       │       ├── MainActivity.kt           # Compose entry point, MusicController init
+│   │       │       ├── playback/
+│   │       │       │   ├── MusicService.kt       # Media3 MediaSessionService + ExoPlayer
+│   │       │       │   ├── MusicController.kt    # MediaController wrapper, StateFlow, pending-play logic
+│   │       │       │   └── NotificationPermissionPolicy.kt # One-shot POST_NOTIFICATIONS prompt policy
+│   │       │       ├── data/
+│   │       │       │   ├── db/
+│   │       │       │   │   ├── AppDatabase.kt       # Room DB (tracks, playlists, playlist_tracks)
+│   │       │       │   │   ├── dao/
+│   │       │       │   │   │   ├── TrackDao.kt       # CRUD + search Flow
+│   │       │       │   │   │   └── PlaylistDao.kt    # CRUD + relations + sort order
+│   │       │       │   │   └── entity/
+│   │       │       │   │       ├── Track.kt          # uri PK, title, artist, album, durationMs
+│   │       │       │   │       ├── Playlist.kt       # autoGenerate id, name, description
+│   │       │       │   │       └── PlaylistTrack.kt  # composite PK, FK cascade, sortOrder
+│   │       │       │   └── repository/
+│   │       │       │       ├── LibraryRepository.kt  # SAF import, MediaMetadataRetriever, dedupe
+│   │       │       │       └── PlaylistRepository.kt # CRUD, validation, sort order mgmt
+│   │       │       └── ui/
+│   │       │           ├── shell/
+│   │       │           │   └── MainShell.kt          # Scaffold + BottomNav (4 tabs + Create) + MiniPlayer
+│   │       │           ├── navigation/
+│   │       │           │   └── NavGraph.kt           # NavHost: Home / Search / Library / Discover
+│   │       │           ├── theme/
+│   │       │           │   ├── Color.kt              # Dark palette (visual spec colors)
+│   │       │           │   ├── Theme.kt              # BoomBasticTheme (Material3 dark color scheme)
+│   │       │           │   ├── Type.kt               # Sans-serif typography scale
+│   │       │           │   └── Dimens.kt             # 24dp icons, 48dp touch targets, 64dp mini-player
+│   │       │           ├── components/
+│   │       │           │   └── MiniPlayer.kt         # Persistent progress + title + play/pause
+│   │       │           ├── home/
+│   │       │           │   └── HomeScreen.kt         # Greeting, recently played, import hint
+│   │       │           ├── search/
+│   │       │           │   └── SearchScreen.kt       # Search field, SAF import, track list
+│   │       │           ├── library/
+│   │       │           │   └── LibraryScreen.kt      # Playlists + tracks list
+│   │       │           ├── discover/
+│   │       │           │   └── DiscoverScreen.kt     # Honest empty state (Last.fm TBD)
+│   │       │           └── create/
+│   │       │               └── CreatePlaylistSheet.kt # AlertDialog with name validation
+│   │       └── test/java/com/boombastic/mobile/
+│   │           ├── data/db/
+│   │           │   ├── AppDatabaseTest.kt            # Abstract Robolectric base class
+│   │           │   ├── TrackDaoTest.kt               # 11 tests: CRUD, search, dedupe, count
+│   │           │   └── PlaylistDaoTest.kt            # 7 tests: CRUD, cascade, sortOrder
+│   │           ├── data/repository/
+│   │           │   └── PlaylistRepositoryTest.kt     # 5 tests: validation, CRUD, trim
+│   │           └── playback/
+│   │               ├── NotificationPermissionPolicyTest.kt # 11 tests: permission policy matrix
+│   │               └── MusicControllerTest.kt        # Added contract tests; final reviewer did not verify compilation
+│   │
+│   └── .gradle/                         # Gradle caches (not tracked — in .gitignore implicitly)
+│
+├── project_brain.md                     # Desktop brain — do not duplicate its detail here
+│
+├── engine.py                            # SHARED LOGIC (desktop): DiscoveryService,
+│                                        #   scan_library, find_duplicates,
+│                                        #   _normalize_for_dupe, VibeEngine (pygame)
+│
+├── downloader.py                        # SHARED LOGIC (desktop): Downloader class,
+│                                        #   yt-dlp wrapper, playlist sync, dedupe ledger
+│
+├── theme.py                             # SHARED: current desktop/Flet palette
+│                                        #   (#121212, #181818, #282828, etc.)
+│                                        #   does NOT match planned mobile colors
+│
+├── utils.py                             # SHARED: split_track_name, format_time,
+│                                        #   hex_to_rgb, resource_path, etc.
+│
+├── music_player_flet.py                 # FLET PROTOTYPE: pygame backend, responsive
+│                                        #   mobile/desktop UI, 3 tabs, mini-player
+│
+├── main.py                              # FLET ENTRY POINT: runs music_player_flet.main
+│
+├── buildozer.spec                       # FLET ANDROID BUILD: target API 33, min API 21
+│
+├── music_player.py                      # DESKTOP APP: Tkinter CVE controller
+│
+├── views/                               # DESKTOP VIEWS: library.py, downloader.py,
+│   │                                    #   settings.py, discover.py, etc.
+│   └── ...
+│
+├── test_media_keys.py                   # TESTS: deterministic media key unit tests
+├── test_dl.py                           # TESTS: downloader tests
+├── test_downloader_sync.py              # TESTS: sync/download tests
+│
+├── buildozer.spec                       # FLET BUILD CONFIG (see above)
+├── requirements.txt                     # PYTHON DEPENDENCIES (desktop + Flet)
+├── .gitignore                           # Ignores .venv, build/, dist/, __pycache__, .DS_Store
+├── .opencode/                           # AI agent/plugin configuration
+└── mobile-app/                          # Native Android app (see tree above)
+```
+
+---
+
+## 🎯 Product Decisions (Settled)
+
+### Scope & Non-Goals
+
+**In scope:**
+- Offline-first native Android music player
+- Play local audio files from device/SD storage
+- Download from YouTube/YouTube Music/SoundCloud (via desktop-semantics reproduction)
+- Library management (playlists, search, duplicates)
+- Last.fm discovery/recommendations (user's own API key)
+- Local queue, history, shuffle/repeat modes
+- Audio playback via Media3 with notification/lock-screen/headset/Bluetooth/AUX
+- Local display name/profile (editable, never sent to a server)
+- ReplayGain/loudness normalization (planned — see below)
+- Equalizer (planned)
+- Export/import playlists and selected songs as versioned JSON (via email/share/files)
+- GitHub Releases with signed APK, update check
+
+**EXCLUDED (must not implement):**
+- No live sync, pairing, peer transfer, cloud account/backend, or remote playback
+- No Premium/Spotify Premium features
+- No podcasts/audiobooks (unless explicitly implemented later)
+- No social messaging, accounts, or collaborative features (no "Blend")
+- No sleep timer, lyrics display, visualizer, or crossfade (open to future addition)
+- No Spotify logos, assets, or branding — BoomBastic is an independent app
+
+### Interoperability (Export/Import)
+
+**Export:** Selected song(s), playlist(s), or full library as a **versioned JSON manifest**.
+
+**Manifest format principles:**
+- Versioned schema; include `"manifest_version": 1` at root
+- Never include secrets, audio blobs, history, or local file paths
+- **Track identification:** Track name alone is insufficient. Require stable provider/source identity (YouTube video ID, Deezer ID, MusicBrainz ID) when available. Without a stable ID, include full metadata (artist, title, album, duration) plus an **explicit ambiguity confirmation** that the import may match a different recording.
+- Treat every manifest as **untrusted** — validate and sanitize all fields
+
+**Import behavior:**
+- Import independently downloads missing music (does not copy audio blobs)
+- Creates or merges playlists (by name); user confirms merge strategy
+- **No automatic deletion** — import never removes existing content
+- Duplicate resolution uses the same normalized-key approach as desktop (see `engine.py` `_normalize_for_dupe`)
+
+### Storage
+
+**User-selected storage** — always ask the user to pick:
+- Shared internal storage (default)
+- Removable SD card
+
+Via **Scoped Storage / Storage Access Framework (SAF)**:
+- Use `ACTION_OPEN_DOCUMENT_TREE` or `MediaStore` for the music root
+- Audio survives app uninstall (it's in user-visible shared storage)
+- Grants may not survive reinstall; on reinstall, prompt user to reselect and reconcile
+
+**State handling:**
+- **Unavailable/ejected storage:** Gracefully detect `Environment.MEDIA_UNMOUNTED` and distinguish from a genuinely empty folder. Show a clear message; do not crash or show empty library silently.
+- **Stop-all:** A single action to halt all active/pending download jobs
+- **Resumable jobs:** Track download state (queued, downloading, paused, failed, completed). On connectivity change or storage re-availability, offer to resume.
+- **Insufficient storage:** Check available space before each download. Notify user with actionable information.
+- **Placeholders/retry:** Failed downloads show a placeholder entry; user can retry individually or in bulk.
+
+### Downloader (Android Adaptation)
+
+**Must reproduce desktop acquisition semantics** where Android-compatible. The planner/coder MUST:
+1. Inspect `downloader.py` lines 58–96 ([source](../downloader.py#L58-L96)) for format/quality/loudnorm details
+2. Research a permitted Android alternative if `yt-dlp` + `FFmpeg` subprocess cannot run on device
+3. Document the supported-source-format table before coding
+
+**Desktop downloader facts (from `downloader.py`):**
+| Setting | Value |
+|---------|-------|
+| Video format selector | `bestaudio/best` |
+| Audio output codec | MP3 (via FFmpegExtractAudio) |
+| Bitrate | 192 kbps |
+| Sample rate | 44.1 kHz |
+| Channels | 2 (stereo) |
+| Loudness normalization | EBU R128 loudnorm: `I=-14:LRA=11:TP=-1.5` |
+| Thumbnail | `EmbedThumbnail` postprocessor, also `writethumbnail: true` |
+| Filename template | `%(title)s.%(ext)s` |
+| Retry | 5 retries, 5 fragment retries, 3 extractor retries |
+| Socket timeout | 30s |
+| Download timeout | 120s (daemon thread continues) |
+
+**Planned Android approach:**
+- **Best available source quality** — prefer highest quality available from the source
+- **Retain supported source format** when possible (e.g., if source provides AAC, keep AAC)
+- **Convert only when needed** for compatibility or normalization
+- **Provisional output format:** AAC-LC in M4A container at high quality (provisional — subject to codec licensing validation and patent landscape review). **Do not claim AAC-LC as final until codec/license validation is complete.**
+- The desktop converts everything to MP3 192k because `pygame.mixer` cannot reliably decode M4A/AAC. Android's Media3 can decode AAC natively, so conversion requirements differ.
+
+### Native Planned Stack
+
+| Component | Technology | Status |
+|-----------|-----------|--------|
+| Language | Kotlin 2.0.0 | ✅ **Implemented** — source in `playback/`, `data/`, `ui/` |
+| UI | Jetpack Compose (BOM 2024.06.00) | ✅ **Implemented** — 4 screens + shell + theme + mini-player |
+| Playback | Media3 (ExoPlayer 1.3.1) | ✅ **Implemented** — `MusicService` (MediaSessionService) + `MusicController` (StateFlow wrapper) |
+| Local DB | Room 2.6.1 | ✅ **Implemented** — 3 entities, 2 DAOs, schema exported |
+| Background downloads | WorkManager + Foreground Service | **Planned** — not yet implemented |
+| Media scanning | MediaStore / SAF | ✅ **Implemented** — SAF `OpenMultipleDocuments` import via `LibraryRepository` |
+| Dependency injection | Manual singleton (BoomBasticApp) | ✅ **Implemented** — Hilt deferred; manual DI in Application class |
+
+**Playback architecture (implemented, with known reliability defects):**
+- `MusicService` extends `MediaSessionService` — single ExoPlayer instance. `onDestroy()` now releases `MediaSession` before ExoPlayer, which is the correct Media3 teardown order.
+- `MusicController` wraps `MediaController` with `StateFlow` for `isPlaying`, `currentTrack`, `progress`, `duration`, `hasActiveItem`, `isConnected`; supports **pending-play semantics** when playback is requested before async connection completes.
+- Current `MusicController` pending-play implementation is **not production-ready**: it stores only one pending URI, loses full queue/start-index data for `play(List, startIndex)`, uses non-atomic pending state, can race `release()` against the async connection callback, and exposes `connectionError` without a UI collector. See Risk Assessment before editing playback.
+- `NotificationPermissionPolicy` — one-shot prompt policy; API<33 skips, API 33+ prompts once via `MainShell`'s central `onPlay` callback shared by Search and Library screens; playback proceeds regardless of the permission result.
+- Official Android documentation and Media3 source confirm media-session notifications are exempt from `POST_NOTIFICATIONS`; denial alone is **not** the Android 14+ crash previously suspected for a correctly declared `MediaSessionService`/`mediaPlayback` foreground service. The current code documents this in `NotificationPermissionPolicy.kt` and `MainShell.kt`.
+- ExoPlayer configured with `AudioAttributes` for music, `setHandleAudioBecomingNoisy(true)` for headset unplug detection
+- Notification and lock-screen controls provided by Media3 session
+- `onTaskRemoved` stops service if nothing is playing
+- **Not yet implemented:** Full player screen, queue/history screens, Bluetooth AVRCP metadata publication, Android Auto
+
+**Queue/history:**
+- Queue is **local only** — never synced to a server
+- History is local only, max 100 entries (following desktop convention from `engine.py` line 328)
+- Shuffle/repeat modes: off, repeat one, repeat all (matching `music_player_flet.py` line 78)
+- "Up Next" model: user-queued items play before the playlist context (mirroring desktop `user_queue_count` logic at `engine.py` lines 213, 384–385)
+
+### Last.fm (Recommendations Only — No Scrobbling)
+
+**Scope:**
+- User enters their own Last.fm API key (free — register at https://www.last.fm/api)
+- **Recommendations only** (display similar tracks based on current playback)
+- **No scrobbling** unless the product direction changes (this is a settled non-goal for now)
+- Recommendations are downloaded via the normal acquisition pipeline (same downloader)
+
+**Desktop DiscoveryService facts (from `engine.py` lines 10–83):**
+- Two-stage: `track.getSimilar` → if 0 results, fallback to `artist.getTopTracks`
+- Cache limited to 10 entries; cleared when exceeded
+- Fallback tracks get a hardcoded match score of 0.8
+- Recommendations are cross-referenced against the user's library and filtered out
+
+**Planned Android behavior:**
+- Same two-stage API logic
+- Credentials secured via `EncryptedSharedPreferences` (never exported in JSON manifests)
+- Show **current track** as the query seed; if nothing is playing, show the **fallback last track** (matching desktop behavior)
+
+### ReplayGain / Loudness Normalization
+
+**Status: Planned** — no implementation exists in any form (the desktop uses EBU loudnorm at encode time, which is different).
+
+**Desktop facts (separate from ReplayGain):**
+- Desktop applies loudnorm (`I=-14:LRA=11:TP=-1.5`) during yt-dlp postprocessing
+- This is a destructive encode-time normalization, not ReplayGain
+
+**Planned Android modes:**
+1. **Off** — no normalization
+2. **Track** — normalize to a target level per track
+3. **Album** — normalize consistently within an album
+4. **Automatic** — choose Track or Album based on playback context
+
+**Non-negotiable constraints:**
+- **Clipping prevention** — never apply gain that causes intersample clipping
+- **Non-destructive playback gain** — never modify source files; apply gain in the audio pipeline
+- **Analysis as background job** — scanning for loudness metadata runs as a low-priority WorkManager job; results cached in Room
+- **Processing interaction** — ReplayGain analysis interacts with download postprocessing; this interaction must be validated and documented before coding
+
+### Distribution & Updates
+
+- **GitHub Releases** with signed APK (AAB for Play Store if pursued later)
+- **Permanent protected signing key** — back up securely; loss breaks updates
+- **In-app update check** — compare local version against latest GitHub Release tag
+- **Sideload warnings** — display a one-time notice about installing from outside Google Play
+- **No mandatory paid developer license** — Google Play \$25 fee is optional; sideload-only distribution is valid
+- **Desktop warning-free signing not required** — Android requires a valid signature; self-signed is acceptable for sideload
+
+### Visual Specification (Authoritative Fallback)
+
+> Note: The current desktop/Flet theme (`theme.py`) uses different colors (#121212, #181818, #282828, etc.). The colors below are **implemented** in `ui/theme/Color.kt` and match the visual spec. Full screen contracts (full player, queue, etc.) remain **planned**.
+
+**Color palette:**
+| Role | Hex | Usage |
+|------|-----|-------|
+| Primary background | `#101010` | Main app background |
+| Surface | `#202020`–`#292929` | Cards, sheets, elevated surfaces |
+| Primary text | `#FFFFFF` | Headlines, body text |
+| Secondary text | `#B3B3B3` | Subtext, metadata |
+| Accent | `#1ED760` | Active indicators, buttons, highlights |
+
+**Typography:**
+- Primary: **Inter** (system sans for maximum compatibility)
+- Fallback: System default sans-serif
+
+**Iconography & touch:**
+- Icon display size: **24–28dp**
+- Minimum touch target: **48dp** (Android accessibility guideline)
+- System insets (status bar, navigation bar) must be respected
+
+**Artwork:**
+- Playlist/album art uses **dynamic artwork gradients** generated from dominant colors (matching desktop's `extract_dominant_color` in `utils.py` line 37)
+- Gradients animate subtly on transition
+
+**Mini-player:**
+- **Persistent mini-player** at the bottom (similar to Spotify)
+- Shows artwork thumbnail, title, artist, play/pause, progress bar
+- Tapping expands to full player
+- Present on all main tabs when audio is active
+
+**Carousels:**
+- **Visible-clipped horizontal carousels** (items slightly clipped at screen edges to indicate scrollability)
+- Used on Home, Discover, and Artist/Playlist detail screens
+
+**Navigation:**
+- Bottom navigation bar with 5 destinations (in order):
+  1. **Home** — Recommended, recently played, quick-start
+  2. **Search** — Search library + web sources
+  3. **Your Library** — Playlists, artists, albums, downloaded
+  4. **Discover** — Last.fm-powered recommendations
+  5. **Create** — One-action create playlist modal
+- No "Premium" tab, no podcast/audiobook tab
+
+**Screen contracts (comprehensive):**
+
+1. **Home:** Greeting (editable display name), "Good morning/afternoon/evening", recently played horizontal carousel, "Made for you" recommendations carousel, quick-action playlists, your top genres
+2. **Full player:** Large artwork (center), title, artist, scrub bar with time, repeat/shuffle/prev/play-pause/next, volume slider, queue button, go-to-artist button, action sheet trigger
+3. **Action sheet (bottom sheet):** Add to playlist, play next, add to queue, go to album, go to artist, share, view credits, remove from playlist
+4. **Playlist detail:** Header with artwork/title/owner/description/track count/total duration, sort options, search within playlist, track list with drag-to-reorder, download all toggle
+5. **Playlist tools:** Rename, delete, export JSON, import JSON (merge/replace), duplicate track resolution
+6. **Six-row recommended footer + Refresh** — on playlist/track detail pages, 6 rows of "Recommended based on this..." with a Refresh button that fetches new recommendations
+7. **Local-function drawer:** Settings (audio, storage, Last.fm key, appearance), about, export/import, check for updates — never contains cloud account/login/logout
+8. **Queue / Recents:** Tab layout with "Playing Next" (queue) and "Recently Played" (history); clear all button; drag-to-reorder queue
+9. **Discover:** Last.fm recommendations grid/carousel; "Get Similar" button; refresh; download individual or batch
+10. **Create Playlist modal:** Name input, optional description, create button — single action, no multiple steps
+
+**Omitted visual elements:**
+- Premium upsells, Spotify logos, social/share buttons (except local share via Android Sharesheet), collaborative playlist UI, Blend UI, sleep timer, lyrics tab, visualizer
+
+---
+
+## 🔊 Desktop-Validated Facts (Source Citations)
+
+These facts are confirmed by reading the actual source files. Link to them rather than copying uncertain detail.
+
+### Downloader (`downloader.py`)
+
+| Fact | Detail | Source |
+|------|--------|--------|
+| Format selector | `bestaudio/best` | Line 60 |
+| Audio codec | MP3 via FFmpegExtractAudio | Lines 76–79 |
+| Bitrate | 192 kbps | Line 78 |
+| Sample rate | 44.1 kHz (`-ar 44100`) | Line 87 |
+| Channels | 2 (`-ac 2`) | Line 88 |
+| Loudnorm | `I=-14:LRA=11:TP=-1.5` | Line 90 |
+| Thumbnail | `EmbedThumbnail` + `writethumbnail: true` | Lines 80–83, 93 |
+| Filename | `%(title)s.%(ext)s` | Lines 62, 123 |
+| Timeout | 120s daemon-threaded | Lines 15–38, 398 |
+| Sync dedupe | `.downloaded_vids` + `.sync_failed_vids` per playlist folder | Lines 219–290 |
+| Library-wide dedupe | Walks whole `os.path.dirname(out_folder)` | Lines 308–320 |
+| Normalization | `make_key()`: strip non-alnum, `make_safe_name()`: regex-clean filename | Lines 246–304 |
+
+### Playback & Library (`engine.py`)
+
+| Fact | Detail | Source |
+|------|--------|--------|
+| Backend | `pygame.mixer` with 44.1kHz init | Lines 201–208 |
+| Queue model | Flat `queue` list, `queue_idx`, `user_queue_count` (Up Next) | Lines 211–213 |
+| Shuffle | Copy to `_original_queue`, shuffle rest after current | Lines 340–358 |
+| Repeat | Track-level via `repeat` bool; loops through context | Lines 392–407, 462, 469 |
+| Duplicate normalization | `_normalize_for_dupe()` — strips tags, normalizes feat, removes non-alnum | Lines 151–173 |
+| Allowed dups | `.vibe_allowed_dups.json` in MUSIC_ROOT | Lines 492–506 |
+| Discovery | `DiscoveryService`: `track.getSimilar` → `artist.getTopTracks` fallback | Lines 25–83 |
+| Discovery cache | Max 10 entries, cleared on exceed | Lines 76–77 |
+| Library scan | `scan_library(roots)`: walks subdirs as playlists, root as Unsorted | Lines 107–126 |
+| History | 100-entry `_recently_played` list | Lines 328 |
+
+### Flet Prototype (`music_player_flet.py`)
+
+| Fact | Detail | Source |
+|------|--------|--------|
+| Framework | Flet (Flutter-based Python UI framework) | Line 7 |
+| Audio backend | Pygame mixer (same as desktop) | Lines 93–98 |
+| Mobile tabs | 3: Library, Player, Settings | Lines 1048–1058 |
+| Responsive | <600px = mobile layout (bottom nav + mini-player), ≥600px = desktop sidebar | Lines 1336–1361 |
+| Mini-player | Floating bar at bottom on mobile (visible except on Player tab) | Lines 1031–1044 |
+| Theme colors | Uses `theme.py` (#121212, #181818, #1DB954) — different from planned mobile spec | Line 108, 109 |
+| Player UI | Fullscreen art (280dp), scrub bar, volume, shuffle/repeat/prev/play/next | Lines 796–898 |
+| Bottom player | Art 56dp, controls, scrub, volume (desktop layout) | Lines 911–1012 |
+| Search | `Filter tracks...` text field, filters by title/artist | Lines 688–699, 1293–1297 |
+| Track limit | Paginated: 100 tracks initially, Load More button | Lines 1220–1282 |
+| Art cache | `FletArtCache` with ThreadPoolExecutor, mutagen/Pillow | Lines 18–58 |
+
+### Buildozer Config (`buildozer.spec`)
+
+| Fact | Detail |
+|------|--------|
+| Target API | 33 |
+| Min API | 21 |
+| Archs | `arm64-v8a, armeabi-v7a` |
+| Permissions | `INTERNET, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, MANAGE_EXTERNAL_STORAGE` |
+| Orientation | Portrait |
+| Private storage | True |
+
+---
+
+## 🔐 Security & Permissions (Android)
+
+### Runtime Permissions (current implementation)
+
+| Permission | Rationale | Status |
+|-----------|-----------|--------|
+| `POST_NOTIFICATIONS` (Android 13+) | Media notification visibility | ✅ Declared in manifest; requested once via centralised `NotificationPermissionPolicy` in `MainShell` before first playback tap; prompt attempt is persisted with `SharedPreferences.commit()`. Playback proceeds regardless of grant because media-session notifications are exempt from `POST_NOTIFICATIONS`. |
+| `FOREGROUND_SERVICE` | Ongoing playback | ✅ Declared in manifest |
+| `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | Media playback foreground service type | ✅ Declared in manifest (Android 14+) |
+| `READ_EXTERNAL_STORAGE` / `READ_MEDIA_AUDIO` | — | **Not used** — SAF-based import avoids broad storage permission |
+| `WRITE_EXTERNAL_STORAGE` | — | **Not declared** — no download writing yet |
+
+### Android Manifest Distinction
+
+**AndroidManifest.xml** (the actual OS manifest at `app/src/main/AndroidManifest.xml`) declares:
+- Permissions: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, `POST_NOTIFICATIONS`
+- Activity: `MainActivity` (LAUNCHER, `adjustResize` soft input)
+- Service: `MusicService` (`mediaPlayback` foreground type, `MediaSessionService` intent filter)
+
+**JSON Export Manifests** (planned user-generated data files):
+- Versioned, untrusted, never contain secrets or audio data
+- Used for export/import of playlist data
+- Not yet implemented
+
+### Compatibility & Recovery
+
+- SAF import uses `takePersistableUriPermission` so grants survive app restart
+- `LibraryRepository.importAudioUri` handles deduplication and IO errors via `Result` type
+- No broad storage permission requested — SAF `OpenMultipleDocuments` handles user-selected files only
+- MediaStore batch scanning not yet implemented; downloads not yet implemented
+- Graceful degradation on older API levels (minSdk 29)
+
+---
+
+## 🧩 Architecture / Data Flow
+
+### Implemented Module Map (with actual files)
+
+```
+┌──────────────────────────────────────────────────┐
+│  UI Layer (Jetpack Compose)                       │
+│  ┌─────┐ ┌──────┐ ┌──────────┐ ┌─────────┐ ┌────┐ │
+│  │Home │ │Search│ │Your Lib  │ │Discover │ │Create│ │
+│  └──┬──┘ └──┬───┘ └────┬─────┘ └────┬────┘ └──┬─┘ │
+│     │       │          │            │         │     │
+│  ┌──┴───────┴──────────┴────────────┴─────────┴──┐ │
+│  │    MainShell (Scaffold + BottomNav)            │ │
+│  │    + MiniPlayer (AnimatedVisibility)           │ │
+│  └───────────────────────┬───────────────────────┘ │
+│                          │                          │
+│  ┌───────────────────────┴───────────────────────┐ │
+│  │  MusicController (StateFlow)                   │ │
+│  │  - isPlaying, currentTrack, progress,          │ │
+│  │    duration, hasActiveItem                     │ │
+│  │  No ViewModel layer yet — direct controller    │ │
+│  └──────────┬────────────────────────────────────┘ │
+└─────────────┼─────────────────────────────────────┘
+              │
+┌─────────────┼─────────────────────────────────────┐
+│  Service    │                                      │
+│  Layer      │                                      │
+│  ┌──────────┴──────┐                               │
+│  │  MusicService    │  (DownloadWorker: Planned)   │
+│  │  (MediaSession   │                               │
+│  │   Service)       │                               │
+│  │  - ExoPlayer     │                               │
+│  │  - Notification  │                               │
+│  │  - No AVRCP yet  │                               │
+│  └──────────┬───────┘                               │
+└─────────────┼──────────────────────────────────────┘
+              │
+┌─────────────┼──────────────────────────────────────┐
+│  Data Layer │                                       │
+│  ┌──────────┴──────────────────────────┐            │
+│  │  Repository                          │            │
+│  │  - LibraryRepository (Room + SAF)    │ ✅        │
+│  │  - PlaylistRepository (Room)         │ ✅        │
+│  │  - DownloadRepository                │ Planned   │
+│  │  - DiscoveryRepository (Last.fm)     │ Planned   │
+│  │  - SettingsRepository (DataStore)    │ Planned   │
+│  └──────────────────┬───────────────────┘            │
+│                     │                                │
+│  ┌──────────────────┴───────────────────┐            │
+│  │  Room Database (AppDatabase v1)       │            │
+│  │  - Track, Playlist, PlaylistTrack     │            │
+│  │  (DownloadJob, QueueEntry,            │ Planned   │
+│  │   HistoryEntry, AllowedDuplicate      │ Planned   │
+│  │   are not yet implemented)            │            │
+│  └──────────────────────────────────────┘            │
+└──────────────────────────────────────────────────────┘
+```
+
+### Data Flow: Library Import (implemented)
+
+1. User taps "Import audio files" on SearchScreen → SAF `OpenMultipleDocuments` launcher opens
+2. User selects one or more audio files → launcher returns `List<Uri>`
+3. `LibraryRepository.importMultipleUris()` iterates URIs, calls `importAudioUri()` for each
+4. `importAudioUri()`:
+   - Checks `TrackDao.exists()` for deduplication → skips if duplicate
+   - Calls `takePersistableUriPermission()` to retain access across restarts
+   - Extracts metadata via `MediaMetadataRetriever` (title, artist, duration) with filename-based fallback ("Artist - Title" split)
+   - Inserts `Track` entity into Room via `TrackDao.insertTrack()`
+5. Returns `ImportResult(imported, duplicates, errors)` — UI observes updated `Flow<List<Track>>` from Room
+
+### Data Flow: Download (Planned — not implemented)
+
+1. User finds a track (search, discover, URL input) → triggers download
+2. `DownloadRepository` creates a `DownloadJob` in Room (state: QUEUED)
+3. `WorkManager` enqueues `DownloadWorker` with constraints (network, storage)
+4. Worker runs (potentially using embedded yt-dlp or equivalent): downloads, converts, writes to user-selected SAF/MediaStore location
+5. On success: update job state to COMPLETED, trigger library rescan, post notification
+6. On failure: update state to FAILED, save error info, show retry action
+
+### Data Flow: Playback (implemented)
+
+1. User taps track in SearchScreen or LibraryScreen → screen calls shared `onPlay(uri)` supplied by `MainShell`.
+2. `MainShell` evaluates `NotificationPermissionPolicy`; API 33+ shows the system notification prompt at most once automatically, then dispatches playback regardless of prompt result.
+3. `onPlay` calls `MusicController.playUri(uri)`.
+4. If the Media3 controller is connected, `MusicController` builds a `MediaItem` and sends it to `MusicService` through `MediaController`.
+5. If the Media3 controller is not yet connected, current code records a pending play request and flushes it in `executePendingPlay()` after connection. **Known defect:** this path is not atomic, can race `release()`, and loses full list/start-index semantics for `play(List, startIndex)`.
+6. `MusicService` (`MediaSessionService`) receives the item, ExoPlayer decodes and renders audio.
+7. `MusicController` listener observes `onIsPlayingChanged`, `onMediaItemTransition`, `onPlaybackStateChanged`.
+8. State published via `StateFlow` (`isPlaying`, `currentTrack`, `progress`, `duration`, `hasActiveItem`).
+9. `MiniPlayer` composable observes `hasActiveItem` for visibility, `currentTrack` for metadata display, `isPlaying` for play/pause icon.
+10. Track completion triggers auto-advance within ExoPlayer; UI tracks progress via 250ms polling coroutine.
+11. Notification/lock-screen controls handled by Media3 session; Bluetooth AVRCP not yet explicitly configured.
+
+---
+
+## 📂 File Registry (Implemented)
+
+All files listed below exist in `mobile-app/` as of this writing.
+
+### Build & Config
+| File | Responsibility | Status |
+|------|---------------|--------|
+| `build.gradle.kts` | Root Gradle: plugin declarations (AGP, Kotlin, Compose, KSP) | ✅ |
+| `settings.gradle.kts` | Project settings, single `:app` module | ✅ |
+| `gradle.properties` | JVM args, AndroidX, Kotlin code style | ✅ |
+| `gradle/libs.versions.toml` | Version catalog (AGP 8.5.2, Kotlin 2.0.0, Media3 1.3.1, Room 2.6.1) | ✅ |
+| `app/build.gradle.kts` | App module: compileSdk 35, minSdk 29, Compose BOM 2024.06.00, all dependencies | ✅ |
+| `app/proguard-rules.pro` | Keep Room entity annotations | ✅ |
+| `app/schemas/.../1.json` | Room schema v1 export (tracks, playlists, playlist_tracks) | ✅ |
+
+### Android System
+| File | Responsibility | Status |
+|------|---------------|--------|
+| `app/src/main/AndroidManifest.xml` | Permissions (FOREGROUND_SERVICE, POST_NOTIFICATIONS), MainActivity, MusicService | ✅ |
+| `app/src/main/res/values/colors.xml` | `#101010`, `#202020`, `#292929`, `#1ED760` (visual spec colors) | ✅ |
+| `app/src/main/res/values/themes.xml` | Theme.BoomBastic (Material NoActionBar, dark background) | ✅ |
+| `app/src/main/res/values/strings.xml` | App name, nav labels, action strings | ✅ |
+| `app/src/main/res/drawable/*.xml` | 8 vector icons (home, search, library, discover, create, play, pause, music_note) + launcher assets | ✅ |
+
+### Kotlin Source
+| File | Responsibility | Status |
+|------|---------------|--------|
+| `BoomBasticApp.kt` | Application class, manual DI (database, libraryRepo, playlistRepo) | ✅ |
+| `MainActivity.kt` | Compose entry, MusicController init, edge-to-edge | ✅ |
+| `playback/MusicService.kt` | Media3 MediaSessionService + ExoPlayer | ✅ |
+| `playback/MusicController.kt` | MediaController wrapper, StateFlow playback state, pending-play logic | ⚠ Implemented but has unresolved reliability defects around async connection/release and pending queue state |
+| `playback/NotificationPermissionPolicy.kt` | One-shot `POST_NOTIFICATIONS` prompt policy using SharedPreferences | ✅ |
+| `data/db/AppDatabase.kt` | Room database (3 entities, version 1, singleton) | ✅ |
+| `data/db/entity/Track.kt` | Track entity (uri PK, title, artist, album, durationMs) | ✅ |
+| `data/db/entity/Playlist.kt` | Playlist entity (autoId, name, description, createdAt) | ✅ |
+| `data/db/entity/PlaylistTrack.kt` | Junction entity (composite PK, FK cascade, sortOrder) | ✅ |
+| `data/db/dao/TrackDao.kt` | Track CRUD + search Flow + dedupe check | ✅ |
+| `data/db/dao/PlaylistDao.kt` | Playlist CRUD + relation queries + sort order | ✅ |
+| `data/repository/LibraryRepository.kt` | SAF import, MediaMetadataRetriever, dedupe, ImportResult | ✅ |
+| `data/repository/PlaylistRepository.kt` | Playlist CRUD, name validation, sort order mgmt | ✅ |
+| `ui/shell/MainShell.kt` | Scaffold + BottomNav (4 tabs + Create) + AnimatedVisibility MiniPlayer | ✅ |
+| `ui/navigation/NavGraph.kt` | NavHost: Routes (HOME, SEARCH, LIBRARY, DISCOVER) | ✅ |
+| `ui/theme/Color.kt` | Dark palette constants | ✅ |
+| `ui/theme/Theme.kt` | BoomBasticTheme (Material3 darkColorScheme) | ✅ |
+| `ui/theme/Type.kt` | Sans-serif typography scale | ✅ |
+| `ui/theme/Dimens.kt` | Touch targets, icon sizes, padding constants | ✅ |
+| `ui/components/MiniPlayer.kt` | Persistent mini-player with progress, title, artist, play/pause | ✅ |
+| `ui/home/HomeScreen.kt` | Greeting, recently played, import hint | ✅ |
+| `ui/search/SearchScreen.kt` | Search field, SAF import button, track list | ✅ |
+| `ui/library/LibraryScreen.kt` | Playlists + tracks list | ✅ |
+| `ui/discover/DiscoverScreen.kt` | Honest empty state (Last.fm TBD) | ✅ |
+| `ui/create/CreatePlaylistSheet.kt` | AlertDialog with name validation | ✅ |
+
+### Tests
+| File | Responsibility | Status |
+|------|---------------|--------|
+| `data/db/AppDatabaseTest.kt` | Abstract Robolectric base class (in-memory DB) | ✅ |
+| `data/db/TrackDaoTest.kt` | 11 tests: insert, search, dedupe, delete, count | ✅ |
+| `data/db/PlaylistDaoTest.kt` | 7 tests: CRUD, track-to-playlist, cascade, sortOrder | ✅ |
+| `data/repository/PlaylistRepositoryTest.kt` | 5 tests: blank name rejection, persistence, trim, list, delete | ✅ |
+| `playback/NotificationPermissionPolicyTest.kt` | 11 tests: API 29/33+ prompt policy, grant/deny/attempted behavior | ✅ Reported passing before latest debugger changes |
+| `playback/MusicControllerTest.kt` | Contract tests for pending-play API shape and lifecycle no-throw behavior | ⚠ Exists, but final reviewer did not find evidence that it compiled or ran after latest changes |
+
+---
+
+## ⚠️ Security Considerations
+
+1. **Last.fm API key** — stored in `EncryptedSharedPreferences`; never logged, never exported in JSON manifests, never sent over HTTP (HTTPS always)
+2. **Downloaded audio** — stored in user-selected shared storage; no app-internal encryption needed (user has full filesystem control)
+3. **JSON import** — always parse with a strict schema validator; reject unknown fields; limit file size; never execute dynamic content
+4. **Network** — HTTPS only for Last.fm API; yt-dlp-equivalent downloads may contact multiple hosts (YouTube, etc.); validate TLS
+5. **Signing key** — permanent, backed up securely; loss prevents APK updates; store in hardware-backed keystore when possible
+6. **No cloud accounts** — no user authentication, no tokens, no session management, no server-side storage
+
+---
+
+## 🛡 Risk Assessment
+
+| Risk | Impact | Mitigation |
+|------|--------|-----------|
+| yt-dlp alternatives on Android may have different capabilities | Downloader may not reproduce desktop quality | Research before coding; document format table; fallback to lower quality with user notification |
+| SAF/MediaStore complexity | Storage access confusing or broken on some devices | Test on API 29, 30, 33; fallback paths; clear user guidance |
+| Android Auto fee-free sideload conflict | Cannot distribute with Auto support without paid Google dev account | Mark Auto as optional/removable |
+| AAC-LC licensing | Patent royalty obligations for AAC-LC encoder/distributor | Verify Android's built-in AAC codec license (generally covered by device manufacturer); if uncertain, keep MP3 as safe default |
+| WorkManager+Foreground Service on OEM-skinned Android | Background execution limits on Xiaomi/Huawei/etc. | Test on target device (S20 FE); document known OEM quirks |
+| Mono repo grows large | mobile-app/ may accumulate stale files | Clear ownership; file registry; archive policy |
+| **MusicController async connection/release race** | `MediaController.Builder(...).buildAsync()` can complete after `MusicController.release()`. Current callback can publish a controller, add the listener, and dispatch pending playback after release, leaking resources or starting audio after cleanup. | Add terminal release gate and serialized state machine; cancel/ignore late futures and release late controllers immediately. **Unresolved — highest-priority playback fix.** |
+| **MusicController pending queue loses state** | Pre-connection `play(List<String>, startIndex)` stores only the effective single URI. It loses the full queue and start index, so later connection does not preserve user intent. | Store immutable `PendingPlayRequest(uris, startIndex)` and dispatch the same queue setup used by connected playback. **Unresolved.** |
+| **MusicController pending state is not atomic** | `pendingUri` is volatile but `pendingPlayConsumed` is not; cross-field updates can double-execute, lose, or stale-read pending work under concurrent play/connect/release paths. | Replace independent fields with one serialized/atomic pending request model. **Unresolved.** |
+| **MusicController connection errors are not surfaced** | `connectionError` is emitted on a buffered `SharedFlow`, but no Compose shell collector surfaces it to the user; startup failures can still be invisible. | Collect errors in `MainShell` and show a one-shot Snackbar/user-visible message. **Unresolved.** |
+| **No latest build evidence after last debugger changes** | Earlier `assembleDebug`, `testDebugUnitTest`, and `lintDebug` passed with 33 tests before the final debugger changes. The last debugger reported JDK unavailable and could not rerun Gradle after adding/updating `MusicController` tests and playback comments. | Re-run `./gradlew clean :app:assembleDebug`, `./gradlew :app:testDebugUnitTest`, and `./gradlew :app:lintDebug` before continuing feature work. **Critical verification gap.** |
+| **No device/emulator verification** | SAF import flow, Media3 service lifecycle, notification permission dialog, and ExoPlayer audio output are untested on real hardware/emulator. | Run `./gradlew connectedCheck` on a device/emulator; manually verify import flow, playback start, permission prompt, media controls, and audio output. **Critical gap before any release.** |
+
+---
+
+## 🚫 Rejected Alternatives
+
+| Alternative | Reason for Rejection |
+|------------|---------------------|
+| React Native / Flutter for native app | Kotlin/Compose chosen for best Android integration, Media3 compatibility, and native performance |
+| Cloud sync (Firebase/AWS) | Product decision: offline-first, no cloud accounts |
+| Server-side scrobbling | Until product requires it, not implemented; user can use third-party Last.fm scrobbler |
+| Collaborative playlists / Blend | Social feature; out of scope |
+| Download audio blobs in export/import | Privacy and size concerns; references only |
+| Force internal storage only | User choice is paramount; SD card support is a feature, not a bug |
+
+---
+
+## 🔧 Known Current Code Smells (from desktop/Flet — avoid in native app)
+
+These are issues in the existing codebase that the native app should NOT reproduce:
+
+1. **`music_player.py` orphaned inline sidebar rebuild** (desktop brain line 246): After calling `_populate_sidebar()`, the function has a second block of orphaned code that destroys and rebuilds the sidebar cards again.
+2. **`views/artists.py` uninitialized attributes** (desktop brain line 247): `_sel_indices`, `_sel_anchor`, and `artist_tracks` are not initialized in `__init__`.
+3. **`views/song_page.py` thread leak** (desktop brain line 248): `_load_blur_bg` spawns a new thread on every `update_view()` call with no cancellation mechanism.
+4. **Flet prototype mixed desktop/mobile in one file** (`music_player_flet.py`): Over 1300 lines with conditional visibility toggles; native app should use proper navigation architecture.
+5. **Flet prototype hardcoded color constants** (lines 108, 429, 449, 628, etc.): Colors scattered instead of using a theme system.
+6. **Desktop downloader uses daemon threads** (`downloader.py`): Daemon threads can be killed mid-operation; native app should use WorkManager for guaranteed completion.
+
+---
+
+## ❓ Open Decisions (Actionable)
+
+| Question | Status | Suggested Approach |
+|----------|--------|-------------------|
+| `yt-dlp` on Android — embed via Chaquopy/JNI? Or use NewPipe Extractor? Use android-youtube-dl fork? | **Unresolved** | Research: compare android-youtube-dl (Kotlin) vs NewPipe Extractor (Java) vs embedded yt-dlp via Python-on-device. Key criterion: must reproduce desktop's bestaudio/best → 44.1kHz output. |
+| Output format: AAC-LC/M4A vs MP3 vs Opus | **Unresolved** | Provisional: high-quality AAC-LC M4A. Validation needed: does Android's built-in AAC decoder cover patent licensing? Is there any cost/distribution constraint? |
+| Android Auto — Google's fee-free distribution rules for media apps on non-Play-Store releases | **Unresolved** | Investigate: can an Android Auto app be sideloaded without Play Store? If not, mark Auto as removable and document the trade-off. |
+| SAF tree URI vs MediaStore for music root | **Resolved** | SAF `OpenMultipleDocuments` used for import (`LibraryRepository`). MediaStore broad scan not yet implemented. Hybrid approach deferred. |
+| Room schema migration strategy | **Resolved** | Use `AutoMigration` (Room 2.4+) for simple changes; manual migration with testing for complex changes. |
+| Min SDK | **Resolved** | **API 29** — set in `app/build.gradle.kts`. SAF/document provider model works from API 19+, but Media3 and Compose benefit from API 29 baseline. |
+| Gradle build system configuration | **Resolved** | **Kotlin DSL** + version catalog (`libs.versions.toml`) + single `:app` module. Convention plugins deferred. AGP 8.5.2. |
+| Dependency injection: Hilt vs manual | **Resolved** | **Manual singleton DI** in `BoomBasticApp` for now. Hilt deferred — not a blocking decision. |
+| CI/CD for signed APK releases | **Unresolved** | GitHub Actions with `reviewdog`, lint, detekt; signing via CI secrets; GitHub Releases for distribution. |
+| MusicController pending-play reliability | **Unresolved** | Replace independent pending fields with an atomic/serialized `PendingPlayRequest`; gate async connection callbacks after release; preserve full queue/start index; surface connection errors in `MainShell`; then rerun build/tests/lint. |
+| Android notification permission semantics | **Resolved** | `POST_NOTIFICATIONS` denial does not itself block a correctly declared Media3 media-session notification/`mediaPlayback` foreground service. Keep one-shot prompt policy for notification visibility, but do not block playback solely on denial. |
+
+---
+
+## 📦 Dependencies (from version catalog `libs.versions.toml`)
+
+| Dependency | Version | Purpose | Status |
+|-----------|---------|---------|--------|
+| AGP (Android Gradle Plugin) | 8.5.2 | Build system | ✅ In use |
+| Kotlin | 2.0.0 | Language | ✅ In use |
+| KSP | 2.0.0-1.0.22 | Room annotation processing | ✅ In use |
+| Jetpack Compose BOM | 2024.06.00 | UI framework | ✅ In use |
+| Compose Material3 | via BOM | Material Design 3 | ✅ In use |
+| Compose Material Icons Extended | via BOM | Extra icons | ✅ In use |
+| Media3 (ExoPlayer) | 1.3.1 | Audio playback | ✅ In use |
+| Media3 Session | 1.3.1 | MediaSessionService | ✅ In use |
+| Room Runtime + KTX | 2.6.1 | Local database | ✅ In use |
+| Room Compiler (KSP) | 2.6.1 | Code generation | ✅ In use |
+| Navigation Compose | 2.7.7 | Screen navigation | ✅ In use |
+| Coroutines | 1.8.1 | Async | ✅ In use |
+| AndroidX Core KTX | 1.13.1 | Android API wrappers | ✅ In use |
+| Lifecycle Runtime KTX | 2.8.3 | Lifecycle-aware coroutines | ✅ In use |
+| Lifecycle ViewModel Compose | 2.8.3 | ViewModel in Compose integration | ✅ In use |
+| Lifecycle Runtime Compose | 2.8.3 | Lifecycle-aware Compose effects | ✅ In use |
+| Activity Compose | 1.9.0 | Compose entry point | ✅ In use |
+| JUnit 4 | 4.13.2 | Test framework | ✅ In use |
+| Robolectric | 4.12.2 | Android unit tests (JVM) | ✅ In use |
+| Turbine | 1.1.0 | Flow testing | ✅ In use |
+| Truth | 1.4.2 | Test assertions | ✅ In use |
+| Room Testing | 2.6.1 | Room test helpers | ✅ In use |
+| **Excluded (current):** | | | |
+| WorkManager | — | Background downloads | **Planned** |
+| Hilt | — | Dependency injection | Deferred — manual DI in `BoomBasticApp` |
+| Coil | — | Image loading | **Planned** — no album art display yet |
+| OkHttp | — | HTTP client | **Planned** — needed for downloader |
+| Kotlinx Serialization | — | JSON parsing | **Planned** — needed for export/import |
+| DataStore | — | Preferences | **Planned** — settings not yet implemented |
+| EncryptedSharedPreferences | — | Secure credential storage | **Planned** — needed for Last.fm key |
+
+---
+
+## 🧪 Testing Strategy
+
+| Level | Tool | Scope | Status |
+|-------|------|-------|--------|
+| Unit | JUnit 4 + Truth + Turbine + Robolectric | Room DAOs, Repositories | ✅ **23 tests** — `TrackDaoTest` (11), `PlaylistDaoTest` (7), `PlaylistRepositoryTest` (5) |
+| Unit | JUnit 4 + Truth + Robolectric | Notification permission policy | ✅ **11 tests reported passing** before final debugger changes |
+| Unit | JUnit 4 + Truth + Robolectric | MusicController pending-play/lifecycle contract | ⚠ Test file exists, but final reviewer did not find evidence that it compiled or ran after latest changes |
+| UI | Compose UI Test | Screen composables, navigation | **Planned** |
+| Integration | Android Instrumentation Test | Room DAOs, WorkManager workers, Media3 interaction | **Planned** |
+| Snapshot | Roborazzi (or Paparazzi) | Visual regression for Compose screens | **Planned** |
+| End-to-end | Maestro / ADB script | Full playback flow, download flow, import/export | **Planned** |
+
+**Latest verification status:** Earlier Android foundation verification passed `assembleDebug`, `testDebugUnitTest`, and `lintDebug`; the playback-permission follow-up reported 33 unit tests passing. After the final debugger changes, Gradle was not rerun because the debugger reported no JDK in its environment. Do **not** claim the latest tree compiles until commands are rerun.
+
+**Test targets:** S20 FE (API 33) as primary; Pixel 6 / API 29 as secondary. Add API 34/35 emulator/device coverage for Media3 service and notification behavior before release.
+
+---
+
+## 🔄 Maintenance Policy
+
+1. **This document** must be updated when:
+   - Any settled decision changes
+   - A planned module is implemented
+   - New code smell or risk is discovered
+   - The desktop `engine.py` or `downloader.py` changes in ways that affect planned Android behavior
+
+2. **Authority order** (repeated from banner):
+   Source/tests/config > desktop brain/cited shared source > confirmed product decisions > readable screenshots > labeled proposals/open decisions
+
+3. **File ownership:**
+   - `mobile-app/` files: owned by mobile team
+   - Root shared modules (`engine.py`, `downloader.py`, `theme.py`, `utils.py`): shared ownership — read by mobile team for semantics, but Android will reimplement natively
+   - Root `project_brain.md`: desktop team
+
+4. **Archive policy:** If a planned module is rejected after implementation, move to `mobile-app/archive/` with a deprecation note. Never delete without documenting the decision.
+
+---
+
+## 📎 Links
+
+- [Desktop Project Brain](../project_brain.md) — desktop architecture, CVE pattern, all desktop technical protocols
+- [downloader.py](../downloader.py) — desktop downloader semantics (source of truth for format/quality/loudnorm)
+- [engine.py](../engine.py) — desktop engine, DiscoveryService, dedupe logic, library scan
+- [theme.py](../theme.py) — current desktop/Flet palette (differs from planned mobile colors)
+- [music_player_flet.py](../music_player_flet.py) — current Flet mobile/desktop prototype
+- [buildozer.spec](../buildozer.spec) — current Flet Android build configuration
+- [utils.py](../utils.py) — shared helpers (split_track_name, format_time, extract_dominant_color)

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BoomBastic</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_search">Search</string>
+    <string name="nav_library">Your Library</string>
+    <string name="nav_discover">Discover</string>
+    <string name="nav_create">Create</string>
+    <string name="action_play">Play</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_import_audio">Import audio files</string>
+    <string name="create_playlist_dialog_title">Create Playlist</string>
+    <string name="create_playlist_name_label">Playlist name</string>
+    <string name="create_playlist_name_placeholder">My Playlist</string>
+    <string name="create_playlist_cancel">Cancel</string>
+    <string name="create_playlist_create">Create</string>
+    <string name="create_playlist_empty_name">Name cannot be empty</string>
+    <string name="search_hint">Search your library...</string>
+    <string name="discover_empty_title">Discover</string>
+    <string name="discover_empty_body">Recommendations from Last.fm will appear here.</string>
+</resources>
