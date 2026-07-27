@@ -25,7 +25,9 @@ This document is a high-level architectural map for the **Vibe Music Player**. I
 ├── utils.py                  # Shared helpers (resource_path, format_time, split_track_name, etc.)
 ├── widgets.py                # Custom Canvas widgets (RoundButton, SlimSlider, PlaylistArt, ModernScrollbar)
 ├── icon.icns                 # macOS app icon
+├── build.command             # Executable macOS build helper; activates .venv then runs PyInstaller spec
 ├── DevTunes.spec             # PyInstaller spec for macOS build
+├── .gitignore                # Ignores local envs, Python caches, build/dist artifacts, and OS metadata
 ├── project_brain.md          # This document
 │
 ├── .opencode/                # Project-local deterministic AI delivery workflow
@@ -58,33 +60,45 @@ This document is a high-level architectural map for the **Vibe Music Player**. I
 ├── buildozer.spec            # Android build config (not in scope)
 ├── main.py                   # Flet entry point (not in scope)
 ├── music_player_flet.py      # Flet mobile port (not in scope)
-└── requirements.txt          # Flet dependencies (not in scope)
+└── requirements.txt          # Reproducible Python environment for app/build dependencies
 ```
 
 Files marked **"not in scope"** belong to the Flet mobile port and are not part of the desktop app architecture.
+Generated/local directories are intentionally omitted from the tracked tree: `.venv/`, `build/`, `dist/`, `__pycache__/`, `.pytest_cache/`, and `.DS_Store` are ignored and should not be committed.
 
 ---
 
 ## 📦 Build & Packaging (PyInstaller)
 To bundle the application as a standalone executable (`.app` on macOS or `.exe` on Windows), follow these protocols:
+- **Local Environment Setup**: Create the local env with `python3.12 -m venv .venv`, then install dependencies via `.venv/bin/python -m pip install -r requirements.txt`. The `.venv/` directory is local-only and ignored by Git.
+- **Executable Build Helper**: `build.command` is executable (`100755`) and can be run directly/double-clicked on macOS. It activates `.venv`, runs `pyinstaller --clean --noconfirm DevTunes.spec`, then opens `dist/BoomTunes.app` if the build succeeds.
 - **macOS Build Command**: Use `python -m PyInstaller --noconsole --windowed --noconfirm --clean --name "BoomTunes" --icon "icon.icns" --add-data "views:views" music_player.py`.
 - **macOS Bundle Identifier**: The `DevTunes.spec` file sets `bundle_identifier='com.ty.boomtunes'`. This was changed from `DevTunes` / `com.ty.devTunes` to avoid TCC permission confusion after the rename.
 - **PyInstaller hiddenimports**: The spec includes `'Foundation', 'objc', 'Quartz', 'AppKit'` to ensure PyObjC bridges resolve `True` at runtime in the bundled app.
 - **Windows Build Command**: Use `python -m PyInstaller --noconsole --windowed --noconfirm --clean --name "BoomTunes" --icon "icon.ico" --add-data "views;views" music_player.py`. **Note:** This *must* be run on a Windows OS. Windows uses a semicolon `;` as a path separator and requires an `.ico` icon file.
 - **Package Integrity**: The `views/` directory must contain an `__init__.py` to be correctly recognized as a package during bundling.
 - **Path Handling**: Always use `utils.resource_path()` for assets to ensure they are found within the `sys._MEIPASS` temporary directory at runtime.
-- **Environment**: Always run the build from within the `.venv` to ensure all dependencies (`pygame`, `yt-dlp`, `requests`, etc.) are linked. If you add a new dependency, you MUST `pip install` it inside the `.venv` before building.
+- **Environment**: Always run the build from within `.venv` to ensure all dependencies (`pyinstaller`, `pygame`, `yt-dlp`, `requests`, PyObjC frameworks, etc.) are linked. If you add a new dependency, update `requirements.txt` and reinstall inside `.venv` before building.
+- **Artifact Policy**: `build/` and `dist/` are generated PyInstaller outputs. They must remain ignored and should be regenerated locally or published as release artifacts, not committed.
 
 ---
 
 ## 🛰 Binary Dependencies
 The following must be available in `PATH` for full functionality:
--   **`yt-dlp`**: Metadata extraction and downloading.
+-   **`yt-dlp`**: Metadata extraction and downloading; installed by `requirements.txt` into `.venv`.
 -   **`ffmpeg`**: Essential for audio conversion, resampling, and embedding metadata.
--   **`pygame`**: The audio engine.
+-   **`pyinstaller`**: macOS desktop app packaging; installed by `requirements.txt` into `.venv`.
+-   **`pygame`**: Playback backend (`pygame.mixer`); installed by `requirements.txt` into `.venv` and bundled by PyInstaller.
 -   **`mutagen`**: MP3 metadata reading.
--   **`Pillow`**: Dynamic rendering/resizing of embedded ID3 JPEG thumbnails.
--   **`requests`**: HTTP client for Deezer API, Last.fm API, and YouTube thumbnail fetching.
+-   **`Pillow`**: Dynamic rendering/resizing of embedded ID3 artwork and YouTube thumbnail conversion; installed by `requirements.txt` into `.venv` and bundled by PyInstaller.
+-   **`requests`**: HTTP client for Deezer API, Last.fm API, and YouTube thumbnail fetching; installed by `requirements.txt` into `.venv`.
+
+---
+
+## 🧹 Repository Hygiene
+- The repository tracks source/configuration only. Do not commit local environments, generated packages, bytecode, test caches, or macOS metadata.
+- Root `.gitignore` intentionally covers `.venv/`, `venv/`, `env/`, `build/`, `dist/`, `__pycache__/`, `*.py[cod]`, `.pytest_cache/`, and `.DS_Store`.
+- If generated artifacts are accidentally tracked, remove them from the index with `git rm -r --cached` when the local files should be preserved, or `git rm -r` when they should be removed from disk too.
 
 ---
 
@@ -127,6 +141,7 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 2. `Downloader._create_opts()` → yt-dlp options: 44.1kHz, 192k MP3, loudnorm, EmbedThumbnail
 3. Progress hook → `controller.after(0, ...)` → UI update
 4. On complete → `_refresh_library()` → library scan
+5. Playlist sync compares candidates against the whole local music library root, not only the destination playlist folder, so Sync All avoids duplicating tracks that already exist in another playlist. It tracks successful/matched YouTube IDs in `.downloaded_vids` and permanent failures in `.sync_failed_vids` inside the playlist folder.
 
 ### Artwork Fetching
 1. `PlaylistArt` or `SongPageView` requests art → `ArtCache.get(path, size, callback)`

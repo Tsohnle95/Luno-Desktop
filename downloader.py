@@ -217,14 +217,22 @@ class Downloader:
                     on_playlist_msg(f"Searching {len(entries)} track(s)")
 
                 vid_path = os.path.join(out_folder, ".downloaded_vids")
+                failed_vid_path = os.path.join(out_folder, ".sync_failed_vids")
                 legacy_vid_path = os.path.join(out_folder, ".downloaded.txt")
                 known_vids = set()
+                failed_vids = set()
                 try:
                     if os.path.exists(vid_path):
                         with open(vid_path, "r", encoding="utf-8") as f:
                             known_vids = {line.strip() for line in f if line.strip()}
                 except Exception:
                     known_vids = set()
+                try:
+                    if os.path.exists(failed_vid_path):
+                        with open(failed_vid_path, "r", encoding="utf-8") as f:
+                            failed_vids = {line.strip().split("\t", 1)[0] for line in f if line.strip()}
+                except Exception:
+                    failed_vids = set()
                 try:
                     if os.path.exists(legacy_vid_path):
                         with open(legacy_vid_path, "r", encoding="utf-8") as f:
@@ -263,6 +271,25 @@ class Downloader:
                     except Exception:
                         pass
 
+                def is_permanent_download_failure(err):
+                    text = str(err).lower()
+                    return any(marker in text for marker in (
+                        "video unavailable",
+                        "sign in to confirm your age",
+                        "blocked due to the claimed content",
+                    ))
+
+                def save_failed_vid(vid, err):
+                    if not vid or vid in failed_vids:
+                        return
+                    try:
+                        reason = re.sub(r'\s+', ' ', str(err)).strip()
+                        with open(failed_vid_path, "a", encoding="utf-8") as f:
+                            f.write(f"{vid}\t{reason}\n")
+                        failed_vids.add(vid)
+                    except Exception:
+                        pass
+
                 def audio_paths_for(safe_name):
                     return {
                         os.path.join(out_folder, f"{safe_name}{ext}")
@@ -277,19 +304,25 @@ class Downloader:
                     name = re.sub(r'[<>:"/\\|?*]', '', name).strip()
                     return name or "Unknown"
 
-                # Build known set from existing files
+                # Build known set from existing files across the whole local library.
+                # This prevents Sync All from duplicating tracks that already exist
+                # in another playlist folder.
                 known = set()
                 known_titles = set()
-                if os.path.isdir(out_folder):
-                    for fname in os.listdir(out_folder):
-                        if fname.lower().endswith((".mp3", ".m4a", ".wav", ".flac", ".webm")):
-                            track_name, artist = split_track_name(fname)
-                            known.add(make_key(artist, track_name))
-                            known_titles.add(title_key(track_name))
+                library_root = os.path.dirname(out_folder)
+                scan_root = library_root if os.path.isdir(library_root) else out_folder
+                if os.path.isdir(scan_root):
+                    for root, _, files in os.walk(scan_root):
+                        for fname in files:
+                            if fname.lower().endswith((".mp3", ".m4a", ".wav", ".flac", ".webm")):
+                                track_name, artist = split_track_name(fname)
+                                known.add(make_key(artist, track_name))
+                                known_titles.add(title_key(track_name))
 
                 new_tracks = []
                 matched_vids = set()
                 skipped_missing = 0
+                skipped_failed = 0
                 for e in entries:
                     if not e: continue
                     vid = e.get('id')
@@ -305,6 +338,9 @@ class Downloader:
                     entry_key = make_key(artist_part, title_part)
                     entry_title_key = title_key(title_part)
                     if vid and vid in known_vids:
+                        continue
+                    if vid and vid in failed_vids:
+                        skipped_failed += 1
                         continue
                     if not entry_key and not entry_title_key:
                         skipped_missing += 1
@@ -324,6 +360,8 @@ class Downloader:
                 save_vids(matched_vids)
                 if skipped_missing and on_playlist_msg:
                     on_playlist_msg(f"Skipped {skipped_missing} untitled unavailable item(s)")
+                if skipped_failed and on_playlist_msg:
+                    on_playlist_msg(f"Skipped {skipped_failed} previously failed unavailable item(s)")
 
                 if not new_tracks:
                     if on_playlist_msg:
@@ -366,6 +404,8 @@ class Downloader:
                     except TimeoutError:
                         on_log(title, False, "Download timed out (120s)")
                     except Exception as e:
+                        if is_permanent_download_failure(e):
+                            save_failed_vid(t.get("vid"), e)
                         on_log(title, False, repr(e))
                     on_progress(i + 1, total, None)
 

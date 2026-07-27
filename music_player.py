@@ -417,8 +417,8 @@ lder."""
             self.after(1500, self._start_media_key_listener)
         self.after(100, self._poll_media_commands)
 
-        if not PYGAME_AVAILABLE: self._log("⚠ pygame not available","warning")
-        if not YT_DLP_AVAILABLE: self._log("⚠ yt-dlp not found — brew install yt-dlp","warning")
+        if not PYGAME_AVAILABLE: self._log_error("warning", "pygame not available")
+        if not YT_DLP_AVAILABLE: self._log_error("warning", "yt-dlp not found - brew install yt-dlp")
 
     def _show_about(self):
         # 2. This ONLY happens if you click "About Dev Tunes" in the menu
