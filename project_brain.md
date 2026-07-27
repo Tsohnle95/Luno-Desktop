@@ -30,15 +30,6 @@ This document is a high-level architectural map for the **Vibe Music Player**. I
 ├── .gitignore                # Ignores local envs, Python caches, build/dist artifacts, and OS metadata
 ├── project_brain.md          # This document
 │
-├── .opencode/                # Project-local deterministic AI delivery workflow
-│   ├── plugins/
-│   │   └── feature-pipeline.ts       # Scripted stage orchestration and fail-closed validation
-│   ├── agents/
-│   │   ├── feature-workflow.md       # Tool-only UI agent for the scripted pipeline
-│   │   └── pipeline-reviewer-backup.md # Independent backup when review output is invalid/empty
-│   └── commands/
-│       └── feature.md                # `/feature` command entry point
-│
 ├── views/                    # View modules (all inherit tk.Frame)
 │   ├── __init__.py           # Empty — required for PyInstaller package recognition
 │   ├── library.py            # Main library view (virtual scrolling, visualizer, search)
