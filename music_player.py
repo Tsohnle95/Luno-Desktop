@@ -2234,16 +2234,12 @@ lder."""
     def _update_now_playing_info(self, title="", artist="", duration=0.0):
         """Publish truthful Now Playing metadata/state from engine.
         Rate is 1 when playing, 0 when paused/stopped.
-        Elapsed is computed from track_start or seek_pos."""
+        Elapsed consults the engine's canonical playback position."""
         if not hasattr(self, '_mp_info_center'):
             return
         try:
             rate = 1.0 if (self.engine.playing and not self.engine.paused) else 0.0
-            elapsed = 0.0
-            if self.engine.playing and not self.engine.paused:
-                elapsed = time.time() - self.engine.track_start
-            elif self.engine.paused:
-                elapsed = self.engine.seek_pos
+            elapsed = self.engine.get_position()
 
             now_playing = {
                 self._mp_title_key: title or "",

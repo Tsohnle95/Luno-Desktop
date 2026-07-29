@@ -84,9 +84,11 @@ class DiscoveryService:
 
 
 try:
-    from mutagen.mp3 import MP3
+    from mutagen import File as MutagenFile
+    from mutagen.mp3 import MP3  # Keep for backward compat
     MUTAGEN_AVAILABLE = True
 except ImportError:
+    MutagenFile = None
     MP3 = None
     MUTAGEN_AVAILABLE = False
 
@@ -216,6 +218,9 @@ class VibeEngine:
         self.duration = 0.0
         self.track_start = 0.0
         self.seek_pos = 0.0
+        self._playback_base_pos = 0.0
+        self._playback_base_mono = 0.0
+        self._last_position = 0.0
         self.volume = 0.7
         self.shuffle = False
         self.repeat = False
@@ -275,6 +280,9 @@ class VibeEngine:
             return
         # Reset completion latch so poll knows a new track generation is active
         self._completion_dispatched = False
+        # Clear stale footer position immediately while new track loads
+        self.c.scrub.set(0)
+        self.c.time_cur.config(text=format_time(0.0))
         path = self.queue[self.queue_idx]
         if not os.path.exists(path):
             self.consecutive_fails += 1
@@ -296,12 +304,16 @@ class VibeEngine:
             self.consecutive_fails = 0 # Success!
             self.playing = True
             self.paused = False
-            self.track_start = time.time()
+            self.track_start = time.monotonic()
             self.seek_pos = 0.0
+            self._playback_base_pos = 0.0
+            self._playback_base_mono = self.track_start
+            self._last_position = 0.0
             
+            # Generic duration probing via Mutagen (supports mp3, m4a, flac, etc.)
             try:
-                audio = MP3(path)
-                self.duration = audio.info.length
+                audio = MutagenFile(path) if MUTAGEN_AVAILABLE else None
+                self.duration = audio.info.length if audio and audio.info else 0.0
             except:
                 self.duration = 0.0
 
@@ -367,15 +379,19 @@ class VibeEngine:
         elif self.paused:
             pygame.mixer.music.unpause()
             self.paused = False
-            self.track_start = time.time() - self.seek_pos
+            now = time.monotonic()
+            mixer_elapsed = self._mixer_elapsed_seconds()
+            self._playback_base_pos = self.seek_pos - mixer_elapsed if mixer_elapsed is not None else self.seek_pos
+            self._playback_base_mono = now
+            self.track_start = now - self.seek_pos
             self.c.play_btn.set_text("⏸")
             if self.queue and 0 <= self.queue_idx < len(self.queue):
                 title, artist = split_track_name(self.queue[self.queue_idx])
                 self.c._update_now_playing_info(title, artist, self.duration)
         elif self.playing:
+            self.seek_pos = self.get_position()
             pygame.mixer.music.pause()
             self.paused = True
-            self.seek_pos = time.time() - self.track_start
             self.c.play_btn.set_text("▶")
 
     def next_track(self):
@@ -422,55 +438,106 @@ class VibeEngine:
             self.track_start = 0
             self.c.play_btn.set_text("▶")
 
+    def get_position(self):
+        """Canonical playback position in seconds, clamped to [0, duration].
+        Prefers pygame's mixer playback clock while audio is busy, with a
+        monotonic fallback for startup/end states or unsupported codecs."""
+        if not self.playing and not self.paused:
+            return 0.0
+        if self.paused:
+            pos = self.seek_pos
+        else:
+            mixer_elapsed = self._mixer_elapsed_seconds()
+            if mixer_elapsed is not None:
+                pos = self._playback_base_pos + mixer_elapsed
+            else:
+                pos = self._playback_base_pos + (time.monotonic() - self._playback_base_mono)
+        pos = self._clamp_position(pos)
+        self._last_position = pos
+        return pos
+
+    def _mixer_elapsed_seconds(self):
+        if not PYGAME_AVAILABLE or not self.mixer_ready:
+            return None
+        try:
+            if not pygame.mixer.music.get_busy():
+                return None
+            pos_ms = pygame.mixer.music.get_pos()
+        except Exception:
+            return None
+        if pos_ms is None or pos_ms < 0:
+            return None
+        return pos_ms / 1000.0
+
+    def _clamp_position(self, pos):
+        if self.duration > 0:
+            pos = min(pos, self.duration)
+        return max(0.0, pos)
+
+    def _update_position_display(self, elapsed=None):
+        elapsed = self.get_position() if elapsed is None else self._clamp_position(elapsed)
+        pct = min((elapsed / self.duration) * 100, 100) if self.duration > 0 else 0.0
+        self.c.scrub.set(pct)
+        self.c.time_cur.config(text=format_time(elapsed))
+
+        sp = self.c._frames.get("song_page")
+        if sp and sp.winfo_ismapped():
+            if hasattr(sp, "scrub"): sp.scrub.set(pct)
+            if hasattr(sp, "time_cur"): sp.time_cur.config(text=format_time(elapsed))
+            if hasattr(sp, "time_tot"): sp.time_tot.config(text=format_time(self.duration))
+            if hasattr(sp, "play_btn"): sp.play_btn.set_text("⏸" if not self.paused else "▶")
+
     def on_scrub_moved(self, val):
         if not PYGAME_AVAILABLE or self.duration <= 0: return
-        pos = (float(val) / 100) * self.duration
+        pos = self._clamp_position((float(val) / 100) * self.duration)
         self.seek_pos = pos
-        self.track_start = time.time() - pos
+        now = time.monotonic()
+        self.track_start = now - pos
+        self._playback_base_pos = pos
+        self._playback_base_mono = now
+        self._last_position = pos
         pygame.mixer.music.play(start=pos)
         if self.paused: pygame.mixer.music.pause()
+        self._update_position_display(pos)
+        if self.queue and 0 <= self.queue_idx < len(self.queue):
+            title, artist = split_track_name(self.queue[self.queue_idx])
+            self.c._update_now_playing_info(title, artist, self.duration)
 
     def on_volume_moved(self, val):
         self.volume = float(val) / 100
         if PYGAME_AVAILABLE: pygame.mixer.music.set_volume(self.volume)
 
     def _poll(self):
-        """Internal playback watchdog with generation latch and mixer guard."""
+        """Internal playback watchdog with generation latch and mixer guard.
+
+        Every invocation reschedules exactly one successor unless the controller
+        is closing. Completion detection uses the canonical playback position
+        and works for both known-duration and unknown-duration tracks."""
         try:
             if self.playing and not self.paused and self.mixer_ready:
-                elapsed = time.time() - self.track_start
-                if self.duration > 0:
-                    pct = min((elapsed / self.duration) * 100, 100)
-                    self.c.scrub.set(pct)
-                    self.c.time_cur.config(text=format_time(elapsed))
-                    
-                    # Sync Song Page scrubber/time
-                    sp = self.c._frames.get("song_page")
-                    if sp and sp.winfo_ismapped():
-                        if hasattr(sp, "scrub"): sp.scrub.set(pct)
-                        if hasattr(sp, "time_cur"): sp.time_cur.config(text=format_time(elapsed))
-                        if hasattr(sp, "time_tot"): sp.time_tot.config(text=format_time(self.duration))
-                        if hasattr(sp, "play_btn"): sp.play_btn.set_text("⏸")
-                    
-                    # Completion latch: at most one advance per track generation.
-                    if self._completion_dispatched:
-                        return  # wait for play_current to reset
-                    
-                    # Track completion detection
-                    if elapsed >= self.duration:
+                elapsed = self.get_position()
+
+                self._update_position_display(elapsed)
+
+                # Completion latch: at most one advance per track generation.
+                if self._completion_dispatched:
+                    pass  # wait for play_current to reset
+                else:
+                    # Duration-based completion
+                    duration_known = self.duration > 0
+                    if duration_known and elapsed >= self.duration:
                         self._completion_dispatched = True
                         if self.repeat: self.play_current()
                         else: self.next_track()
-                        return  # next _poll handles new state
+                    # Mixer-idle completion (works for unknown duration too)
                     elif not pygame.mixer.music.get_busy() and elapsed > 0.5:
-                        # get_busy false before duration (short track, error, end).
                         # 0.5s startup grace avoids transient idle after load().
                         self._completion_dispatched = True
                         if self.repeat: self.play_current()
                         else: self.next_track()
-                        return
         except:
             pass
+        # Unconditional reschedule while controller is alive
         if not getattr(self.c, '_closing', False):
             self._poll_after_id = self.c.after(400, self._poll)
 

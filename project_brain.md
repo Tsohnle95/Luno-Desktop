@@ -43,6 +43,7 @@ This document is a high-level architectural map for the **Vibe Music Player**. I
 │   ├── song_page.py          # Now Playing full-screen detail view
 │   └── error_log.py          # Debug log viewer
 │
+├── test_engine_playback.py   # Deterministic mocked unit tests for playback engine
 ├── test_media_keys.py        # Deterministic mocked unit tests for media key logic
 ├── test_audio_flet.py        # Ad-hoc test scripts (not part of the app)
 ├── test_audio_flet2.py
@@ -82,7 +83,7 @@ The following must be available in `PATH` for full functionality:
 -   **`ffmpeg`**: Essential for audio conversion, resampling, and embedding metadata.
 -   **`pyinstaller`**: macOS desktop app packaging; installed by `requirements.txt` into `.venv`.
 -   **`pygame`**: Playback backend (`pygame.mixer`); installed by `requirements.txt` into `.venv` and bundled by PyInstaller.
--   **`mutagen`**: MP3 metadata reading.
+-   **`mutagen`**: Generic audio metadata/duration probing for playback (`mutagen.File`) plus ID3 artwork/tag handling.
 -   **`Pillow`**: Dynamic rendering/resizing of embedded ID3 artwork and YouTube thumbnail conversion; installed by `requirements.txt` into `.venv` and bundled by PyInstaller.
 -   **`requests`**: HTTP client for Deezer API, Last.fm API, and YouTube thumbnail fetching; installed by `requirements.txt` into `.venv`.
 
@@ -126,8 +127,14 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 1. User clicks track → `engine.play_with_context(path, context_list)`
 2. Sets `queue` to `context_list` (or the playlist containing `path`)
 3. Sets `queue_idx` to track's position
-4. Calls `play_current()` → loads `pygame.mixer.music`, starts playback
-5. `poll()` loop (400ms) → updates scrubber, detects track end → calls `next_track()`
+4. Calls `play_current()` → clears stale scrub position/time, loads `pygame.mixer.music`, starts playback, records mixer-clock base state plus monotonic fallback state, probes duration via `mutagen.File` (supports mp3/m4a/flac/etc.)
+5. `_poll()` loop (400ms heartbeat) — unconditional reschedule after every invocation except when controller is closing:
+   - Uses `get_position()` (canonical elapsed from `pygame.mixer.music.get_pos()` while audio is busy, clamped to `[0, duration]`, with monotonic fallback for startup/end/unavailable mixer-clock states)
+   - Updates main scrubber/time and Song Page scrubber/time
+   - Completion detection uses **generation latch** (`_completion_dispatched`): at most one advance per track
+   - **Duration-based completion**: when `duration > 0` and `elapsed >= duration`
+   - **Mixer-idle completion**: `pygame.mixer.music.get_busy()` false with `elapsed > 0.5s` startup grace — works for unknown-duration tracks too
+   - Advances via `next_track()` or `play_current()` (repeat), which resets the latch and clears the scrub to 0
 
 ### Download Pipeline
 1. `DownloadView._download_selected()` or `DownloadView._download_all()` → `Downloader.download_youtube_url(url, ...)`
@@ -150,7 +157,7 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 - **`theme.py`**: The design system. Defines the full color palette (`BG`, `BG2`, `BG3`, `BG4`, `SIDEBAR`, `PLAYER_BG`, `GREEN`, `TEXT`, `TEXT2`, `TEXT3`, etc.), the `PLAYLIST_GRADIENTS` list (10 curated pairs), and the `playlist_gradient(name)` function which deterministically maps a playlist name to a gradient pair via MD5 hashing.
 - **`widgets.py`**: Custom Canvas components: `RoundButton`, `SlimSlider`, `PlaylistArt` (Spotify-style dynamic 4-quadrant thumbnails via `ArtCache`, with performance-optimized rendering — see Protocols), and **`ModernScrollbar`**.
 - **`engine.py`**: The audio engine and supporting services. Contains:
-  - `VibeEngine`: Wraps `pygame.mixer`. Manages `queue` (list of paths), `queue_idx`, `user_queue_count` (Up Next behavior), `_original_queue` (shuffle restore), `shuffle`, `repeat`, `crossfade_secs`. Methods: `play_with_context()`, `play_current()`, `toggle_play()`, `next_track()`, `prev_track()`, `toggle_shuffle()`, `on_scrub_moved()`, `on_volume_moved()`, `poll()`.
+  - `VibeEngine`: Wraps `pygame.mixer`. Manages `queue` (list of paths), `queue_idx`, `user_queue_count` (Up Next behavior), `_original_queue` (shuffle restore), `shuffle`, `repeat`, `crossfade_secs`. Methods: `play_with_context()`, `play_current()`, `toggle_play()`, `next_track()`, `prev_track()`, `toggle_shuffle()`, `on_scrub_moved()`, `on_volume_moved()`, `get_position()` (canonical mixer-clock position with monotonic fallback), `_poll()`. Uses `pygame.mixer.music.get_pos()` as the preferred live playback clock, maintains seek/base state for absolute elapsed time after scrubbing, uses `time.monotonic()` only as a safe fallback, probes duration with `mutagen.File`, reschedules heartbeat unconditionally after completion paths, and keeps get_busy mixer-idle detection for unknown-duration tracks.
   - `DiscoveryService`: Last.fm API client. Two-stage: `track.getSimilar` → `artist.getTopTracks` fallback. Cache limited to 10 entries.
   - `scan_library(roots)`: Walks directories, returns `dict[playlist → paths]`.
   - `find_duplicates(library, allowed_keys)`: Groups tracks by `_normalize_for_dupe`.
@@ -235,6 +242,11 @@ Allowed duplicates are identified by normalized keys (derived via `_normalize_fo
 
 ### 3. Audio & Playlist Patterns
 - **Shuffle Protocol**: `VibeEngine` maintains `_original_queue` for sequential restoration. Toggling shuffle OFF reverts to this order anchored to the current track.
+- **Playback Engine**: Live desktop elapsed time prefers `pygame.mixer.music.get_pos()` while the mixer reports audio busy, so the footer reflects the backend audio clock instead of an independent UI timer. `VibeEngine` keeps explicit base position/monotonic state for seek offsets, pause/resume, startup grace, and codecs where pygame returns unavailable positions. Duration probing uses `mutagen.File` (generic) so non-MP3 files (M4A, FLAC, WAV) report duration correctly. The `_poll()` heartbeat reschedules unconditionally (400 ms) after every invocation except during controller shutdown — even after auto-advance or repeat — ensuring the footer scrubber stays live and future completions fire.
+- **Completion Detection**: Two independent paths, both gated by a `_completion_dispatched` latch to prevent dual-fire:
+  1. **Duration-based**: when `duration > 0` and elapsed ≥ duration
+  2. **Mixer-idle**: `pygame.mixer.music.get_busy()` returns `False` with elapsed > 0.5 s startup grace — works for tracks with unknown duration (0.0)
+- **`get_position()`**: Canonical position method returning clamped `[0, duration]` using mixer `get_pos()` plus the current seek base while playing, paused `seek_pos` while paused, and 0.0 while stopped; falls back to monotonic base deltas when the mixer clock is unavailable.
 - **Audio Standards**: Mandatory **44.1kHz** sample rate and **192k** MP3 bitrate. Enforces **EBU R 128 Loudness Normalization** (Target: -14 LUFS, LRA: 11) via FFmpeg `loudnorm` filter during all yt-dlp downloads to ensure consistent volume playback across the entire library.
 - **Metadata & Album Art**: Track paths are stored absolutely in treeviews `raw_path`. The app integrates the **Deezer API** to fetch high-resolution (up to 1000x1000) album covers. If Deezer yields no results (e.g. for custom YouTube rips), the system falls back to a custom **`yt-dlp` `ytsearch1:` routine** to scrape the original YouTube thumbnail. Image insertion is handled purely in-memory via the `mutagen` library (using the `APIC` frame format) to explicitly avoid re-encoding tracks with FFmpeg. Thumbnails fetched from YouTube in `.webp` format are natively converted on-the-fly to strict `image/jpeg` using `Pillow` to guarantee universal MP3 ID3 compatibility. Automatically applies to all yt-dlp downloads via `EmbedThumbnail` postprocessor.
 - **ArtCache (Lazy Loading)**: A threaded `ArtCache` sits on the main Controller. It uses a `ThreadPoolExecutor` and `Pillow` (`PIL.Image`) to dynamically uncompress and resize thumbnails only when requested by the UI. Caching prevents memory exhaustion and completely eliminates stutter during virtual scrolling loops. `PlaylistArt` asynchronously utilizes this cache to build Spotify-style 4-quadrant grid thumbnails for playlists with 4+ tracks, falling back to full single images (1-3 tracks) or gradient fallbacks (0 tracks / no embedded art).
