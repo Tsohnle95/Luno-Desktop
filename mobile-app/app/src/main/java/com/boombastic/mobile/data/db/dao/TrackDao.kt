@@ -32,4 +32,7 @@ interface TrackDao {
 
     @Query("SELECT EXISTS(SELECT 1 FROM tracks WHERE uri = :uri)")
     suspend fun exists(uri: String): Boolean
+
+    @Query("SELECT * FROM tracks")
+    suspend fun getAllTracksOnce(): List<com.boombastic.mobile.data.db.entity.Track>
 }

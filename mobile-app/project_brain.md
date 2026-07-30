@@ -65,7 +65,7 @@ boomtastic/
 │   │       ├── main/
 │   │       │   ├── AndroidManifest.xml  # FOREGROUND_SERVICE, POST_NOTIFICATIONS, MusicService
 │   │       │   ├── res/
-│   │       │   │   ├── drawable/        # 8 vector icons (home, search, library, discover, create, play, pause, music_note, launcher foreground/background)
+│   │       │   │   ├── drawable/        # 9 vector icons (home, search, library, discover, create, play, pause, music_note, ic_download, launcher foreground/background)
 │   │       │   │   ├── mipmap-anydpi-v26/ic_launcher.xml
 │   │       │   │   └── values/
 │   │       │   │       ├── colors.xml   # Mobile palette: #101010, #202020, #292929, #1ED760
@@ -77,17 +77,22 @@ boomtastic/
 │   │       │       ├── playback/
 │   │       │       │   ├── MusicService.kt       # Media3 MediaSessionService + ExoPlayer
 │   │       │       │   ├── MusicController.kt    # MediaController wrapper, StateFlow, pending-play logic
+│   │       │       │   ├── DownloadWorker.kt     # WorkManager CoroutineWorker: HTTP download, progress, Track insertion
+│   │       │       │   ├── PlaylistSyncWorker.kt # WorkManager worker: fetch YT playlist → create individual download jobs
+│   │       │       │   ├── WebSearchService.kt    # Piped API client: YouTube search, playlist extraction, stream URL extraction
 │   │       │       │   └── NotificationPermissionPolicy.kt # One-shot POST_NOTIFICATIONS prompt policy
 │   │       │       ├── data/
 │   │       │       │   ├── db/
 │   │       │       │   │   ├── AppDatabase.kt       # Room DB (tracks, playlists, playlist_tracks)
 │   │       │       │   │   ├── dao/
 │   │       │       │   │   │   ├── TrackDao.kt       # CRUD + search Flow
-│   │       │       │   │   │   └── PlaylistDao.kt    # CRUD + relations + sort order
+│   │       │       │   │   │   ├── PlaylistDao.kt    # CRUD + relations + sort order
+│   │       │       │   │   │   └── DownloadJobDao.kt # DownloadJob CRUD + progress/state queries with Flow
 │   │       │       │   │   └── entity/
 │   │       │       │   │       ├── Track.kt          # uri PK, title, artist, album, durationMs
 │   │       │       │   │       ├── Playlist.kt       # autoGenerate id, name, description
-│   │       │       │   │       └── PlaylistTrack.kt  # composite PK, FK cascade, sortOrder
+│   │       │       │   │       ├── PlaylistTrack.kt  # composite PK, FK cascade, sortOrder
+│   │       │       │   │       └── DownloadJob.kt    # DownloadJob entity + DownloadState enum
 │   │       │       │   └── repository/
 │   │       │       │       ├── LibraryRepository.kt  # SAF import, MediaMetadataRetriever, dedupe
 │   │       │       │       └── PlaylistRepository.kt # CRUD, validation, sort order mgmt
@@ -111,6 +116,8 @@ boomtastic/
 │   │       │           │   └── LibraryScreen.kt      # Playlists + tracks list
 │   │       │           ├── discover/
 │   │       │           │   └── DiscoverScreen.kt     # Honest empty state (Last.fm TBD)
+│   │       │           ├── downloads/
+│   │       │           │   └── DownloadsScreen.kt    # Full download management: sync controls, queue, cancel/retry/delete
 │   │       │           └── create/
 │   │       │               └── CreatePlaylistSheet.kt # AlertDialog with name validation
 │   │       └── test/java/com/boombastic/mobile/
@@ -250,12 +257,22 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 | Socket timeout | 30s |
 | Download timeout | 120s (daemon thread continues) |
 
-**Planned Android approach:**
-- **Best available source quality** — prefer highest quality available from the source
-- **Retain supported source format** when possible (e.g., if source provides AAC, keep AAC)
-- **Convert only when needed** for compatibility or normalization
-- **Provisional output format:** AAC-LC in M4A container at high quality (provisional — subject to codec licensing validation and patent landscape review). **Do not claim AAC-LC as final until codec/license validation is complete.**
-- The desktop converts everything to MP3 192k because `pygame.mixer` cannot reliably decode M4A/AAC. Android's Media3 can decode AAC natively, so conversion requirements differ.
+**Implemented Android approach:**
+- **YouTube search**: Uses YouTube's InnerTube API (internal API used by youtube.com) — no third-party proxy needed. Falls back through 5 Piped API community instances if InnerTube is unavailable. Search results include title, artist, duration, thumbnail, and video ID for direct download.
+- **YouTube playlist extraction**: `WebSearchService.getPlaylistVideos()` fetches all videos from a playlist URL; `PlaylistSyncWorker` orchestrates downloading each new track in the playlist via individual `DownloadWorker` jobs
+- **Playlist URL management**: Each `Playlist` entity has a `playlistUrl` field (v3 migration). Users set a YT playlist URL per playlist in Library → Sync downloads all missing tracks
+- **Batch sync**: Downloads tab has "Sync All Playlists" button; each playlist with a URL synced sequentially
+- **Audio extraction**: `WebSearchService.getAudioStreamUrl()` tries Piped API instances first (7 community instances), then InnerTube with multiple client types (ANDROID_MUSIC, ANDROID, TVHTML5_SIMPLY, WEB), then Invidious API instances (3 instances) as last resort. Each step handles `signatureCipher`/`cipher` decryption, HLS/DASH manifests, and direct URLs. `DownloadWorker` sets User-Agent and Referer headers.
+- **Direct URL download**: Paste any direct audio URL (optional title/artist override)
+- **CSV import (Exportify)**: Select a Spotify Exportify CSV file; each row (artist, title) is searched on YouTube and the first result downloaded
+- **Download queue management**: Dedicated Downloads tab in bottom nav — view all active, queued, completed, failed downloads; cancel/retry/delete per item; playlist sync button per playlist
+- `DownloadWorker` uses `HttpURLConnection` to stream the download in the background via WorkManager
+- Files saved to app-internal `downloads/` directory
+- On completion, the downloaded file is registered as a `Track` in Room and appears in the library
+- Download progress is exposed through `DownloadJob` state in Room and rendered in the UI
+- Failed downloads auto-retry (exponential backoff, up to 3 attempts)
+- Foreground service notification shows ongoing download progress
+- **SoundCloud**: Not yet extracted via search API; users can paste direct SoundCloud audio URLs
 
 ### Native Planned Stack
 
@@ -264,8 +281,8 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 | Language | Kotlin 2.0.0 | ✅ **Implemented** — source in `playback/`, `data/`, `ui/` |
 | UI | Jetpack Compose (BOM 2024.06.00) | ✅ **Implemented** — 4 screens + shell + theme + mini-player |
 | Playback | Media3 (ExoPlayer 1.3.1) | ✅ **Implemented** — `MusicService` (MediaSessionService) + `MusicController` (StateFlow wrapper) |
-| Local DB | Room 2.6.1 | ✅ **Implemented** — 3 entities, 2 DAOs, schema exported |
-| Background downloads | WorkManager + Foreground Service | **Planned** — not yet implemented |
+| Local DB | Room 2.6.1 | ✅ **Implemented** — 4 entities, 3 DAOs (v3 schema — playlistUrl added to Playlist) |
+| Background downloads | WorkManager + Foreground Service | ✅ **Implemented** — `DownloadWorker` + `DownloadRepository` + `DownloadJob` Room entity (v2 schema) |
 | Media scanning | MediaStore / SAF | ✅ **Implemented** — SAF `OpenMultipleDocuments` import via `LibraryRepository` |
 | Dependency injection | Manual singleton (BoomBasticApp) | ✅ **Implemented** — Hilt deferred; manual DI in Application class |
 
@@ -500,7 +517,7 @@ These facts are confirmed by reading the actual source files. Link to them rathe
 - SAF import uses `takePersistableUriPermission` so grants survive app restart
 - `LibraryRepository.importAudioUri` handles deduplication and IO errors via `Result` type
 - No broad storage permission requested — SAF `OpenMultipleDocuments` handles user-selected files only
-- MediaStore batch scanning not yet implemented; downloads not yet implemented
+- MediaStore batch scanning not yet implemented
 - Graceful degradation on older API levels (minSdk 29)
 
 ---
@@ -533,7 +550,7 @@ These facts are confirmed by reading the actual source files. Link to them rathe
 │  Service    │                                      │
 │  Layer      │                                      │
 │  ┌──────────┴──────┐                               │
-│  │  MusicService    │  (DownloadWorker: Planned)   │
+│  │  MusicService    │  (DownloadWorker)            │
 │  │  (MediaSession   │                               │
 │  │   Service)       │                               │
 │  │  - ExoPlayer     │                               │
@@ -548,17 +565,17 @@ These facts are confirmed by reading the actual source files. Link to them rathe
 │  │  Repository                          │            │
 │  │  - LibraryRepository (Room + SAF)    │ ✅        │
 │  │  - PlaylistRepository (Room)         │ ✅        │
-│  │  - DownloadRepository                │ Planned   │
+│  │  - DownloadRepository                │ ✅ (implemented)   │
 │  │  - DiscoveryRepository (Last.fm)     │ Planned   │
 │  │  - SettingsRepository (DataStore)    │ Planned   │
 │  └──────────────────┬───────────────────┘            │
 │                     │                                │
 │  ┌──────────────────┴───────────────────┐            │
 │  │  Room Database (AppDatabase v1)       │            │
-│  │  - Track, Playlist, PlaylistTrack     │            │
-│  │  (DownloadJob, QueueEntry,            │ Planned   │
-│  │   HistoryEntry, AllowedDuplicate      │ Planned   │
-│  │   are not yet implemented)            │            │
+│  │  - Track, Playlist, PlaylistTrack      │            │
+│  │  - DownloadJob                         │ ✅ (implemented — v2 migration) │
+│  │  - QueueEntry, HistoryEntry,           │ Planned   │
+│  │    AllowedDuplicate                    │ Planned   │
 │  └──────────────────────────────────────┘            │
 └──────────────────────────────────────────────────────┘
 ```
@@ -575,14 +592,28 @@ These facts are confirmed by reading the actual source files. Link to them rathe
    - Inserts `Track` entity into Room via `TrackDao.insertTrack()`
 5. Returns `ImportResult(imported, duplicates, errors)` — UI observes updated `Flow<List<Track>>` from Room
 
-### Data Flow: Download (Planned — not implemented)
+### Data Flow: Download (Implemented)
+1. User navigates to SearchScreen → Web Download tab, pastes a direct audio URL, optionally sets title/artist, taps "Start Download"
+2. `DownloadRepository.enqueueDownload()` inserts a `DownloadJob(state=QUEUED)` in Room, enqueues a `DownloadWorker` via WorkManager with `NetworkType.CONNECTED` constraint
+3. `DownloadWorker` (foreground service):
+   - Sets job state to DOWNLOADING
+   - Opens `HttpURLConnection` to the source URL
+   - Streams data to `{filesDir}/downloads/{safeFileName}.mp3`
+   - Updates progress (0-100%) in Room
+   - On completion: inserts a `Track` entity into Room, marks job COMPLETED
+   - On failure: marks job FAILED with error message, auto-retries up to 3 times
+4. Successful downloads appear immediately in the Library search results via Room `Flow`
+5. User can retry failed downloads or cancel in-progress downloads from the Web Download tab
 
-1. User finds a track (search, discover, URL input) → triggers download
-2. `DownloadRepository` creates a `DownloadJob` in Room (state: QUEUED)
-3. `WorkManager` enqueues `DownloadWorker` with constraints (network, storage)
-4. Worker runs (potentially using embedded yt-dlp or equivalent): downloads, converts, writes to user-selected SAF/MediaStore location
-5. On success: update job state to COMPLETED, trigger library rescan, post notification
-6. On failure: update state to FAILED, save error info, show retry action
+### Data Flow: Playlist Sync (Implemented)
+1. User sets a YouTube playlist URL on a playlist (Library screen) or creates a playlist with a URL
+2. User taps Sync (per-playlist or batch "Sync All")
+3. `DownloadRepository.syncPlaylist()` enqueues a `PlaylistSyncWorker` via WorkManager
+4. `PlaylistSyncWorker`:
+   a. Fetches all videos from the playlist via `WebSearchService.getPlaylistVideos()` (Piped API)
+   b. Compares against existing tracks in Room (by title) and existing queued downloads
+   c. For each new video: extracts audio URL via `WebSearchService.getAudioStreamUrl()`, creates a `DownloadJob`, enqueues an individual `DownloadWorker`
+5. Each `DownloadWorker` runs independently — progress visible in Downloads tab
 
 ### Data Flow: Playback (implemented)
 
@@ -615,7 +646,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `gradle/libs.versions.toml` | Version catalog (AGP 8.5.2, Kotlin 2.0.0, Media3 1.3.1, Room 2.6.1) | ✅ |
 | `app/build.gradle.kts` | App module: compileSdk 35, minSdk 29, Compose BOM 2024.06.00, all dependencies | ✅ |
 | `app/proguard-rules.pro` | Keep Room entity annotations | ✅ |
-| `app/schemas/.../1.json` | Room schema v1 export (tracks, playlists, playlist_tracks) | ✅ |
+| `app/schemas/.../1.json` | v1, v2, and v3 Room schema exports (v1: tracks, playlists, playlist_tracks; v2: adds download_jobs; v3: adds playlistUrl to Playlist) | ✅ |
 
 ### Android System
 | File | Responsibility | Status |
@@ -624,7 +655,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `app/src/main/res/values/colors.xml` | `#101010`, `#202020`, `#292929`, `#1ED760` (visual spec colors) | ✅ |
 | `app/src/main/res/values/themes.xml` | Theme.BoomBastic (Material NoActionBar, dark background) | ✅ |
 | `app/src/main/res/values/strings.xml` | App name, nav labels, action strings | ✅ |
-| `app/src/main/res/drawable/*.xml` | 8 vector icons (home, search, library, discover, create, play, pause, music_note) + launcher assets | ✅ |
+| `app/src/main/res/drawable/*.xml` | 9 vector icons (home, search, library, discover, create, play, pause, music_note, ic_download) + launcher assets | ✅ |
 
 ### Kotlin Source
 | File | Responsibility | Status |
@@ -642,6 +673,12 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `data/db/dao/PlaylistDao.kt` | Playlist CRUD + relation queries + sort order | ✅ |
 | `data/repository/LibraryRepository.kt` | SAF import, MediaMetadataRetriever, dedupe, ImportResult; production-default injectable URI-permission persister for deterministic tests | ✅ |
 | `data/repository/PlaylistRepository.kt` | Playlist CRUD, name validation, sort order mgmt | ✅ |
+| `data/db/entity/DownloadJob.kt` | DownloadJob entity + DownloadState enum (QUEUED, DOWNLOADING, COMPLETED, FAILED, CANCELLED) | ✅ |
+| `data/db/dao/DownloadJobDao.kt` | DownloadJob CRUD + progress/state queries with Flow | ✅ |
+| `playback/DownloadWorker.kt` | WorkManager CoroutineWorker: HTTP download, progress tracking, Track insertion, foreground notification | ✅ |
+| `playback/PlaylistSyncWorker.kt` | WorkManager worker: fetches YouTube playlist videos via Piped API, creates individual DownloadJob per track, deduplicates against existing library | ✅ |
+ | `playback/WebSearchService.kt` | YouTube client: search via InnerTube API (YouTube internal API), playlist extraction via InnerTube browse, audio stream URL extraction via InnerTube player; falls back to Piped API. | ✅ |
+| `data/repository/DownloadRepository.kt` | Enqueue, retry, cancel, delete downloads; bridges Room + WorkManager | ✅ |
 | `ui/shell/MainShell.kt` | Scaffold + BottomNav (4 tabs + Create) + AnimatedVisibility MiniPlayer | ✅ |
 | `ui/navigation/NavGraph.kt` | NavHost: Routes (HOME, SEARCH, LIBRARY, DISCOVER) | ✅ |
 | `ui/theme/Color.kt` | Dark palette constants | ✅ |
@@ -653,6 +690,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `ui/search/SearchScreen.kt` | Search field, SAF import button, track list | ✅ |
 | `ui/library/LibraryScreen.kt` | Playlists + tracks list | ✅ |
 | `ui/discover/DiscoverScreen.kt` | Honest empty state (Last.fm TBD) | ✅ |
+| `ui/downloads/DownloadsScreen.kt` | Full download management screen: playlist sync controls, per-playlist sync, batch sync all, download queue with cancel/retry/delete | ✅ |
 | `ui/create/CreatePlaylistSheet.kt` | AlertDialog with name validation | ✅ |
 
 ### Tests
@@ -662,6 +700,8 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `data/db/TrackDaoTest.kt` | 9 tests: insert, search, dedupe, delete, count | ✅ |
 | `data/db/PlaylistDaoTest.kt` | 8 tests: CRUD, track-to-playlist, cascade, sortOrder | ✅ |
 | `data/repository/PlaylistRepositoryTest.kt` | 5 tests: blank name rejection, persistence, trim, list, delete | ✅ |
+| `data/db/DownloadJobDaoTest.kt` | 9 tests: insert, query, progress, complete, fail, state filter, delete, bulk delete, count | ✅ |
+| `data/repository/DownloadRepositoryTest.kt` | 6 tests: enqueue, list, state filter, cancel, delete, get-null | ✅ |
 | `playback/NotificationPermissionPolicyTest.kt` | 11 tests: API 29/33+ prompt policy, grant/deny/attempted behavior | ✅ |
 | `playback/MusicControllerTest.kt` | 29 contract tests: pending-play, empty-request handling, full-queue preservation, last-request-wins, index clamp, release idempotence, stale-future guard, exact MediaItem metadata, and sanitized error emission | ✅ 29/29 passing |
 | `playback/MusicControllerInstrumentedTest.kt` | 7 instrumented tests: connection, error path, pre-connection queue dispatch, real playback-state transition, notification posting, and activity recreation | ✅ Compiles; emulator execution pending |
@@ -835,3 +875,22 @@ Instrumented smoke tests created for API 34 emulator (`./gradlew :app:connectedD
 - [music_player_flet.py](../music_player_flet.py) — current Flet mobile/desktop prototype
 - [buildozer.spec](../buildozer.spec) — current Flet Android build configuration
 - [utils.py](../utils.py) — shared helpers (split_track_name, format_time, extract_dominant_color)
+
+---
+
+## 📋 Change Record
+
+| Date | Change |
+|------|--------|
+| 2026-07-30 | Implemented Android downloader: `DownloadWorker`, `DownloadRepository`, `DownloadJob` Room entity (v2 schema), DownloadJobDao. Updated all status markers, file registry, data flow, architecture diagram, and file tree. |
+| 2026-07-30 | Implemented playlist sync: `PlaylistSyncWorker`, `WebSearchService` (Piped API client), `DownloadsScreen`, v3 schema (playlistUrl on Playlist), CSV import (Exportify). Updated all sections accordingly. |
+| 2026-07-30 | Fixed YouTube Web Search: migrated from Piped-only API to YouTube InnerTube API as primary with Piped fallback. Updated `WebSearchService.kt` to call InnerTube search/browse/player endpoints directly. Fixed the Piped API type filter (`"stream"`), added User-Agent headers, removed duplicate import. Updated project brain sections. |
+| 2026-07-30 | Fixed audio URL extraction: swapped to Piped-first priority, replaced dead kavin.rocks with working community instances, expanded InnerTube to try 4 client types (ANDROID_MUSIC, ANDROID, TVHTML5_SIMPLY, WEB) with full device context, added Invidious API as third fallback layer, added headers to DownloadWorker. |
+
+## 🛠️ Build & Test Operations
+
+When building the debug APK for testing, always copy it to the repo root:
+
+```
+cd ~/boombastic/mobile-app && ./gradlew assembleDebug && cp app/build/outputs/apk/debug/app-debug.apk ~/boombastic/test.apk
+```

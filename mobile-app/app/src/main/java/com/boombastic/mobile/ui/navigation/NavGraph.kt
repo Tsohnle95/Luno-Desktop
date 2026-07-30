@@ -8,6 +8,7 @@ import androidx.navigation.compose.composable
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.discover.DiscoverScreen
+import com.boombastic.mobile.ui.downloads.DownloadsScreen
 import com.boombastic.mobile.ui.home.HomeScreen
 import com.boombastic.mobile.ui.library.LibraryScreen
 import com.boombastic.mobile.ui.search.SearchScreen
@@ -17,6 +18,7 @@ object Routes {
     const val SEARCH = "search"
     const val LIBRARY = "library"
     const val DISCOVER = "discover"
+    const val DOWNLOADS = "downloads"
 }
 
 @Composable
@@ -43,6 +45,9 @@ fun BoomBasticNavHost(
         }
         composable(Routes.DISCOVER) {
             DiscoverScreen()
+        }
+        composable(Routes.DOWNLOADS) {
+            DownloadsScreen()
         }
     }
 }

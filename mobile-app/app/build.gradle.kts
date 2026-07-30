@@ -87,6 +87,9 @@ dependencies {
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
 
+    // WorkManager
+    implementation(libs.work.runtime.ktx)
+
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.ext.junit)
@@ -97,6 +100,7 @@ dependencies {
     testImplementation(libs.room.testing)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.navigation.testing)
+    testImplementation(libs.work.testing)
 
     // Instrumented testing
     androidTestImplementation(libs.junit)

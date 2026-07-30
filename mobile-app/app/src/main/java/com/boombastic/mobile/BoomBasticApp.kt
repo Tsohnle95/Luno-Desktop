@@ -1,11 +1,16 @@
 package com.boombastic.mobile
 
 import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import androidx.work.Configuration
+import androidx.work.WorkManager
 import com.boombastic.mobile.data.db.AppDatabase
+import com.boombastic.mobile.data.repository.DownloadRepository
 import com.boombastic.mobile.data.repository.LibraryRepository
 import com.boombastic.mobile.data.repository.PlaylistRepository
 
-class BoomBasticApp : Application() {
+class BoomBasticApp : Application(), Configuration.Provider {
 
     lateinit var database: AppDatabase
         private set
@@ -13,11 +18,34 @@ class BoomBasticApp : Application() {
         private set
     lateinit var playlistRepository: PlaylistRepository
         private set
+    lateinit var downloadRepository: DownloadRepository
+        private set
 
     override fun onCreate() {
         super.onCreate()
         database = AppDatabase.getInstance(this)
         libraryRepository = LibraryRepository(this, database.trackDao())
         playlistRepository = PlaylistRepository(database.playlistDao(), database.trackDao())
+        downloadRepository = DownloadRepository(database.downloadJobDao(), this)
+
+        createDownloadNotificationChannel()
+    }
+
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setMinimumLoggingLevel(android.util.Log.INFO)
+            .build()
+
+    private fun createDownloadNotificationChannel() {
+        val channel = NotificationChannel(
+            "download_channel",
+            "Downloads",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Ongoing download progress"
+            setShowBadge(false)
+        }
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(channel)
     }
 }

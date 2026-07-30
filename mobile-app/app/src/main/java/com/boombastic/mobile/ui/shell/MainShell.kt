@@ -59,7 +59,8 @@ private val bottomNavItems = listOf(
     BottomNavItem("Home", R.drawable.ic_home, Routes.HOME),
     BottomNavItem("Search", R.drawable.ic_search, Routes.SEARCH),
     BottomNavItem("Your Library", R.drawable.ic_library, Routes.LIBRARY),
-    BottomNavItem("Discover", R.drawable.ic_discover, Routes.DISCOVER)
+    BottomNavItem("Discover", R.drawable.ic_discover, Routes.DISCOVER),
+    BottomNavItem("Downloads", R.drawable.ic_download, Routes.DOWNLOADS)
 )
 
 @Composable

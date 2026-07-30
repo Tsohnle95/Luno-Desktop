@@ -14,18 +14,27 @@ class PlaylistRepository(
 
     fun getAllPlaylistsWithTracks() = playlistDao.getAllPlaylistsWithTracks()
 
+    fun getPlaylistsWithUrls(): Flow<List<Playlist>> = playlistDao.getPlaylistsWithUrls()
+
+    suspend fun getPlaylistsWithUrlsOnce(): List<Playlist> = playlistDao.getPlaylistsWithUrlsOnce()
+
     suspend fun getPlaylist(id: Long) = playlistDao.getPlaylist(id)
 
-    suspend fun createPlaylist(name: String, description: String = ""): Result<Playlist> {
+    suspend fun createPlaylist(name: String, description: String = "", playlistUrl: String = ""): Result<Playlist> {
         if (name.isBlank()) {
             return Result.failure(IllegalArgumentException("Playlist name cannot be empty"))
         }
         val id = playlistDao.insertPlaylist(
-            Playlist(name = name.trim(), description = description.trim())
+            Playlist(name = name.trim(), description = description.trim(), playlistUrl = playlistUrl.trim())
         )
         val playlist = playlistDao.getPlaylist(id)
             ?: return Result.failure(IllegalStateException("Playlist was not created after insert"))
         return Result.success(playlist)
+    }
+
+    suspend fun updatePlaylistUrl(id: Long, url: String) {
+        val pl = playlistDao.getPlaylist(id) ?: return
+        playlistDao.updatePlaylist(pl.copy(playlistUrl = url.trim()))
     }
 
     suspend fun deletePlaylist(id: Long) = playlistDao.deletePlaylistById(id)
