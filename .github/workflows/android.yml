@@ -1,0 +1,111 @@
+name: Android CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  jvm:
+    name: JVM checks (Java 17)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile-app
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Set up Java 17
+        uses: actions/setup-java@99b8673ff64fbf99d8d325f52d9a5bdedb8483e9 # v4.2.1
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@d156388eb19639ec20ade50009f3d199ce1e2808 # v4.1.0
+
+      - name: Assemble debug
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Lint
+        run: ./gradlew :app:lintDebug --no-daemon
+
+      - name: Upload reports on failure
+        if: failure()
+        uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36f5d5db # v4.3.6
+        with:
+          name: reports
+          path: |
+            mobile-app/app/build/reports/
+          retention-days: 14
+
+  emulator:
+    name: Instrumented smoke tests (API 34)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile-app
+    strategy:
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Set up Java 17
+        uses: actions/setup-java@99b8673ff64fbf99d8d325f52d9a5bdedb8483e9 # v4.2.1
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@d156388eb19639ec20ade50009f3d199ce1e2808 # v4.1.0
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Cache AVD
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        with:
+          key: avd-${{ runner.os }}-34
+          path: |
+            ~/.android/avd/
+            ~/.android/cache/
+
+      - name: Create AVD and run instrumented tests
+        uses: reactivecircus/android-emulator-runner@a3d46fe5ab13a9209d6fd92f38a2ac3e11ff1edc # v2.33.0
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          disable-animations: true
+          script: |
+            cd mobile-app
+            ./gradlew :app:connectedDebugAndroidTest --no-daemon
+
+      - name: Upload instrumentation reports on failure
+        if: failure()
+        uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36f5d5db # v4.3.6
+        with:
+          name: instrumentation-reports
+          path: |
+            mobile-app/app/build/reports/androidTests/
+          retention-days: 14

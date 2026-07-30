@@ -17,8 +17,11 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.boombastic.mobile.R
+import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.playback.NotificationPermissionPolicy
 import com.boombastic.mobile.ui.components.MiniPlayer
@@ -66,6 +70,24 @@ fun MainShell(musicController: MusicController) {
     val hasActiveItem by musicController.hasActiveItem.collectAsState()
     val currentBackStack by navController.currentBackStackEntryAsState()
     val currentRoute = currentBackStack?.destination?.route
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // ── Error Snackbar collection ───────────────────────────────────────────
+    LaunchedEffect(Unit) {
+        musicController.connectionError.collect { error ->
+            snackbarHostState.showSnackbar(
+                message = error.message ?: "Connection failed"
+            )
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        musicController.playbackError.collect { error ->
+            snackbarHostState.showSnackbar(
+                message = error.message
+            )
+        }
+    }
 
     // ── Centralised one-shot notification-prompt policy ──────────────────────
     val policy = remember { NotificationPermissionPolicy.create(context) }
@@ -76,10 +98,9 @@ fun MainShell(musicController: MusicController) {
     ) { /* grant result intentionally ignored — playback already dispatched */ }
 
     // Stable onPlay callback used by SearchScreen and LibraryScreen.
-    // Playback is always dispatched; the permission prompt is fire-and-forget.
-    // playUri() always succeeds (queues if controller not yet connected).
-    val onPlay: (String) -> Unit = remember(policy, notificationPermissionLauncher, musicController) {
-        { uri: String ->
+    // Accepts full MediaTrack metadata so MediaItems carry accurate data.
+    val onPlay: (MediaTrack) -> Unit = remember(policy, notificationPermissionLauncher, musicController) {
+        { track: MediaTrack ->
             if (policy.shouldPrompt(
                     sdkInt = Build.VERSION.SDK_INT,
                     isGranted = policy.isGranted(context)
@@ -89,17 +110,15 @@ fun MainShell(musicController: MusicController) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
             // Playback proceeds regardless of permission state — per Android docs
-            // media-session notifications are exempt from POST_NOTIFICATIONS:
-            // https://developer.android.com/develop/ui/views/notifications/notification-permission#exemptions-media-sessions
-            // startForeground() for a mediaPlayback FGS does NOT throw
-            // SecurityException when POST_NOTIFICATIONS is denied.
-            musicController.playUri(uri)
+            // media-session notifications are exempt from POST_NOTIFICATIONS.
+            musicController.play(track)
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             containerColor = PrimaryBackground,
+            snackbarHost = { SnackbarHost(snackbarHostState) },
             bottomBar = {
                 Column {
                     // Mini player

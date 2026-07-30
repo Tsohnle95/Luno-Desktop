@@ -48,6 +48,13 @@ ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
 
+tasks.withType<Test> {
+    doFirst {
+        file("${project.buildDir.absolutePath}/test-home").mkdirs()
+    }
+    jvmArgs("-Duser.home=${project.buildDir.absolutePath}/test-home")
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -90,4 +97,12 @@ dependencies {
     testImplementation(libs.room.testing)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.navigation.testing)
+
+    // Instrumented testing
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.ext.junit)
+    androidTestImplementation(libs.truth)
+    androidTestImplementation(libs.coroutines.test)
+    // androidx.test:rules and androidx.test:runner are pulled in via the
+    // default testInstrumentationRunner dependency chain.
 }

@@ -5,8 +5,8 @@ import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
-import com.boombastic.mobile.ui.create.CreatePlaylistSheet
 import com.boombastic.mobile.ui.discover.DiscoverScreen
 import com.boombastic.mobile.ui.home.HomeScreen
 import com.boombastic.mobile.ui.library.LibraryScreen
@@ -25,7 +25,7 @@ fun BoomBasticNavHost(
     musicController: MusicController,
     modifier: Modifier = Modifier,
     onCreatePlaylist: () -> Unit,
-    onPlay: (uri: String) -> Unit = {}
+    onPlay: (MediaTrack) -> Unit = {}
 ) {
     NavHost(
         navController = navController,

@@ -2,10 +2,13 @@ package com.boombastic.mobile.playback
 
 import android.content.ComponentName
 import android.content.Context
+import android.os.Bundle
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,28 +27,42 @@ import kotlinx.coroutines.launch
 
 /**
  * Lifecycle-safe controller that connects to the Media3 service.
- * Must be initialized before use and released when done.
+ *
+ * ## Lifecycle
+ *
+ * Each instance is **single-use**: call [initialize] once, then [release] when
+ * done.  After [release] the instance is **terminal** — no new connection can
+ * be started and pending requests are discarded.  Legacy Boolean-returning
+ * methods remain source-compatible but are no-ops (they return `true` without
+ * queuing or starting playback).
  *
  * ## Pending-play semantics
  *
- * If [playUri] or [play] is called before the underlying [MediaController]
- * is connected, the request is queued as a **pending play**. When the
- * controller connects (via [initialize]), the most recent pending request
- * (last-user-request wins) executes exactly once. This prevents silent
- * drops when the user taps a track before the async connection completes.
+ * If [play] or [playUri] is called before the underlying [MediaController]
+ * is connected, the request is serialised as a single immutable
+ * [PlaybackRequest] (last-user-request wins).  When the controller connects
+ * (via [initialize]), the most recent request executes exactly once.
  *
- * If the controller connection fails, [connectionError] emits a
- * [ConnectionException] with a descriptive message.
+ * ## Thread safety
+ *
+ * All public methods are designed to be called from the main application
+ * thread.  Connection, listener, and state transitions are serialised through
+ * the main-thread dispatcher.
  */
-class MusicController(private val context: Context) {
+class MusicController @JvmOverloads constructor(
+    private val context: Context,
+    internal val connector: AsyncConnector = AsyncConnector.Default
+) {
 
-    /**
-     * Thrown when the connection to [MusicService] fails and a pending play
-     * cannot be delivered. Callers can surface this as a recoverable error.
-     */
+    // ── Exceptions / errors ──────────────────────────────────────────────
+
+    /** Thrown when the connection to [MusicService] fails. */
     class ConnectionException(message: String) : Exception(message)
 
-    private var controller: MediaController? = null
+    /** Carries a playback error message safe for user-facing display. */
+    data class PlaybackError(val message: String)
+
+    // ── State flows — exposed to UI ───────────────────────────────────────
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
@@ -65,197 +82,237 @@ class MusicController(private val context: Context) {
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
-    /** Emits once if controller connection fails permanently. */
+    /** Emits once on permanent connection failure. */
     private val _connectionError = MutableSharedFlow<ConnectionException>(extraBufferCapacity = 1)
     val connectionError: SharedFlow<ConnectionException> = _connectionError.asSharedFlow()
 
+    /** Emits non‑sensitive user‑facing error messages from the player. */
+    private val _playbackError = MutableSharedFlow<PlaybackError>(extraBufferCapacity = 1)
+    val playbackError: SharedFlow<PlaybackError> = _playbackError.asSharedFlow()
+
+    // ── Internal state ───────────────────────────────────────────────────
+
+    private var controller: MediaController? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var progressUpdater: Job? = null
 
-    /** Most recent URI queued while disconnected; last-user-request wins. */
-    @Volatile private var pendingUri: String? = null
+    /** Monotonically increasing generation; incremented on every [release]. */
+    private var generation = 0
 
-    /** Whether a pending play has already been consumed after connection. */
-    private var pendingPlayConsumed = false
+    /** Once true, this instance will never connect again. */
+    @Volatile private var released = false
+
+    /**
+     * Single immutable pending request.  Replaced atomically on each
+     * pre‑connection [play] / [playUri] call (last‑user‑request wins).
+     * `null` means no pending request.
+     */
+    @Volatile internal var pendingRequest: PlaybackRequest? = null
+        private set
+
+    /** Test-only hook: records every [PlaybackRequest] dispatched by [playOnController]. */
+    @Volatile internal var lastDispatchedRequest: PlaybackRequest? = null
+        private set
+
+    // ── Player listener ──────────────────────────────────────────────────
 
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _isPlaying.value = isPlaying
             _hasActiveItem.value = isPlaying || (controller?.mediaItemCount ?: 0) > 0
-            if (isPlaying) {
-                startProgressUpdates()
-            } else {
-                stopProgressUpdates()
-            }
+            if (isPlaying) startProgressUpdates() else stopProgressUpdates()
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val metadata = mediaItem?.mediaMetadata
             _currentTrack.value = metadata?.let {
+                val sessionDuration = controller?.duration ?: 0L
                 MediaTrack(
                     uri = mediaItem.mediaId,
                     title = it.title?.toString() ?: "Unknown",
-                    artist = it.artist?.toString() ?: "Unknown"
+                    artist = it.artist?.toString() ?: "Unknown",
+                    album = it.albumTitle?.toString() ?: "",
+                    durationMs = metadataDuration(it, sessionDuration),
                 )
             }
             _hasActiveItem.value = mediaItem != null
-            _duration.value = controller?.duration ?: 0L
+            _duration.value = _currentTrack.value?.durationMs ?: 0L
             _progress.value = 0L
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
-                _duration.value = controller?.duration ?: 0L
+                _duration.value = controller?.duration?.coerceAtLeast(0L) ?: 0L
             }
+        }
+
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            _playbackError.tryEmit(
+                PlaybackError(sanitizeErrorMessage(error.message ?: "Playback error"))
+            )
         }
     }
 
+    // ── Public API ───────────────────────────────────────────────────────
+
     /**
-     * Initializes the async connection to [MusicService].
+     * Initialises the async connection to [MusicService].
      *
-     * @param onReady Optional callback invoked on the main thread when the
-     *   controller is fully connected and any pending play has been dispatched.
-     *   Called **after** pending-play execution, so callers can observe the
-     *   resulting player state.
+     * @param onReady Optional callback invoked on the main thread after the
+     *   controller is connected **and** any pending play has been dispatched.
      */
     fun initialize(onReady: () -> Unit = {}) {
-        val sessionToken = SessionToken(
-            context,
-            ComponentName(context, MusicService::class.java)
-        )
-
-        val controllerFuture = MediaController.Builder(context, sessionToken)
-            .buildAsync()
+        if (released) return
+        val currentGen = generation
+        val controllerFuture = try {
+            connector.connect(context)
+        } catch (e: Exception) {
+            reportConnectionError(
+                sanitizeErrorMessage("Failed to connect: ${e.message}")
+            )
+            return
+        }
 
         controllerFuture.addListener({
+            // Stale future guard: release was called or a new generation started.
+            if (released || generation != currentGen) {
+                releaseStaleController(controllerFuture)
+                return@addListener
+            }
             try {
                 val ctrl = controllerFuture.get()
                 if (ctrl != null) {
                     controller = ctrl
                     ctrl.addListener(listener)
-                    _hasActiveItem.value = ctrl.mediaItemCount > 0
-                    _isPlaying.value = ctrl.isPlaying
-                    _isConnected.value = true
-                    // Flush any pending play (last-user-request wins).
+                    hydrateState(ctrl)
                     executePendingPlay()
                     onReady()
                 } else {
                     reportConnectionError("Controller future returned null")
                 }
             } catch (e: Exception) {
-                reportConnectionError("Failed to connect: ${e.message}", e)
+                reportConnectionError(
+                    sanitizeErrorMessage("Failed to connect: ${e.message}")
+                )
             }
         }, MoreExecutors.directExecutor())
     }
 
     /**
-     * Plays the given URI. If the controller is not yet connected, the URI
-     * is stored as the pending play and will execute when the connection
-     * completes. Only the **most recent** call is preserved (last-user-request
-     * semantics).
+     * Plays a single track with full metadata.
      *
-     * @return `true` – the request is either dispatched immediately or queued.
-     *   Callers can rely on the return value always being `true` as of 2026;
-     *   the return type is kept for binary compatibility.
+     * @return `true` — dispatched immediately or queued.  After [release]
+     *   returns `true` without queuing (harmless no‑op).
      */
-    fun playUri(uri: String): Boolean {
+    fun play(track: MediaTrack): Boolean {
+        return play(listOf(track), 0)
+    }
+
+    /**
+     * Plays the given list of tracks, starting at [startIndex].
+     * Only the most recent call to any play method is preserved
+     * (last‑user‑request wins).
+     *
+     * @return `true` — see [play].
+     */
+    fun play(tracks: List<MediaTrack>, startIndex: Int = 0): Boolean {
+        if (released) return true
+        if (tracks.isEmpty()) return true
+        val request = PlaybackRequest(
+            items = tracks.toList(),
+            startIndex = startIndex.coerceIn(0, tracks.lastIndex)
+        )
         val ctrl = controller
         if (ctrl != null) {
-            return playOnController(ctrl, uri)
+            return playOnController(ctrl, request)
         }
-        // Queue until connected; last-user-request wins.
-        pendingUri = uri
-        pendingPlayConsumed = false
+        pendingRequest = request
         return true
     }
 
     /**
-     * Plays the given list of URIs, starting at [startIndex].
-     * If the controller is not yet connected, the request is stored as
-     * pending. Only the most recent call to [play] or [playUri] is preserved.
+     * Plays the given URI.  Metadata will show "Unknown" / "" until the
+     * track transitions and Media3 resolves it.
      *
-     * @return `true` – the request is either dispatched immediately or queued.
+     * @return `true` — dispatched, queued, or (after [release]) silently ignored.
      */
+    fun playUri(uri: String): Boolean {
+        return play(MediaTrack(uri = uri))
+    }
+
+    /**
+     * Plays the given list of URIs.  Minimal metadata.
+     *
+     * @return `true` — see [playUri].
+     */
+    @JvmName("playUris")
     fun play(uris: List<String>, startIndex: Int = 0): Boolean {
-        val ctrl = controller
-        if (ctrl != null) {
-            return playOnController(ctrl, uris, startIndex)
-        }
-        // Queue the first URI (the full playlist could be stored, but for
-        // simplicity we capture the effective start URI).
-        if (uris.isNotEmpty()) {
-            pendingUri = uris[startIndex.coerceIn(0, uris.lastIndex)]
-            pendingPlayConsumed = false
-        }
-        return true
+        val tracks = uris.map { MediaTrack(uri = it) }
+        return play(tracks, startIndex)
     }
 
     fun togglePlayPause() {
+        if (released) return
         controller?.let {
             if (it.isPlaying) it.pause() else it.play()
         }
     }
 
     fun seekTo(positionMs: Long) {
+        if (released) return
         controller?.seekTo(positionMs)
     }
 
     fun skipToNext() {
+        if (released) return
         controller?.seekToNextMediaItem()
     }
 
     fun skipToPrevious() {
+        if (released) return
         controller?.seekToPreviousMediaItem()
     }
 
     fun stop() {
+        if (released) return
         controller?.stop()
         _isPlaying.value = false
         stopProgressUpdates()
     }
 
+    /**
+     * Releases the underlying Media3 controller and marks this instance as
+     * **terminal**.  Idempotent — subsequent calls are no‑ops.
+     *
+     * After release:
+     * - [play], [playUri] return `true` silently without queuing.
+     * - Any late‑arriving future is released immediately.
+     * - No listener callbacks or state changes occur.
+     */
     fun release() {
+        if (released) return
+        released = true
+        generation++
+        pendingRequest = null
         stopProgressUpdates()
         scope.cancel()
         _isConnected.value = false
         controller?.removeListener(listener)
         controller?.release()
         controller = null
-        pendingUri = null
-        pendingPlayConsumed = false
     }
 
     // ── Private helpers ──────────────────────────────────────────────────
 
-    private fun playOnController(ctrl: MediaController, uri: String): Boolean {
-        val mediaItem = MediaItem.Builder()
-            .setMediaId(uri)
-            .setUri(uri)
-            .build()
-        ctrl.apply {
-            stop()
-            clearMediaItems()
-            addMediaItem(mediaItem)
-            prepare()
-            play()
-        }
-        startProgressUpdates()
-        return true
-    }
-
-    private fun playOnController(ctrl: MediaController, uris: List<String>, startIndex: Int): Boolean {
-        val items = uris.map { uri ->
-            MediaItem.Builder()
-                .setMediaId(uri)
-                .setUri(uri)
-                .build()
-        }
+    private fun playOnController(ctrl: MediaController, request: PlaybackRequest): Boolean {
+        lastDispatchedRequest = request
+        val items = request.items.map(::buildMediaItem)
         ctrl.apply {
             stop()
             clearMediaItems()
             addMediaItems(items)
             prepare()
-            seekToDefaultPosition(startIndex)
+            seekToDefaultPosition(request.startIndex.coerceIn(0, items.lastIndex))
             play()
         }
         startProgressUpdates()
@@ -263,27 +320,108 @@ class MusicController(private val context: Context) {
     }
 
     /**
-     * Executes the queued pending play, if any.  Idempotent — will only
-     * fire once after connection.
+     * Synchronises all state flows from the connected controller.
+     * Called after every (re)connection so UI state is immediately accurate.
+     */
+    private fun hydrateState(ctrl: MediaController) {
+        _isConnected.value = true
+        _isPlaying.value = ctrl.isPlaying
+        _hasActiveItem.value = ctrl.mediaItemCount > 0
+
+        val currentMediaItem = ctrl.currentMediaItem
+        if (currentMediaItem != null) {
+            val meta = currentMediaItem.mediaMetadata
+            val hydratedDuration = metadataDuration(meta, ctrl.duration)
+            _currentTrack.value = MediaTrack(
+                uri = currentMediaItem.mediaId,
+                title = meta.title?.toString() ?: "Unknown",
+                artist = meta.artist?.toString() ?: "Unknown",
+                album = meta.albumTitle?.toString() ?: "",
+                durationMs = hydratedDuration
+            )
+            _duration.value = hydratedDuration
+            _progress.value = ctrl.currentPosition.coerceAtLeast(0L)
+        }
+
+        if (ctrl.isPlaying) startProgressUpdates()
+    }
+
+    /**
+     * Executes a queued pending request exactly once.
      */
     private fun executePendingPlay() {
-        val uri = pendingUri
-        if (uri != null && !pendingPlayConsumed) {
-            pendingPlayConsumed = true
-            val ctrl = controller ?: return
-            playOnController(ctrl, uri)
+        val req = pendingRequest ?: return
+        pendingRequest = null // consume — guarantees exactly-once dispatch
+        val ctrl = controller ?: return
+        playOnController(ctrl, req)
+    }
+
+    /**
+     * Stale-future guard: if the connection future completed after release
+     * or a new generation was created, release any delivered controller
+     * immediately and swallow the result.
+     */
+    private fun releaseStaleController(future: ListenableFuture<MediaController>) {
+        try {
+            future.get()?.release()
+        } catch (_: Exception) {
+            // Stale future — nothing to clean up.
         }
     }
 
-    private fun reportConnectionError(msg: String, cause: Throwable? = null) {
+    private fun reportConnectionError(msg: String) {
         _connectionError.tryEmit(ConnectionException(msg))
+    }
+
+    /**
+     * Strips sensitive content (URIs, paths, stacks) from error messages
+     * so they are safe for user‑facing display.
+     */
+    internal fun sanitizeErrorMessage(raw: String): String {
+        // Keep only the first line and strip anything that looks like a URI or path.
+        val firstLine = raw.lines().firstOrNull() ?: raw
+        return firstLine
+            .replace(Regex("\\b[a-zA-Z][a-zA-Z0-9+.-]*://\\S+"), "[link]")
+            .replace(Regex("/\\S+/"), "")
+            .trim()
+            .take(200)
+            .ifEmpty { "An unexpected error occurred" }
+    }
+
+    /** Builds the exact metadata-bearing item dispatched to Media3. */
+    internal fun buildMediaItem(track: MediaTrack): MediaItem {
+        val extras = Bundle().apply {
+            putLong(METADATA_DURATION_MS, track.durationMs)
+        }
+        return MediaItem.Builder()
+            .setMediaId(track.uri)
+            .setUri(track.uri)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(track.title)
+                    .setArtist(track.artist)
+                    .setAlbumTitle(track.album)
+                    .setExtras(extras)
+                    .build()
+            )
+            .build()
+    }
+
+    private fun metadataDuration(metadata: MediaMetadata, sessionDurationMs: Long): Long {
+        if (sessionDurationMs >= 0L) return sessionDurationMs
+        val extras = metadata.extras
+        return if (extras?.containsKey(METADATA_DURATION_MS) == true) {
+            extras.getLong(METADATA_DURATION_MS).coerceAtLeast(0L)
+        } else {
+            0L
+        }
     }
 
     private fun startProgressUpdates() {
         if (progressUpdater?.isActive == true) return
         progressUpdater = scope.launch {
             while (isActive) {
-                _progress.value = controller?.currentPosition ?: 0L
+                _progress.value = controller?.currentPosition?.coerceAtLeast(0L) ?: 0L
                 delay(PROGRESS_UPDATE_INTERVAL_MS)
             }
         }
@@ -294,13 +432,49 @@ class MusicController(private val context: Context) {
         progressUpdater = null
     }
 
+    // ── Async connector (injectable seam for testing) ────────────────────
+
+    fun interface AsyncConnector {
+        fun connect(context: Context): ListenableFuture<MediaController>
+
+        companion object {
+            val Default = AsyncConnector { ctx ->
+                val token = SessionToken(ctx, ComponentName(ctx, MusicService::class.java))
+                MediaController.Builder(ctx, token).buildAsync()
+            }
+        }
+    }
+
     companion object {
         private const val PROGRESS_UPDATE_INTERVAL_MS = 250L
+        internal const val METADATA_DURATION_MS =
+            "com.boombastic.mobile.playback.DURATION_MS"
     }
 }
 
+// ── Data types ───────────────────────────────────────────────────────────
+
+/**
+ * Immutable request representing a complete ordered playback list with a
+ * clamped start index.  Created by [MusicController.play] and
+ * [MusicController.playUri] before or after connection.
+ */
+data class PlaybackRequest(
+    val items: List<MediaTrack>,
+    val startIndex: Int = 0
+)
+
+/**
+ * Metadata for a playable audio item.
+ *
+ * When originating from a Room [Track][com.boombastic.mobile.data.db.entity.Track],
+ * title, artist, album, and durationMs contain the exact values supplied by
+ * the database, including original Unicode, case, and whitespace.
+ */
 data class MediaTrack(
     val uri: String,
-    val title: String,
-    val artist: String
+    val title: String = "Unknown",
+    val artist: String = "Unknown",
+    val album: String = "",
+    val durationMs: Long = 0L
 )

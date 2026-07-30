@@ -25,7 +25,7 @@
 
 ## Product Direction
 
-BoomBastic is a **native Android offline-first music player** in the same monorepo as the desktop Vibe Music Player and its Flet mobile/desktop-capable port. The architecture is **Kotlin + Jetpack Compose + Media3**. **As of this writing Kotlin, Compose, Media3, and Room source exist** under `mobile-app/` — the native stack foundation is implemented. The `mobile-app/` directory is tracked in the repo but not yet committed (git status shows `?? mobile-app/`).
+BoomBastic is a **native Android offline-first music player** in the same monorepo as the desktop Vibe Music Player and its Flet mobile/desktop-capable port. The architecture is **Kotlin + Jetpack Compose + Media3**. **As of this writing Kotlin, Compose, Media3, and Room source exist** under `mobile-app/` — the native stack foundation is implemented and committed to the repository.
 
 **Current repo state (desktop/Flet legacy alongside native):**
 - `music_player_flet.py` — Flet-based mobile/desktop prototype using **Pygame** audio backend, 3-tab responsive layout (Library/Player/Settings), mini-player, bottom nav on mobile, sidebar layout on desktop ([source](../music_player_flet.py))
@@ -269,16 +269,25 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 | Media scanning | MediaStore / SAF | ✅ **Implemented** — SAF `OpenMultipleDocuments` import via `LibraryRepository` |
 | Dependency injection | Manual singleton (BoomBasticApp) | ✅ **Implemented** — Hilt deferred; manual DI in Application class |
 
-**Playback architecture (implemented, with known reliability defects):**
-- `MusicService` extends `MediaSessionService` — single ExoPlayer instance. `onDestroy()` now releases `MediaSession` before ExoPlayer, which is the correct Media3 teardown order.
-- `MusicController` wraps `MediaController` with `StateFlow` for `isPlaying`, `currentTrack`, `progress`, `duration`, `hasActiveItem`, `isConnected`; supports **pending-play semantics** when playback is requested before async connection completes.
-- Current `MusicController` pending-play implementation is **not production-ready**: it stores only one pending URI, loses full queue/start-index data for `play(List, startIndex)`, uses non-atomic pending state, can race `release()` against the async connection callback, and exposes `connectionError` without a UI collector. See Risk Assessment before editing playback.
+**Playback architecture (current implementation):**
+- `MusicService` extends `MediaSessionService` — single ExoPlayer instance. `onDestroy()` releases `MediaSession` before ExoPlayer (correct Media3 teardown order).
+- `MusicController` wraps `MediaController` with `StateFlow` for `isPlaying`, `currentTrack`, `progress`, `duration`, `hasActiveItem`, `isConnected`; supports **pending-play semantics** via a single immutable `PlaybackRequest(items, startIndex)` (last-user-request wins).
+- **Reliability merge (2026-07-30):** The pending-play implementation is now production‑ready:
+  - `AsyncConnector` injectable seam for deterministic testing without a live service.
+  - Terminal `released` flag + `generation` counter prevents late‑arriving controller futures from attaching listeners or starting playback after `release()`.
+  - `pendingRequest: PlaybackRequest?` atomically replaced on each pre‑connection call (full queue + clamped start index preserved).
+  - `playbackError: SharedFlow<PlaybackError>` exposes Media3 `Player.Listener.onPlayerError` events.
+  - `hydrateState(MediaController)` synchronises all `StateFlow`s immediately after (re)connection.
+  - `sanitizeErrorMessage()` strips URIs and absolute paths from user‑facing messages.
+  - `lastDispatchedRequest` internal hook enables test assertions on dispatched requests.
 - `NotificationPermissionPolicy` — one-shot prompt policy; API<33 skips, API 33+ prompts once via `MainShell`'s central `onPlay` callback shared by Search and Library screens; playback proceeds regardless of the permission result.
-- Official Android documentation and Media3 source confirm media-session notifications are exempt from `POST_NOTIFICATIONS`; denial alone is **not** the Android 14+ crash previously suspected for a correctly declared `MediaSessionService`/`mediaPlayback` foreground service. The current code documents this in `NotificationPermissionPolicy.kt` and `MainShell.kt`.
-- ExoPlayer configured with `AudioAttributes` for music, `setHandleAudioBecomingNoisy(true)` for headset unplug detection
-- Notification and lock-screen controls provided by Media3 session
-- `onTaskRemoved` stops service if nothing is playing
-- **Not yet implemented:** Full player screen, queue/history screens, Bluetooth AVRCP metadata publication, Android Auto
+- Official Android documentation and Media3 source confirm media-session notifications are exempt from `POST_NOTIFICATIONS`; denial alone is **not** the Android 14+ crash previously suspected for a correctly declared `MediaSessionService`/`mediaPlayback` foreground service.
+- ExoPlayer configured with `AudioAttributes` for music, `setHandleAudioBecomingNoisy(true)` for headset unplug detection.
+- Notification and lock-screen controls provided by Media3 session.
+- `onTaskRemoved` stops service if nothing is playing.
+- `MainShell` collects `connectionError` and `playbackError` via `SnackbarHostState` and shows one‑shot Snackbars.
+- `MediaTrack` extended with `album: String` and `durationMs: Long`. SearchScreen/LibraryScreen construct `MediaTrack` from Room `Track` with exact title, artist, album, durationMs; `MiniPlayer` displays `Artist · Album` when available.
+- **Not yet implemented:** Full player screen, queue/history screens, Bluetooth AVRCP metadata publication, Android Auto.
 
 **Queue/history:**
 - Queue is **local only** — never synced to a server
@@ -577,17 +586,18 @@ These facts are confirmed by reading the actual source files. Link to them rathe
 
 ### Data Flow: Playback (implemented)
 
-1. User taps track in SearchScreen or LibraryScreen → screen calls shared `onPlay(uri)` supplied by `MainShell`.
+1. User taps track in SearchScreen or LibraryScreen → screen constructs `MediaTrack(uri, title, artist, album, durationMs)` from Room `Track` and calls shared `onPlay(MediaTrack)` supplied by `MainShell`.
 2. `MainShell` evaluates `NotificationPermissionPolicy`; API 33+ shows the system notification prompt at most once automatically, then dispatches playback regardless of prompt result.
-3. `onPlay` calls `MusicController.playUri(uri)`.
-4. If the Media3 controller is connected, `MusicController` builds a `MediaItem` and sends it to `MusicService` through `MediaController`.
-5. If the Media3 controller is not yet connected, current code records a pending play request and flushes it in `executePendingPlay()` after connection. **Known defect:** this path is not atomic, can race `release()`, and loses full list/start-index semantics for `play(List, startIndex)`.
+3. `onPlay` calls `MusicController.play(track)` with full metadata.
+4. If the Media3 controller is connected, `MusicController` builds a `MediaItem` with a `MediaMetadata` containing title, artist, and album, and sends it to `MusicService` through `MediaController`.
+5. If the Media3 controller is not yet connected, the request is serialised as an immutable `PlaybackRequest(items, startIndex)` (last-user-request wins, full queue preserved). When the connection completes, `executePendingPlay()` dispatches the request exactly once.
 6. `MusicService` (`MediaSessionService`) receives the item, ExoPlayer decodes and renders audio.
-7. `MusicController` listener observes `onIsPlayingChanged`, `onMediaItemTransition`, `onPlaybackStateChanged`.
-8. State published via `StateFlow` (`isPlaying`, `currentTrack`, `progress`, `duration`, `hasActiveItem`).
-9. `MiniPlayer` composable observes `hasActiveItem` for visibility, `currentTrack` for metadata display, `isPlaying` for play/pause icon.
-10. Track completion triggers auto-advance within ExoPlayer; UI tracks progress via 250ms polling coroutine.
-11. Notification/lock-screen controls handled by Media3 session; Bluetooth AVRCP not yet explicitly configured.
+7. `MusicController` listener observes `onIsPlayingChanged`, `onMediaItemTransition`, `onPlaybackStateChanged`, and `onPlayerError`.
+8. State published via `StateFlow` (`isPlaying`, `currentTrack`, `progress`, `duration`, `hasActiveItem`, `playbackError`).
+9. `MiniPlayer` composable observes `hasActiveItem` for visibility, `currentTrack` for metadata display (title, `Artist · Album`), `isPlaying` for play/pause icon.
+10. `connectionError` and `playbackError` emissions are collected by `MainShell` and displayed as one‑shot Snackbars.
+11. Track completion triggers auto-advance within ExoPlayer; UI tracks progress via 250ms polling coroutine.
+12. Notification/lock-screen controls handled by Media3 session; Bluetooth AVRCP not yet explicitly configured.
 
 ---
 
@@ -598,6 +608,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 ### Build & Config
 | File | Responsibility | Status |
 |------|---------------|--------|
+| `.github/workflows/android.yml` | Java 17 CI: assemble, unit tests, lint + API 34 emulator smoke tests | ✅ |
 | `build.gradle.kts` | Root Gradle: plugin declarations (AGP, Kotlin, Compose, KSP) | ✅ |
 | `settings.gradle.kts` | Project settings, single `:app` module | ✅ |
 | `gradle.properties` | JVM args, AndroidX, Kotlin code style | ✅ |
@@ -619,9 +630,9 @@ All files listed below exist in `mobile-app/` as of this writing.
 | File | Responsibility | Status |
 |------|---------------|--------|
 | `BoomBasticApp.kt` | Application class, manual DI (database, libraryRepo, playlistRepo) | ✅ |
-| `MainActivity.kt` | Compose entry, MusicController init, edge-to-edge | ✅ |
+| `MainActivity.kt` | Compose entry, MusicController init, edge-to-edge; controller is internally visible to instrumentation tests only | ✅ |
 | `playback/MusicService.kt` | Media3 MediaSessionService + ExoPlayer | ✅ |
-| `playback/MusicController.kt` | MediaController wrapper, StateFlow playback state, pending-play logic | ⚠ Implemented but has unresolved reliability defects around async connection/release and pending queue state |
+| `playback/MusicController.kt` | MediaController wrapper, StateFlow playback state, immutable PlaybackRequest, injectable AsyncConnector, playbackError flow, generation-gated release | ✅ Terminal lifecycle, full-queue pending, metadata-aware MediaItems, error Snackbar propagation |
 | `playback/NotificationPermissionPolicy.kt` | One-shot `POST_NOTIFICATIONS` prompt policy using SharedPreferences | ✅ |
 | `data/db/AppDatabase.kt` | Room database (3 entities, version 1, singleton) | ✅ |
 | `data/db/entity/Track.kt` | Track entity (uri PK, title, artist, album, durationMs) | ✅ |
@@ -629,7 +640,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `data/db/entity/PlaylistTrack.kt` | Junction entity (composite PK, FK cascade, sortOrder) | ✅ |
 | `data/db/dao/TrackDao.kt` | Track CRUD + search Flow + dedupe check | ✅ |
 | `data/db/dao/PlaylistDao.kt` | Playlist CRUD + relation queries + sort order | ✅ |
-| `data/repository/LibraryRepository.kt` | SAF import, MediaMetadataRetriever, dedupe, ImportResult | ✅ |
+| `data/repository/LibraryRepository.kt` | SAF import, MediaMetadataRetriever, dedupe, ImportResult; production-default injectable URI-permission persister for deterministic tests | ✅ |
 | `data/repository/PlaylistRepository.kt` | Playlist CRUD, name validation, sort order mgmt | ✅ |
 | `ui/shell/MainShell.kt` | Scaffold + BottomNav (4 tabs + Create) + AnimatedVisibility MiniPlayer | ✅ |
 | `ui/navigation/NavGraph.kt` | NavHost: Routes (HOME, SEARCH, LIBRARY, DISCOVER) | ✅ |
@@ -648,11 +659,13 @@ All files listed below exist in `mobile-app/` as of this writing.
 | File | Responsibility | Status |
 |------|---------------|--------|
 | `data/db/AppDatabaseTest.kt` | Abstract Robolectric base class (in-memory DB) | ✅ |
-| `data/db/TrackDaoTest.kt` | 11 tests: insert, search, dedupe, delete, count | ✅ |
-| `data/db/PlaylistDaoTest.kt` | 7 tests: CRUD, track-to-playlist, cascade, sortOrder | ✅ |
+| `data/db/TrackDaoTest.kt` | 9 tests: insert, search, dedupe, delete, count | ✅ |
+| `data/db/PlaylistDaoTest.kt` | 8 tests: CRUD, track-to-playlist, cascade, sortOrder | ✅ |
 | `data/repository/PlaylistRepositoryTest.kt` | 5 tests: blank name rejection, persistence, trim, list, delete | ✅ |
-| `playback/NotificationPermissionPolicyTest.kt` | 11 tests: API 29/33+ prompt policy, grant/deny/attempted behavior | ✅ Reported passing before latest debugger changes |
-| `playback/MusicControllerTest.kt` | Contract tests for pending-play API shape and lifecycle no-throw behavior | ⚠ Exists, but final reviewer did not find evidence that it compiled or ran after latest changes |
+| `playback/NotificationPermissionPolicyTest.kt` | 11 tests: API 29/33+ prompt policy, grant/deny/attempted behavior | ✅ |
+| `playback/MusicControllerTest.kt` | 29 contract tests: pending-play, empty-request handling, full-queue preservation, last-request-wins, index clamp, release idempotence, stale-future guard, exact MediaItem metadata, and sanitized error emission | ✅ 29/29 passing |
+| `playback/MusicControllerInstrumentedTest.kt` | 7 instrumented tests: connection, error path, pre-connection queue dispatch, real playback-state transition, notification posting, and activity recreation | ✅ Compiles; emulator execution pending |
+| `storage/LibrarySmokeTest.kt` | 6 instrumented tests: repository/DAO basics, successful FileProvider-backed import, and deterministic revoked-permission failure | ✅ Compiles; emulator execution pending |
 
 ---
 
@@ -677,12 +690,13 @@ All files listed below exist in `mobile-app/` as of this writing.
 | AAC-LC licensing | Patent royalty obligations for AAC-LC encoder/distributor | Verify Android's built-in AAC codec license (generally covered by device manufacturer); if uncertain, keep MP3 as safe default |
 | WorkManager+Foreground Service on OEM-skinned Android | Background execution limits on Xiaomi/Huawei/etc. | Test on target device (S20 FE); document known OEM quirks |
 | Mono repo grows large | mobile-app/ may accumulate stale files | Clear ownership; file registry; archive policy |
-| **MusicController async connection/release race** | `MediaController.Builder(...).buildAsync()` can complete after `MusicController.release()`. Current callback can publish a controller, add the listener, and dispatch pending playback after release, leaking resources or starting audio after cleanup. | Add terminal release gate and serialized state machine; cancel/ignore late futures and release late controllers immediately. **Unresolved — highest-priority playback fix.** |
-| **MusicController pending queue loses state** | Pre-connection `play(List<String>, startIndex)` stores only the effective single URI. It loses the full queue and start index, so later connection does not preserve user intent. | Store immutable `PendingPlayRequest(uris, startIndex)` and dispatch the same queue setup used by connected playback. **Unresolved.** |
-| **MusicController pending state is not atomic** | `pendingUri` is volatile but `pendingPlayConsumed` is not; cross-field updates can double-execute, lose, or stale-read pending work under concurrent play/connect/release paths. | Replace independent fields with one serialized/atomic pending request model. **Unresolved.** |
-| **MusicController connection errors are not surfaced** | `connectionError` is emitted on a buffered `SharedFlow`, but no Compose shell collector surfaces it to the user; startup failures can still be invisible. | Collect errors in `MainShell` and show a one-shot Snackbar/user-visible message. **Unresolved.** |
-| **No latest build evidence after last debugger changes** | Earlier `assembleDebug`, `testDebugUnitTest`, and `lintDebug` passed with 33 tests before the final debugger changes. The last debugger reported JDK unavailable and could not rerun Gradle after adding/updating `MusicController` tests and playback comments. | Re-run `./gradlew clean :app:assembleDebug`, `./gradlew :app:testDebugUnitTest`, and `./gradlew :app:lintDebug` before continuing feature work. **Critical verification gap.** |
-| **No device/emulator verification** | SAF import flow, Media3 service lifecycle, notification permission dialog, and ExoPlayer audio output are untested on real hardware/emulator. | Run `./gradlew connectedCheck` on a device/emulator; manually verify import flow, playback start, permission prompt, media controls, and audio output. **Critical gap before any release.** |
+| **MusicController async connection/release race** | `MediaController.Builder(...).buildAsync()` can complete after `MusicController.release()` — leaking resources or starting audio after cleanup. | ✅ **Resolved (2026-07-30).** Terminal `released` flag + `generation` counter prevents late futures from attaching listeners or starting playback. `releaseStaleController()` releases any late-arriving controller immediately. |
+| **MusicController pending queue loses state** | Pre-connection `play(List<String>, startIndex)` stores only the effective single URI, losing the full queue and start index. | ✅ **Resolved (2026-07-30).** `pendingRequest: PlaybackRequest` stores the complete ordered item list and clamped start index. |
+| **MusicController pending state is not atomic** | `pendingUri`/`pendingPlayConsumed` cross-field updates can double-execute, lose, or stale-read pending work. | ✅ **Resolved (2026-07-30).** Replaced with a single immutable `PlaybackRequest?` field; atomically replaced on each pre-connection call. |
+| **MusicController connection errors are not surfaced** | `connectionError` emitted on `SharedFlow` but no Compose collector surfaced it. | ✅ **Resolved (2026-07-30).** `MainShell` now collects both `connectionError` and `playbackError` via `LaunchedEffect` and displays them as one-shot Snackbars. |
+| **MusicController player errors not surfaced** | No `onPlayerError` listener, so Media3 decoder/network failures were invisible. | ✅ **Resolved (2026-07-30).** `onPlayerError` emits sanitised messages through `playbackError: SharedFlow<PlaybackError>`; collected by `MainShell`. |
+| **No latest build evidence after last debugger changes** | Earlier `assembleDebug`, `testDebugUnitTest`, and `lintDebug` passed with 33 tests before the final debugger changes. | ✅ **Resolved (2026-07-30).** Verified: `assembleDebug` ✓, `testDebugUnitTest` (62/62 ✓), `lintDebug` ✓ — all pass under Java 17. |
+| **No device/emulator verification** | SAF import flow, Media3 service lifecycle, notification permission dialog, and ExoPlayer audio output are untested on real hardware/emulator. | ⚠ Instrumented smoke tests created for API 34 emulator; manual S20 FE API 33 check still required before release. |
 
 ---
 
@@ -724,8 +738,8 @@ These are issues in the existing codebase that the native app should NOT reprodu
 | Min SDK | **Resolved** | **API 29** — set in `app/build.gradle.kts`. SAF/document provider model works from API 19+, but Media3 and Compose benefit from API 29 baseline. |
 | Gradle build system configuration | **Resolved** | **Kotlin DSL** + version catalog (`libs.versions.toml`) + single `:app` module. Convention plugins deferred. AGP 8.5.2. |
 | Dependency injection: Hilt vs manual | **Resolved** | **Manual singleton DI** in `BoomBasticApp` for now. Hilt deferred — not a blocking decision. |
-| CI/CD for signed APK releases | **Unresolved** | GitHub Actions with `reviewdog`, lint, detekt; signing via CI secrets; GitHub Releases for distribution. |
-| MusicController pending-play reliability | **Unresolved** | Replace independent pending fields with an atomic/serialized `PendingPlayRequest`; gate async connection callbacks after release; preserve full queue/start index; surface connection errors in `MainShell`; then rerun build/tests/lint. |
+| CI/CD for signed APK releases | **Resolved** (JVM + emulator checks) | `.github/workflows/android.yml` — Java 17 assemble, unit tests, lint on push/PR; API 34 emulator smoke tests; uploads reports on failure. Signing/release CI deferred. |
+| MusicController pending-play reliability | ✅ **Resolved** (2026-07-30) | Terminal lifecycle + generation-gated futures + immutable `PlaybackRequest` + `AsyncConnector` seam + playback error propagation + SnackbarHost. See playback architecture for details. |
 | Android notification permission semantics | **Resolved** | `POST_NOTIFICATIONS` denial does not itself block a correctly declared Media3 media-session notification/`mediaPlayback` foreground service. Keep one-shot prompt policy for notification visibility, but do not block playback solely on denial. |
 
 ---
@@ -771,15 +785,22 @@ These are issues in the existing codebase that the native app should NOT reprodu
 
 | Level | Tool | Scope | Status |
 |-------|------|-------|--------|
-| Unit | JUnit 4 + Truth + Turbine + Robolectric | Room DAOs, Repositories | ✅ **23 tests** — `TrackDaoTest` (11), `PlaylistDaoTest` (7), `PlaylistRepositoryTest` (5) |
-| Unit | JUnit 4 + Truth + Robolectric | Notification permission policy | ✅ **11 tests reported passing** before final debugger changes |
-| Unit | JUnit 4 + Truth + Robolectric | MusicController pending-play/lifecycle contract | ⚠ Test file exists, but final reviewer did not find evidence that it compiled or ran after latest changes |
+| Unit | JUnit 4 + Truth + Turbine + Robolectric | Room DAOs, Repositories | ✅ **22 tests** — `TrackDaoTest` (9), `PlaylistDaoTest` (8), `PlaylistRepositoryTest` (5) |
+| Unit | JUnit 4 + Truth + Robolectric | Notification permission policy | ✅ **11 tests** |
+| Unit | JUnit 4 + Truth + Robolectric | MusicController pending-play/lifecycle contract | ✅ **29 tests** — full-queue preservation, empty-request handling, last-request-wins, index clamp, release idempotence, stale-future guard, exact MediaItem metadata, and sanitized error emission |
+| Instrumentation | Android Instrumentation Test + emulator | Media3 connection, queue dispatch, playback state, notification posting, activity recreation, SAF import, and revoked URI access | ✅ **13 smoke tests compile** — `MusicControllerInstrumentedTest` (7), `LibrarySmokeTest` (6); emulator execution pending |
 | UI | Compose UI Test | Screen composables, navigation | **Planned** |
-| Integration | Android Instrumentation Test | Room DAOs, WorkManager workers, Media3 interaction | **Planned** |
+| Integration | Android Instrumentation Test | WorkManager workers, full Media3 interaction | **Planned** |
 | Snapshot | Roborazzi (or Paparazzi) | Visual regression for Compose screens | **Planned** |
 | End-to-end | Maestro / ADB script | Full playback flow, download flow, import/export | **Planned** |
 
-**Latest verification status:** Earlier Android foundation verification passed `assembleDebug`, `testDebugUnitTest`, and `lintDebug`; the playback-permission follow-up reported 33 unit tests passing. After the final debugger changes, Gradle was not rerun because the debugger reported no JDK in its environment. Do **not** claim the latest tree compiles until commands are rerun.
+**Latest verification status (2026-07-30):** ✅ All three baseline checks pass on Java 17:
+- `./gradlew clean :app:assembleDebug` — **PASS**
+- `./gradlew :app:testDebugUnitTest` — **62/62 PASS** (11 NotificationPermissionPolicy, 29 MusicController, 9 TrackDao, 8 PlaylistDao, 5 PlaylistRepository)
+- `./gradlew :app:lintDebug` — **PASS**
+- `./gradlew :app:compileDebugAndroidTestKotlin` — **PASS**
+
+Instrumented smoke tests created for API 34 emulator (`./gradlew :app:connectedDebugAndroidTest`), pending CI emulator execution. Manual S20 FE API 33 hardware verification still required before release.
 
 **Test targets:** S20 FE (API 33) as primary; Pixel 6 / API 29 as secondary. Add API 34/35 emulator/device coverage for Media3 service and notification behavior before release.
 

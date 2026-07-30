@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+        Test-only FileProvider that serves temp audio files from
+        the app's cache directory as content:// URIs with URI
+        permission grants, simulating SAF document-provider URIs.
+        The authority is hard-coded because ${applicationId} in the
+        test APK manifest resolves to a different package than the
+        main APK's applicationId.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.boombastic.mobile.test.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/test_file_paths" />
+        </provider>
+    </application>
+
+</manifest>

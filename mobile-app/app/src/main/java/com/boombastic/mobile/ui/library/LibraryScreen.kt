@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.BoomBasticApp
 import com.boombastic.mobile.data.db.entity.Track
+import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.home.SectionHeader
 import com.boombastic.mobile.ui.theme.Dimens
@@ -29,7 +30,7 @@ import com.boombastic.mobile.ui.theme.SecondaryText
 @Composable
 fun LibraryScreen(
     musicController: MusicController,
-    onPlay: (uri: String) -> Unit = {}
+    onPlay: (MediaTrack) -> Unit = {}
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
@@ -109,7 +110,17 @@ fun LibraryScreen(
             items(allTracks, key = { it.uri }) { track ->
                 TrackRow(
                     track = track,
-                    onClick = { onPlay(track.uri) }
+                    onClick = {
+                        onPlay(
+                            MediaTrack(
+                                uri = track.uri,
+                                title = track.title,
+                                artist = track.artist,
+                                album = track.album,
+                                durationMs = track.durationMs
+                            )
+                        )
+                    }
                 )
             }
         }

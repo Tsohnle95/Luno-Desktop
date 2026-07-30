@@ -13,7 +13,9 @@ import java.io.InputStreamReader
 
 class LibraryRepository(
     private val context: Context,
-    private val trackDao: TrackDao
+    private val trackDao: TrackDao,
+    private val uriPermissionPersister: UriPermissionPersister =
+        UriPermissionPersister.Default(context)
 ) {
     suspend fun importAudioUri(uri: Uri): Result<Track> = withContext(Dispatchers.IO) {
         try {
@@ -24,9 +26,8 @@ class LibraryRepository(
                 )
             }
 
-            // Persist read URI permission
-            val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION
-            context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+            // Persist read URI permission using the injectable persister
+            uriPermissionPersister.persistReadPermission(uri)
 
             // Extract metadata safely off main thread
             val track = extractMetadata(uri)
@@ -133,6 +134,26 @@ class LibraryRepository(
     suspend fun getTrack(uri: String) = trackDao.getTrack(uri)
 
     suspend fun deleteTrack(uri: String) = trackDao.deleteTrack(uri)
+
+    /**
+     * Injectable seam for URI-permission persistence.
+     *
+     * The [Default] implementation calls
+     * [android.content.ContentResolver.takePersistableUriPermission],
+     * which is the production SAF requirement.  Tests may inject a fake
+     * that records the call without requiring a real URI permission grant.
+     */
+    fun interface UriPermissionPersister {
+        fun persistReadPermission(uri: Uri)
+
+        companion object {
+            fun Default(context: Context): UriPermissionPersister =
+                UriPermissionPersister { uri ->
+                    val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+                }
+        }
+    }
 
     data class ImportResult(
         val imported: Int,

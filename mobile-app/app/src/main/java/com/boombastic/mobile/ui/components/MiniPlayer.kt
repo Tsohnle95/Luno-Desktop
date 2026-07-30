@@ -80,7 +80,14 @@ fun MiniPlayer(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = currentTrack?.artist ?: "Unknown Artist",
+                    text = buildString {
+                        append(currentTrack?.artist ?: "Unknown Artist")
+                        val album = currentTrack?.album
+                        if (!album.isNullOrBlank()) {
+                            append(" · ")
+                            append(album)
+                        }
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = SecondaryText,
                     maxLines = 1,
