@@ -103,7 +103,7 @@ class PlaylistSyncWorker(
                 .addTag("playlist_sync_$playlistId")
                 .build()
 
-            jobDao.updateDownload(job.copy(workManagerId = workRequest.id.toString()))
+            jobDao.updateDownload(job.copy(id = jobId, workManagerId = workRequest.id.toString()))
 
             WorkManager.getInstance(context)
                 .enqueueUniqueWork(

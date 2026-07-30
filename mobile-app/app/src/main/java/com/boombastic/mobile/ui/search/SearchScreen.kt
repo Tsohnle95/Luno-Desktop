@@ -1,8 +1,10 @@
 package com.boombastic.mobile.ui.search
 
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -243,6 +245,8 @@ private fun WebSearchContent(
     var urlArtist by rememberSaveable { mutableStateOf("") }
     val downloads by downloadRepository.getAllDownloads().collectAsState(initial = emptyList())
     var errorMsg by remember { mutableStateOf("") }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var downloadingVideoIds by remember { mutableStateOf(setOf<String>()) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -294,8 +298,12 @@ private fun WebSearchContent(
             Text(
                 text = errorMsg,
                 color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = Dimens.paddingSmall)
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = Dimens.paddingSmall, bottom = Dimens.paddingSmall)
+                    .background(androidx.compose.ui.graphics.Color(0x33FF0000))
+                    .padding(horizontal = Dimens.paddingSmall, vertical = Dimens.paddingSmall)
             )
         }
 
@@ -320,20 +328,21 @@ private fun WebSearchContent(
                 onTitleChange = { urlTitle = it },
                 trackArtist = urlArtist,
                 onArtistChange = { urlArtist = it },
-                onDownload = {
-                    if (urlInput.isNotBlank()) {
-                        scope.launch {
-                            downloadRepository.enqueueDownload(
-                                sourceUrl = urlInput.trim(),
-                                title = urlTitle.trim().ifBlank { "Download" },
-                                artist = urlArtist.trim()
-                            )
-                            urlInput = ""
-                            urlTitle = ""
-                            urlArtist = ""
+                    onDownload = {
+                        if (urlInput.isNotBlank()) {
+                            scope.launch {
+                                downloadRepository.enqueueDownload(
+                                    sourceUrl = urlInput.trim(),
+                                    title = urlTitle.trim().ifBlank { "Download" },
+                                    artist = urlArtist.trim()
+                                )
+                                urlInput = ""
+                                urlTitle = ""
+                                urlArtist = ""
+                                Toast.makeText(ctx, "Download queued", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
-                }
             )
         }
 
@@ -408,10 +417,14 @@ private fun WebSearchContent(
                     WebResultRow(
                         result = result,
                         onDownload = {
+                            val videoId = result.videoId
+                            if (videoId in downloadingVideoIds) return@WebResultRow
+                            downloadingVideoIds = downloadingVideoIds + videoId
                             scope.launch {
                                 val audioUrl = withContext(Dispatchers.IO) {
                                     WebSearchService.getAudioStreamUrl(result.videoId)
                                 }
+                                downloadingVideoIds = downloadingVideoIds - videoId
                                 if (audioUrl != null) {
                                     val titleParts = result.title.split(" - ", limit = 2)
                                     val artist = if (titleParts.size > 1) titleParts[0].trim() else result.artist
@@ -421,13 +434,15 @@ private fun WebSearchContent(
                                         title = trackTitle,
                                         artist = artist
                                     )
+                                    Toast.makeText(ctx, "Download queued: $trackTitle", Toast.LENGTH_SHORT).show()
                                 } else {
-                                    errorMsg = "Could not extract audio URL for \"${result.title}\""
+                                    errorMsg = "Could not extract audio URL for \"${result.title}\". Try pasting the video URL in the direct URL section below."
                                 }
                             }
                         },
                         isDownloading = downloads.any { it.title == result.title && it.state == DownloadState.DOWNLOADING },
-                        isDone = downloads.any { it.title == result.title && it.state == DownloadState.COMPLETED }
+                        isDone = downloads.any { it.title == result.title && it.state == DownloadState.COMPLETED },
+                        extractingAudio = result.videoId in downloadingVideoIds
                     )
                 }
             }
@@ -568,7 +583,8 @@ private fun WebResultRow(
     result: WebSearchResult,
     onDownload: () -> Unit,
     isDownloading: Boolean,
-    isDone: Boolean
+    isDone: Boolean,
+    extractingAudio: Boolean = false
 ) {
     val durationStr = formatDuration(result.duration)
     Row(
@@ -618,6 +634,13 @@ private fun WebResultRow(
                     contentDescription = "Downloading",
                     tint = AccentGreen,
                     modifier = Modifier.size(Dimens.iconSize)
+                )
+            }
+            extractingAudio -> {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(Dimens.iconSize),
+                    color = AccentGreen,
+                    strokeWidth = 2.dp
                 )
             }
             else -> {

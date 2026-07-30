@@ -4,6 +4,8 @@
 > **MAINTENANCE INSTRUCTIONS FOR AI/HUMANS:**
 > This document is the authoritative knowledge base for the **implemented** BoomBastic native Android app under `mobile-app/`, including its planned extensions. It must be updated whenever settled decisions change.
 >
+> **Last verified and updated:** 2026-07-30
+>
 > **Authority policy (descending):**
 > 1. **Source code + tests + config** in this repo (highest truth)
 > 2. **Desktop `project_brain.md`** and cited shared source modules (engine.py, downloader.py, theme.py)
@@ -77,9 +79,9 @@ boomtastic/
 │   │       │       ├── playback/
 │   │       │       │   ├── MusicService.kt       # Media3 MediaSessionService + ExoPlayer
 │   │       │       │   ├── MusicController.kt    # MediaController wrapper, StateFlow, pending-play logic
-│   │       │       │   ├── DownloadWorker.kt     # WorkManager CoroutineWorker: HTTP download, progress, Track insertion
+│   │       │       │   ├── DownloadWorker.kt     # WorkManager: HTTP download, progress, duration extraction, Track insertion, app-icon notification
 │   │       │       │   ├── PlaylistSyncWorker.kt # WorkManager worker: fetch YT playlist → create individual download jobs
-│   │       │       │   ├── WebSearchService.kt    # Piped API client: YouTube search, playlist extraction, stream URL extraction
+│   │       │       │   ├── WebSearchService.kt    # YouTube: watch page scraping + InnerTube + Piped + Invidious audio extraction
 │   │       │       │   └── NotificationPermissionPolicy.kt # One-shot POST_NOTIFICATIONS prompt policy
 │   │       │       ├── data/
 │   │       │       │   ├── db/
@@ -111,7 +113,7 @@ boomtastic/
 │   │       │           ├── home/
 │   │       │           │   └── HomeScreen.kt         # Greeting, recently played, import hint
 │   │       │           ├── search/
-│   │       │           │   └── SearchScreen.kt       # Search field, SAF import, track list
+│   │       │           │   └── SearchScreen.kt       # Library search + Web search + download with loading spinner
 │   │       │           ├── library/
 │   │       │           │   └── LibraryScreen.kt      # Playlists + tracks list
 │   │       │           ├── discover/
@@ -262,16 +264,16 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 - **YouTube playlist extraction**: `WebSearchService.getPlaylistVideos()` fetches all videos from a playlist URL; `PlaylistSyncWorker` orchestrates downloading each new track in the playlist via individual `DownloadWorker` jobs
 - **Playlist URL management**: Each `Playlist` entity has a `playlistUrl` field (v3 migration). Users set a YT playlist URL per playlist in Library → Sync downloads all missing tracks
 - **Batch sync**: Downloads tab has "Sync All Playlists" button; each playlist with a URL synced sequentially
-- **Audio extraction**: `WebSearchService.getAudioStreamUrl()` tries Piped API instances first (7 community instances), then InnerTube with multiple client types (ANDROID_MUSIC, ANDROID, TVHTML5_SIMPLY, WEB), then Invidious API instances (3 instances) as last resort. Each step handles `signatureCipher`/`cipher` decryption, HLS/DASH manifests, and direct URLs. `DownloadWorker` sets User-Agent and Referer headers.
+- **Audio extraction**: `WebSearchService.getAudioStreamUrl()` first scrapes the YouTube watch page HTML (`/watch?v=VIDEO_ID`) to extract `ytInitialPlayerResponse` JSON directly (same approach as yt-dlp, avoids API key rate-limiting). Falls back to Piped API instances (7 community instances), then InnerTube with multiple client types (ANDROID_MUSIC, ANDROID, TVHTML5_SIMPLY, WEB — versions updated to 2025 builds with `playbackContext.contentPlaybackContext` and `signatureTimestamp`), then Invidious API instances (3 instances) as last resort. Each step handles `signatureCipher`/`cipher` decryption, HLS/DASH manifests, and direct URLs. JSON extraction uses brace-depth counting to handle nested/minified player response objects.
 - **Direct URL download**: Paste any direct audio URL (optional title/artist override)
 - **CSV import (Exportify)**: Select a Spotify Exportify CSV file; each row (artist, title) is searched on YouTube and the first result downloaded
 - **Download queue management**: Dedicated Downloads tab in bottom nav — view all active, queued, completed, failed downloads; cancel/retry/delete per item; playlist sync button per playlist
 - `DownloadWorker` uses `HttpURLConnection` to stream the download in the background via WorkManager
 - Files saved to app-internal `downloads/` directory
-- On completion, the downloaded file is registered as a `Track` in Room and appears in the library
+- On completion, metadata (`durationMs`) is extracted from the downloaded file via `MediaMetadataRetriever` before creating the `Track` entity in Room
 - Download progress is exposed through `DownloadJob` state in Room and rendered in the UI
 - Failed downloads auto-retry (exponential backoff, up to 3 attempts)
-- Foreground service notification shows ongoing download progress
+- Foreground service notification uses the app's own `ic_download` drawable and a stable notification ID (`1000 + jobId`)
 - **SoundCloud**: Not yet extracted via search API; users can paste direct SoundCloud audio URLs
 
 ### Native Planned Stack
@@ -593,17 +595,23 @@ These facts are confirmed by reading the actual source files. Link to them rathe
 5. Returns `ImportResult(imported, duplicates, errors)` — UI observes updated `Flow<List<Track>>` from Room
 
 ### Data Flow: Download (Implemented)
-1. User navigates to SearchScreen → Web Download tab, pastes a direct audio URL, optionally sets title/artist, taps "Start Download"
-2. `DownloadRepository.enqueueDownload()` inserts a `DownloadJob(state=QUEUED)` in Room, enqueues a `DownloadWorker` via WorkManager with `NetworkType.CONNECTED` constraint
-3. `DownloadWorker` (foreground service):
+1. User navigates to SearchScreen → Web Search tab → searches YouTube → taps download on a result
+2. UI shows a `CircularProgressIndicator` on that result and tracks the video ID as "extracting" via `downloadingVideoIds` state set (prevents duplicate taps)
+3. `WebSearchService.getAudioStreamUrl(videoId)` runs on IO dispatcher with fallback chain: YouTube watch page HTML scraping → Piped API → InnerTube player endpoint (4 client types) → Invidious API
+4. If extraction succeeds: `DownloadRepository.enqueueDownload()` inserts a `DownloadJob(state=QUEUED)` in Room, enqueues a `DownloadWorker` via WorkManager with `NetworkType.CONNECTED` constraint
+5. `DownloadWorker` (foreground service with app's `ic_download` icon, notification ID `1000 + jobId`):
    - Sets job state to DOWNLOADING
-   - Opens `HttpURLConnection` to the source URL
+   - Opens `HttpURLConnection` to the source URL with User-Agent and Referer headers
    - Streams data to `{filesDir}/downloads/{safeFileName}.mp3`
    - Updates progress (0-100%) in Room
-   - On completion: inserts a `Track` entity into Room, marks job COMPLETED
+   - On completion: extracts `durationMs` via `MediaMetadataRetriever`, inserts `Track` entity into Room, marks job COMPLETED
    - On failure: marks job FAILED with error message, auto-retries up to 3 times
-4. Successful downloads appear immediately in the Library search results via Room `Flow`
-5. User can retry failed downloads or cancel in-progress downloads from the Web Download tab
+6. Successful downloads appear immediately in the Library search results via Room `Flow`
+7. User can retry failed downloads or cancel in-progress downloads
+
+Alternative paths:
+- **Direct URL paste**: User pastes any direct audio URL (optional title/artist override) → taps "Start Download" — skips extraction, goes straight to enqueue
+- **CSV import (Exportify)**: User selects Spotify Exportify CSV → each row (artist, title) is searched on YouTube → first result's audio URL extracted → downloads queued
 
 ### Data Flow: Playlist Sync (Implemented)
 1. User sets a YouTube playlist URL on a playlist (Library screen) or creates a playlist with a URL
@@ -675,9 +683,9 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `data/repository/PlaylistRepository.kt` | Playlist CRUD, name validation, sort order mgmt | ✅ |
 | `data/db/entity/DownloadJob.kt` | DownloadJob entity + DownloadState enum (QUEUED, DOWNLOADING, COMPLETED, FAILED, CANCELLED) | ✅ |
 | `data/db/dao/DownloadJobDao.kt` | DownloadJob CRUD + progress/state queries with Flow | ✅ |
-| `playback/DownloadWorker.kt` | WorkManager CoroutineWorker: HTTP download, progress tracking, Track insertion, foreground notification | ✅ |
+| `playback/DownloadWorker.kt` | WorkManager CoroutineWorker: HTTP download, progress tracking, Track insertion (with MediaMetadataRetriever duration extraction), foreground notification with app icon and stable notification ID | ✅ |
 | `playback/PlaylistSyncWorker.kt` | WorkManager worker: fetches YouTube playlist videos via Piped API, creates individual DownloadJob per track, deduplicates against existing library | ✅ |
- | `playback/WebSearchService.kt` | YouTube client: search via InnerTube API (YouTube internal API), playlist extraction via InnerTube browse, audio stream URL extraction via InnerTube player; falls back to Piped API. | ✅ |
+ | `playback/WebSearchService.kt` | YouTube client: search via InnerTube API, playlist extraction, audio stream URL extraction via YouTube watch page scraping → Piped API → InnerTube player (4 client types) → Invidious. Brace-depth JSON extraction, signatureCipher/cipher decryption. | ✅ |
 | `data/repository/DownloadRepository.kt` | Enqueue, retry, cancel, delete downloads; bridges Room + WorkManager | ✅ |
 | `ui/shell/MainShell.kt` | Scaffold + BottomNav (4 tabs + Create) + AnimatedVisibility MiniPlayer | ✅ |
 | `ui/navigation/NavGraph.kt` | NavHost: Routes (HOME, SEARCH, LIBRARY, DISCOVER) | ✅ |
@@ -687,7 +695,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `ui/theme/Dimens.kt` | Touch targets, icon sizes, padding constants | ✅ |
 | `ui/components/MiniPlayer.kt` | Persistent mini-player with progress, title, artist, play/pause | ✅ |
 | `ui/home/HomeScreen.kt` | Greeting, recently played, import hint | ✅ |
-| `ui/search/SearchScreen.kt` | Search field, SAF import button, track list | ✅ |
+| `ui/search/SearchScreen.kt` | Library search + Web Search (YouTube search, download with loading spinner per video ID, CSV import, direct URL download), SAF import | ✅ |
 | `ui/library/LibraryScreen.kt` | Playlists + tracks list | ✅ |
 | `ui/discover/DiscoverScreen.kt` | Honest empty state (Last.fm TBD) | ✅ |
 | `ui/downloads/DownloadsScreen.kt` | Full download management screen: playlist sync controls, per-playlist sync, batch sync all, download queue with cancel/retry/delete | ✅ |
@@ -886,6 +894,7 @@ Instrumented smoke tests created for API 34 emulator (`./gradlew :app:connectedD
 | 2026-07-30 | Implemented playlist sync: `PlaylistSyncWorker`, `WebSearchService` (Piped API client), `DownloadsScreen`, v3 schema (playlistUrl on Playlist), CSV import (Exportify). Updated all sections accordingly. |
 | 2026-07-30 | Fixed YouTube Web Search: migrated from Piped-only API to YouTube InnerTube API as primary with Piped fallback. Updated `WebSearchService.kt` to call InnerTube search/browse/player endpoints directly. Fixed the Piped API type filter (`"stream"`), added User-Agent headers, removed duplicate import. Updated project brain sections. |
 | 2026-07-30 | Fixed audio URL extraction: swapped to Piped-first priority, replaced dead kavin.rocks with working community instances, expanded InnerTube to try 4 client types (ANDROID_MUSIC, ANDROID, TVHTML5_SIMPLY, WEB) with full device context, added Invidious API as third fallback layer, added headers to DownloadWorker. |
+| 2026-07-30 | Reordered extraction fallback: YouTube watch page HTML scraping (ytInitialPlayerResponse, brace-depth JSON parser) as primary method, then Piped → InnerTube (updated to 2025 client versions with playbackContext/signatureTimestamp) → Invidious. Added download loading spinner per video ID in SearchScreen. DownloadWorker: replaced private system notification icon with app's ic_download, added MediaMetadataRetriever duration extraction, fixed notification ID collision (1000 + jobId). |
 
 ## 🛠️ Build & Test Operations
 

@@ -416,15 +416,120 @@ object WebSearchService {
     }
 
     fun getAudioStreamUrl(videoId: String): String? {
+        // 1. Try parsing the YouTube watch page directly (most reliable)
+        val watchUrl = watchPageGetAudioUrl(videoId)
+        if (watchUrl != null) return watchUrl
+        Log.w(TAG, "Watch page parsing failed for $videoId, trying Piped API")
+
+        // 2. Try Piped API instances
         val pipedUrl = pipedGetAudioUrl(videoId)
         if (pipedUrl != null) return pipedUrl
         Log.w(TAG, "Piped failed for $videoId, trying InnerTube with multiple client types")
 
+        // 3. Try InnerTube player endpoint
         val innerTubeUrl = innertubeGetAudioUrl(videoId)
         if (innerTubeUrl != null) return innerTubeUrl
         Log.w(TAG, "InnerTube failed for $videoId, trying Invidious API fallback")
 
+        // 4. Last resort: Invidious
         return invidiousGetAudioUrl(videoId)
+    }
+
+    /**
+     * Fetches the YouTube watch page HTML and extracts the streaming data
+     * from the embedded ytInitialPlayerResponse JSON.
+     * This mimics what youtube-dl does.
+     */
+    private fun watchPageGetAudioUrl(videoId: String): String? {
+        try {
+            val pageUrl = URL("https://www.youtube.com/watch?v=$videoId")
+            Log.d(TAG, "Watch page fetch: $pageUrl")
+            val conn = pageUrl.openConnection() as HttpURLConnection
+            conn.connectTimeout = 15000
+            conn.readTimeout = 15000
+            conn.setRequestProperty("User-Agent", USER_AGENT)
+            conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            conn.setRequestProperty("Accept-Language", "en-US,en;q=0.5")
+            conn.setRequestProperty("Referer", "https://www.youtube.com")
+            conn.instanceFollowRedirects = true
+
+            val responseCode = conn.responseCode
+            if (responseCode != 200) {
+                Log.w(TAG, "Watch page returned $responseCode for $videoId")
+                conn.disconnect()
+                return null
+            }
+
+            val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
+            val html = reader.readText()
+            reader.close()
+            conn.disconnect()
+
+            val jsonStr = extractJsonFromHtml(html, "ytInitialPlayerResponse")
+            if (jsonStr == null) {
+                Log.w(TAG, "No ytInitialPlayerResponse found in watch page for $videoId")
+                return null
+            }
+
+            val response = JSONObject(jsonStr)
+
+            // Check playability
+            val playabilityStatus = response.optJSONObject("playabilityStatus")
+            if (playabilityStatus != null) {
+                val status = playabilityStatus.optString("status", "")
+                if (status == "UNPLAYABLE" || status == "LOGIN_REQUIRED" || status == "ERROR") {
+                    val reason = playabilityStatus.optString("reason", status)
+                    Log.w(TAG, "Watch page: video $videoId is $status ($reason)")
+                }
+            }
+
+            val streamUrl = extractStreamUrlFromResponse(response)
+            if (streamUrl != null) {
+                Log.d(TAG, "Watch page parsing succeeded for $videoId")
+                return streamUrl
+            }
+
+            val ytcfgPattern = Regex("ytcfg\\.set\\s*\\(\\s*(\\{.+?\\})\\s*\\)\\s*;")
+            val cfgMatch = ytcfgPattern.find(html)
+            if (cfgMatch != null) {
+                Log.d(TAG, "Found ytcfg in watch page for $videoId, but no streaming data")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Watch page fetch failed for $videoId", e)
+        }
+        return null
+    }
+
+    /**
+     * Extracts a JSON variable assignment from HTML by finding
+     * `var VAR_NAME = {` and counting braces to extract the full object.
+     */
+    private fun extractJsonFromHtml(html: String, varName: String): String? {
+        val startMarker = "$varName = "
+        val idx = html.indexOf(startMarker)
+        if (idx < 0) return null
+        val jsonStart = idx + startMarker.length
+        if (jsonStart >= html.length || html[jsonStart] != '{') return null
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (i in jsonStart until html.length) {
+            val c = html[i]
+            if (escaped) { escaped = false; continue }
+            if (c == '\\' && inString) { escaped = true; continue }
+            if (c == '"') { inString = !inString; continue }
+            if (inString) continue
+            when (c) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) {
+                        return html.substring(jsonStart, i + 1)
+                    }
+                }
+            }
+        }
+        return null
     }
 
     private data class ITubeClient(
@@ -437,10 +542,10 @@ object WebSearchService {
     )
 
     private val INNERTUBE_CLIENTS = listOf(
-        ITubeClient("ANDROID_MUSIC", "6.15.34", 34, "14"),
-        ITubeClient("ANDROID", "19.25.37", 34, "14", "samsung", "SM-S901B"),
-        ITubeClient("TVHTML5_SIMPLY", "7.20240104.00.00"),
-        ITubeClient("WEB", "2.20240718.01.00"),
+        ITubeClient("ANDROID_MUSIC", "6.27.56", 35, "14"),
+        ITubeClient("ANDROID", "19.43.38", 35, "14", "samsung", "SM-S928B"),
+        ITubeClient("TVHTML5_SIMPLY", "7.20250101.00.00"),
+        ITubeClient("WEB", "2.20250101.00.00"),
     )
 
     private fun innertubeGetAudioUrl(videoId: String): String? {
@@ -458,6 +563,7 @@ object WebSearchService {
                 if (clientCfg.make != null) client.put("deviceMake", clientCfg.make)
                 if (clientCfg.model != null) client.put("deviceModel", clientCfg.model)
                 client.put("userAgent", USER_AGENT)
+                client.put("clientScreen", "WATCH")
                 val context = JSONObject()
                 context.put("client", client)
 
@@ -466,6 +572,12 @@ object WebSearchService {
                 body.put("videoId", videoId)
                 body.put("contentCheckOk", true)
                 body.put("racyCheckOk", true)
+                body.put("playbackContext", JSONObject().apply {
+                    put("contentPlaybackContext", JSONObject().apply {
+                        put("html5Preference", "HTML5_PREF_WANTS")
+                        put("signatureTimestamp", (System.currentTimeMillis() / 1000 - 10000).toInt())
+                    })
+                })
 
                 val response = innertubePost("player", body)
                 if (response == null) {
@@ -487,6 +599,8 @@ object WebSearchService {
                     Log.d(TAG, "InnerTube ${clientCfg.name} succeeded for $videoId")
                     return url
                 }
+
+                Log.d(TAG, "InnerTube ${clientCfg.name} no stream in response for $videoId")
             } catch (e: Exception) {
                 Log.e(TAG, "InnerTube ${clientCfg.name} failed for $videoId", e)
             }

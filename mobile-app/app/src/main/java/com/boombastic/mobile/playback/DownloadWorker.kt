@@ -1,13 +1,11 @@
 package com.boombastic.mobile.playback
 
 import android.content.Context
-import android.os.Environment
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
-import androidx.work.workDataOf
+import com.boombastic.mobile.R
 import com.boombastic.mobile.data.db.AppDatabase
-import com.boombastic.mobile.data.db.entity.DownloadJob
 import com.boombastic.mobile.data.db.entity.DownloadState
 import com.boombastic.mobile.data.db.entity.Track
 import java.io.File
@@ -19,11 +17,6 @@ class DownloadWorker(
     private val context: Context,
     params: WorkerParameters
 ) : CoroutineWorker(context, params) {
-
-    companion object {
-        const val KEY_DOWNLOAD_JOB_ID = "download_job_id"
-        const val KEY_DOWNLOAD_DIR = "downloads"
-    }
 
     override suspend fun doWork(): Result {
         val jobId = inputData.getLong(KEY_DOWNLOAD_JOB_ID, -1L)
@@ -81,11 +74,21 @@ class DownloadWorker(
             inputStream.close()
             connection.disconnect()
 
+            val durationMs = try {
+                val retriever = android.media.MediaMetadataRetriever()
+                retriever.setDataSource(file.absolutePath)
+                val durStr = retriever.extractMetadata(
+                    android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
+                )
+                retriever.release()
+                durStr?.toLongOrNull() ?: 0L
+            } catch (_: Exception) { 0L }
+
             val track = Track(
                 uri = file.toURI().toString(),
                 title = job.title,
                 artist = job.artist,
-                durationMs = 0L,
+                durationMs = durationMs,
                 addedAt = System.currentTimeMillis()
             )
             trackDao.insertTrack(track)
@@ -111,13 +114,19 @@ class DownloadWorker(
         )
             .setContentTitle("Downloading")
             .setContentText(title)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(R.drawable.ic_download)
             .setOngoing(true)
             .build()
 
         return ForegroundInfo(
-            applicationContext.getString(android.R.string.ok).hashCode(),
+            NOTIFICATION_ID_BASE + inputData.getLong(KEY_DOWNLOAD_JOB_ID, -1L).toInt(),
             notification
         )
+    }
+
+    companion object {
+        const val KEY_DOWNLOAD_JOB_ID = "download_job_id"
+        const val KEY_DOWNLOAD_DIR = "downloads"
+        private const val NOTIFICATION_ID_BASE = 1000
     }
 }

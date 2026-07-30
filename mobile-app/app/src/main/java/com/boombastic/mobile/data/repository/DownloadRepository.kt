@@ -64,7 +64,7 @@ class DownloadRepository(
 
         val workManagerId = workRequest.id.toString()
         downloadJobDao.updateDownload(
-            job.copy(workManagerId = workManagerId)
+            job.copy(id = jobId, workManagerId = workManagerId)
         )
 
         WorkManager.getInstance(context)
@@ -79,13 +79,12 @@ class DownloadRepository(
 
     suspend fun retryDownload(id: Long) {
         val job = downloadJobDao.getDownload(id) ?: return
-        downloadJobDao.updateDownload(
-            job.copy(
-                state = DownloadState.QUEUED,
-                progress = 0,
-                errorMessage = ""
-            )
+        val updatedJob = job.copy(
+            state = DownloadState.QUEUED,
+            progress = 0,
+            errorMessage = ""
         )
+        downloadJobDao.updateDownload(updatedJob)
 
         val inputData = Data.Builder()
             .putLong(DownloadWorker.KEY_DOWNLOAD_JOB_ID, id)
@@ -106,7 +105,7 @@ class DownloadRepository(
             .addTag("download_$id")
             .build()
 
-        downloadJobDao.updateDownload(job.copy(workManagerId = workRequest.id.toString()))
+        downloadJobDao.updateDownload(updatedJob.copy(workManagerId = workRequest.id.toString()))
 
         WorkManager.getInstance(context)
             .enqueueUniqueWork(
