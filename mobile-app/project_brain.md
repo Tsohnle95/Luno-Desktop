@@ -4,7 +4,7 @@
 > **MAINTENANCE INSTRUCTIONS FOR AI/HUMANS:**
 > This document is the authoritative knowledge base for the **implemented** BoomBastic native Android app under `mobile-app/`, including its planned extensions. It must be updated whenever settled decisions change.
 >
-> **Last verified and updated:** 2026-07-31 (imports hardened end-to-end: `ArtworkStorage` now bounds-checks embedded-art decode (huge pictures no longer OOM — an `OutOfMemoryError` escaped the per-file `catch` and silently killed imports mid-run at ~1846 songs); import loop catches `Throwable` per file and runs on an **app-scoped** `CoroutineScope` (`BoomBasticApp.appScope`) so navigation/rotation can't cancel it; folder-document grants are persisted and tree-grant persist failures are reported via `ImportResult.persistFailures` (playback of unpersisted songs after restart = source error). **Cross-flow dedupe:** re-imports now match by SAF **document id** as well as exact URI string — the same song has different URIs per flow (`document/…` picker vs `tree/…/document/…` folder), which previously double-imported on re-import through the other flow; the id set is built once per run (`loadExistingDocumentIds`) and grows as the run imports. UI: Home profile icon removed (Settings drawer opens from the tappable "Luno" header), Home spacing standardized (16dp greeting, 24dp section breaks, 8dp header-to-content). Refreshed baseline checks — 103/103 unit tests, lint PASS)
+> **Last verified and updated:** 2026-07-31 (UI regression from the app-wide `LocalIndication` override reverted: wrapping the whole shell in `CompositionLocalProvider(LocalIndication provides NoIndication)` blanked the app shell on device (Luno header, drawer items, Home sections all missing). **No-ripple is now per-element** — `clickable`/`combinedClickable` with `indication = null` on song rows, playlist cards, Home cards, the Luno header, drawer items and Library toggles; Material3 `Button`/`IconButton`/`NavigationBarItem` keep their default ripple (m3 1.2.1 exposes no indication override). The Settings-drawer music-folder import keeps its **live progress strip** under the app header. Import fixes all retained: `ArtworkStorage` bounds-checked decode (no more OOM-killed imports), per-file `Throwable` catches, app-scoped import coroutines (`BoomBasticApp.appScope`), persisted folder-document grants + `persistFailures` reporting, cross-flow SAF document-id dedupe. Refreshed baseline checks — 103/103 unit tests, lint PASS)
 >
 > **Authority policy (descending):**
 > 1. **Source code + tests + config** in this repo (highest truth)
@@ -100,7 +100,7 @@ boomtastic/
 │   │       │       │       └── PlaylistRepository.kt # CRUD, validation, sort order mgmt
 │   │       │       └── ui/
 │   │           │   ├── shell/
-│   │           │   │   └── MainShell.kt          # ModalNavigationDrawer ("Settings" header: Downloads, Export/Import, About, Update check) + AppHeader ("Luno" + green bar; the title is a button — tap opens the Settings drawer) + Scaffold + BottomNav (Home/Search/Library/Discover/Create) + MiniPlayer (hidden on full player)
+│   │           │   │   └── MainShell.kt          # ModalNavigationDrawer ("Settings" header: Downloads, Export/Import, About, Update check) + AppHeader ("Luno" + green bar; the title is a button — tap opens the Settings drawer) + Scaffold + BottomNav (Home/Search/Library/Discover/Create) + MiniPlayer (hidden on full player); live music-folder import progress strip (no-ripple applied per element, not via a LocalIndication override)
 │   │       │           ├── navigation/
 │   │       │           │   └── NavGraph.kt           # NavHost: Home / Search / Library / Discover / Downloads (drawer) / full_player; 350ms fade transitions (halved from 700ms default)
 │   │       │           ├── theme/
@@ -741,7 +741,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `playback/NewPipeDownloader.kt` | `HttpURLConnection`-based implementation of NewPipe's `Downloader` interface. Handles GET/POST requests with proper User-Agent and redirects. | ✅ |
 | `playback/ExtractionResult.kt` | Sealed class for typed extraction results: `Success<T>` or `Error(message, details)`. Eliminates nullable/pair returns. | ✅ |
 | `data/repository/DownloadRepository.kt` | Enqueue, retry, cancel, delete, stop-all, cancel-playlist-sync; bridges Room + WorkManager; threads thumbnailUrl through job + inputData | ✅ |
-| `ui/shell/MainShell.kt` | ModalNavigationDrawer ("Settings" header: Downloads/Export-Import/About/Update check) + Scaffold + BottomNav (Home/Search/Library/Discover/Create) + AnimatedVisibility MiniPlayer + AppHeader ("Luno" title is a button — opens the Settings drawer) | ✅ |
+| `ui/shell/MainShell.kt` | ModalNavigationDrawer ("Settings" header: Downloads/Export-Import/About/Update check) + Scaffold + BottomNav (Home/Search/Library/Discover/Create) + AnimatedVisibility MiniPlayer + AppHeader ("Luno" title is a button — opens the Settings drawer) + live music-folder import progress strip | ✅ |
 | `ui/navigation/NavGraph.kt` | NavHost: Routes (HOME, SEARCH, LIBRARY, DISCOVER, DOWNLOADS, FULL_PLAYER) | ✅ |
 | `ui/theme/Color.kt` | Dark palette constants | ✅ |
 | `ui/theme/Theme.kt` | BoomBasticTheme (Material3 darkColorScheme) | ✅ |

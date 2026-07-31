@@ -10,12 +10,14 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,6 +30,7 @@ import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -122,16 +125,22 @@ fun MainShell(musicController: MusicController) {
     val policy = remember { NotificationPermissionPolicy.create(context) }
 
     // Music-folder destination picker (Settings drawer) — sets the folder
-    // and imports it desktop-style (subfolders become playlists).
+    // and imports it desktop-style (subfolders become playlists).  Live
+    // progress is shown in the shell (progress strip under the header);
+    // re-imports of a large folder take a while, so silence looks broken.
+    var folderImportState by remember { mutableStateOf<FolderImportState?>(null) }
     val folderImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: android.net.Uri? ->
         if (uri != null) {
             val app = context.applicationContext as com.boombastic.mobile.BoomBasticApp
+            folderImportState = FolderImportState(0, 0, 0)
             // appScope: the import must survive rotation/navigation.
             app.appScope.launch {
                 app.musicFolderRepository.saveTreeUri(uri)
-                val result = app.libraryRepository.importLibraryTree(uri)
+                val result = app.libraryRepository.importLibraryTree(uri) { imported, duplicates, errors ->
+                    folderImportState = FolderImportState(imported, duplicates, errors)
+                }
                 val persistWarning = if (result.persistFailures > 0) {
                     " — storage access not persisted (${result.persistFailures}): " +
                         "these songs may not play after a restart"
@@ -144,6 +153,7 @@ fun MainShell(musicController: MusicController) {
                         "${result.duplicates} duplicates, ${result.errors} errors$persistWarning",
                     Toast.LENGTH_LONG
                 ).show()
+                folderImportState = null
             }
         }
     }
@@ -364,6 +374,31 @@ fun MainShell(musicController: MusicController) {
                     if (currentRoute != Routes.FULL_PLAYER) {
                         AppHeader(onClick = { scope.launch { drawerState.open() } })
                     }
+                    // Live music-folder import progress (Settings drawer
+                    // flow) — re-imports of large folders take a while, so
+                    // show that work is happening.
+                    folderImportState?.let { state ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Dimens.paddingLarge)
+                        ) {
+                            LinearProgressIndicator(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(Dimens.progressBarHeight),
+                                color = AccentGreen,
+                                trackColor = SurfaceDark
+                            )
+                            Text(
+                                text = "Importing music folder… ${state.imported} added, " +
+                                    "${state.duplicates} duplicates, ${state.errors} errors",
+                                color = AccentGreen,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(vertical = Dimens.paddingSmall)
+                            )
+                        }
+                    }
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -390,6 +425,13 @@ fun MainShell(musicController: MusicController) {
     }
 }
 
+/** Live counters for the Settings-drawer music-folder import. */
+private data class FolderImportState(
+    val imported: Int,
+    val duplicates: Int,
+    val errors: Int
+)
+
 /**
  * Desktop-style app header: bold "Luno" wordmark with the small green
  * rounded bar (the desktop's green "▮") immediately to its right,
@@ -402,7 +444,11 @@ private fun AppHeader(onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .clip(RoundedCornerShape(Dimens.cornerMedium))
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
             .padding(
                 start = Dimens.paddingLarge,
                 top = Dimens.paddingMedium,
@@ -436,7 +482,11 @@ private fun DrawerItem(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(Dimens.cornerMedium))
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
             .padding(vertical = Dimens.paddingMedium, horizontal = Dimens.paddingLarge),
         verticalAlignment = Alignment.CenterVertically
     ) {

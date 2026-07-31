@@ -2,6 +2,7 @@ package com.boombastic.mobile.ui.library
 
 import android.widget.Toast
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -215,10 +216,14 @@ fun LibraryScreen(
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(Dimens.cornerMedium))
-                            .clickable {
-                                musicController.play(mediaTracks, 0)
-                                musicController.setShuffle(true)
-                            }
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = {
+                                    musicController.play(mediaTracks, 0)
+                                    musicController.setShuffle(true)
+                                }
+                            )
                             .padding(vertical = Dimens.paddingSmall),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -251,7 +256,11 @@ fun LibraryScreen(
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(Dimens.cornerMedium))
-                        .clickable { playlistView = !playlistView }
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { playlistView = !playlistView }
+                        )
                         .padding(Dimens.paddingSmall),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -274,7 +283,11 @@ fun LibraryScreen(
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(Dimens.cornerMedium))
-                            .clickable { playlistSortRecent = !playlistSortRecent }
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = { playlistSortRecent = !playlistSortRecent }
+                            )
                             .padding(Dimens.paddingSmall),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -311,7 +324,11 @@ fun LibraryScreen(
                             contentDescription = "Clear search",
                             tint = SecondaryText,
                             modifier = Modifier
-                                .clickable { query = "" }
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = { query = "" }
+                                )
                                 .padding(Dimens.paddingSmall)
                         )
                     }

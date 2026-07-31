@@ -2,6 +2,7 @@ package com.boombastic.mobile.ui.library
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -253,6 +254,8 @@ private fun PlaylistTrackRow(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
                 onClick = onClick,
                 onLongClick = onLongPress
             )
