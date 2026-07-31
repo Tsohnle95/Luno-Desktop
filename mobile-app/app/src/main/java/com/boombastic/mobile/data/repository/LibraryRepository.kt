@@ -43,6 +43,30 @@ class LibraryRepository(
         }
     }
 
+    /**
+     * Import for URIs already covered by a persisted **tree** grant
+     * (descendants of an imported music folder).  No per-file
+     * `takePersistableUriPermission` — that only works on the tree root
+     * itself and throws for child document URIs.
+     */
+    private suspend fun importTrackFromGrantedUri(uri: Uri): Result<Track> =
+        withContext(Dispatchers.IO) {
+            try {
+                if (trackDao.exists(uri.toString())) {
+                    return@withContext Result.failure(
+                        ImportException("Track already imported", ImportError.DUPLICATE)
+                    )
+                }
+                val track = extractMetadata(uri)
+                trackDao.insertTrack(track)
+                Result.success(track)
+            } catch (e: Exception) {
+                Result.failure(
+                    ImportException("Failed to import: ${e.message}", ImportError.IO_ERROR)
+                )
+            }
+        }
+
     suspend fun importMultipleUris(uris: List<Uri>): ImportResult {
         var imported = 0
         var duplicates = 0
@@ -107,7 +131,7 @@ class LibraryRepository(
                     if (isDir) {
                         importFolder(childUri, name)
                     } else if (isAudio(mime, name)) {
-                        val result = importAudioUri(childUri)
+                        val result = importTrackFromGrantedUri(childUri)
                         when {
                             result.isSuccess -> {
                                 val track = result.getOrThrow()

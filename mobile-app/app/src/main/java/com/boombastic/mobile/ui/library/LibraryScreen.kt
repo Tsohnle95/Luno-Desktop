@@ -1,7 +1,9 @@
 package com.boombastic.mobile.ui.library
 
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -18,13 +20,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -50,6 +56,7 @@ import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.components.PlaylistCard
+import com.boombastic.mobile.ui.components.PlaylistPickerSheet
 import com.boombastic.mobile.ui.components.TrackActionsSheet
 import com.boombastic.mobile.ui.components.TrackRowCard
 import com.boombastic.mobile.ui.home.SectionHeader
@@ -84,6 +91,13 @@ fun LibraryScreen(
     var query by rememberSaveable { mutableStateOf("") }
     var playlistView by rememberSaveable { mutableStateOf(false) }
     var playlistSortRecent by rememberSaveable { mutableStateOf(false) }
+
+    // Multi-select / batch actions (3-dot menu on the section header)
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedKeys by remember { mutableStateOf(setOf<String>()) }
+    var showBatchMenu by remember { mutableStateOf(false) }
+    var showBatchPlaylistPicker by remember { mutableStateOf(false) }
+    var showBatchRemoveConfirm by remember { mutableStateOf(false) }
 
     fun playlistHasActiveJobs(playlistId: Long): Boolean =
         downloads.any {
@@ -125,6 +139,26 @@ fun LibraryScreen(
     }
 
     val mediaTracks = sortedTracks.map { it.toMediaTrack() }
+
+    // Batch-action helpers: keys are track URIs in songs view, "p<id>" in
+    // playlist view.
+    val allKeys = if (playlistView) {
+        displayPlaylists.map { "p${it.playlist.id}" }.toSet()
+    } else {
+        sortedTracks.map { it.uri }.toSet()
+    }
+    val selectedSongs = selectedKeys.filter { !it.startsWith("p") }
+    val selectedPlaylistIds = selectedKeys.filter { it.startsWith("p") }
+        .mapNotNull { it.removePrefix("p").toLongOrNull() }
+
+    fun toggleSelection(key: String) {
+        selectedKeys = if (key in selectedKeys) selectedKeys - key else selectedKeys + key
+    }
+
+    fun exitSelection() {
+        selectionMode = false
+        selectedKeys = emptySet()
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -288,7 +322,21 @@ fun LibraryScreen(
         if (playlistView) {
             // Playlist view — all playlists, full-width cards
             item {
-                SectionHeader(title = "Playlists (${displayPlaylists.size})")
+                BatchSectionHeader(
+                    title = "Playlists (${displayPlaylists.size})",
+                    showMenu = showBatchMenu,
+                    onMenuToggle = { showBatchMenu = !showBatchMenu },
+                    onMenuDismiss = { showBatchMenu = false },
+                    selectionMode = selectionMode,
+                    selectedCount = selectedKeys.size,
+                    onSelectAll = {
+                        selectionMode = true
+                        selectedKeys = allKeys
+                    },
+                    onAddToPlaylist = { showBatchPlaylistPicker = true },
+                    onRemove = { showBatchRemoveConfirm = true },
+                    onCancelSelection = ::exitSelection
+                )
             }
             if (displayPlaylists.isEmpty()) {
                 item {
@@ -305,10 +353,18 @@ fun LibraryScreen(
                 }
             } else {
                 items(displayPlaylists, key = { it.playlist.id }) { playlistWithTracks ->
+                    val playlistKey = "p${playlistWithTracks.playlist.id}"
                     PlaylistCard(
                         playlist = playlistWithTracks.playlist,
                         tracks = playlistWithTracks.tracks,
-                        onClick = { onOpenPlaylist(playlistWithTracks.playlist.id) },
+                        selected = if (selectionMode) playlistKey in selectedKeys else null,
+                        onClick = {
+                            if (selectionMode) {
+                                toggleSelection(playlistKey)
+                            } else {
+                                onOpenPlaylist(playlistWithTracks.playlist.id)
+                            }
+                        },
                         onSync = {
                             if (playlistWithTracks.playlist.playlistUrl.isNotBlank()) {
                                 scope.launch {
@@ -339,7 +395,21 @@ fun LibraryScreen(
         } else {
             // All-songs view — every track in the track card layout
             item {
-                SectionHeader(title = "Tracks (${sortedTracks.size})")
+                BatchSectionHeader(
+                    title = "Tracks (${sortedTracks.size})",
+                    showMenu = showBatchMenu,
+                    onMenuToggle = { showBatchMenu = !showBatchMenu },
+                    onMenuDismiss = { showBatchMenu = false },
+                    selectionMode = selectionMode,
+                    selectedCount = selectedKeys.size,
+                    onSelectAll = {
+                        selectionMode = true
+                        selectedKeys = allKeys
+                    },
+                    onAddToPlaylist = { showBatchPlaylistPicker = true },
+                    onRemove = { showBatchRemoveConfirm = true },
+                    onCancelSelection = ::exitSelection
+                )
             }
             if (sortedTracks.isEmpty()) {
                 item {
@@ -359,17 +429,22 @@ fun LibraryScreen(
                     var showActions by remember { mutableStateOf(false) }
                     TrackRowCard(
                         track = track,
+                        selected = if (selectionMode) track.uri in selectedKeys else null,
                         onClick = {
-                            onPlay(
-                                MediaTrack(
-                                    uri = track.uri,
-                                    title = track.title,
-                                    artist = track.artist,
-                                    album = track.album,
-                                    durationMs = track.durationMs,
-                                    artworkUri = track.albumArtUri()
+                            if (selectionMode) {
+                                toggleSelection(track.uri)
+                            } else {
+                                onPlay(
+                                    MediaTrack(
+                                        uri = track.uri,
+                                        title = track.title,
+                                        artist = track.artist,
+                                        album = track.album,
+                                        durationMs = track.durationMs,
+                                        artworkUri = track.albumArtUri()
+                                    )
                                 )
-                            )
+                            }
                         },
                         onMenuClick = { showActions = true },
                         modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
@@ -452,6 +527,164 @@ fun LibraryScreen(
                 }
             }
         )
+    }
+
+    // Batch remove (multi-select) — metadata-only, files stay on the phone.
+    if (showBatchRemoveConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBatchRemoveConfirm = false },
+            containerColor = SurfaceDark,
+            titleContentColor = PrimaryText,
+            textContentColor = SecondaryText,
+            title = {
+                Text(
+                    if (playlistView) "Remove playlists from app?" else "Remove songs from app?"
+                )
+            },
+            text = {
+                Text(
+                    if (playlistView) {
+                        "${selectedPlaylistIds.size} playlist(s) will be removed from the app. " +
+                            "Songs stay in your library and the audio files stay on your phone."
+                    } else {
+                        "${selectedSongs.size} song(s) will be removed from your library and all " +
+                            "playlists. The audio files stay on your phone."
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        if (playlistView) {
+                            selectedPlaylistIds.forEach { app.playlistRepository.deletePlaylist(it) }
+                        } else {
+                            selectedSongs.forEach { app.libraryRepository.deleteTrack(it) }
+                        }
+                    }
+                    showBatchRemoveConfirm = false
+                    exitSelection()
+                }) {
+                    Text("Remove", color = AccentGreen)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchRemoveConfirm = false }) {
+                    Text("Cancel", color = SecondaryText)
+                }
+            }
+        )
+    }
+
+    // Batch add to playlist (multi-select)
+    if (showBatchPlaylistPicker) {
+        PlaylistPickerSheet(
+            onPick = { target ->
+                scope.launch {
+                    if (playlistView) {
+                        selectedPlaylistIds.forEach { id ->
+                            app.playlistRepository.getPlaylistWithTracks(id)
+                                ?.tracks?.forEach { track ->
+                                    app.playlistRepository.addTrackToPlaylist(target.id, track.uri)
+                                }
+                        }
+                    } else {
+                        selectedSongs.forEach { uri ->
+                            app.playlistRepository.addTrackToPlaylist(target.id, uri)
+                        }
+                    }
+                    Toast.makeText(
+                        context,
+                        "Added to ${target.name}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                showBatchPlaylistPicker = false
+                exitSelection()
+            },
+            onDismiss = { showBatchPlaylistPicker = false }
+        )
+    }
+}
+
+/**
+ * Section header row with the batch-actions 3-dot menu on the far right
+ * (gray dots).  Menu: Select all / Add to playlist / Remove from app /
+ * Cancel selection.
+ */
+@Composable
+private fun BatchSectionHeader(
+    title: String,
+    showMenu: Boolean,
+    onMenuToggle: () -> Unit,
+    onMenuDismiss: () -> Unit,
+    selectionMode: Boolean,
+    selectedCount: Int,
+    onSelectAll: () -> Unit,
+    onAddToPlaylist: () -> Unit,
+    onRemove: () -> Unit,
+    onCancelSelection: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = Dimens.paddingLarge, end = Dimens.paddingLarge),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = if (selectionMode) "$selectedCount selected" else title,
+            style = MaterialTheme.typography.titleMedium,
+            color = if (selectionMode) AccentGreen else PrimaryText,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+            modifier = Modifier
+                .weight(1f)
+                .padding(vertical = Dimens.paddingSmall)
+        )
+        Box {
+            IconButton(onClick = onMenuToggle) {
+                Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = "Batch actions",
+                    tint = SecondaryText
+                )
+            }
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = onMenuDismiss
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Select all", color = PrimaryText) },
+                    onClick = {
+                        onMenuDismiss()
+                        onSelectAll()
+                    }
+                )
+                if (selectionMode && selectedCount > 0) {
+                    DropdownMenuItem(
+                        text = { Text("Add to playlist", color = PrimaryText) },
+                        onClick = {
+                            onMenuDismiss()
+                            onAddToPlaylist()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Remove from app", color = PrimaryText) },
+                        onClick = {
+                            onMenuDismiss()
+                            onRemove()
+                        }
+                    )
+                }
+                if (selectionMode) {
+                    DropdownMenuItem(
+                        text = { Text("Cancel selection", color = PrimaryText) },
+                        onClick = {
+                            onMenuDismiss()
+                            onCancelSelection()
+                        }
+                    )
+                }
+            }
+        }
     }
 }
 

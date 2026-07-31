@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -33,14 +35,16 @@ import com.boombastic.mobile.ui.theme.SurfaceDark
 /**
  * Track row following the playlist-card UI layout: artwork thumbnail on
  * the left, title/artist beside it, green 3-dot options on the right, on
- * a dark gray rounded surface.
+ * a dark gray rounded surface.  When [selected] is non-null the row is in
+ * multi-select mode and shows a check indicator.
  */
 @Composable
 fun TrackRowCard(
     track: Track,
     onClick: () -> Unit,
     onMenuClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    selected: Boolean? = null
 ) {
     Row(
         modifier = modifier
@@ -49,6 +53,20 @@ fun TrackRowCard(
             .padding(Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (selected != null) {
+            Icon(
+                imageVector = if (selected) {
+                    Icons.Filled.CheckCircle
+                } else {
+                    Icons.Filled.RadioButtonUnchecked
+                },
+                contentDescription = if (selected) "Selected" else "Not selected",
+                tint = if (selected) AccentGreen else SecondaryText,
+                modifier = Modifier.size(Dimens.iconSize)
+            )
+            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+        }
+
         ArtworkImage(
             artworkUri = track.albumArtUri(),
             modifier = Modifier

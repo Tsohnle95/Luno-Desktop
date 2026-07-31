@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.UploadFile
@@ -118,6 +119,27 @@ fun MainShell(musicController: MusicController) {
     // ── Centralised one-shot notification-prompt policy ──────────────────────
     val policy = remember { NotificationPermissionPolicy.create(context) }
 
+    // Music-folder destination picker (Settings drawer) — sets the folder
+    // and imports it desktop-style (subfolders become playlists).
+    val folderImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: android.net.Uri? ->
+        if (uri != null) {
+            scope.launch {
+                (context.applicationContext as com.boombastic.mobile.BoomBasticApp)
+                    .musicFolderRepository.saveTreeUri(uri)
+                val result = (context.applicationContext as com.boombastic.mobile.BoomBasticApp)
+                    .libraryRepository.importLibraryTree(uri)
+                Toast.makeText(
+                    context,
+                    "Music folder set: ${result.imported} songs imported, " +
+                        "${result.duplicates} duplicates, ${result.errors} errors",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
     // Single ActivityResult permission launcher — survives recomposition.
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -169,6 +191,14 @@ fun MainShell(musicController: MusicController) {
                         navController.navigate(Routes.DOWNLOADS) {
                             launchSingleTop = true
                         }
+                    }
+                )
+                DrawerItem(
+                    icon = Icons.Filled.Folder,
+                    label = "Music folder",
+                    onClick = {
+                        scope.launch { drawerState.close() }
+                        folderImportLauncher.launch(null)
                     }
                 )
                 DrawerItem(

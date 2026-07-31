@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -33,6 +35,7 @@ import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
+import com.boombastic.mobile.ui.theme.SecondaryText
 import com.boombastic.mobile.ui.theme.SurfaceDark
 
 /**
@@ -54,7 +57,8 @@ fun PlaylistCard(
     onUrlChanged: ((String) -> Unit)? = null,
     onClearPlaylist: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    selected: Boolean? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -65,6 +69,20 @@ fun PlaylistCard(
             .padding(Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (selected != null) {
+            Icon(
+                imageVector = if (selected) {
+                    Icons.Filled.CheckCircle
+                } else {
+                    Icons.Filled.RadioButtonUnchecked
+                },
+                contentDescription = if (selected) "Selected" else "Not selected",
+                tint = if (selected) AccentGreen else SecondaryText,
+                modifier = Modifier.size(Dimens.iconSize)
+            )
+            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+        }
+
         ArtworkCollage(
             tracks = tracks,
             modifier = Modifier.size(Dimens.albumArtSmall),

@@ -7,6 +7,7 @@ import androidx.work.Configuration
 import com.boombastic.mobile.data.db.AppDatabase
 import com.boombastic.mobile.data.repository.DownloadRepository
 import com.boombastic.mobile.data.repository.LibraryRepository
+import com.boombastic.mobile.data.repository.MusicFolderRepository
 import com.boombastic.mobile.data.repository.PlaylistRepository
 import com.boombastic.mobile.playback.NewPipeDownloader
 import org.schabi.newpipe.extractor.NewPipe
@@ -24,6 +25,8 @@ class BoomBasticApp : Application(), Configuration.Provider {
         private set
     lateinit var downloadRepository: DownloadRepository
         private set
+    lateinit var musicFolderRepository: MusicFolderRepository
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -31,6 +34,7 @@ class BoomBasticApp : Application(), Configuration.Provider {
         libraryRepository = LibraryRepository(this, database.trackDao(), database.playlistDao())
         playlistRepository = PlaylistRepository(database.playlistDao(), database.trackDao())
         downloadRepository = DownloadRepository(database.downloadJobDao(), this)
+        musicFolderRepository = MusicFolderRepository(this)
 
         createDownloadNotificationChannel()
         CookieHandler.setDefault(CookieManager(null, CookiePolicy.ACCEPT_ALL))

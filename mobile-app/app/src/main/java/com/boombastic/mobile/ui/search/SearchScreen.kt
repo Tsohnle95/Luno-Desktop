@@ -108,7 +108,8 @@ fun SearchScreen(
     }
 
     // Desktop-style folder import: subfolders become playlists (folder name
-    // = playlist name), files at the root land in "Unsorted".
+    // = playlist name), files at the root land in "Unsorted".  The chosen
+    // folder is persisted as the app's music-folder destination.
     var folderImportState by remember { mutableStateOf<FolderImportState?>(null) }
     val folderImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -116,12 +117,19 @@ fun SearchScreen(
         if (uri != null) {
             folderImportState = FolderImportState(0, 0, 0)
             scope.launch {
-                app.libraryRepository.importLibraryTree(
+                app.musicFolderRepository.saveTreeUri(uri)
+                val result = app.libraryRepository.importLibraryTree(
                     treeUri = uri,
                     onProgress = { imported, duplicates, errors ->
                         folderImportState = FolderImportState(imported, duplicates, errors)
                     }
                 )
+                Toast.makeText(
+                    context,
+                    "Imported ${result.imported} songs " +
+                        "(${result.duplicates} duplicates, ${result.errors} errors)",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
     }
