@@ -316,6 +316,15 @@ class MusicController @JvmOverloads constructor(
     }
 
     /**
+     * Sets ExoPlayer shuffle mode explicitly on the connected player.
+     * No-op before connection.
+     */
+    fun setShuffle(enabled: Boolean) {
+        if (released) return
+        controller?.shuffleModeEnabled = enabled
+    }
+
+    /**
      * Snapshot of the current playback queue (in playback order) derived from
      * the connected player's media items.  Empty before connection.
      */

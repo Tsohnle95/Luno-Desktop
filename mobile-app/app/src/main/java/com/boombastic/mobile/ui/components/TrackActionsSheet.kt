@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material3.AlertDialog
@@ -19,6 +20,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -27,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +45,7 @@ import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
 import com.boombastic.mobile.ui.theme.SurfaceDark
+import com.boombastic.mobile.ui.theme.SurfaceElevated
 import kotlinx.coroutines.launch
 
 /**
@@ -60,8 +65,32 @@ fun TrackActionsSheet(
     val scope = rememberCoroutineScope()
     var showPlaylistPicker by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showNewPlaylistDialog by remember { mutableStateOf(false) }
 
-    if (showPlaylistPicker) {
+    if (showNewPlaylistDialog) {
+        NewPlaylistForTrackDialog(
+            trackTitle = track.title,
+            onDismiss = { showNewPlaylistDialog = false },
+            onCreate = { name, description ->
+                scope.launch {
+                    app.playlistRepository.createPlaylist(name, description)
+                        .onSuccess { playlist ->
+                            app.playlistRepository.addTrackToPlaylist(
+                                playlistId = playlist.id,
+                                trackUri = track.uri
+                            )
+                            Toast.makeText(
+                                context,
+                                "Created \"${playlist.name}\"",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                }
+                showNewPlaylistDialog = false
+                onDismiss()
+            }
+        )
+    } else if (showPlaylistPicker) {
         val playlists by app.playlistRepository.getAllPlaylists().collectAsState(initial = emptyList())
         ModalBottomSheet(
             onDismissRequest = { showPlaylistPicker = false },
@@ -79,9 +108,15 @@ fun TrackActionsSheet(
                 )
                 Spacer(modifier = Modifier.height(Dimens.paddingMedium))
 
+                TrackActionRow(
+                    icon = Icons.Filled.Add,
+                    label = "New playlist",
+                    onClick = { showNewPlaylistDialog = true }
+                )
+
                 if (playlists.isEmpty()) {
                     Text(
-                        text = "No playlists yet. Create one in Your Library.",
+                        text = "No playlists yet.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = SecondaryText,
                         modifier = Modifier.padding(vertical = Dimens.paddingMedium)
@@ -206,4 +241,79 @@ private fun TrackActionRow(
             color = PrimaryText
         )
     }
+}
+
+/** Creates a new playlist (and adds the long-pressed track to it). */
+@Composable
+private fun NewPlaylistForTrackDialog(
+    trackTitle: String,
+    onDismiss: () -> Unit,
+    onCreate: (String, String) -> Unit
+) {
+    var name by rememberSaveable { mutableStateOf("") }
+    var description by rememberSaveable { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SurfaceDark,
+        titleContentColor = PrimaryText,
+        textContentColor = PrimaryText,
+        title = { Text("New playlist") },
+        text = {
+            Column {
+                Text(
+                    text = "Add \"$trackTitle\" to a new playlist.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SecondaryText
+                )
+                Spacer(modifier = Modifier.height(Dimens.paddingMedium))
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Playlist name", color = SecondaryText) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = PrimaryText,
+                        unfocusedTextColor = PrimaryText,
+                        cursorColor = AccentGreen,
+                        focusedBorderColor = AccentGreen,
+                        unfocusedBorderColor = SurfaceElevated,
+                        focusedContainerColor = SurfaceDark,
+                        unfocusedContainerColor = SurfaceDark
+                    )
+                )
+                Spacer(modifier = Modifier.height(Dimens.paddingSmall))
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Description (optional)", color = SecondaryText) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = PrimaryText,
+                        unfocusedTextColor = PrimaryText,
+                        cursorColor = AccentGreen,
+                        focusedBorderColor = AccentGreen,
+                        unfocusedBorderColor = SurfaceElevated,
+                        focusedContainerColor = SurfaceDark,
+                        unfocusedContainerColor = SurfaceDark
+                    )
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onCreate(name.trim(), description.trim()) },
+                enabled = name.isNotBlank()
+            ) {
+                Text("Create", color = AccentGreen)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = SecondaryText)
+            }
+        }
+    )
 }

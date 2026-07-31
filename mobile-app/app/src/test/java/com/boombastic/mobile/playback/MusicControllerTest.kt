@@ -273,6 +273,12 @@ class MusicControllerTest {
     }
 
     @Test
+    fun `setShuffle does not throw before connection`() {
+        controller.setShuffle(true)
+        controller.setShuffle(false)
+    }
+
+    @Test
     fun `getQueue returns empty before connection`() {
         assertThat(controller.getQueue()).isEmpty()
     }

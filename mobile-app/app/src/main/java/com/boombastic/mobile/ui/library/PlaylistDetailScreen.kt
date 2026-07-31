@@ -1,15 +1,12 @@
 package com.boombastic.mobile.ui.library
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -45,6 +42,7 @@ import com.boombastic.mobile.data.db.dao.PlaylistWithTracks
 import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
+import com.boombastic.mobile.ui.components.ArtworkCollage
 import com.boombastic.mobile.ui.components.ArtworkImage
 import com.boombastic.mobile.ui.components.TrackActionsSheet
 import com.boombastic.mobile.ui.player.formatTime
@@ -52,7 +50,6 @@ import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
-import com.boombastic.mobile.ui.theme.SurfaceDark
 
 /**
  * Playlist detail view (Spotify-inspired): a 2x2 collage of up to four
@@ -121,7 +118,7 @@ fun PlaylistDetailScreen(
         } else if (tracks.isEmpty()) {
             // Header without tracks
             item {
-                PlaylistCollage(
+                ArtworkCollage(
                     tracks = tracks,
                     modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                 )
@@ -146,7 +143,7 @@ fun PlaylistDetailScreen(
         } else {
             // Header: 2x2 collage of the first four track artworks
             item {
-                PlaylistCollage(
+                ArtworkCollage(
                     tracks = tracks,
                     modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                 )
@@ -222,44 +219,6 @@ private fun PlaylistHeader(
                 )
                 Spacer(modifier = Modifier.width(Dimens.paddingSmall))
                 Text("Play")
-            }
-        }
-    }
-}
-
-/** 2x2 square collage of up to four track artworks (Spotify playlist header). */
-@Composable
-private fun PlaylistCollage(
-    tracks: List<Track>,
-    modifier: Modifier = Modifier
-) {
-    val cells = tracks.take(4)
-
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .aspectRatio(1f)
-            .clip(RoundedCornerShape(Dimens.cornerLarge))
-            .background(SurfaceDark)
-    ) {
-        for (row in 0 until 2) {
-            Row(modifier = Modifier.weight(1f)) {
-                for (col in 0 until 2) {
-                    val index = row * 2 + col
-                    val track = cells.getOrNull(index)
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        ArtworkImage(
-                            artworkUri = track?.albumArtUri(),
-                            modifier = Modifier.fillMaxSize(),
-                            placeholderIconSize = 36.dp
-                        )
-                    }
-                }
             }
         }
     }

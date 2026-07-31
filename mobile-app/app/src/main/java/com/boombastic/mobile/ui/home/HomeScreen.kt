@@ -189,7 +189,8 @@ fun HomeScreen(
             }
         }
 
-        // Quick-action playlists — two cards per horizontal block
+        // Quick-action playlists — horizontal carousel (same layout as
+        // "Made for you"), edge-clipped
         item {
             SectionHeader(title = "Your playlists")
         }
@@ -202,22 +203,18 @@ fun HomeScreen(
                 )
             }
         } else {
-            playlistsWithTracks.chunked(2).forEach { rowPlaylists ->
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = Dimens.paddingLarge),
-                        horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium)
-                    ) {
-                        rowPlaylists.forEach { playlistWithTracks ->
-                            PlaylistCard(
-                                playlist = playlistWithTracks.playlist,
-                                thumbnailUri = playlistWithTracks.tracks.firstOrNull()?.albumArtUri(),
-                                onClick = { onOpenPlaylist(playlistWithTracks.playlist.id) },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
+            item {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+                    contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
+                ) {
+                    items(playlistsWithTracks, key = { it.playlist.id }) { playlistWithTracks ->
+                        PlaylistCard(
+                            playlist = playlistWithTracks.playlist,
+                            thumbnailUri = playlistWithTracks.tracks.firstOrNull()?.albumArtUri(),
+                            onClick = { onOpenPlaylist(playlistWithTracks.playlist.id) },
+                            modifier = Modifier.width(200.dp)
+                        )
                     }
                 }
             }

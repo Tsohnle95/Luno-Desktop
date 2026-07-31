@@ -243,7 +243,15 @@ fun MainShell(musicController: MusicController) {
                                             Icon(
                                                 imageVector = ImageVector.vectorResource(id = item.icon),
                                                 contentDescription = item.label,
-                                                modifier = Modifier.padding(Dimens.paddingSmall)
+                                                // Search (and Create below) render at 28dp — their
+                                                // glyphs are optically smaller than the other tabs.
+                                                modifier = Modifier.size(
+                                                    if (item.route == Routes.SEARCH) {
+                                                        Dimens.iconSizeMedium
+                                                    } else {
+                                                        Dimens.bottomNavIconSize
+                                                    }
+                                                )
                                             )
                                         },
                                         label = {
@@ -270,7 +278,7 @@ fun MainShell(musicController: MusicController) {
                                         Icon(
                                             imageVector = ImageVector.vectorResource(id = R.drawable.ic_create),
                                             contentDescription = "Create",
-                                            modifier = Modifier.padding(Dimens.paddingSmall)
+                                            modifier = Modifier.size(Dimens.iconSizeMedium)
                                         )
                                     },
                                     label = {
