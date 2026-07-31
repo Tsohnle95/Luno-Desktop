@@ -1,10 +1,10 @@
-# 🧠 Project Brain: BoomBastic Native Android App
+# 🧠 Project Brain: Luno Native Android App
 
 > [!IMPORTANT]
 > **MAINTENANCE INSTRUCTIONS FOR AI/HUMANS:**
 > This document is the authoritative knowledge base for the **implemented** BoomBastic native Android app under `mobile-app/`, including its planned extensions. It must be updated whenever settled decisions change.
 >
-> **Last verified and updated:** 2026-07-30 (Folder import fixed — per-file permission persist on tree descendants removed; persisted music-folder destination in Settings drawer + Search tab; Library batch multi-select (select all / add to playlist / remove from app); refreshed baseline checks — 93/93 unit tests, lint PASS)
+> **Last verified and updated:** 2026-07-31 (App rebranded to "Luno" — app_name + About toast; desktop-style header "Luno ▮" at top of the screen via MainShell; GitHub CI workflow removed (no more tests on commit); refreshed baseline checks — 97/97 unit tests, lint PASS)
 >
 > **Authority policy (descending):**
 > 1. **Source code + tests + config** in this repo (highest truth)
@@ -27,7 +27,7 @@
 
 ## Product Direction
 
-BoomBastic is a **native Android offline-first music player** in the same monorepo as the desktop Vibe Music Player and its Flet mobile/desktop-capable port. The architecture is **Kotlin + Jetpack Compose + Media3**. **As of this writing Kotlin, Compose, Media3, and Room source exist** under `mobile-app/` — the native stack foundation is implemented and committed to the repository.
+Luno is a **native Android offline-first music player** in the same monorepo as the desktop Vibe Music Player and its Flet mobile/desktop-capable port. The architecture is **Kotlin + Jetpack Compose + Media3**. **As of this writing Kotlin, Compose, Media3, and Room source exist** under `mobile-app/` — the native stack foundation is implemented and committed to the repository.
 
 **Current repo state (desktop/Flet legacy alongside native):**
 - `music_player_flet.py` — Flet-based mobile/desktop prototype using **Pygame** audio backend, 3-tab responsive layout (Library/Player/Settings), mini-player, bottom nav on mobile, sidebar layout on desktop ([source](../music_player_flet.py))
@@ -99,8 +99,8 @@ boomtastic/
 │   │       │       │       ├── LibraryRepository.kt  # SAF import, MediaMetadataRetriever, dedupe
 │   │       │       │       └── PlaylistRepository.kt # CRUD, validation, sort order mgmt
 │   │       │       └── ui/
-│   │       │           ├── shell/
-│   │       │           │   └── MainShell.kt          # ModalNavigationDrawer ("Settings" header: Downloads, Export/Import, About, Update check) + Scaffold + BottomNav (Home/Search/Library/Discover/Create) + MiniPlayer (hidden on full player)
+│   │           │   ├── shell/
+│   │           │   │   └── MainShell.kt          # ModalNavigationDrawer ("Settings" header: Downloads, Export/Import, About, Update check) + AppHeader ("Luno" + green bar) + Scaffold + BottomNav (Home/Search/Library/Discover/Create) + MiniPlayer (hidden on full player)
 │   │       │           ├── navigation/
 │   │       │           │   └── NavGraph.kt           # NavHost: Home / Search / Library / Discover / Downloads (drawer) / full_player
 │   │       │           ├── theme/
@@ -141,7 +141,8 @@ boomtastic/
 │   │           │   ├── TrackDaoTest.kt               # 11 tests: CRUD, search, dedupe, count
 │   │           │   └── PlaylistDaoTest.kt            # 7 tests: CRUD, cascade, sortOrder
 │   │           ├── data/repository/
-│   │           │   └── PlaylistRepositoryTest.kt     # 5 tests: validation, CRUD, trim
+│   │           │   ├── LibraryRepositoryTest.kt    # 4 tests: SAF tree + multi-picker folder recursion (fake DocumentsProvider)
+│   │           │   └── PlaylistRepositoryTest.kt   # 5 tests: validation, CRUD, trim
 │   │           └── playback/
 │   │               ├── NotificationPermissionPolicyTest.kt # 11 tests: permission policy matrix
 │   │               └── MusicControllerTest.kt        # Added contract tests; final reviewer did not verify compilation
@@ -333,9 +334,9 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 - **Spotify-style Home (2026-07-30):** `HomeScreen` matches the visual-spec contract: greeting ("Good morning/afternoon/evening" + name) with a **36dp green-circle settings icon** (22dp Person glyph, no IconButton padding, 14dp spacing below), **edge-clipped horizontal carousels** ("Recently played" — current track; "Made for you" — first 10 library tracks until Last.fm lands), and a **quick-action playlist grid** (two shared PlaylistCards per row). "Your top genres" remains unimplemented (no genre metadata).
 - **Playlist detail screen (2026-07-30):** `ui/library/PlaylistDetailScreen.kt` at route `playlist/{playlistId}` (opened by tapping any playlist card on Home or Library). Spotify-inspired header: **2x2 collage of up to four track artworks** filling a rounded square, playlist name, description, "N songs · total duration", green Play button (plays the whole playlist via `MusicController.play(tracks, 0)`), then the track list — tap plays the playlist from that track, long-press opens `TrackActionsSheet`. Not yet implemented (desktop parity): sort options, search within playlist, drag-to-reorder, download-all toggle.
 - **Recently-played history (2026-07-30):** `MusicController` now keeps an **in-session recently-played array** (`recentlyPlayed: StateFlow<List<MediaTrack>>`, most recent first, max 100 per desktop convention), populated from `onMediaItemTransition` + state hydration (consecutive duplicates coalesced). **Home's "Recently played" section is now a swipeable edge-clipped horizontal carousel of the full history** (up to 20, same layout as "Made for you"; tapping a card replays it). Not yet persisted across app restarts — Room `HistoryEntry` remains planned.
-- **Desktop-style folder import (2026-07-30):** `LibraryRepository.importLibraryTree(treeUri, onProgress)` imports a whole music root picked via SAF `ACTION_OPEN_DOCUMENT_TREE`, mirroring desktop `scan_library`: **each subfolder becomes a playlist named after the folder** (created on demand, merge-safe via name lookup + IGNORE dedupe), files directly in the root land in the **"Unsorted"** playlist. Audio detection by MIME type or extension; embedded artwork/metadata extraction reuses `importAudioUri`. The Search screen's Library tab has an "Import music folder (playlists by folder)" button with live `imported/duplicates/errors` progress. Root URI permission persisted.
+- **Desktop-style folder import (2026-07-30):** `LibraryRepository.importLibraryTree(treeUri, onProgress)` imports a whole music root picked via SAF `ACTION_OPEN_DOCUMENT_TREE`, mirroring desktop `scan_library`: **each subfolder becomes a playlist named after the folder** (created on demand, merge-safe via name lookup + IGNORE dedupe), files directly in the root land in the **"Unsorted"** playlist. Audio detection by MIME type or extension; embedded artwork/metadata extraction reuses `importAudioUri`. The Search screen's Library tab has an "Import music folder (playlists by folder)" button with live `imported/duplicates/errors` progress. Root URI permission persisted. **Recursion fixed 2026-07-31:** subfolders are enumerated via `buildChildDocumentsUriUsingTree` (`…/children`) and every descendant URI is built from the **original tree root** + document id (`buildDocumentUriUsingTree`) — the previous code built children from child document URIs, producing nested `tree/…/document/…/document/…` URIs the provider cannot resolve, so folder contents were silently skipped. **Multi-picker folders (2026-07-31):** when the file picker returns directory documents (Samsung pickers allow selecting folders), `importMultipleUris` now recurses into them with the same folder-name = playlist-name semantics instead of importing one bogus "track" per folder; a directory guard in `importAudioUri` keeps folders from ever becoming tracks. Regression-covered by `LibraryRepositoryTest` (fake SAF `DocumentsProvider`, 4 tests).
 - **Home tab always returns Home (2026-07-30):** Tapping the Home bottom-nav item now `popBackStack`s to the Home route (falling back to navigate) instead of the tab-style `popUpTo(saveState)` — you can never get "stuck" on the Downloads screen or any drawer/deep route.
-- **CI emulator job removed (2026-07-30):** `.github/workflows/android.yml` no longer runs the API 34 emulator `connectedDebugAndroidTest` job (the recurring failed GitHub check). CI is now JVM-only: assemble + unit tests + lint (+ report upload on failure).
+- **CI workflow removed (2026-07-31):** `.github/workflows/android.yml` deleted — no GitHub Actions run on push/PR.
 - **Stop All fixed (2026-07-30):** `stopAllActive()` previously cancelled jobs by stored work ID — running playlist syncs kept spawning new downloads. Every download work now shares tag `DownloadWorker.TAG_DOWNLOAD` and every sync shares `PlaylistSyncWorker.TAG_PLAYLIST_SYNC`; Stop All cancels by tag (reaching sync workers + their spawned downloads) and marks active jobs CANCELLED.
 - **Library sorting (2026-07-30):** Tracks are listed **alphabetically** (case-insensitive title). Playlist view defaults to **A–Z** with a **"Sort: Recent"** toggle (by `Playlist.createdAt`) in the filter row; both are driven by `Track.addedAt` / `Playlist.createdAt` which are populated at import/download/create time.
 - **Search tab lists nothing by default (2026-07-30):** The Search screen's Library tab shows "Songs appear here when you search." until a query is typed — it no longer dumps the whole library.

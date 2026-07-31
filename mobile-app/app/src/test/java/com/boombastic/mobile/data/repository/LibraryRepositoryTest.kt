@@ -1,0 +1,278 @@
+package com.boombastic.mobile.data.repository
+
+import android.content.ContentProvider
+import android.content.ContentValues
+import android.content.Context
+import android.database.Cursor
+import android.database.MatrixCursor
+import android.net.Uri
+import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.boombastic.mobile.data.db.AppDatabase
+import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.annotation.Config
+import java.io.File
+import java.io.FileNotFoundException
+
+/**
+ * Regression tests for SAF import recursion.
+ *
+ * The old implementation built child document URIs from a child document
+ * URI, producing nested `tree/.../document/.../document/...` URIs (and
+ * queried document URIs expecting children).  These tests pin the correct
+ * behavior: tree children are enumerated via `.../children` and every
+ * descendant URI is built from the original tree root, so subfolder
+ * contents are imported into playlists named after their folders.
+ */
+@RunWith(AndroidJUnit4::class)
+@Config(manifest = Config.NONE, sdk = [34])
+class LibraryRepositoryTest {
+
+    private lateinit var database: AppDatabase
+    private lateinit var repository: LibraryRepository
+
+    @Before
+    fun setUp() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        database = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java).build()
+        repository = LibraryRepository(
+            context = context,
+            trackDao = database.trackDao(),
+            playlistDao = database.playlistDao(),
+            uriPermissionPersister = LibraryRepository.UriPermissionPersister { }
+        )
+        Robolectric.setupContentProvider(
+            FakeDocumentsProvider::class.java,
+            FakeDocumentsProvider.AUTHORITY
+        )
+    }
+
+    @After
+    fun tearDown() {
+        database.close()
+    }
+
+    private fun treeRootUri(): Uri =
+        Uri.parse("content://${FakeDocumentsProvider.AUTHORITY}/tree/root")
+
+    private suspend fun playlistNames(): List<String> =
+        database.playlistDao().getAllPlaylists().first().map { it.name }
+
+    private suspend fun trackTitles(): List<String> =
+        database.trackDao().getAllTracks().first().map { it.title }
+
+    @Test
+    fun importLibraryTree_importsNestedFolderContentsIntoPlaylists() = runBlocking<Unit> {
+        val result = repository.importLibraryTree(treeRootUri())
+
+        assertThat(result.imported).isEqualTo(5)
+        assertThat(result.duplicates).isEqualTo(0)
+        assertThat(result.errors).isEqualTo(0)
+
+        assertThat(trackTitles()).containsExactly(
+            "album1", "song1", "song2", "deep1", "only"
+        )
+
+        // Root file lands in "Unsorted"; each folder becomes a playlist.
+        assertThat(playlistNames()).containsExactly(
+            "Unsorted", "Folder A", "Folder B", "Sub"
+        )
+        val unsorted = database.playlistDao().getPlaylistByName("Unsorted")!!
+        val folderA = database.playlistDao().getPlaylistByName("Folder A")!!
+        val folderB = database.playlistDao().getPlaylistByName("Folder B")!!
+        val sub = database.playlistDao().getPlaylistByName("Sub")!!
+        assertThat(database.playlistDao().trackCount(unsorted.id)).isEqualTo(1)
+        assertThat(database.playlistDao().trackCount(folderA.id)).isEqualTo(2)
+        assertThat(database.playlistDao().trackCount(folderB.id)).isEqualTo(1)
+        assertThat(database.playlistDao().trackCount(sub.id)).isEqualTo(1)
+    }
+
+    @Test
+    fun importLibraryTree_secondRunReportsAllDuplicates() = runBlocking<Unit> {
+        repository.importLibraryTree(treeRootUri())
+        val result = repository.importLibraryTree(treeRootUri())
+
+        assertThat(result.imported).isEqualTo(0)
+        assertThat(result.duplicates).isEqualTo(5)
+        assertThat(result.errors).isEqualTo(0)
+    }
+
+    @Test
+    fun importMultipleUris_folderSelected_importsContentsAsPlaylist() = runBlocking<Unit> {
+        val folderUri = Uri.parse(
+            "content://${FakeDocumentsProvider.AUTHORITY}/document/root%2FFolder%20A"
+        )
+        val result = repository.importMultipleUris(listOf(folderUri))
+
+        assertThat(result.imported).isEqualTo(3)
+        assertThat(result.duplicates).isEqualTo(0)
+        assertThat(result.errors).isEqualTo(0)
+
+        assertThat(trackTitles()).containsExactly("song1", "song2", "deep1")
+        assertThat(playlistNames()).containsExactly("Folder A", "Sub")
+    }
+
+    @Test
+    fun importMultipleUris_filesImportWithoutPlaylist() = runBlocking<Unit> {
+        val fileUri = Uri.parse(
+            "content://${FakeDocumentsProvider.AUTHORITY}/document/root%2Falbum1.mp3"
+        )
+        val result = repository.importMultipleUris(listOf(fileUri))
+
+        assertThat(result.imported).isEqualTo(1)
+        assertThat(result.errors).isEqualTo(0)
+        assertThat(trackTitles()).containsExactly("album1")
+        assertThat(playlistNames()).isEmpty()
+    }
+
+    /**
+     * Minimal in-memory SAF provider emulating an external-storage
+     * DocumentsProvider: querying a document URI returns the document
+     * itself; `.../children` returns its children; the bare tree URI
+     * returns the tree root's children.
+     */
+    class FakeDocumentsProvider : ContentProvider() {
+
+        private data class FakeDoc(
+            val id: String,
+            val name: String,
+            val mime: String,
+            val children: List<String> = emptyList()
+        )
+
+        private val docs: Map<String, FakeDoc> = listOf(
+            FakeDoc(ROOT_ID, "Music", DIR, listOf("root/album1.mp3", "root/Folder A", "root/Folder B")),
+            FakeDoc("root/album1.mp3", "album1.mp3", AUDIO),
+            FakeDoc("root/Folder A", "Folder A", DIR, listOf("root/Folder A/song1.mp3", "root/Folder A/song2.mp3", "root/Folder A/Sub")),
+            FakeDoc("root/Folder A/song1.mp3", "song1.mp3", AUDIO),
+            FakeDoc("root/Folder A/song2.mp3", "song2.mp3", AUDIO),
+            FakeDoc("root/Folder A/Sub", "Sub", DIR, listOf("root/Folder A/Sub/deep1.flac")),
+            FakeDoc("root/Folder A/Sub/deep1.flac", "deep1.flac", AUDIO),
+            FakeDoc("root/Folder B", "Folder B", DIR, listOf("root/Folder B/only.mp3")),
+            FakeDoc("root/Folder B/only.mp3", "only.mp3", AUDIO)
+        ).associateBy { it.id }
+
+        override fun onCreate(): Boolean = true
+
+        override fun query(
+            uri: Uri,
+            projection: Array<out String>?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+            sortOrder: String?
+        ): Cursor {
+            val segments = uri.pathSegments ?: return emptyCursor(projection)
+            return when {
+                // Bare tree URI → the tree root's children.
+                segments.size == 2 && segments[0] == "tree" ->
+                    childrenCursor(ROOT_ID, projection)
+                // tree/<treeId>/document/<docId> → the document itself.
+                segments.size == 4 && segments[0] == "tree" && segments[2] == "document" ->
+                    documentCursor(segments[3], projection)
+                // tree/<treeId>/document/<docId>/children → the folder's children.
+                segments.size == 5 && segments[0] == "tree" &&
+                    segments[2] == "document" && segments[4] == "children" ->
+                    childrenCursor(segments[3], projection)
+                // document/<docId> → the document itself.
+                segments.size == 2 && segments[0] == "document" ->
+                    documentCursor(segments[1], projection)
+                // document/<docId>/children → the folder's children.
+                segments.size == 3 && segments[0] == "document" && segments[2] == "children" ->
+                    childrenCursor(segments[1], projection)
+                else -> emptyCursor(projection)
+            }
+        }
+
+        override fun getType(uri: Uri): String = docs[documentIdOf(uri)]?.mime ?: "application/octet-stream"
+
+        override fun insert(uri: Uri, values: ContentValues?): Uri =
+            throw UnsupportedOperationException()
+
+        override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int =
+            throw UnsupportedOperationException()
+
+        override fun update(
+            uri: Uri,
+            values: ContentValues?,
+            selection: String?,
+            selectionArgs: Array<out String>?
+        ): Int = throw UnsupportedOperationException()
+
+        override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+            val file = File(System.getProperty("java.io.tmpdir"), "fake-audio.bin")
+            file.writeBytes(ByteArray(4))
+            return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        }
+
+        private fun documentIdOf(uri: Uri): String {
+            val segments = uri.pathSegments ?: return ""
+            return if (segments.size >= 4 && segments[0] == "tree") {
+                segments[3]
+            } else {
+                segments.getOrNull(1) ?: ""
+            }
+        }
+
+        private fun documentCursor(documentId: String, projection: Array<out String>?): Cursor {
+            val doc = docs[documentId] ?: return emptyCursor(projection)
+            return matrixCursor(
+                projection,
+                listOf(rowOf(doc.id, doc.name, doc.mime))
+            )
+        }
+
+        private fun childrenCursor(documentId: String, projection: Array<out String>?): Cursor {
+            val parent = docs[documentId] ?: return emptyCursor(projection)
+            return matrixCursor(
+                projection,
+                parent.children.mapNotNull { childId ->
+                    docs[childId]?.let { rowOf(it.id, it.name, it.mime) }
+                }
+            )
+        }
+
+        private fun rowOf(id: String, name: String, mime: String): Map<String, Any?> = mapOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID to id,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME to name,
+            DocumentsContract.Document.COLUMN_MIME_TYPE to mime,
+            DocumentsContract.Document.COLUMN_SIZE to 0L
+        )
+
+        private fun matrixCursor(
+            projection: Array<out String>?,
+            rows: List<Map<String, Any?>>
+        ): Cursor {
+            val columns = projection ?: arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE
+            )
+            val cursor = MatrixCursor(columns)
+            for (row in rows) {
+                cursor.addRow(columns.map { row[it] })
+            }
+            return cursor
+        }
+
+        private fun emptyCursor(projection: Array<out String>?): Cursor =
+            MatrixCursor(projection ?: arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID))
+
+        companion object {
+            const val AUTHORITY = "com.boombastic.test.documents"
+            const val ROOT_ID = "root"
+            private const val DIR = DocumentsContract.Document.MIME_TYPE_DIR
+            private const val AUDIO = "audio/mpeg"
+        }
+    }
+}

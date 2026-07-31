@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,6 +54,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.vectorResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
@@ -214,7 +216,7 @@ fun MainShell(musicController: MusicController) {
                     label = "About",
                     onClick = {
                         scope.launch { drawerState.close() }
-                        Toast.makeText(context, "BoomBastic v0.1.0", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Luno v0.1.0", Toast.LENGTH_SHORT).show()
                     }
                 )
                 DrawerItem(
@@ -343,14 +345,32 @@ fun MainShell(musicController: MusicController) {
                     }
                 }
             ) { innerPadding ->
-                BoomBasticNavHost(
-                    navController = navController,
-                    musicController = musicController,
-                    modifier = Modifier.padding(innerPadding),
-                    onCreatePlaylist = { showCreateSheet = true },
-                    onPlay = onPlay,
-                    onOpenOptions = { scope.launch { drawerState.open() } }
-                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                ) {
+                    // App header: "Luno" with the small green bar to its
+                    // right (desktop sidebar logo style).  Hidden on the
+                    // full player, which is truly full-screen.
+                    if (currentRoute != Routes.FULL_PLAYER) {
+                        AppHeader()
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    ) {
+                        BoomBasticNavHost(
+                            navController = navController,
+                            musicController = musicController,
+                            modifier = Modifier.fillMaxSize(),
+                            onCreatePlaylist = { showCreateSheet = true },
+                            onPlay = onPlay,
+                            onOpenOptions = { scope.launch { drawerState.open() } }
+                        )
+                    }
+                }
             }
 
             // Create Playlist modal
@@ -360,6 +380,37 @@ fun MainShell(musicController: MusicController) {
                 )
             }
         }
+    }
+}
+
+/**
+ * Desktop-style app header: bold "Luno" wordmark with the small green
+ * rounded bar (the desktop's green "▮") immediately to its right,
+ * aligned to the text baseline.
+ */
+@Composable
+private fun AppHeader() {
+    Row(
+        verticalAlignment = Alignment.Bottom,
+        modifier = Modifier.padding(
+            start = Dimens.paddingLarge,
+            top = Dimens.paddingMedium,
+            bottom = Dimens.paddingSmall
+        )
+    ) {
+        Text(
+            text = "Luno",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            color = PrimaryText
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Box(
+            modifier = Modifier
+                .size(width = 5.dp, height = 13.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(AccentGreen)
+        )
     }
 }
 

@@ -29,6 +29,14 @@ class LibraryRepository(
                 )
             }
 
+            // A folder is never a track — recurse into it instead of
+            // importing a bogus "track" named after the folder.
+            if (isDirectoryDocument(uri)) {
+                return@withContext Result.failure(
+                    ImportException("Selected a folder, not a track", ImportError.IO_ERROR)
+                )
+            }
+
             // Persist read URI permission using the injectable persister
             uriPermissionPersister.persistReadPermission(uri)
 
@@ -67,25 +75,35 @@ class LibraryRepository(
             }
         }
 
-    suspend fun importMultipleUris(uris: List<Uri>): ImportResult {
-        var imported = 0
-        var duplicates = 0
-        var errors = 0
+    suspend fun importMultipleUris(uris: List<Uri>): ImportResult = withContext(Dispatchers.IO) {
+        val counters = ImportCounters()
 
         for (uri in uris) {
-            val result = importAudioUri(uri)
-            if (result.isSuccess) {
-                imported++
+            if (isDirectoryDocument(uri)) {
+                // A folder selected in the file picker (some pickers, e.g.
+                // Samsung's, allow selecting folders): import its audio
+                // contents desktop-style (folder name = playlist name)
+                // instead of treating the folder as a single track.
+                val name = documentDisplayName(uri)?.takeIf { it.isNotBlank() }
+                    ?: uri.lastPathSegment?.substringAfterLast('/')
+                    ?: UNSORTED_PLAYLIST
+                importDocumentFolder(uri, name, counters)
             } else {
-                val error = result.exceptionOrNull()
-                if (error is ImportException && error.error == ImportError.DUPLICATE) {
-                    duplicates++
+                val result = importAudioUri(uri)
+                if (result.isSuccess) {
+                    counters.imported++
                 } else {
-                    errors++
+                    val error = result.exceptionOrNull()
+                    if (error is ImportException && error.error == ImportError.DUPLICATE) {
+                        counters.duplicates++
+                    } else {
+                        counters.errors++
+                    }
                 }
             }
         }
-        return ImportResult(imported, duplicates, errors)
+
+        ImportResult(counters.imported, counters.duplicates, counters.errors)
     }
 
     /**
@@ -101,75 +119,139 @@ class LibraryRepository(
         treeUri: Uri,
         onProgress: (imported: Int, duplicates: Int, errors: Int) -> Unit = { _, _, _ -> }
     ): ImportResult {
-        var imported = 0
-        var duplicates = 0
-        var errors = 0
+        val counters = ImportCounters()
 
         withContext(Dispatchers.IO) {
             runCatching {
                 uriPermissionPersister.persistReadPermission(treeUri)
             }
-
-            suspend fun playlistIdFor(folderName: String): Long? {
-                val dao = playlistDao ?: return null
-                return runCatching {
-                    dao.getPlaylistByName(folderName)?.id
-                        ?: dao.insertPlaylist(
-                            com.boombastic.mobile.data.db.entity.Playlist(name = folderName)
-                        )
-                }.getOrNull()
-            }
-
-            suspend fun importFolder(folderUri: Uri, playlistName: String) {
-                val playlistId = playlistIdFor(playlistName)
-                val children = queryChildren(folderUri)
-                for (child in children) {
-                    val childUri = child.first
-                    val name = child.second
-                    val mime = child.third
-                    val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
-                    if (isDir) {
-                        importFolder(childUri, name)
-                    } else if (isAudio(mime, name)) {
-                        val result = importTrackFromGrantedUri(childUri)
-                        when {
-                            result.isSuccess -> {
-                                val track = result.getOrThrow()
-                                if (playlistId != null) {
-                                    runCatching {
-                                        val sortOrder =
-                                            playlistDao?.maxSortOrder(playlistId)?.plus(1) ?: 0
-                                        playlistDao?.addTrackToPlaylist(
-                                            com.boombastic.mobile.data.db.entity.PlaylistTrack(
-                                                playlistId = playlistId,
-                                                trackUri = track.uri,
-                                                sortOrder = sortOrder
-                                            )
-                                        )
-                                    }
-                                }
-                                imported++
-                            }
-                            result.exceptionOrNull() is ImportException &&
-                                (result.exceptionOrNull() as ImportException).error == ImportError.DUPLICATE -> {
-                                duplicates++
-                            }
-                            else -> errors++
-                        }
-                        onProgress(imported, duplicates, errors)
-                    }
-                }
-            }
-
-            importFolder(treeUri, UNSORTED_PLAYLIST)
+            importTreeFolder(treeUri, "", UNSORTED_PLAYLIST, counters, onProgress)
         }
 
-        return ImportResult(imported, duplicates, errors)
+        return ImportResult(counters.imported, counters.duplicates, counters.errors)
     }
 
-    /** Lists `(documentUri, displayName, mimeType)` for the folder's children. */
-    private fun queryChildren(folderUri: Uri): List<Triple<Uri, String, String>> {
-        val children = mutableListOf<Triple<Uri, String, String>>()
+    /**
+     * Recursively imports a folder of a SAF **tree** ([treeUri] is the
+     * original root from the picker).  [folderDocumentId] is the folder's
+     * document id; `""` means the tree root itself.
+     *
+     * Descendant URIs are always built from the tree root plus a document
+     * id via `buildDocumentUriUsingTree`/`buildChildDocumentsUriUsingTree`.
+     * Building them from a child document URI instead produces nested
+     * `tree/.../document/.../document/...` URIs that the DocumentsProvider
+     * cannot resolve (it only parses the first document segment), and
+     * querying a document URI returns the document itself, not its
+     * children — so subfolder contents were silently skipped.
+     */
+    private suspend fun importTreeFolder(
+        treeUri: Uri,
+        folderDocumentId: String,
+        playlistName: String,
+        counters: ImportCounters,
+        onProgress: (imported: Int, duplicates: Int, errors: Int) -> Unit
+    ) {
+        val playlistId = playlistIdFor(playlistName)
+        for ((documentId, name, mime) in queryTreeChildren(treeUri, folderDocumentId)) {
+            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                importTreeFolder(treeUri, documentId, name, counters, onProgress)
+            } else if (isAudio(mime, name)) {
+                handleAudioChild(
+                    childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId),
+                    playlistId = playlistId,
+                    counters = counters,
+                    onProgress = onProgress
+                )
+            }
+        }
+    }
+
+    /**
+     * Recursively imports a folder picked as a plain **document** URI via
+     * `ACTION_OPEN_DOCUMENT` (folders selected in the file picker).
+     * Children are only readable when the provider extends the grant to
+     * descendants; otherwise they surface as import errors instead of
+     * bogus folder-as-track imports.
+     */
+    private suspend fun importDocumentFolder(
+        folderUri: Uri,
+        playlistName: String,
+        counters: ImportCounters
+    ) {
+        val playlistId = playlistIdFor(playlistName)
+        for ((childUri, name, mime) in queryDocumentChildren(folderUri)) {
+            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                importDocumentFolder(childUri, name, counters)
+            } else if (isAudio(mime, name)) {
+                handleAudioChild(
+                    childUri = childUri,
+                    playlistId = playlistId,
+                    counters = counters,
+                    onProgress = null
+                )
+            }
+        }
+    }
+
+    /**
+     * Imports one audio [childUri] and books it in [counters]: dedupe,
+     * metadata extraction, track insert, playlist membership when
+     * [playlistId] is non-null.
+     */
+    private suspend fun handleAudioChild(
+        childUri: Uri,
+        playlistId: Long?,
+        counters: ImportCounters,
+        onProgress: ((imported: Int, duplicates: Int, errors: Int) -> Unit)?
+    ) {
+        val result = importTrackFromGrantedUri(childUri)
+        when {
+            result.isSuccess -> {
+                val track = result.getOrThrow()
+                if (playlistId != null) {
+                    runCatching {
+                        val sortOrder = playlistDao?.maxSortOrder(playlistId)?.plus(1) ?: 0
+                        playlistDao?.addTrackToPlaylist(
+                            com.boombastic.mobile.data.db.entity.PlaylistTrack(
+                                playlistId = playlistId,
+                                trackUri = track.uri,
+                                sortOrder = sortOrder
+                            )
+                        )
+                    }
+                }
+                counters.imported++
+            }
+            result.exceptionOrNull() is ImportException &&
+                (result.exceptionOrNull() as ImportException).error == ImportError.DUPLICATE -> {
+                counters.duplicates++
+            }
+            else -> counters.errors++
+        }
+        onProgress?.invoke(counters.imported, counters.duplicates, counters.errors)
+    }
+
+    private suspend fun playlistIdFor(folderName: String): Long? {
+        val dao = playlistDao ?: return null
+        return runCatching {
+            dao.getPlaylistByName(folderName)?.id
+                ?: dao.insertPlaylist(
+                    com.boombastic.mobile.data.db.entity.Playlist(name = folderName)
+                )
+        }.getOrNull()
+    }
+
+    /**
+     * Lists `(documentId, displayName, mimeType)` for [folderDocumentId]
+     * under [treeUri].  The bare tree URI lists the root's children
+     * directly; deeper folders are queried via
+     * `buildChildDocumentsUriUsingTree` (`.../children`).
+     */
+    private fun queryTreeChildren(
+        treeUri: Uri,
+        folderDocumentId: String
+    ): List<Triple<String, String, String>> {
+        val children = mutableListOf<Triple<String, String, String>>()
         val resolver = context.contentResolver
         val projection = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -177,7 +259,12 @@ class LibraryRepository(
             DocumentsContract.Document.COLUMN_MIME_TYPE
         )
         runCatching {
-            resolver.query(folderUri, projection, null, null, null)?.use { cursor ->
+            val queryUri = if (folderDocumentId.isEmpty()) {
+                treeUri
+            } else {
+                DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, folderDocumentId)
+            }
+            resolver.query(queryUri, projection, null, null, null)?.use { cursor ->
                 val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
                 val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
@@ -186,14 +273,75 @@ class LibraryRepository(
                     val name = cursor.getString(nameIndex)
                     val mime = cursor.getString(mimeIndex)
                     if (id != null) {
-                        val docUri = DocumentsContract.buildDocumentUriUsingTree(folderUri, id)
-                        children.add(Triple(docUri, name ?: "", mime ?: ""))
+                        children.add(Triple(id, name ?: "", mime ?: ""))
                     }
                 }
             }
         }
         return children
     }
+
+    /**
+     * Lists `(documentUri, displayName, mimeType)` for a folder picked as
+     * a plain document URI.  Children are addressed as
+     * `content://<authority>/document/<childId>` — document ids carry the
+     * full path, so this never nests.
+     */
+    private fun queryDocumentChildren(folderUri: Uri): List<Triple<Uri, String, String>> {
+        val children = mutableListOf<Triple<Uri, String, String>>()
+        val resolver = context.contentResolver
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE
+        )
+        runCatching {
+            val childrenUri = DocumentsContract.buildChildDocumentsUri(
+                folderUri.authority,
+                DocumentsContract.getDocumentId(folderUri)
+            )
+            resolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+                val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                while (cursor.moveToNext()) {
+                    val id = cursor.getString(idIndex)
+                    val name = cursor.getString(nameIndex)
+                    val mime = cursor.getString(mimeIndex)
+                    if (id != null) {
+                        children.add(
+                            Triple(
+                                DocumentsContract.buildDocumentUri(folderUri.authority, id),
+                                name ?: "",
+                                mime ?: ""
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        return children
+    }
+
+    /**
+     * True when [uri] is a directory document (a folder selected in a
+     * file picker).  Querying a document URI returns the document's own
+     * row; a directory is identified by the directory MIME type.
+     */
+    private fun isDirectoryDocument(uri: Uri): Boolean = runCatching {
+        val projection = arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE)
+        context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+            cursor.moveToFirst() &&
+                cursor.getString(0) == DocumentsContract.Document.MIME_TYPE_DIR
+        } ?: false
+    }.getOrDefault(false)
+
+    private fun documentDisplayName(uri: Uri): String? = runCatching {
+        val projection = arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+        context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull()
 
     private fun isAudio(mime: String, name: String): Boolean {
         if (mime.startsWith("audio/")) return true
@@ -308,6 +456,13 @@ class LibraryRepository(
         val imported: Int,
         val duplicates: Int,
         val errors: Int
+    )
+
+    /** Mutable counters threaded through recursive folder imports. */
+    private class ImportCounters(
+        var imported: Int = 0,
+        var duplicates: Int = 0,
+        var errors: Int = 0
     )
 
     companion object {
