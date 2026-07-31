@@ -58,6 +58,7 @@ import com.boombastic.mobile.data.db.entity.DownloadState
 import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
+import com.boombastic.mobile.playback.ExtractionResult
 import com.boombastic.mobile.playback.WebSearchResult
 import com.boombastic.mobile.playback.WebSearchService
 import com.boombastic.mobile.ui.theme.AccentGreen
@@ -280,10 +281,19 @@ private fun WebSearchContent(
                     webResults = emptyList()
                     errorMsg = ""
                     scope.launch {
-                        val results = withContext(Dispatchers.IO) {
+                        val result = withContext(Dispatchers.IO) {
                             WebSearchService.searchYouTube(searchQuery.trim())
                         }
-                        webResults = results
+                        when (result) {
+                            is ExtractionResult.Success -> {
+                                webResults = result.data
+                                errorMsg = ""
+                            }
+                            is ExtractionResult.Error -> {
+                                webResults = emptyList()
+                                errorMsg = result.message
+                            }
+                        }
                         isSearching = false
                     }
                 },
@@ -366,17 +376,17 @@ private fun WebSearchContent(
                         for ((artist, title) in rows) {
                             val query = "$artist $title"
                             val encoded = java.net.URLEncoder.encode(query, "UTF-8")
-                            val results = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            val searchResult = withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 WebSearchService.searchYouTube(query, limit = 1)
                             }
-                            if (results.isNotEmpty()) {
-                                val r = results.first()
-                                val audioUrl = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            if (searchResult is ExtractionResult.Success && searchResult.data.isNotEmpty()) {
+                                val r = searchResult.data.first()
+                                val audioResult = withContext(kotlinx.coroutines.Dispatchers.IO) {
                                     WebSearchService.getAudioStreamUrl(r.videoId)
                                 }
-                                if (audioUrl != null) {
+                                if (audioResult is ExtractionResult.Success) {
                                     downloadRepository.enqueueDownload(
-                                        sourceUrl = audioUrl,
+                                        sourceUrl = audioResult.data.url,
                                         title = title,
                                         artist = artist
                                     )
@@ -421,22 +431,30 @@ private fun WebSearchContent(
                             if (videoId in downloadingVideoIds) return@WebResultRow
                             downloadingVideoIds = downloadingVideoIds + videoId
                             scope.launch {
-                                val audioUrl = withContext(Dispatchers.IO) {
-                                    WebSearchService.getAudioStreamUrl(result.videoId)
-                                }
-                                downloadingVideoIds = downloadingVideoIds - videoId
-                                if (audioUrl != null) {
-                                    val titleParts = result.title.split(" - ", limit = 2)
-                                    val artist = if (titleParts.size > 1) titleParts[0].trim() else result.artist
-                                    val trackTitle = if (titleParts.size > 1) titleParts[1].trim() else result.title
-                                    downloadRepository.enqueueDownload(
-                                        sourceUrl = audioUrl,
-                                        title = trackTitle,
-                                        artist = artist
-                                    )
-                                    Toast.makeText(ctx, "Download queued: $trackTitle", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    errorMsg = "Could not extract audio URL for \"${result.title}\". Try pasting the video URL in the direct URL section below."
+                                try {
+                                    val audioResult = withContext(Dispatchers.IO) {
+                                        WebSearchService.getAudioStreamUrl(result.videoId)
+                                    }
+                                    when (audioResult) {
+                                        is ExtractionResult.Success -> {
+                                            val titleParts = result.title.split(" - ", limit = 2)
+                                            val artist = if (titleParts.size > 1) titleParts[0].trim() else result.artist
+                                            val trackTitle = if (titleParts.size > 1) titleParts[1].trim() else result.title
+                                            downloadRepository.enqueueDownload(
+                                                sourceUrl = audioResult.data.url,
+                                                title = trackTitle,
+                                                artist = artist
+                                            )
+                                            Toast.makeText(ctx, "Download queued: $trackTitle", Toast.LENGTH_SHORT).show()
+                                        }
+                                        is ExtractionResult.Error -> {
+                                            errorMsg = "Extraction failed: ${audioResult.message}"
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    errorMsg = "Error: ${e.message}"
+                                } finally {
+                                    downloadingVideoIds = downloadingVideoIds - videoId
                                 }
                             }
                         },
@@ -446,8 +464,7 @@ private fun WebSearchContent(
                     )
                 }
             }
-        } else if (searchQuery.isNotBlank() && !isSearching) {
-            // Search performed but no results
+        } else if (searchQuery.isNotBlank() && !isSearching && webResults.isEmpty() && errorMsg.isBlank()) {
             Text(
                 text = "No results found for \"$searchQuery\". Check network or try a different query.",
                 color = MaterialTheme.colorScheme.error,
@@ -675,7 +692,7 @@ private fun DownloadJobRow(
         DownloadState.QUEUED -> "Queued"
         DownloadState.DOWNLOADING -> "Downloading ${job.progress}%"
         DownloadState.COMPLETED -> "Completed"
-        DownloadState.FAILED -> "Failed"
+        DownloadState.FAILED -> job.errorMessage.ifBlank { "Failed" }
         DownloadState.CANCELLED -> "Cancelled"
     }
 

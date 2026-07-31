@@ -90,6 +90,9 @@ dependencies {
     // WorkManager
     implementation(libs.work.runtime.ktx)
 
+    // NewPipe Extractor
+    implementation(libs.newpipe.extractor)
+
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.ext.junit)

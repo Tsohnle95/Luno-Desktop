@@ -4,7 +4,7 @@
 > **MAINTENANCE INSTRUCTIONS FOR AI/HUMANS:**
 > This document is the authoritative knowledge base for the **implemented** BoomBastic native Android app under `mobile-app/`, including its planned extensions. It must be updated whenever settled decisions change.
 >
-> **Last verified and updated:** 2026-07-30
+> **Last verified and updated:** 2026-07-30 (Updated for NewPipe Extractor migration)
 >
 > **Authority policy (descending):**
 > 1. **Source code + tests + config** in this repo (highest truth)
@@ -260,11 +260,11 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 | Download timeout | 120s (daemon thread continues) |
 
 **Implemented Android approach:**
-- **YouTube search**: Uses YouTube's InnerTube API (internal API used by youtube.com) — no third-party proxy needed. Falls back through 5 Piped API community instances if InnerTube is unavailable. Search results include title, artist, duration, thumbnail, and video ID for direct download.
-- **YouTube playlist extraction**: `WebSearchService.getPlaylistVideos()` fetches all videos from a playlist URL; `PlaylistSyncWorker` orchestrates downloading each new track in the playlist via individual `DownloadWorker` jobs
+- **YouTube search**: Uses NewPipe Extractor (TeamNewPipe/NewPipeExtractor v0.24.3) for reliable, up-to-date YouTube search extraction. No API key required. Search results include title, artist, duration, thumbnail, and video ID for direct download.
+- **YouTube playlist extraction**: `WebSearchService.getPlaylistVideos()` fetches all videos from a playlist URL via NewPipe Extractor; `PlaylistSyncWorker` orchestrates downloading each new track in the playlist via individual `DownloadWorker` jobs
 - **Playlist URL management**: Each `Playlist` entity has a `playlistUrl` field (v3 migration). Users set a YT playlist URL per playlist in Library → Sync downloads all missing tracks
 - **Batch sync**: Downloads tab has "Sync All Playlists" button; each playlist with a URL synced sequentially
-- **Audio extraction**: `WebSearchService.getAudioStreamUrl()` first scrapes the YouTube watch page HTML (`/watch?v=VIDEO_ID`) to extract `ytInitialPlayerResponse` JSON directly (same approach as yt-dlp, avoids API key rate-limiting). Falls back to Piped API instances (7 community instances), then InnerTube with multiple client types (ANDROID_MUSIC, ANDROID, TVHTML5_SIMPLY, WEB — versions updated to 2025 builds with `playbackContext.contentPlaybackContext` and `signatureTimestamp`), then Invidious API instances (3 instances) as last resort. Each step handles `signatureCipher`/`cipher` decryption, HLS/DASH manifests, and direct URLs. JSON extraction uses brace-depth counting to handle nested/minified player response objects.
+- **Audio extraction**: `WebSearchService.getAudioStreamUrl()` uses NewPipe Extractor's `StreamExtractor` to fetch the best available audio stream (highest bitrate) from YouTube. NewPipe Extractor handles signature decryption, format selection, and all YouTube anti-scraping measures internally — no multi-fallback chain needed. Results are returned as typed `ExtractionResult<AudioStreamInfo>` so failures are never silent.
 - **Direct URL download**: Paste any direct audio URL (optional title/artist override)
 - **CSV import (Exportify)**: Select a Spotify Exportify CSV file; each row (artist, title) is searched on YouTube and the first result downloaded
 - **Download queue management**: Dedicated Downloads tab in bottom nav — view all active, queued, completed, failed downloads; cancel/retry/delete per item; playlist sync button per playlist
@@ -684,8 +684,10 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `data/db/entity/DownloadJob.kt` | DownloadJob entity + DownloadState enum (QUEUED, DOWNLOADING, COMPLETED, FAILED, CANCELLED) | ✅ |
 | `data/db/dao/DownloadJobDao.kt` | DownloadJob CRUD + progress/state queries with Flow | ✅ |
 | `playback/DownloadWorker.kt` | WorkManager CoroutineWorker: HTTP download, progress tracking, Track insertion (with MediaMetadataRetriever duration extraction), foreground notification with app icon and stable notification ID | ✅ |
-| `playback/PlaylistSyncWorker.kt` | WorkManager worker: fetches YouTube playlist videos via Piped API, creates individual DownloadJob per track, deduplicates against existing library | ✅ |
- | `playback/WebSearchService.kt` | YouTube client: search via InnerTube API, playlist extraction, audio stream URL extraction via YouTube watch page scraping → Piped API → InnerTube player (4 client types) → Invidious. Brace-depth JSON extraction, signatureCipher/cipher decryption. | ✅ |
+| `playback/PlaylistSyncWorker.kt` | WorkManager worker: fetches YouTube playlist videos via NewPipe Extractor, creates individual DownloadJob per track, deduplicates against existing library, reports extraction errors as failed jobs | ✅ |
+| `playback/WebSearchService.kt` | YouTube client: search, playlist extraction, and audio stream URL extraction via NewPipe Extractor (TeamNewPipe/NewPipeExtractor v0.24.3). Replaces the previous 4-fallback InnerTube/Piped/Invidious chain with bundled native extraction. Returns typed `ExtractionResult` for error propagation. | ✅ |
+| `playback/NewPipeDownloader.kt` | `HttpURLConnection`-based implementation of NewPipe's `Downloader` interface. Handles GET/POST requests with proper User-Agent and redirects. | ✅ |
+| `playback/ExtractionResult.kt` | Sealed class for typed extraction results: `Success<T>` or `Error(message, details)`. Eliminates nullable/pair returns. | ✅ |
 | `data/repository/DownloadRepository.kt` | Enqueue, retry, cancel, delete downloads; bridges Room + WorkManager | ✅ |
 | `ui/shell/MainShell.kt` | Scaffold + BottomNav (4 tabs + Create) + AnimatedVisibility MiniPlayer | ✅ |
 | `ui/navigation/NavGraph.kt` | NavHost: Routes (HOME, SEARCH, LIBRARY, DISCOVER) | ✅ |
@@ -778,7 +780,7 @@ These are issues in the existing codebase that the native app should NOT reprodu
 
 | Question | Status | Suggested Approach |
 |----------|--------|-------------------|
-| `yt-dlp` on Android — embed via Chaquopy/JNI? Or use NewPipe Extractor? Use android-youtube-dl fork? | **Unresolved** | Research: compare android-youtube-dl (Kotlin) vs NewPipe Extractor (Java) vs embedded yt-dlp via Python-on-device. Key criterion: must reproduce desktop's bestaudio/best → 44.1kHz output. |
+| `yt-dlp` on Android — embed via Chaquopy/JNI? Or use NewPipe Extractor? Use android-youtube-dl fork? | ✅ **Resolved** (2026-07-30) | **NewPipe Extractor v0.24.3** adopted via JitPack. Bundled native Java library with custom `HttpURLConnection` Downloader. Replaces fragile InnerTube/Piped/Invidious 4-fallback chain. Handles search, playlist, and audio-stream extraction with typed error propagation. |
 | Output format: AAC-LC/M4A vs MP3 vs Opus | **Unresolved** | Provisional: high-quality AAC-LC M4A. Validation needed: does Android's built-in AAC decoder cover patent licensing? Is there any cost/distribution constraint? |
 | Android Auto — Google's fee-free distribution rules for media apps on non-Play-Store releases | **Unresolved** | Investigate: can an Android Auto app be sideloaded without Play Store? If not, mark Auto as removable and document the trade-off. |
 | SAF tree URI vs MediaStore for music root | **Resolved** | SAF `OpenMultipleDocuments` used for import (`LibraryRepository`). MediaStore broad scan not yet implemented. Hybrid approach deferred. |
@@ -825,6 +827,7 @@ These are issues in the existing codebase that the native app should NOT reprodu
 | OkHttp | — | HTTP client | **Planned** — needed for downloader |
 | Kotlinx Serialization | — | JSON parsing | **Planned** — needed for export/import |
 | DataStore | — | Preferences | **Planned** — settings not yet implemented |
+| NewPipe Extractor | 0.24.3 | YouTube extraction (via JitPack) | ✅ **Adopted** |
 | EncryptedSharedPreferences | — | Secure credential storage | **Planned** — needed for Last.fm key |
 
 ---
@@ -895,6 +898,7 @@ Instrumented smoke tests created for API 34 emulator (`./gradlew :app:connectedD
 | 2026-07-30 | Fixed YouTube Web Search: migrated from Piped-only API to YouTube InnerTube API as primary with Piped fallback. Updated `WebSearchService.kt` to call InnerTube search/browse/player endpoints directly. Fixed the Piped API type filter (`"stream"`), added User-Agent headers, removed duplicate import. Updated project brain sections. |
 | 2026-07-30 | Fixed audio URL extraction: swapped to Piped-first priority, replaced dead kavin.rocks with working community instances, expanded InnerTube to try 4 client types (ANDROID_MUSIC, ANDROID, TVHTML5_SIMPLY, WEB) with full device context, added Invidious API as third fallback layer, added headers to DownloadWorker. |
 | 2026-07-30 | Reordered extraction fallback: YouTube watch page HTML scraping (ytInitialPlayerResponse, brace-depth JSON parser) as primary method, then Piped → InnerTube (updated to 2025 client versions with playbackContext/signatureTimestamp) → Invidious. Added download loading spinner per video ID in SearchScreen. DownloadWorker: replaced private system notification icon with app's ic_download, added MediaMetadataRetriever duration extraction, fixed notification ID collision (1000 + jobId). |
+| 2026-07-30 | **Migrated YouTube extraction to NewPipe Extractor v0.24.3.** Replaced the fragile 4-fallback InnerTube/Piped/Invidious chain with bundled native NewPipe Extractor library. Added `NewPipeDownloader.kt` (HttpURLConnection-based Downloader), `ExtractionResult.kt` (typed error propagation). Updated `WebSearchService.kt` to use NewPipe's `StreamExtractor`, `SearchExtractor`, and `PlaylistExtractor`. Added extraction error visibility in SearchScreen and PlaylistSyncWorker. Updated `BoomBasticApp.kt` to initialize NewPipe at startup. Added JitPack repo and dependency. |
 
 ## 🛠️ Build & Test Operations
 

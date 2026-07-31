@@ -1,6 +1,7 @@
 package com.boombastic.mobile.data.repository
 
 import android.content.Context
+import android.util.Log
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.Data
@@ -20,6 +21,9 @@ class DownloadRepository(
     private val downloadJobDao: DownloadJobDao,
     private val context: Context
 ) {
+    companion object {
+        const val TAG = "DownloadRepository"
+    }
     fun getAllDownloads(): Flow<List<DownloadJob>> = downloadJobDao.getAllDownloads()
 
     fun getDownloadsByState(state: DownloadState): Flow<List<DownloadJob>> =
@@ -33,6 +37,9 @@ class DownloadRepository(
         artist: String = "",
         playlistId: Long? = null
     ): Long {
+        Log.d(TAG, "enqueueDownload: $title by $artist")
+        Log.d(TAG, "Source URL (truncated): ${sourceUrl.take(120)}")
+
         val job = DownloadJob(
             sourceUrl = sourceUrl,
             title = title,
@@ -42,6 +49,7 @@ class DownloadRepository(
             playlistId = playlistId
         )
         val jobId = downloadJobDao.insertDownload(job)
+        Log.d(TAG, "Inserted download job with id=$jobId")
 
         val inputData = Data.Builder()
             .putLong(DownloadWorker.KEY_DOWNLOAD_JOB_ID, jobId)
@@ -74,6 +82,7 @@ class DownloadRepository(
                 workRequest
             )
 
+        Log.d(TAG, "Enqueued WorkManager work for download job $jobId (workId=$workManagerId)")
         return jobId
     }
 

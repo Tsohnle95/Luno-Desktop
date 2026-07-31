@@ -4,11 +4,12 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import androidx.work.Configuration
-import androidx.work.WorkManager
 import com.boombastic.mobile.data.db.AppDatabase
 import com.boombastic.mobile.data.repository.DownloadRepository
 import com.boombastic.mobile.data.repository.LibraryRepository
 import com.boombastic.mobile.data.repository.PlaylistRepository
+import com.boombastic.mobile.playback.NewPipeDownloader
+import org.schabi.newpipe.extractor.NewPipe
 
 class BoomBasticApp : Application(), Configuration.Provider {
 
@@ -29,6 +30,7 @@ class BoomBasticApp : Application(), Configuration.Provider {
         downloadRepository = DownloadRepository(database.downloadJobDao(), this)
 
         createDownloadNotificationChannel()
+        NewPipe.init(NewPipeDownloader())
     }
 
     override val workManagerConfiguration: Configuration
