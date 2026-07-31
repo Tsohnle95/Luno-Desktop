@@ -109,6 +109,49 @@ class LibraryRepositoryTest {
     }
 
     @Test
+    fun pickerFileThenTreeImport_dedupesByDocumentId() = runBlocking<Unit> {
+        // The same physical file has different URI strings per flow:
+        // `…/document/<id>` (picker) vs `…/tree/<id>/document/<id>` (tree).
+        // A picker import followed by a folder import must NOT create a
+        // second Track row — the folder run counts it as a duplicate.
+        val fileUri = Uri.parse(
+            "content://${FakeDocumentsProvider.AUTHORITY}/document/root%2Falbum1.mp3"
+        )
+        repository.importMultipleUris(listOf(fileUri))
+
+        val result = repository.importLibraryTree(treeRootUri())
+
+        assertThat(result.imported).isEqualTo(4)
+        assertThat(result.duplicates).isEqualTo(1)
+        assertThat(result.errors).isEqualTo(0)
+        assertThat(trackTitles()).containsExactly(
+            "album1", "song1", "song2", "deep1", "only"
+        )
+        // album1 was already a track, so it is not re-added to "Unsorted".
+        val unsorted = database.playlistDao().getPlaylistByName("Unsorted")!!
+        assertThat(database.playlistDao().trackCount(unsorted.id)).isEqualTo(0)
+    }
+
+    @Test
+    fun treeImportThenPickerFile_dedupesByDocumentId() = runBlocking<Unit> {
+        // Reverse direction: folder import first, then the same file picked
+        // directly — the picker run must report it as a duplicate.
+        repository.importLibraryTree(treeRootUri())
+
+        val fileUri = Uri.parse(
+            "content://${FakeDocumentsProvider.AUTHORITY}/document/root%2Falbum1.mp3"
+        )
+        val result = repository.importMultipleUris(listOf(fileUri))
+
+        assertThat(result.imported).isEqualTo(0)
+        assertThat(result.duplicates).isEqualTo(1)
+        assertThat(result.errors).isEqualTo(0)
+        assertThat(trackTitles()).containsExactly(
+            "album1", "song1", "song2", "deep1", "only"
+        )
+    }
+
+    @Test
     fun importLibraryTree_samsungStyleTree_importsViaDocQueryFallbacks() = runBlocking<Unit> {
         // Samsung-style provider: `.../children` tree queries are
         // unsupported; children come from querying the folder document

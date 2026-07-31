@@ -1,9 +1,7 @@
 package com.boombastic.mobile.ui.home
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,17 +15,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
@@ -41,23 +35,21 @@ import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.components.ArtworkImage
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
-import com.boombastic.mobile.ui.theme.PrimaryBackground
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
-import com.boombastic.mobile.ui.theme.SurfaceDark
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * Spotify-inspired Home: greeting with green-circle settings icon,
- * edge-clipped "Recently played" and "Made for you" carousels, and a
- * quick-action playlist grid.
+ * Spotify-inspired Home: greeting, edge-clipped "Recently played" and
+ * "Made for you" carousels, and a quick-action playlist grid.  The
+ * Settings drawer is opened from the tappable "Luno" app header instead
+ * of a profile icon.
  */
 @Composable
 fun HomeScreen(
     musicController: MusicController,
-    onOpenOptions: () -> Unit = {},
     onPlay: (MediaTrack) -> Unit = {},
     onOpenPlaylist: (Long) -> Unit = {}
 ) {
@@ -73,7 +65,9 @@ fun HomeScreen(
     val displayName = "Listener" // Editable in future
 
     // Edge-to-edge column; each section supplies its own horizontal padding
-    // so carousels clip visibly at the screen edges.
+    // so carousels clip visibly at the screen edges.  Vertical rhythm is
+    // standardized: 16dp above the greeting, then every section is broken
+    // by a 24dp header gap with an 8dp header-to-content gap.
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(top = Dimens.paddingLarge, bottom = Dimens.paddingXLarge)
@@ -81,34 +75,12 @@ fun HomeScreen(
         // Greeting header
         item {
             Column(modifier = Modifier.padding(horizontal = Dimens.paddingLarge)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Profile/settings entry point (top-left, green circle)
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(AccentGreen)
-                            .clickable(onClick = onOpenOptions),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Person,
-                            contentDescription = "Options",
-                            tint = PrimaryBackground,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.weight(1f))
-                }
-                Spacer(modifier = Modifier.height(14.dp))
                 Text(
                     text = "Good $greeting",
                     style = MaterialTheme.typography.bodyLarge,
                     color = SecondaryText
                 )
+                Spacer(modifier = Modifier.height(Dimens.paddingSmall))
                 Text(
                     text = displayName,
                     style = MaterialTheme.typography.headlineLarge,
@@ -268,6 +240,10 @@ private fun HomePlaylistCard(
     }
 }
 
+/**
+ * Section title with the standardized rhythm used across Home: 24dp above
+ * (break between sections), 8dp below (header-to-content gap).
+ */
 @Composable
 fun SectionHeader(title: String) {
     Text(
@@ -278,7 +254,7 @@ fun SectionHeader(title: String) {
         modifier = Modifier.padding(
             start = Dimens.paddingLarge,
             end = Dimens.paddingLarge,
-            top = Dimens.paddingLarge,
+            top = Dimens.paddingXLarge,
             bottom = Dimens.paddingSmall
         )
     )

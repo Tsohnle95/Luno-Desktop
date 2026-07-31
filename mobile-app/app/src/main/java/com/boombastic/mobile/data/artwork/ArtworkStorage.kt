@@ -67,7 +67,7 @@ object ArtworkStorage {
      * decodable image.
      */
     fun saveImageBytes(context: Context, bytes: ByteArray): String? {
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+        val bitmap = decodeSized(bytes) ?: return null
         val scaled = if (maxOf(bitmap.width, bitmap.height) > MAX_DIMENSION_PX) {
             val scale = MAX_DIMENSION_PX.toFloat() / maxOf(bitmap.width, bitmap.height)
             Bitmap.createScaledBitmap(
@@ -139,7 +139,7 @@ object ArtworkStorage {
         key: String
     ): String? {
         val picture = retriever.embeddedPicture ?: return null
-        val bitmap = BitmapFactory.decodeByteArray(picture, 0, picture.size) ?: return null
+        val bitmap = decodeSized(picture) ?: return null
         val scaled = if (maxOf(bitmap.width, bitmap.height) > MAX_DIMENSION_PX) {
             val scale = MAX_DIMENSION_PX.toFloat() / maxOf(bitmap.width, bitmap.height)
             Bitmap.createScaledBitmap(
@@ -157,6 +157,26 @@ object ArtworkStorage {
             scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
         }
         return target.absolutePath
+    }
+
+    /**
+     * Bounds-checked decode: reads the image dimensions first and samples
+     * down before allocating the bitmap, so a huge embedded picture (some
+     * albums embed 3000px+ art) can never OOM the process — an
+     * `OutOfMemoryError` would otherwise escape the per-file `catch` in
+     * the import loop and kill the whole import.
+     */
+    private fun decodeSized(bytes: ByteArray): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val sampleSize = calculateSampleSize(bounds.outWidth, bounds.outHeight)
+        return BitmapFactory.decodeByteArray(
+            bytes,
+            0,
+            bytes.size,
+            BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        )
     }
 
     private fun keyFor(source: String): String =

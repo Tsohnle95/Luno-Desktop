@@ -20,10 +20,25 @@ class LibraryRepository(
     private val uriPermissionPersister: UriPermissionPersister =
         UriPermissionPersister.Default(context)
 ) {
-    suspend fun importAudioUri(uri: Uri): Result<Track> = withContext(Dispatchers.IO) {
+    /**
+     * Imports a single audio document.
+     *
+     * [existingDocIds] — when provided — holds the document ids of every
+     * track already in the library (and of tracks added earlier in this
+     * run).  Dedupe then matches by **document id** as well as by exact
+     * URI string, because the same physical file has different URI
+     * strings depending on how it was imported: the picker returns
+     * `…/document/<id>` while folder (tree) imports build
+     * `…/tree/<treeId>/document/<id>`.  Without this, re-importing the
+     * same song through the other flow creates a second Track row.
+     */
+    suspend fun importAudioUri(
+        uri: Uri,
+        existingDocIds: MutableSet<String>? = null
+    ): Result<Track> = withContext(Dispatchers.IO) {
         try {
             // Check dedupe
-            if (trackDao.exists(uri.toString())) {
+            if (trackDao.exists(uri.toString()) || isDocumentIdDuplicate(uri, existingDocIds)) {
                 return@withContext Result.failure(
                     ImportException("Track already imported", ImportError.DUPLICATE)
                 )
@@ -53,8 +68,12 @@ class LibraryRepository(
             // Extract metadata safely off main thread
             val track = extractMetadata(uri)
             trackDao.insertTrack(track)
+            documentIdOf(uri.toString())?.let { existingDocIds?.add(it) }
             Result.success(track)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // `Throwable` (not just `Exception`): an OutOfMemoryError while
+            // decoding huge embedded artwork must become one failed file,
+            // never a silently dead import.
             Result.failure(
                 ImportException("Failed to import: ${e.message}", ImportError.IO_ERROR)
             )
@@ -67,18 +86,23 @@ class LibraryRepository(
      * `takePersistableUriPermission` — that only works on the tree root
      * itself and throws for child document URIs.
      */
-    private suspend fun importTrackFromGrantedUri(uri: Uri): Result<Track> =
+    private suspend fun importTrackFromGrantedUri(
+        uri: Uri,
+        existingDocIds: MutableSet<String>?
+    ): Result<Track> =
         withContext(Dispatchers.IO) {
             try {
-                if (trackDao.exists(uri.toString())) {
+                if (trackDao.exists(uri.toString()) || isDocumentIdDuplicate(uri, existingDocIds)) {
                     return@withContext Result.failure(
                         ImportException("Track already imported", ImportError.DUPLICATE)
                     )
                 }
                 val track = extractMetadata(uri)
                 trackDao.insertTrack(track)
+                documentIdOf(uri.toString())?.let { existingDocIds?.add(it) }
                 Result.success(track)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // `Throwable`: one bad file must never kill the whole import.
                 Result.failure(
                     ImportException("Failed to import: ${e.message}", ImportError.IO_ERROR)
                 )
@@ -87,6 +111,7 @@ class LibraryRepository(
 
     suspend fun importMultipleUris(uris: List<Uri>): ImportResult = withContext(Dispatchers.IO) {
         val counters = ImportCounters()
+        counters.existingDocIds += loadExistingDocumentIds()
 
         for (uri in uris) {
             when {
@@ -94,19 +119,26 @@ class LibraryRepository(
                 // tree URIs — import them like an `ACTION_OPEN_DOCUMENT_TREE`
                 // root (folder name = playlist name).
                 DocumentsContract.isTreeUri(uri) -> {
-                    runCatching {
+                    val persisted = runCatching {
                         uriPermissionPersister.persistReadPermission(uri)
-                    }
+                    }.isSuccess
+                    if (!persisted) counters.persistFailures++
                     importTreeFolder(uri, "", folderDisplayName(uri), counters) { _, _, _ -> }
                 }
                 // A folder selected in the file picker: import its audio
                 // contents desktop-style (folder name = playlist name)
                 // instead of treating the folder as a single track.
                 isFolderDocument(uri) -> {
+                    // Persist the folder grant (best effort): playback of
+                    // its songs after an app restart needs the grant; a
+                    // provider that extends it to descendants keeps them
+                    // readable.  Some providers don't support persistence —
+                    // then the songs still import and play this session.
+                    runCatching { uriPermissionPersister.persistReadPermission(uri) }
                     importDocumentFolder(uri, folderDisplayName(uri), counters)
                 }
                 else -> {
-                    val result = importAudioUri(uri)
+                    val result = importAudioUri(uri, counters.existingDocIds)
                     if (result.isSuccess) {
                         counters.imported++
                     } else {
@@ -121,7 +153,7 @@ class LibraryRepository(
             }
         }
 
-        ImportResult(counters.imported, counters.duplicates, counters.errors)
+        ImportResult(counters.imported, counters.duplicates, counters.errors, counters.persistFailures)
     }
 
     /**
@@ -138,15 +170,20 @@ class LibraryRepository(
         onProgress: (imported: Int, duplicates: Int, errors: Int) -> Unit = { _, _, _ -> }
     ): ImportResult {
         val counters = ImportCounters()
+        counters.existingDocIds += loadExistingDocumentIds()
 
         withContext(Dispatchers.IO) {
-            runCatching {
+            // Persisting the root grant is what keeps every imported song
+            // playable after an app restart — never swallow the failure
+            // silently; report it so the UI can warn the user.
+            val persisted = runCatching {
                 uriPermissionPersister.persistReadPermission(treeUri)
-            }
+            }.isSuccess
+            if (!persisted) counters.persistFailures++
             importTreeFolder(treeUri, "", UNSORTED_PLAYLIST, counters, onProgress)
         }
 
-        return ImportResult(counters.imported, counters.duplicates, counters.errors)
+        return ImportResult(counters.imported, counters.duplicates, counters.errors, counters.persistFailures)
     }
 
     /**
@@ -222,7 +259,7 @@ class LibraryRepository(
         counters: ImportCounters,
         onProgress: ((imported: Int, duplicates: Int, errors: Int) -> Unit)?
     ) {
-        val result = importTrackFromGrantedUri(childUri)
+        val result = importTrackFromGrantedUri(childUri, counters.existingDocIds)
         when {
             result.isSuccess -> {
                 val track = result.getOrThrow()
@@ -458,6 +495,43 @@ class LibraryRepository(
         return name?.takeIf { it.isNotBlank() } ?: UNSORTED_PLAYLIST
     }
 
+    /**
+     * Document ids (`authority + "/" + documentId`) of every track already
+     * in the library — built once per import run so cross-flow re-imports
+     * (picker `document/…` vs folder `tree/…/document/…` URIs for the same
+     * physical file) are detected without an O(n²) per-file scan.
+     */
+    private suspend fun loadExistingDocumentIds(): Set<String> = withContext(Dispatchers.IO) {
+        buildSet {
+            trackDao.getAllTracksOnce().forEach { track ->
+                documentIdOf(track.uri)?.let { add(it) }
+            }
+        }
+    }
+
+    private fun isDocumentIdDuplicate(uri: Uri, existingDocIds: Set<String>?): Boolean {
+        val id = documentIdOf(uri.toString()) ?: return false
+        return id in existingDocIds.orEmpty()
+    }
+
+    /**
+     * Stable identity for a SAF document across URI forms: `authority` +
+     * the document id, for both `…/document/<id>` (picker) and
+     * `…/tree/<treeId>/document/<id>` (tree grant) URIs — the two forms of
+     * the same physical file.  Returns null for non-SAF URIs (e.g. `file://`
+     * downloads), which can never collide across flows.
+     */
+    private fun documentIdOf(uriString: String): String? = runCatching {
+        val uri = Uri.parse(uriString)
+        val segments = uri.pathSegments ?: return null
+        val documentId = when {
+            segments.size >= 2 && segments[0] == "document" -> segments[1]
+            segments.size >= 4 && segments[0] == "tree" && segments[2] == "document" -> segments[3]
+            else -> return null
+        }
+        uri.authority?.let { "$it/$documentId" }
+    }.getOrNull()
+
     private fun isAudio(mime: String, name: String): Boolean {
         if (mime.startsWith("audio/")) return true
         val ext = name.substringAfterLast('.', "").lowercase()
@@ -570,15 +644,22 @@ class LibraryRepository(
     data class ImportResult(
         val imported: Int,
         val duplicates: Int,
-        val errors: Int
+        val errors: Int,
+        /** Tree/folder grants the provider refused to persist — those songs
+         *  may stop playing after an app restart. */
+        val persistFailures: Int = 0
     )
 
     /** Mutable counters threaded through recursive folder imports. */
     private class ImportCounters(
         var imported: Int = 0,
         var duplicates: Int = 0,
-        var errors: Int = 0
-    )
+        var errors: Int = 0,
+        var persistFailures: Int = 0
+    ) {
+        /** Document ids of all known tracks (preloaded + grown as the run imports). */
+        val existingDocIds: MutableSet<String> = mutableSetOf()
+    }
 
     companion object {
         /** Desktop convention: files at the music root belong to "Unsorted". */

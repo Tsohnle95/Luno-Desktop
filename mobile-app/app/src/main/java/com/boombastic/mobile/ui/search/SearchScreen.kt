@@ -102,7 +102,8 @@ fun SearchScreen(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris: List<Uri> ->
         if (uris.isNotEmpty()) {
-            scope.launch {
+            // appScope: the import must survive leaving this screen.
+            app.appScope.launch {
                 app.libraryRepository.importMultipleUris(uris)
             }
         }
@@ -117,7 +118,8 @@ fun SearchScreen(
     ) { uri: Uri? ->
         if (uri != null) {
             folderImportState = FolderImportState(0, 0, 0)
-            scope.launch {
+            // appScope: the import must survive leaving this screen.
+            app.appScope.launch {
                 app.musicFolderRepository.saveTreeUri(uri)
                 val result = app.libraryRepository.importLibraryTree(
                     treeUri = uri,
@@ -125,10 +127,16 @@ fun SearchScreen(
                         folderImportState = FolderImportState(imported, duplicates, errors)
                     }
                 )
+                val persistWarning = if (result.persistFailures > 0) {
+                    " — storage access not persisted (${result.persistFailures}): " +
+                        "these songs may not play after a restart"
+                } else {
+                    ""
+                }
                 Toast.makeText(
                     context,
                     "Imported ${result.imported} songs " +
-                        "(${result.duplicates} duplicates, ${result.errors} errors)",
+                        "(${result.duplicates} duplicates, ${result.errors} errors)$persistWarning",
                     Toast.LENGTH_LONG
                 ).show()
             }

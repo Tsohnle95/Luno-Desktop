@@ -38,8 +38,7 @@ fun BoomBasticNavHost(
     musicController: MusicController,
     modifier: Modifier = Modifier,
     onCreatePlaylist: () -> Unit,
-    onPlay: (MediaTrack) -> Unit = {},
-    onOpenOptions: () -> Unit = {}
+    onPlay: (MediaTrack) -> Unit = {}
 ) {
     NavHost(
         navController = navController,
@@ -55,7 +54,6 @@ fun BoomBasticNavHost(
         composable(Routes.HOME) {
             HomeScreen(
                 musicController = musicController,
-                onOpenOptions = onOpenOptions,
                 onPlay = onPlay,
                 onOpenPlaylist = { playlistId ->
                     navController.navigate(Routes.playlistDetail(playlistId))

@@ -10,6 +10,9 @@ import com.boombastic.mobile.data.repository.LibraryRepository
 import com.boombastic.mobile.data.repository.MusicFolderRepository
 import com.boombastic.mobile.data.repository.PlaylistRepository
 import com.boombastic.mobile.playback.NewPipeDownloader
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import org.schabi.newpipe.extractor.NewPipe
 import java.net.CookieManager
 import java.net.CookiePolicy
@@ -27,6 +30,14 @@ class BoomBasticApp : Application(), Configuration.Provider {
         private set
     lateinit var musicFolderRepository: MusicFolderRepository
         private set
+
+    /**
+     * Process-lifetime scope for long-running work (library imports) that
+     * must survive navigation away from the launching screen — a
+     * `rememberCoroutineScope` dies with its composable, which is exactly
+     * how folder imports used to stop partway.
+     */
+    val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
         super.onCreate()

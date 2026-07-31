@@ -127,15 +127,21 @@ fun MainShell(musicController: MusicController) {
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: android.net.Uri? ->
         if (uri != null) {
-            scope.launch {
-                (context.applicationContext as com.boombastic.mobile.BoomBasticApp)
-                    .musicFolderRepository.saveTreeUri(uri)
-                val result = (context.applicationContext as com.boombastic.mobile.BoomBasticApp)
-                    .libraryRepository.importLibraryTree(uri)
+            val app = context.applicationContext as com.boombastic.mobile.BoomBasticApp
+            // appScope: the import must survive rotation/navigation.
+            app.appScope.launch {
+                app.musicFolderRepository.saveTreeUri(uri)
+                val result = app.libraryRepository.importLibraryTree(uri)
+                val persistWarning = if (result.persistFailures > 0) {
+                    " — storage access not persisted (${result.persistFailures}): " +
+                        "these songs may not play after a restart"
+                } else {
+                    ""
+                }
                 Toast.makeText(
                     context,
                     "Music folder set: ${result.imported} songs imported, " +
-                        "${result.duplicates} duplicates, ${result.errors} errors",
+                        "${result.duplicates} duplicates, ${result.errors} errors$persistWarning",
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -368,8 +374,7 @@ fun MainShell(musicController: MusicController) {
                             musicController = musicController,
                             modifier = Modifier.fillMaxSize(),
                             onCreatePlaylist = { showCreateSheet = true },
-                            onPlay = onPlay,
-                            onOpenOptions = { scope.launch { drawerState.open() } }
+                            onPlay = onPlay
                         )
                     }
                 }
