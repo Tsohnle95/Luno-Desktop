@@ -4,7 +4,7 @@
 > **MAINTENANCE INSTRUCTIONS FOR AI/HUMANS:**
 > This document is the authoritative knowledge base for the **implemented** BoomBastic native Android app under `mobile-app/`, including its planned extensions. It must be updated whenever settled decisions change.
 >
-> **Last verified and updated:** 2026-07-30 (Updated for multi-strategy extraction + OkHttp download pipeline, and summarizing our Invidious companion proxy approach)
+> **Last verified and updated:** 2026-07-30 (Updated for vendored NewPipeExtractor v0.26.4: Git submodule + Gradle composite build, JDK 11 toolchain requirement, core-library desugaring, CI submodule checkout)
 >
 > **Authority policy (descending):**
 > 1. **Source code + tests + config** in this repo (highest truth)
@@ -133,6 +133,8 @@ boomtastic/
 │   │               ├── NotificationPermissionPolicyTest.kt # 11 tests: permission policy matrix
 │   │               └── MusicControllerTest.kt        # Added contract tests; final reviewer did not verify compilation
 │   │
+│   ├── vendor/
+│   │   └── NewPipeExtractor/            # Git submodule, pinned tag v0.26.4 (shallow); built via composite build
 │   └── .gradle/                         # Gradle caches (not tracked — in .gitignore implicitly)
 │
 ├── project_brain.md                     # Desktop brain — do not duplicate its detail here
@@ -260,12 +262,12 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 | Download timeout | 120s (daemon thread continues) |
 
 **Implemented Android approach:**
-- **YouTube search**: Uses NewPipe Extractor (TeamNewPipe/NewPipeExtractor v0.24.3 via JitPack) for reliable YouTube search extraction. No API key required.
+- **YouTube search**: Uses NewPipe Extractor **v0.26.4** bundled as a Git submodule (`vendor/NewPipeExtractor`) and wired via a Gradle composite build (`settings.gradle.kts` dependency substitution). No JitPack, no API key required.
 - **YouTube playlist extraction**: `WebSearchService.getPlaylistVideos()` fetches all videos from a playlist URL via NewPipe Extractor; `PlaylistSyncWorker` orchestrates downloading each new track.
 - **Playlist URL management**: Each `Playlist` entity has a `playlistUrl` field (v3 migration). Sync downloads all missing tracks.
 - **Batch sync**: Downloads tab has "Sync All Playlists" button; each playlist with a URL synced sequentially.
 - **Audio extraction** (`WebSearchService.getAudioStreamUrl()` — multi-strategy pipeline):
-  1. **NewPipe StreamExtractor** — primary, but currently fails due to YouTube SABR enforcement (v0.24.3 is too old; v0.26.3+ needed but not available on JitPack)
+  1. **NewPipe StreamExtractor** — primary. v0.24.3 was too old for YouTube SABR enforcement (v0.26.3+ carries the SABR workaround); v0.26.4 is now vendored locally as a submodule and built via a composite build (JitPack does not publish v0.26.3+). The Invidious/InnerTube fallbacks below remain as emergency paths.
   2. **Invidious companion proxy** — fetches `invidious.tiekoetter.com/embed/VIDEO_ID`, parses the `<source>` tag to get the companion server URL (`eu-de1.companion.invidious.tiekoetter.com/companion/latest_version`), swaps `itag=18` → `itag=140` for audio-only M4A, strips the CSRF `check` token. The companion server bridges HTTP/2 (to googlevideo.com) → HTTP/1.1 (to our device).
   3. **InnerTube player endpoint** — as last resort, POSTs to `youtubei/v1/player` with ANDROID client; strips `lsparams`/`lsig` (login signature tokens); attempts `n`-parameter deobfuscation via `YoutubeJavaScriptPlayerManager` if a player JS URL can be extracted. URLs from this path point to googlevideo.com and **fail with HTTP 403** on this device due to HTTP/1.1 protocol mismatch with `gvs 1.0` CDN.
 - **Direct URL download**: Paste any direct audio URL (optional title/artist override)
@@ -652,11 +654,12 @@ All files listed below exist in `mobile-app/` as of this writing.
 |------|---------------|--------|
 | `.github/workflows/android.yml` | Java 17 CI: assemble, unit tests, lint + API 34 emulator smoke tests | ✅ |
 | `build.gradle.kts` | Root Gradle: plugin declarations (AGP, Kotlin, Compose, KSP) | ✅ |
-| `settings.gradle.kts` | Project settings, single `:app` module | ✅ |
+| `settings.gradle.kts` | Project settings, single `:app` module; `includeBuild("vendor/NewPipeExtractor")` composite build substitutes the JitPack NewPipe coordinate (`com.github.TeamNewPipe.NewPipeExtractor:extractor`) with the local `:extractor` module | ✅ |
 | `gradle.properties` | JVM args, AndroidX, Kotlin code style | ✅ |
-| `gradle/libs.versions.toml` | Version catalog (AGP 8.5.2, Kotlin 2.0.0, Media3 1.3.1, Room 2.6.1) | ✅ |
+| `gradle/libs.versions.toml` | Version catalog (AGP 8.5.2, Kotlin 2.0.0, Media3 1.3.1, Room 2.6.1, NewPipe v0.26.4, desugar_jdk_libs_nio 2.1.4) | ✅ |
 | `app/build.gradle.kts` | App module: compileSdk 35, minSdk 29, Compose BOM 2024.06.00, all dependencies | ✅ |
 | `app/proguard-rules.pro` | Keep Room entity annotations | ✅ |
+| `vendor/NewPipeExtractor/` | Git submodule pinned to tag `v0.26.4` (shallow). Built via Gradle composite build; **requires a JDK 11 toolchain** (set in its root `build.gradle.kts`); **requires core-library desugaring** in the app (minSdk 29 < 33). GPLv3 licensed. | ✅ |
 | `app/schemas/.../1.json` | v1, v2, and v3 Room schema exports (v1: tracks, playlists, playlist_tracks; v2: adds download_jobs; v3: adds playlistUrl to Playlist) | ✅ |
 
 ### Android System
@@ -688,7 +691,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `data/db/dao/DownloadJobDao.kt` | DownloadJob CRUD + progress/state queries with Flow | ✅ |
 | `playback/DownloadWorker.kt` | WorkManager CoroutineWorker: HTTP download, progress tracking, Track insertion (with MediaMetadataRetriever duration extraction), foreground notification with app icon and stable notification ID | ✅ |
 | `playback/PlaylistSyncWorker.kt` | WorkManager worker: fetches YouTube playlist videos via NewPipe Extractor, creates individual DownloadJob per track, deduplicates against existing library, reports extraction errors as failed jobs | ✅ |
-| `playback/WebSearchService.kt` | YouTube client: search, playlist extraction, and audio stream URL extraction via NewPipe Extractor (TeamNewPipe/NewPipeExtractor v0.24.3). Replaces the previous 4-fallback InnerTube/Piped/Invidious chain with bundled native extraction. Returns typed `ExtractionResult` for error propagation. | ✅ |
+| `playback/WebSearchService.kt` | YouTube client: search, playlist extraction, and audio stream URL extraction via NewPipe Extractor (v0.26.4, vendored Git submodule at `vendor/NewPipeExtractor` via composite build). Replaces the previous 4-fallback InnerTube/Piped/Invidious chain with bundled native extraction. Returns typed `ExtractionResult` for error propagation. | ✅ |
 | `playback/NewPipeDownloader.kt` | `HttpURLConnection`-based implementation of NewPipe's `Downloader` interface. Handles GET/POST requests with proper User-Agent and redirects. | ✅ |
 | `playback/ExtractionResult.kt` | Sealed class for typed extraction results: `Success<T>` or `Error(message, details)`. Eliminates nullable/pair returns. | ✅ |
 | `data/repository/DownloadRepository.kt` | Enqueue, retry, cancel, delete downloads; bridges Room + WorkManager | ✅ |
@@ -783,7 +786,7 @@ These are issues in the existing codebase that the native app should NOT reprodu
 
 | Question | Status | Suggested Approach |
 |----------|--------|-------------------|
-| `yt-dlp` on Android — embed via Chaquopy/JNI? Or use NewPipe Extractor? Use android-youtube-dl fork? | ✅ **Resolved** (2026-07-30) | **NewPipe Extractor v0.24.3** adopted via JitPack. Bundled native Java library with custom `HttpURLConnection` Downloader. Replaces fragile InnerTube/Piped/Invidious 4-fallback chain. Handles search, playlist, and audio-stream extraction with typed error propagation. |
+| `yt-dlp` on Android — embed via Chaquopy/JNI? Or use NewPipe Extractor? Use android-youtube-dl fork? | ✅ **Resolved** (2026-07-30) | **NewPipe Extractor v0.26.4** adopted as a vendored Git submodule + Gradle composite build (JitPack stops at v0.24.x). Bundled native Java library with custom `HttpURLConnection` Downloader. Requires JDK 11 toolchain and core-library desugaring (`desugar_jdk_libs_nio`) for minSdk 29. Handles search, playlist, and audio-stream extraction with typed error propagation. |
 | Output format: AAC-LC/M4A vs MP3 vs Opus | **Unresolved** | Provisional: high-quality AAC-LC M4A. Validation needed: does Android's built-in AAC decoder cover patent licensing? Is there any cost/distribution constraint? |
 | Android Auto — Google's fee-free distribution rules for media apps on non-Play-Store releases | **Unresolved** | Investigate: can an Android Auto app be sideloaded without Play Store? If not, mark Auto as removable and document the trade-off. |
 | SAF tree URI vs MediaStore for music root | **Resolved** | SAF `OpenMultipleDocuments` used for import (`LibraryRepository`). MediaStore broad scan not yet implemented. Hybrid approach deferred. |
@@ -826,7 +829,7 @@ These are issues in the existing codebase that the native app should NOT reprodu
 | **Excluded (current):** | | | |
 | WorkManager | 2.9.0 | Background downloads | ✅ **Implemented** |
 | OkHttp | 4.12.0 | HTTP client for googlevideo.com downloads (supports HTTP/2, ALPN) | ✅ **Implemented** |
-| NewPipe Extractor | 0.24.3 | YouTube extraction (via JitPack) | ✅ **Adopted** |
+| NewPipe Extractor | v0.26.4 | YouTube extraction (vendored submodule via composite build) | ✅ **Adopted** |
 | Hilt | — | Dependency injection | Deferred |
 | Coil | — | Image loading | **Planned** |
 | Kotlinx Serialization | — | JSON parsing | **Planned** |

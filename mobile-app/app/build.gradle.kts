@@ -32,6 +32,9 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // NewPipeExtractor v0.26.4 (vendored submodule) requires core-library
+        // desugaring on minSdk < 33 (see vendor/NewPipeExtractor/README.md).
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -95,6 +98,9 @@ dependencies {
 
     // OkHttp
     implementation(libs.okhttp)
+
+    // Core library desugaring (NewPipeExtractor v0.26.4 on minSdk 29)
+    coreLibraryDesugaring(libs.desugar.jdk.libs.nio)
 
     // Testing
     testImplementation(libs.junit)

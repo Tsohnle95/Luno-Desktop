@@ -23,3 +23,16 @@ dependencyResolutionManagement {
 
 rootProject.name = "BoomBastic"
 include(":app")
+
+// NewPipeExtractor is bundled as a Git submodule at vendor/NewPipeExtractor
+// (pinned to tag v0.26.4) because JitPack stops at v0.24.x and v0.26.3+ is
+// not published there. The composite build substitutes the JitPack
+// coordinate with the local :extractor module, so the version declared in
+// libs.versions.toml is documentation only — resolution always comes from
+// this included build.
+includeBuild("vendor/NewPipeExtractor") {
+    dependencySubstitution {
+        substitute(module("com.github.TeamNewPipe.NewPipeExtractor:extractor"))
+            .using(project(":extractor"))
+    }
+}

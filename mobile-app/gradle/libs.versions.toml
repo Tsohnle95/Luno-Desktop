@@ -17,8 +17,11 @@ truth = "1.4.2"
 turbine = "1.1.0"
 coreTesting = "2.2.0"
 work = "2.9.0"
-newpipeExtractor = "v0.24.3"
+# Must stay in sync with the vendored submodule tag at vendor/NewPipeExtractor.
+# Not resolved from JitPack — substituted by the composite build in settings.gradle.kts.
+newpipeExtractor = "v0.26.4"
 okhttp = "4.12.0"
+desugarJdkLibsNio = "2.1.4"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -72,6 +75,9 @@ newpipe-extractor = { group = "com.github.TeamNewPipe.NewPipeExtractor", name = 
 
 # OkHttp
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+
+# Core library desugaring — required by NewPipeExtractor v0.26.4 on minSdk < 33
+desugar-jdk-libs-nio = { group = "com.android.tools", name = "desugar_jdk_libs_nio", version.ref = "desugarJdkLibsNio" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
