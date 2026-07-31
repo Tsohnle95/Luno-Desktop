@@ -77,12 +77,15 @@ class DownloadWorker(
             Log.d(TAG, "Protocol: $protocol, code: ${response.code}")
 
             if (response.code != 200 && response.code != 206) {
+                // Redacted diagnostics: response headers can carry signed stream
+                // URLs (e.g. Location after a redirect) — never log full headers.
                 Log.w(TAG, "HTTP ${response.code} from ${response.request.url.host}")
-                for ((name, values) in response.headers) {
-                    Log.w(TAG, "  header: $name = $values")
-                }
+                val contentType = response.header("Content-Type")
+                val contentRange = response.header("Content-Range")
+                if (contentType != null) Log.w(TAG, "  Content-Type: $contentType")
+                if (contentRange != null) Log.w(TAG, "  Content-Range: $contentRange")
                 response.close()
-                jobDao.markFailed(jobId, DownloadState.FAILED, "HTTP ${response.code} - YouTube blocked download")
+                jobDao.markFailed(jobId, DownloadState.FAILED, downloadErrorForCode(response.code))
                 return Result.failure()
             }
 
@@ -171,6 +174,15 @@ class DownloadWorker(
             jobDao.markFailed(jobId, DownloadState.FAILED, "${e::class.simpleName}: ${e.message}")
             return if (runAttemptCount < 3) Result.retry() else Result.failure()
         }
+    }
+
+    private fun downloadErrorForCode(code: Int): String = when (code) {
+        400 -> "HTTP 400 - Stream request invalid (expired or wrong format; re-extract and retry)"
+        403 -> "HTTP 403 - Stream authorization denied (re-extract to get a fresh URL)"
+        404 -> "HTTP 404 - Stream URL no longer available"
+        429 -> "HTTP 429 - Rate limited; try again later"
+        503 -> "HTTP 503 - Server temporarily unavailable; try again later"
+        else -> "HTTP $code - Download failed"
     }
 
     private fun createForegroundInfo(title: String): ForegroundInfo {

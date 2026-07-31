@@ -4,7 +4,7 @@
 > **MAINTENANCE INSTRUCTIONS FOR AI/HUMANS:**
 > This document is the authoritative knowledge base for the **implemented** BoomBastic native Android app under `mobile-app/`, including its planned extensions. It must be updated whenever settled decisions change.
 >
-> **Last verified and updated:** 2026-07-30 (Updated for vendored NewPipeExtractor v0.26.4: Git submodule + Gradle composite build, JDK 11 toolchain requirement, core-library desugaring, CI submodule checkout)
+> **Last verified and updated:** 2026-07-30 (Updated for vendored NewPipeExtractor v0.26.4 composite build + downloader hardening: M4A/Opus itag selection, `check` token preservation, redacted download logging; on-device runtime verification pending)
 >
 > **Authority policy (descending):**
 > 1. **Source code + tests + config** in this repo (highest truth)
@@ -267,8 +267,8 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 - **Playlist URL management**: Each `Playlist` entity has a `playlistUrl` field (v3 migration). Sync downloads all missing tracks.
 - **Batch sync**: Downloads tab has "Sync All Playlists" button; each playlist with a URL synced sequentially.
 - **Audio extraction** (`WebSearchService.getAudioStreamUrl()` — multi-strategy pipeline):
-  1. **NewPipe StreamExtractor** — primary. v0.24.3 was too old for YouTube SABR enforcement (v0.26.3+ carries the SABR workaround); v0.26.4 is now vendored locally as a submodule and built via a composite build (JitPack does not publish v0.26.3+). The Invidious/InnerTube fallbacks below remain as emergency paths.
-  2. **Invidious companion proxy** — fetches `invidious.tiekoetter.com/embed/VIDEO_ID`, parses the `<source>` tag to get the companion server URL (`eu-de1.companion.invidious.tiekoetter.com/companion/latest_version`), swaps `itag=18` → `itag=140` for audio-only M4A, strips the CSRF `check` token. The companion server bridges HTTP/2 (to googlevideo.com) → HTTP/1.1 (to our device).
+  1. **NewPipe StreamExtractor** — primary. v0.24.3 was too old for YouTube SABR enforcement (v0.26.3+ carries the SABR workaround); v0.26.4 is now vendored locally as a submodule and built via a composite build (JitPack does not publish v0.26.3+). Audio stream selected by priority M4A/AAC → Opus → best bitrate. The Invidious/InnerTube fallbacks below remain as emergency paths.
+  2. **Invidious companion proxy** — emergency fallback. Fetches `invidious.tiekoetter.com/embed/VIDEO_ID`, parses the `<source>` tag to get the companion server URL, selects the audio itag from the actual adaptive formats parsed from the page (M4A/AAC → Opus priority — not a blind `itag=18` → `itag=140` swap), and **preserves the original `check` token** (companions with `verify_requests` enabled reject missing/invalid checks with HTTP 400). Falls back to itag 140 only when no format list is present. The companion server bridges HTTP/2 (to googlevideo.com) → HTTP/1.1 (to our device).
   3. **InnerTube player endpoint** — as last resort, POSTs to `youtubei/v1/player` with ANDROID client; strips `lsparams`/`lsig` (login signature tokens); attempts `n`-parameter deobfuscation via `YoutubeJavaScriptPlayerManager` if a player JS URL can be extracted. URLs from this path point to googlevideo.com and **fail with HTTP 403** on this device due to HTTP/1.1 protocol mismatch with `gvs 1.0` CDN.
 - **Direct URL download**: Paste any direct audio URL (optional title/artist override)
 - **CSV import (Exportify)**: Select a Spotify Exportify CSV file; each row (artist, title) is searched on YouTube and the first result downloaded
@@ -602,17 +602,19 @@ These facts are confirmed by reading the actual source files. Link to them rathe
 ### Data Flow: Download (Implemented)
 1. User navigates to SearchScreen → Web Search tab → searches YouTube → taps download on a result
 2. UI shows a `CircularProgressIndicator` on that result and tracks the video ID as "extracting" via `downloadingVideoIds` state set (prevents duplicate taps)
-3. `WebSearchService.getAudioStreamUrl(videoId)` runs on IO dispatcher with fallback chain: YouTube watch page HTML scraping → Piped API → InnerTube player endpoint (4 client types) → Invidious API
+3. `WebSearchService.getAudioStreamUrl(videoId)` runs on IO dispatcher with fallback chain: **NewPipe Extractor v0.26.4** (primary; audio stream chosen by priority M4A/AAC → Opus → best bitrate) → **Invidious companion** (emergency; embed player response parsed for the actual format list, companion `latest_version` URL requested with the chosen audio itag and the original `check` token preserved) → **InnerTube player endpoint** (last resort; googlevideo URLs typically 403 on this device)
 4. If extraction succeeds: `DownloadRepository.enqueueDownload()` inserts a `DownloadJob(state=QUEUED)` in Room, enqueues a `DownloadWorker` via WorkManager with `NetworkType.CONNECTED` constraint
 5. `DownloadWorker` (foreground service with app's `ic_download` icon, notification ID `1000 + jobId`):
    - Sets job state to DOWNLOADING
-   - Opens `HttpURLConnection` to the source URL with User-Agent and Referer headers
-   - Streams data to `{filesDir}/downloads/{safeFileName}.mp3`
+   - Opens an OkHttp request to the source URL with User-Agent, Referer, Origin, and `Range: bytes=0-` headers (client configured with `ConnectionSpec.MODERN_TLS` + `COMPATIBLE_TLS`)
+   - Streams data to `{filesDir}/downloads/{safeFileName}.{ext}` — extension derived from response `Content-Type` (`.m4a`, `.opus`, `.mp3`, `.ogg`, `.audio`)
    - Updates progress (0-100%) in Room
    - On completion: extracts `durationMs` via `MediaMetadataRetriever`, inserts `Track` entity into Room, marks job COMPLETED
-   - On failure: marks job FAILED with error message, auto-retries up to 3 times
+   - On failure: marks job FAILED with a status-specific error message (400/403/404/429/503 distinct; never logs full headers or signed stream URLs), auto-retries up to 3 times
 6. Successful downloads appear immediately in the Library search results via Room `Flow`
 7. User can retry failed downloads or cancel in-progress downloads
+
+> **Verification status (2026-07-30):** Build/compile verified (`assembleDebug` + unit tests green; extractor v0.26.4 classes confirmed in APK). **On-device runtime verification PENDING** — extraction/download/playback has not yet been exercised on the Galaxy S20 FE. Diagnostic: install official NewPipe v0.29.0 on the same device/network and download the same video; if NewPipe succeeds, any remaining 403s are in the app's request construction, not device transport.
 
 Alternative paths:
 - **Direct URL paste**: User pastes any direct audio URL (optional title/artist override) → taps "Start Download" — skips extraction, goes straight to enqueue
@@ -906,6 +908,7 @@ Instrumented smoke tests created for API 34 emulator (`./gradlew :app:connectedD
 | 2026-07-30 | Reordered extraction fallback: YouTube watch page HTML scraping (ytInitialPlayerResponse, brace-depth JSON parser) as primary method, then Piped → InnerTube (updated to 2025 client versions with playbackContext/signatureTimestamp) → Invidious. Added download loading spinner per video ID in SearchScreen. DownloadWorker: replaced private system notification icon with app's ic_download, added MediaMetadataRetriever duration extraction, fixed notification ID collision (1000 + jobId). |
 | 2026-07-30 | **Migrated YouTube extraction to NewPipe Extractor v0.24.3.** Replaced the fragile 4-fallback InnerTube/Piped/Invidious chain with bundled native NewPipe Extractor library. Added `NewPipeDownloader.kt` (HttpURLConnection-based Downloader), `ExtractionResult.kt` (typed error propagation). Updated `WebSearchService.kt` to use NewPipe's `StreamExtractor`, `SearchExtractor`, and `PlaylistExtractor`. Added extraction error visibility in SearchScreen and PlaylistSyncWorker. Updated `BoomBasticApp.kt` to initialize NewPipe at startup. Added JitPack repo and dependency. |
 | 2026-07-30 | **Multi-strategy audio extraction & download rewrite.** NewPipe v0.24.3 fails SABR enforcement (requires v0.26.3+ for fix, not available on JitPack). Added three-stage fallback: (1) Invidious companion proxy (`tiekoetter.com/embed` → companion `latest_version` with itag=140 for audio-only M4A), (2) InnerTube ANDROID client with `lsparams`/`lsig` stripping, (3) `n`-parameter deobfuscation via `YoutubeJavaScriptPlayerManager`. Replaced `HttpURLConnection` with OkHttp 4.12.0 in `DownloadWorker` (`ConnectionSpec.MODERN_TLS`) for HTTP/2 ALPN support. Added `CookieManager` for session cookies. Auto-detects file extension from Content-Type. googlevideo.com direct downloads return HTTP 403 (HTTP/1.1 protocol mismatch with `gvs 1.0` CDN) — the Invidious companion proxy bridges this gap. |
+| 2026-07-30 | **Downloader hardening + vendored extractor.** Bundled NewPipeExtractor v0.26.4 as a Git submodule (`vendor/NewPipeExtractor`, pinned tag, shallow) built via Gradle composite build — JitPack stops at v0.24.x; requires JDK 11 toolchain (registered in CI via `org.gradle.java.installations.paths`; local via Temurin 11) and core-library desugaring (`desugar_jdk_libs_nio` 2.1.4, minSdk 29 < 33); CI checkout now `submodules: recursive`. Hardened `WebSearchService`: audio selection by priority M4A/AAC → Opus → best bitrate; Invidious companion preserves `check` and picks the itag from the actual format list instead of the blind 18→140 rewrite. `DownloadWorker`: redacted failure logging (no full headers / signed stream URLs) and status-specific error messages (400/403/404/429/503 distinct). **On-device runtime verification pending.** |
 
 ## 🛠️ Build & Test Operations
 

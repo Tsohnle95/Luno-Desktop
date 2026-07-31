@@ -6,6 +6,7 @@ import org.json.JSONObject
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.exceptions.ExtractionException
 import org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager
+import org.schabi.newpipe.extractor.stream.AudioStream
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -203,33 +204,90 @@ object WebSearchService {
             val html = conn.inputStream.bufferedReader().readText()
             conn.disconnect()
 
+            // Parse the real player response first: it lists the formats the
+            // companion can actually serve, so we can request an audio itag
+            // that exists instead of blind-requesting itag=140.
+            val responseObj = extractPlayerResponse(html)
+            val formats = responseObj
+                ?.optJSONObject("streamingData")
+                ?.optJSONArray("adaptiveFormats")
+
             val sourceRegex = Regex("<source\\s+[^>]*src=\"([^\"]+)\"[^>]*>")
             val match = sourceRegex.find(html)
             if (match != null) {
                 var src = match.groupValues[1]
                 if (src.startsWith("/")) src = "$instance$src"
                 if (src.contains("latest_version") || src.contains("videoplayback")) {
-                    val proxyUrl = src
-                        .replace(Regex("itag=\\d+"), "itag=140")
-                        .replace(Regex("&check=[^&]+"), "")
-                    Log.d(TAG, "Invidious embed source: ${proxyUrl.take(150)}")
-                    val resp = JSONObject()
-                    val fmt = JSONObject()
-                    fmt.put("url", proxyUrl)
-                    fmt.put("mimeType", "audio/mp4")
-                    fmt.put("bitrate", 128000)
-                    val arr = JSONArray()
-                    arr.put(fmt)
-                    val sd = JSONObject()
-                    sd.put("adaptiveFormats", arr)
-                    resp.put("streamingData", sd)
-                    return resp
+                    // Preserve the companion URL's `check` token (companions with
+                    // verify_requests enabled reject missing/invalid checks with
+                    // HTTP 400) and request an audio itag from the actual format
+                    // list. `check` values are already URL-encoded in the source
+                    // URL and are passed through as-is.
+                    val companionUrl = buildCompanionAudioUrl(src, formats)
+                    if (companionUrl != null) {
+                        Log.d(TAG, "Invidious companion (check preserved): ${companionUrl.take(150)}")
+                        val resp = JSONObject()
+                        val fmt = JSONObject()
+                        fmt.put("url", companionUrl)
+                        fmt.put("mimeType", "audio/mp4")
+                        fmt.put("bitrate", 128000)
+                        val arr = JSONArray()
+                        arr.put(fmt)
+                        val sd = JSONObject()
+                        sd.put("adaptiveFormats", arr)
+                        resp.put("streamingData", sd)
+                        return resp
+                    }
                 }
             }
 
-            val responseObj = extractPlayerResponse(html)
             return responseObj
         } catch (e: Exception) { Log.d(TAG, "Invidious embed fail: ${e.message}"); return null }
+    }
+
+    /**
+     * Rebuilds a companion `latest_version` URL with an audio itag chosen from
+     * the formats actually present in the page (M4A/AAC, then Opus), keeping
+     * the original `check` token. Falls back to itag 140 only when the page
+     * exposes no format list.
+     */
+    private fun buildCompanionAudioUrl(sourceUrl: String, adaptiveFormats: JSONArray?): String? {
+        return try {
+            val parsed = URL(sourceUrl)
+            val params = parsed.query?.split("&")
+                ?.mapNotNull { part ->
+                    val eq = part.indexOf("=")
+                    if (eq > 0) part.substring(0, eq) to part.substring(eq + 1) else null
+                }
+                ?.toMap()
+                ?: emptyMap()
+            val id = params["id"] ?: return null
+            val check = params["check"] ?: return null
+            val itag = pickAudioItag(adaptiveFormats) ?: 140
+            val base = "${parsed.protocol}://${parsed.host}${parsed.path}"
+            "$base?id=$id&itag=$itag&local=true&check=$check"
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun pickAudioItag(adaptiveFormats: JSONArray?): Int? {
+        if (adaptiveFormats == null) return null
+        var best: Pair<Int, Int>? = null // (priority, itag)
+        for (i in 0 until adaptiveFormats.length()) {
+            val fmt = adaptiveFormats.optJSONObject(i) ?: continue
+            val mime = fmt.optString("mimeType", "")
+            if (!mime.startsWith("audio/")) continue
+            val itag = fmt.optInt("itag", 0)
+            if (itag <= 0) continue
+            val priority = when {
+                mime.contains("mp4") || mime.contains("m4a") || mime.contains("aac") -> 2
+                mime.contains("opus") -> 1
+                else -> 0
+            }
+            if (best == null || priority > best.first) best = priority to itag
+        }
+        return best?.second
     }
 
     private fun rewriteToInvidiousProxy(googlevideoUrl: String, invidiousHost: String): String {
@@ -252,12 +310,26 @@ object WebSearchService {
                 return ExtractionResult.Error("No audio streams available")
             }
 
-            val bestAudio = audioStreams.maxByOrNull { it.averageBitrate }
+            // Prefer M4A/AAC, then Opus, then anything else — highest bitrate
+            // wins within a tier.
+            val bestAudio = audioStreams
+                .filter { !it.content.isNullOrBlank() }
+                .maxWithOrNull(
+                    compareBy(
+                        { streamPriority(it) },
+                        { it.averageBitrate }
+                    )
+                )
             if (bestAudio == null || bestAudio.content.isNullOrBlank()) {
                 return ExtractionResult.Error("No usable audio stream found")
             }
 
-            Log.d(TAG, "NewPipe extraction succeeded for $videoId (bitrate=${bestAudio.averageBitrate})")
+            Log.d(
+                TAG,
+                "NewPipe extraction succeeded for $videoId " +
+                    "(itag=${bestAudio.itag}, mime=${bestAudio.format?.mimeType}, " +
+                    "bitrate=${bestAudio.averageBitrate})"
+            )
             ExtractionResult.Success(
                 AudioStreamInfo(
                     url = bestAudio.content,
@@ -271,6 +343,15 @@ object WebSearchService {
             ExtractionResult.Error("Extraction error: ${e.message}", e.toString())
         } catch (e: Exception) {
             ExtractionResult.Error("Unexpected error: ${e.message}", e.toString())
+        }
+    }
+
+    private fun streamPriority(stream: AudioStream): Int {
+        val mime = stream.format?.mimeType ?: ""
+        return when {
+            mime.contains("mp4") || mime.contains("m4a") || mime.contains("aac") -> 2
+            mime.contains("opus") -> 1
+            else -> 0
         }
     }
 
