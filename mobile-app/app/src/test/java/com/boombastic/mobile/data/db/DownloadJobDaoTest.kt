@@ -142,4 +142,51 @@ class DownloadJobDaoTest : AppDatabaseTest() {
         )
         assertThat(jobDao.countByState(DownloadState.QUEUED)).isEqualTo(2)
     }
+
+    @Test
+    fun getActiveDownloadsOnce_returnsOnlyActiveJobs() = runBlocking {
+        val active1 = jobDao.insertDownload(
+            DownloadJob(sourceUrl = "https://example.com/1.mp3", title = "A", state = DownloadState.QUEUED)
+        )
+        val active2 = jobDao.insertDownload(
+            DownloadJob(sourceUrl = "https://example.com/2.mp3", title = "B", state = DownloadState.DOWNLOADING)
+        )
+        jobDao.insertDownload(
+            DownloadJob(sourceUrl = "https://example.com/3.mp3", title = "C", state = DownloadState.COMPLETED)
+        )
+
+        val active = jobDao.getActiveDownloadsOnce()
+        assertThat(active.map { it.id }).containsExactly(active1, active2).inOrder()
+    }
+
+    @Test
+    fun getActiveDownloadsForPlaylistOnce_filtersByPlaylist() = runBlocking {
+        val p1 = jobDao.insertDownload(
+            DownloadJob(
+                sourceUrl = "https://example.com/1.mp3",
+                title = "P1",
+                state = DownloadState.DOWNLOADING,
+                playlistId = 7L
+            )
+        )
+        jobDao.insertDownload(
+            DownloadJob(
+                sourceUrl = "https://example.com/2.mp3",
+                title = "P1 done",
+                state = DownloadState.COMPLETED,
+                playlistId = 7L
+            )
+        )
+        jobDao.insertDownload(
+            DownloadJob(
+                sourceUrl = "https://example.com/3.mp3",
+                title = "Other",
+                state = DownloadState.DOWNLOADING,
+                playlistId = 8L
+            )
+        )
+
+        val active = jobDao.getActiveDownloadsForPlaylistOnce(7L)
+        assertThat(active.map { it.id }).containsExactly(p1).inOrder()
+    }
 }

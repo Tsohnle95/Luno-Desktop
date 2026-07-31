@@ -24,8 +24,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -41,6 +43,7 @@ import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -70,6 +73,7 @@ import com.boombastic.mobile.ui.theme.SecondaryText
 import com.boombastic.mobile.ui.theme.SurfaceDark
 import com.boombastic.mobile.ui.theme.SurfaceElevated
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -252,6 +256,29 @@ private fun WebSearchContent(
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var downloadingVideoIds by remember { mutableStateOf(setOf<String>()) }
 
+    // videoId → job id, set at enqueue time so rows can show live
+    // progress/checkmark/cancel for the exact job they created.
+    var jobIdByVideoId by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+
+    // Completed results show a green checkmark for a moment, then vanish.
+    var dismissedVideoIds by remember { mutableStateOf(setOf<String>()) }
+    LaunchedEffect(downloads) {
+        for (job in downloads) {
+            if (job.state != DownloadState.COMPLETED) continue
+            val videoId = jobIdByVideoId.entries.firstOrNull { it.value == job.id }?.key
+                ?: continue
+            if (videoId in dismissedVideoIds) continue
+            delay(1500)
+            dismissedVideoIds = dismissedVideoIds + videoId
+        }
+    }
+    val visibleResults = webResults.filter { it.videoId !in dismissedVideoIds }
+
+    fun jobForResult(result: WebSearchResult): DownloadJob? =
+        jobIdByVideoId[result.videoId]?.let { id ->
+            downloads.firstOrNull { it.id == id }
+        }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -417,7 +444,7 @@ private fun WebSearchContent(
         } else if (webResults.isNotEmpty()) {
             // Show results
             Text(
-                text = "YouTube results (${webResults.size})",
+                text = "YouTube results (${visibleResults.size})",
                 style = MaterialTheme.typography.titleSmall,
                 color = PrimaryText,
                 modifier = Modifier.padding(bottom = Dimens.paddingSmall)
@@ -427,9 +454,11 @@ private fun WebSearchContent(
                 verticalArrangement = Arrangement.spacedBy(2.dp),
                 contentPadding = PaddingValues(bottom = Dimens.paddingSmall)
             ) {
-                items(webResults, key = { it.videoId }) { result ->
+                items(visibleResults, key = { it.videoId }) { result ->
+                    val job = jobForResult(result)
                     WebResultRow(
                         result = result,
+                        job = job,
                         onDownload = {
                             val videoId = result.videoId
                             if (videoId in downloadingVideoIds) return@WebResultRow
@@ -444,12 +473,13 @@ private fun WebSearchContent(
                                             val titleParts = result.title.split(" - ", limit = 2)
                                             val artist = if (titleParts.size > 1) titleParts[0].trim() else result.artist
                                             val trackTitle = if (titleParts.size > 1) titleParts[1].trim() else result.title
-                                            downloadRepository.enqueueDownload(
+                                            val jobId = downloadRepository.enqueueDownload(
                                                 sourceUrl = audioResult.data.url,
                                                 title = trackTitle,
                                                 artist = artist,
                                                 thumbnailUrl = result.thumbnailUrl
                                             )
+                                            jobIdByVideoId = jobIdByVideoId + (videoId to jobId)
                                             Toast.makeText(ctx, "Download queued: $trackTitle", Toast.LENGTH_SHORT).show()
                                         }
                                         is ExtractionResult.Error -> {
@@ -463,8 +493,12 @@ private fun WebSearchContent(
                                 }
                             }
                         },
-                        isDownloading = downloads.any { it.title == result.title && it.state == DownloadState.DOWNLOADING },
-                        isDone = downloads.any { it.title == result.title && it.state == DownloadState.COMPLETED },
+                        onCancel = { jobId ->
+                            scope.launch { downloadRepository.cancelDownload(jobId) }
+                        },
+                        onRetry = { jobId ->
+                            scope.launch { downloadRepository.retryDownload(jobId) }
+                        },
                         extractingAudio = result.videoId in downloadingVideoIds
                     )
                 }
@@ -481,30 +515,6 @@ private fun WebSearchContent(
             )
         }
 
-        // Download history
-        if (downloads.isNotEmpty()) {
-            Text(
-                text = "Recent Downloads",
-                style = MaterialTheme.typography.titleSmall,
-                color = PrimaryText,
-                modifier = Modifier.padding(bottom = Dimens.paddingSmall)
-            )
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-                contentPadding = PaddingValues(bottom = Dimens.paddingLarge)
-            ) {
-                items(downloads, key = { it.id }) { job ->
-                    DownloadJobRow(
-                        job = job,
-                        onCancel = { scope.launch { downloadRepository.cancelDownload(job.id) } },
-                        onRetry = { scope.launch { downloadRepository.retryDownload(job.id) } },
-                        onDelete = { scope.launch { downloadRepository.deleteDownload(job.id) } }
-                    )
-                }
-            }
-        }
-
         if (webResults.isEmpty() && !isSearching && searchQuery.isBlank()) {
             Box(
                 modifier = Modifier
@@ -513,8 +523,7 @@ private fun WebSearchContent(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = if (downloads.isEmpty()) "Search YouTube for songs, then download them to your library."
-                    else "",
+                    text = "Search YouTube for songs, then download them to your library.",
                     color = SecondaryText,
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -603,9 +612,10 @@ private fun UrlDownloadSection(
 @Composable
 private fun WebResultRow(
     result: WebSearchResult,
+    job: DownloadJob?,
     onDownload: () -> Unit,
-    isDownloading: Boolean,
-    isDone: Boolean,
+    onCancel: (Long) -> Unit,
+    onRetry: (Long) -> Unit,
     extractingAudio: Boolean = false
 ) {
     val durationStr = formatDuration(result.duration)
@@ -641,22 +651,36 @@ private fun WebResultRow(
 
         Spacer(modifier = Modifier.width(Dimens.paddingSmall))
 
+        val state = job?.state
         when {
-            isDone -> {
+            state == DownloadState.COMPLETED -> {
+                // Green checkmark — row disappears shortly after
                 Icon(
-                    Icons.Default.Close,
+                    Icons.Default.CheckCircle,
                     contentDescription = "Downloaded",
                     tint = AccentGreen,
                     modifier = Modifier.size(Dimens.iconSize)
                 )
             }
-            isDownloading -> {
-                Icon(
-                    Icons.Default.Download,
-                    contentDescription = "Downloading",
-                    tint = AccentGreen,
-                    modifier = Modifier.size(Dimens.iconSize)
+            state == DownloadState.QUEUED || state == DownloadState.DOWNLOADING -> {
+                // Green circular progress — tap to cancel this download
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier
+                        .size(Dimens.iconSize)
+                        .clickable { job?.let { onCancel(it.id) } },
+                    color = AccentGreen,
+                    strokeWidth = 2.dp
                 )
+            }
+            state == DownloadState.FAILED -> {
+                IconButton(onClick = { job?.let { onRetry(it.id) } }) {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = "Retry download",
+                        tint = AccentGreen,
+                        modifier = Modifier.size(Dimens.iconSize)
+                    )
+                }
             }
             extractingAudio -> {
                 androidx.compose.material3.CircularProgressIndicator(
@@ -672,84 +696,6 @@ private fun WebResultRow(
                         contentDescription = "Download",
                         tint = AccentGreen
                     )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DownloadJobRow(
-    job: DownloadJob,
-    onCancel: () -> Unit,
-    onRetry: () -> Unit,
-    onDelete: () -> Unit
-) {
-    val stateColor = when (job.state) {
-        DownloadState.QUEUED -> SecondaryText
-        DownloadState.DOWNLOADING -> AccentGreen
-        DownloadState.COMPLETED -> AccentGreen
-        DownloadState.FAILED -> MaterialTheme.colorScheme.error
-        DownloadState.CANCELLED -> SecondaryText
-    }
-
-    val stateLabel = when (job.state) {
-        DownloadState.QUEUED -> "Queued"
-        DownloadState.DOWNLOADING -> "Downloading ${job.progress}%"
-        DownloadState.COMPLETED -> "Completed"
-        DownloadState.FAILED -> job.errorMessage.ifBlank { "Failed" }
-        DownloadState.CANCELLED -> "Cancelled"
-    }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = Dimens.paddingSmall, horizontal = Dimens.paddingSmall),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = job.title,
-                style = MaterialTheme.typography.titleSmall,
-                color = PrimaryText,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (job.artist.isNotBlank()) {
-                Text(
-                    text = job.artist,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = SecondaryText,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Text(
-                text = stateLabel,
-                style = MaterialTheme.typography.labelSmall,
-                color = stateColor
-            )
-        }
-
-        when (job.state) {
-            DownloadState.QUEUED, DownloadState.DOWNLOADING -> {
-                IconButton(onClick = onCancel) {
-                    Icon(Icons.Default.Close, contentDescription = "Cancel", tint = SecondaryText)
-                }
-            }
-            DownloadState.FAILED -> {
-                OutlinedButton(
-                    onClick = onRetry,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentGreen)
-                ) { Text("Retry") }
-                Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Default.Close, contentDescription = "Delete", tint = SecondaryText)
-                }
-            }
-            DownloadState.COMPLETED, DownloadState.CANCELLED -> {
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = SecondaryText)
                 }
             }
         }

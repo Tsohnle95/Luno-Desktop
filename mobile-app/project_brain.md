@@ -4,7 +4,7 @@
 > **MAINTENANCE INSTRUCTIONS FOR AI/HUMANS:**
 > This document is the authoritative knowledge base for the **implemented** BoomBastic native Android app under `mobile-app/`, including its planned extensions. It must be updated whenever settled decisions change.
 >
-> **Last verified and updated:** 2026-07-30 (In-session recently-played history + swipeable Home carousel; Library: stacked Play/Shuffle with green shuffle text, search clear-X, collage header disabled; create icon 32dp; refreshed baseline checks — 90/90 unit tests, lint PASS)
+> **Last verified and updated:** 2026-07-30 (Stop-download/sync controls everywhere; playlist sync now adds songs to the playlist; collage playlist thumbnails; Home playlist cards = Made-for-you style; search rows spinner → checkmark → vanish; refreshed baseline checks — 92/92 unit tests, lint PASS)
 >
 > **Authority policy (descending):**
 > 1. **Source code + tests + config** in this repo (highest truth)
@@ -111,8 +111,8 @@ boomtastic/
 │   │       │           ├── components/
 │   │       │           │   ├── MiniPlayer.kt         # Persistent progress + artwork thumb + title + play/pause; tap → full player
 │   │       │           │   ├── ArtworkImage.kt       # Coil AsyncImage + gradient placeholder + animated dominant-color extraction
-│   │       │           │   ├── ArtworkCollage.kt     # 2x2 square collage: first 4 track artworks, one per quadrant
-│   │       │           │   ├── PlaylistCard.kt       # Shared card: thumbnail + name + green 3-dot menu (sync/URL/delete opt-in callbacks)
+│   │       │           │   ├── ArtworkCollage.kt     # 2x2 square collage: first 4 track artworks, one per quadrant (playlist thumbnails + detail header)
+│   │       │           │   ├── PlaylistCard.kt       # Shared card: 2x2 collage thumbnail + name + green 3-dot menu (sync/stop-sync/URL/delete opt-in)
 │   │       │           │   ├── TrackRowCard.kt       # Track row in playlist-card UI: artwork thumb + title/artist + green 3-dot
 │   │       │           │   └── TrackActionsSheet.kt  # Long-press track actions: add to playlist (picker + create-new) + delete (confirm dialog)
 │   │       │           ├── player/
@@ -122,9 +122,9 @@ boomtastic/
 │   │       │           ├── home/
 │   │       │           │   └── HomeScreen.kt         # Spotify-style: greeting + 36dp green-circle settings icon, edge-clipped Recently-played (history) / Made-for-you / Your-playlists carousels
 │   │       │           ├── search/
-│   │       │           │   └── SearchScreen.kt       # Library search (long-press actions) + Web search + download with loading spinner
+│   │       │           │   └── SearchScreen.kt       # Library search (long-press actions) + Web search (rows show spinner→checkmark→vanish job status, tap-to-cancel, retry on failure; no recent-downloads list)
 │   │       │           ├── library/
-│   │       │           │   ├── LibraryScreen.kt      # Desktop "All Music": stacked Play + Shuffle (green text, no box), Playlist-view filter tab, search bar w/ clear-X, song/playlist lists
+│   │       │           │   ├── LibraryScreen.kt      # Desktop "All Music": Play left / Shuffle right (green text), Playlist-view tab under Play, search bar w/ clear-X, collage-thumbnail playlist cards (Stop sync in menu)
 │   │       │           │   └── PlaylistDetailScreen.kt # Spotify-style playlist view: 2x2 four-artwork collage header, name/desc/count/duration, play-all, track list (play + long-press actions)
 │   │       │           ├── discover/
 │   │       │           │   └── DiscoverScreen.kt     # Honest empty state (Last.fm TBD)
@@ -332,8 +332,11 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 - **Spotify-style Home (2026-07-30):** `HomeScreen` matches the visual-spec contract: greeting ("Good morning/afternoon/evening" + name) with a **36dp green-circle settings icon** (22dp Person glyph, no IconButton padding, 14dp spacing below), **edge-clipped horizontal carousels** ("Recently played" — current track; "Made for you" — first 10 library tracks until Last.fm lands), and a **quick-action playlist grid** (two shared PlaylistCards per row). "Your top genres" remains unimplemented (no genre metadata).
 - **Playlist detail screen (2026-07-30):** `ui/library/PlaylistDetailScreen.kt` at route `playlist/{playlistId}` (opened by tapping any playlist card on Home or Library). Spotify-inspired header: **2x2 collage of up to four track artworks** filling a rounded square, playlist name, description, "N songs · total duration", green Play button (plays the whole playlist via `MusicController.play(tracks, 0)`), then the track list — tap plays the playlist from that track, long-press opens `TrackActionsSheet`. Not yet implemented (desktop parity): sort options, search within playlist, drag-to-reorder, download-all toggle.
 - **Recently-played history (2026-07-30):** `MusicController` now keeps an **in-session recently-played array** (`recentlyPlayed: StateFlow<List<MediaTrack>>`, most recent first, max 100 per desktop convention), populated from `onMediaItemTransition` + state hydration (consecutive duplicates coalesced). **Home's "Recently played" section is now a swipeable edge-clipped horizontal carousel of the full history** (up to 20, same layout as "Made for you"; tapping a card replays it). Not yet persisted across app restarts — Room `HistoryEntry` remains planned.
-- **Library tab = desktop "All Music" (2026-07-30):** `LibraryScreen` mirrors the desktop all-music page: **Play button with Shuffle stacked underneath it** (Play queues the whole library; Shuffle plays all with `MusicController.setShuffle(true)` — rendered as icon + text with **no box and the text in accent green**), a **"Playlist view" filter tab on the right side of that row** (filter icon + label; toggles the list between all songs and all playlists — the tab label flips to "All songs view" when active), the **search bar underneath** with a **clear (X) icon** that empties the input, then **all songs in the track-card layout** (default) or **all playlists as full-width cards** (playlist view). The 4-quadrant collage header is **disabled** (removed from the layout; `ArtworkCollage` remains for the playlist detail header). The "New Playlist" button was **removed** — playlists are created via long-press → "New playlist".
-- **Home playlists carousel (2026-07-30):** "Your playlists" on Home now copies the "Made for you" layout — an **edge-clipped horizontal carousel** of 200dp-wide `PlaylistCard`s instead of the two-per-row grid.
+- **Stop downloads/sync everywhere (2026-07-30):** Every download/sync entry point now has a stop control. `DownloadRepository.stopAllActive()` (cancels all QUEUED/DOWNLOADING jobs + their WorkManager work — shown as a "Stop All" button on the Downloads screen when anything is active) and `cancelPlaylistSync(playlistId)` (cancels the sync worker via its tag + the playlist's active jobs). Library playlist cards show **"Stop sync"** in the 3-dot menu while that playlist has active jobs; search result rows show a green progress circle that **cancels the job on tap**.
+- **Playlist sync membership fix (2026-07-30):** Syncing a playlist previously downloaded the songs but never added them to the playlist. Now `DownloadWorker` adds each completed download to its job's playlist (`playlistId` → `PlaylistTrack` with next sort order), and `PlaylistSyncWorker` also inserts pre-existing matching tracks into the playlist (idempotent via IGNORE conflict).
+- **Playlist thumbnails = 4-quadrant collage (2026-07-30):** Playlist cards (Library, playlist view) use a **2x2 collage of the playlist's first four song artworks** as the thumbnail (`PlaylistCard` renders `ArtworkCollage` at 48dp); only individual songs use their singular artwork. Home's "Your playlists" carousel cards now **match the "Made for you" TrackCard layout** (square collage artwork on top, name, "N songs" subtitle) — Home-only styling.
+- **Search download rows (2026-07-30):** The web-search page no longer shows the "Recent Downloads" list. Each result row is driven by its enqueued job (videoId → jobId map): green circular progress while queued/downloading (tap to cancel), **green checkmark on completion, then the row disappears** after ~1.5s to make room for other results; failed jobs show a retry icon.
+- **Library play/shuffle/tab layout (2026-07-30):** Play sits **left**, Shuffle **right** (icon + green text, no box — desktop All Music layout), and the **Playlist-view filter tab sits under the Play button** (left-aligned; label flips to "All songs view" when active).
 - **Create-playlist inside add-to-playlist (2026-07-30):** The "Add to playlist" picker in `TrackActionsSheet` now leads with a **"New playlist"** row that opens a create dialog (name + optional description); on create the track is added to the new playlist immediately.
 - **Long-press track actions (2026-07-30):** `ui/components/TrackActionsSheet.kt` — long-press (or 3-dot) any track row (Library, Search library results, PlaylistDetail) to open a bottom sheet with **Add to playlist** (nested picker incl. create-new) and **Delete from library** (confirm dialog; `LibraryRepository.deleteTrack` cascades `playlist_tracks` rows via FK).
 - **Not yet implemented:** Queue/history persistence, Bluetooth AVRCP metadata publication, Android Auto, volume slider (deferred — hardware keys only).
@@ -440,7 +443,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 
 **Screen contracts (comprehensive):**
 
-1. **Home:** ✅ **Implemented** in `ui/home/HomeScreen.kt` (Spotify-inspired, 2026-07-30) — Greeting (display name "Listener", editable in future), "Good morning/afternoon/evening", **36dp green-circle settings icon** (opens the Settings drawer), **recently played horizontal carousel** (edge-clipped, current track), **"Made for you" recommendations carousel** (edge-clipped, first 10 library tracks — Last.fm recommendations TBD), **quick-action playlists grid** (2 per row, tap → playlist detail). **Not yet:** editable display name, "your top genres" (no genre metadata).
+1. **Home:** ✅ **Implemented** in `ui/home/HomeScreen.kt` (Spotify-inspired, 2026-07-30) — Greeting (display name "Listener", editable in future), "Good morning/afternoon/evening", **36dp green-circle settings icon** (opens the Settings drawer), **recently played swipeable carousel** (edge-clipped, in-session history), **"Made for you" recommendations carousel** (edge-clipped, first 10 library tracks — Last.fm recommendations TBD), **quick-action playlists carousel** (same TrackCard layout: 2x2 collage art + name + song count, tap → playlist detail). **Not yet:** editable display name, "your top genres" (no genre metadata).
 2. **Full player:** ✅ **Implemented** in `ui/player/FullPlayerScreen.kt` — **Large real artwork (280dp, Coil `AsyncImage` from `Track.albumArtPath` via `MediaTrack.artworkUri`; also shown in the notification/lock-screen via `MusicService` artwork-data enrichment)**, title, artist, **scrub bar with m:ss time labels**, repeat/shuffle/prev/play-pause/next transport, **queue button (`ui/player/QueueSheet.kt` with artwork rows + long-press drag-to-reorder)**, action sheet trigger (`ui/player/ActionSheet.kt` with add-to-playlist, play next, add to queue, go-to-artist, share), **animated dominant-color gradient backdrop** (androidx Palette → 600ms `animateColorAsState`). **Deferred:** volume slider (device hardware volume keys only — per scope decision), go-to-artist/album detail wiring.
 3. **Action sheet (bottom sheet):** Add to playlist, play next, add to queue, go to album, go to artist, share, view credits, remove from playlist
 4. **Playlist detail:** ✅ **Implemented (partial)** in `ui/library/PlaylistDetailScreen.kt` — **header with 2x2 four-artwork collage** (Spotify-style, up to 4 track artworks divided amongst a square), title, description, track count + total duration, **Play button**, track list (tap plays from track, long-press opens actions). **Deferred:** sort options, search within playlist, drag-to-reorder, download-all toggle, owner display.
@@ -718,12 +721,12 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `data/repository/PlaylistRepository.kt` | Playlist CRUD, name validation, sort order mgmt | ✅ |
 | `data/db/entity/DownloadJob.kt` | DownloadJob entity + DownloadState enum (QUEUED, DOWNLOADING, COMPLETED, FAILED, CANCELLED); thumbnailUrl captures the YouTube video thumbnail | ✅ |
 | `data/db/dao/DownloadJobDao.kt` | DownloadJob CRUD + progress/state queries with Flow | ✅ |
-| `playback/DownloadWorker.kt` | WorkManager CoroutineWorker: HTTP download, progress tracking, Track insertion (MediaMetadataRetriever duration + embedded-artwork extraction, thumbnail fetch fallback for YouTube), foreground notification with app icon and stable notification ID | ✅ |
-| `playback/PlaylistSyncWorker.kt` | WorkManager worker: fetches YouTube playlist videos via NewPipe Extractor, creates individual DownloadJob per track, deduplicates against existing library, reports extraction errors as failed jobs | ✅ |
+| `playback/DownloadWorker.kt` | WorkManager CoroutineWorker: HTTP download, progress tracking, Track insertion (MediaMetadataRetriever duration + embedded-artwork extraction, thumbnail fetch fallback for YouTube), **adds completed download to its playlist**, foreground notification with app icon and stable notification ID | ✅ |
+| `playback/PlaylistSyncWorker.kt` | WorkManager worker: fetches YouTube playlist videos via NewPipe Extractor, creates individual DownloadJob per track, **adds pre-existing matching tracks to the playlist**, deduplicates, reports extraction errors as failed jobs | ✅ |
 | `playback/WebSearchService.kt` | YouTube client: search, playlist extraction, and audio stream URL extraction via NewPipe Extractor (v0.26.4, vendored Git submodule at `vendor/NewPipeExtractor` via composite build). Replaces the previous 4-fallback InnerTube/Piped/Invidious chain with bundled native extraction. Returns typed `ExtractionResult` for error propagation. | ✅ |
 | `playback/NewPipeDownloader.kt` | `HttpURLConnection`-based implementation of NewPipe's `Downloader` interface. Handles GET/POST requests with proper User-Agent and redirects. | ✅ |
 | `playback/ExtractionResult.kt` | Sealed class for typed extraction results: `Success<T>` or `Error(message, details)`. Eliminates nullable/pair returns. | ✅ |
-| `data/repository/DownloadRepository.kt` | Enqueue, retry, cancel, delete downloads; bridges Room + WorkManager; threads thumbnailUrl through job + inputData | ✅ |
+| `data/repository/DownloadRepository.kt` | Enqueue, retry, cancel, delete, stop-all, cancel-playlist-sync; bridges Room + WorkManager; threads thumbnailUrl through job + inputData | ✅ |
 | `ui/shell/MainShell.kt` | ModalNavigationDrawer ("Settings" header: Downloads/Export-Import/About/Update check) + Scaffold + BottomNav (Home/Search/Library/Discover/Create) + AnimatedVisibility MiniPlayer | ✅ |
 | `ui/navigation/NavGraph.kt` | NavHost: Routes (HOME, SEARCH, LIBRARY, DISCOVER, DOWNLOADS, FULL_PLAYER) | ✅ |
 | `ui/theme/Color.kt` | Dark palette constants | ✅ |
@@ -732,18 +735,19 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `ui/theme/Dimens.kt` | Touch targets, icon sizes, padding constants | ✅ |
 | `ui/components/MiniPlayer.kt` | Persistent mini-player with progress, artwork thumb, title, artist, play/pause | ✅ |
 | `ui/components/ArtworkImage.kt` | Coil SubcomposeAsyncImage wrapper (file:// artwork, gradient + music-note placeholder) + rememberArtworkColors (Palette dominant color → animated gradient stops) | ✅ |
-| `ui/components/PlaylistCard.kt` | Shared playlist card: artwork thumb + name + green 3-dot menu (sync / URL / delete, opt-in callbacks); 2-per-row on Home, full-width in Library | ✅ |
+| `ui/components/PlaylistCard.kt` | Shared playlist card: 2x2 collage thumbnail + name + green 3-dot menu (sync / stop-sync / URL / delete, opt-in callbacks) | ✅ |
 | `ui/components/TrackRowCard.kt` | Track row in playlist-card UI layout: artwork thumb + title/artist + green 3-dot | ✅ |
-| `ui/components/ArtworkCollage.kt` | 2x2 square collage of up to 4 track artworks (desktop home + playlist header) | ✅ |
+| `ui/components/ArtworkCollage.kt` | 2x2 square collage of up to 4 track artworks (playlist thumbnails + detail header) | ✅ |
 | `ui/components/TrackActionsSheet.kt` | Long-press track sheet: add to playlist (nested picker with create-new playlist dialog) + delete (confirm dialog) | ✅ |
 | `ui/player/FullPlayerScreen.kt` | Full-screen player: 280dp artwork, animated dominant-color gradient backdrop, title/artist, m:ss scrub bar, shuffle/prev/play-pause/next/repeat, queue + action-sheet triggers | ✅ |
 | `ui/player/QueueSheet.kt` | "Playing Next" bottom sheet: artwork rows, long-press drag-to-reorder via moveQueueItem | ✅ |
 | `ui/player/ActionSheet.kt` | Track action sheet: add to playlist (nested picker), play next, add to queue, go to artist, share | ✅ |
-| `ui/home/HomeScreen.kt` | Spotify-style Home: greeting + 36dp green-circle settings icon, edge-clipped Recently-played (history) / Made-for-you / Your-playlists carousels | ✅ |
-| `ui/library/LibraryScreen.kt` | Desktop "All Music": stacked Play + Shuffle (green text, no box), Playlist-view filter tab, search bar w/ clear-X, song/playlist lists | ✅ |
+| `ui/home/HomeScreen.kt` | Spotify-style Home: greeting + 36dp green-circle settings icon, edge-clipped Recently-played (history) / Made-for-you / Your-playlists carousels (playlist cards = TrackCard layout) | ✅ |
+| `ui/library/LibraryScreen.kt` | Desktop "All Music": Play left / Shuffle right (green text), Playlist-view tab under Play, search bar w/ clear-X, collage-thumbnail playlist cards (Stop sync in menu), track cards | ✅ |
+| `ui/search/SearchScreen.kt` | Library search (long-press actions) + Web search (job-status rows: spinner→checkmark→vanish, tap-to-cancel, retry on failure; no recent-downloads list) + CSV import + direct URL + SAF import | ✅ |
 | `ui/library/PlaylistDetailScreen.kt` | Playlist detail: 2x2 four-artwork collage header, name/desc/count/duration, play-all, track list (play from track + long-press actions) | ✅ |
 | `ui/discover/DiscoverScreen.kt` | Honest empty state (Last.fm TBD) | ✅ |
-| `ui/downloads/DownloadsScreen.kt` | Full download management screen: playlist sync controls, per-playlist sync, batch sync all, download queue with cancel/retry/delete | ✅ |
+| `ui/downloads/DownloadsScreen.kt` | Full download management screen: playlist sync controls, per-playlist sync, batch sync all, **Stop All**, download queue with cancel/retry/delete | ✅ |
 | `ui/create/CreatePlaylistSheet.kt` | AlertDialog with name validation | ✅ |
 
 ### Tests
@@ -753,7 +757,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `data/db/TrackDaoTest.kt` | 10 tests: insert, search, dedupe, delete, count, albumArtPath round-trip | ✅ |
 | `data/db/PlaylistDaoTest.kt` | 8 tests: CRUD, track-to-playlist, cascade, sortOrder | ✅ |
 | `data/repository/PlaylistRepositoryTest.kt` | 5 tests: blank name rejection, persistence, trim, list, delete | ✅ |
-| `data/db/DownloadJobDaoTest.kt` | 9 tests: insert, query, progress, complete, fail, state filter, delete, bulk delete, count | ✅ |
+| `data/db/DownloadJobDaoTest.kt` | 11 tests: insert, query, progress, complete, fail, state filter, active-list queries, delete, bulk delete, count | ✅ |
 | `data/repository/DownloadRepositoryTest.kt` | 7 tests: enqueue, thumbnailUrl persistence, list, state filter, cancel, delete, get-null | ✅ |
 | `playback/NotificationPermissionPolicyTest.kt` | 11 tests: API 29/33+ prompt policy, grant/deny/attempted behavior | ✅ |
 | `playback/MusicControllerTest.kt` | 40 contract tests: pending-play, empty-request handling, full-queue preservation, last-request-wins, index clamp, release idempotence, stale-future guard, exact MediaItem metadata (incl. artworkUri), moveQueueItem no-ops, setShuffle no-op, and sanitized error emission | ✅ 40/40 passing |
@@ -880,7 +884,7 @@ These are issues in the existing codebase that the native app should NOT reprodu
 
 | Level | Tool | Scope | Status |
 |-------|------|-------|--------|
-| Unit | JUnit 4 + Truth + Turbine + Robolectric | Room DAOs, Repositories | ✅ **39 tests** — `TrackDaoTest` (10), `PlaylistDaoTest` (8), `PlaylistRepositoryTest` (5), `DownloadJobDaoTest` (9), `DownloadRepositoryTest` (7) |
+| Unit | JUnit 4 + Truth + Turbine + Robolectric | Room DAOs, Repositories | ✅ **41 tests** — `TrackDaoTest` (10), `PlaylistDaoTest` (8), `PlaylistRepositoryTest` (5), `DownloadJobDaoTest` (11), `DownloadRepositoryTest` (7) |
 | Unit | JUnit 4 + Truth + Robolectric | Notification permission policy | ✅ **11 tests** |
 | Unit | JUnit 4 + Truth + Robolectric | MusicController pending-play/lifecycle contract | ✅ **40 tests** — full-queue preservation, empty-request handling, last-request-wins, index clamp, release idempotence, stale-future guard, exact MediaItem metadata (incl. artworkUri), moveQueueItem no-ops, setShuffle no-op, and sanitized error emission |
 | Instrumentation | Android Instrumentation Test + emulator | Media3 connection, queue dispatch, playback state, notification posting, activity recreation, SAF import, and revoked URI access | ✅ **13 smoke tests compile** — `MusicControllerInstrumentedTest` (7), `LibrarySmokeTest` (6); emulator execution pending |
@@ -891,7 +895,7 @@ These are issues in the existing codebase that the native app should NOT reprodu
 
 **Latest verification status (2026-07-30):** ✅ All four baseline checks pass on Java 17:
 - `./gradlew clean :app:assembleDebug` — **PASS**
-- `./gradlew :app:testDebugUnitTest` — **90/90 PASS** (11 NotificationPermissionPolicy, 40 MusicController, 10 TrackDao, 8 PlaylistDao, 5 PlaylistRepository, 9 DownloadJobDao, 7 DownloadRepository)
+- `./gradlew :app:testDebugUnitTest` — **92/92 PASS** (11 NotificationPermissionPolicy, 40 MusicController, 10 TrackDao, 8 PlaylistDao, 5 PlaylistRepository, 11 DownloadJobDao, 7 DownloadRepository)
 - `./gradlew :app:lintDebug` — **PASS** (after removing the default `WorkManagerInitializer` from the merged manifest — see AndroidManifest.xml)
 - `./gradlew :app:compileDebugAndroidTestKotlin` — **PASS**
 
@@ -937,6 +941,7 @@ Instrumented smoke tests created for API 34 emulator (`./gradlew :app:connectedD
 
 | Date | Change |
 |------|--------|
+| 2026-07-30 | **Stop controls + playlist-sync membership fix + search-row statuses.** Added `DownloadRepository.stopAllActive()` (Downloads screen "Stop All") and `cancelPlaylistSync()` (Library playlist 3-dot "Stop sync" while active; cancels sync worker + playlist jobs). **Fixed sync bug**: synced songs are now added to the playlist — `DownloadWorker` inserts the completed track into its job's playlist, `PlaylistSyncWorker` adds pre-existing matching tracks (IGNORE-dup). Playlist card thumbnails are now **2x2 collages of the first four songs** (only songs keep singular art); Home playlist cards match the Made-for-you TrackCard layout. Search page: recent-downloads list removed; result rows show green spinner (tap cancels) → green checkmark → row vanishes after 1.5s; failed rows show retry. Library: Play left / Shuffle right, Playlist-view tab under Play. Baseline re-verified: `assembleDebug` ✓, `testDebugUnitTest` **92/92** ✓, `lintDebug` ✓. |
 | 2026-07-30 | **Recently-played history + Library polish.** `MusicController` gained `recentlyPlayed` StateFlow (in-session, max 100, recorded on media-item transitions + hydration, consecutive duplicates coalesced); Home "Recently played" is now a **swipeable edge-clipped carousel of the full history** (tap replays). Library: Shuffle **stacked under Play** with icon + green text (gray box removed), Playlist-view tab right-aligned without overflow, search field gained a **clear-X**, and the 4-quadrant collage header was **removed/disabled** (component remains for playlist detail). Footer Create icon bumped to 32dp. Baseline re-verified: `assembleDebug` ✓, `testDebugUnitTest` **90/90** ✓, `lintDebug` ✓. |
 | 2026-07-30 | **Desktop "All Music" library + Home playlist carousel.** `LibraryScreen`: centered ~60% 2x2 collage, Play + Shuffle row (Shuffle uses new `MusicController.setShuffle`), right-aligned **Playlist view filter tab** (filter icon + label, toggles songs ↔ playlists; label flips to "All songs view"), search bar underneath, "New Playlist" button removed (creation moved to long-press → New playlist). Home "Your playlists" became an edge-clipped horizontal carousel (200dp cards, same as "Made for you"). Nav Search + Create icons bumped to 28dp (optically smaller glyphs). Baseline re-verified: `assembleDebug` ✓, `testDebugUnitTest` **90/90** ✓, `lintDebug` ✓. |
 | 2026-07-30 | **Library tab = desktop-home layout.** `LibraryScreen` reworked: 2x2 collage square of the first 4 album covers (shared `ArtworkCollage`), search bar below (live filter of playlists + tracks), playlists listed **full-width** one after another (shared `PlaylistCard`), tracks listed with the **same playlist-card UI** (`TrackRowCard`: thumb + title/artist + green 3-dot). Add-to-playlist sheet gained **"New playlist"** (create dialog, track added immediately). Baseline re-verified: `assembleDebug` ✓, `testDebugUnitTest` **89/89** ✓, `lintDebug` ✓. |

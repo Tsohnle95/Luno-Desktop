@@ -140,6 +140,42 @@ class DownloadRepository(
         )
     }
 
+    /**
+     * Halts every active/pending download job (cancels its WorkManager work
+     * and marks it CANCELLED) — the "stop-all" action.
+     */
+    suspend fun stopAllActive() {
+        for (job in downloadJobDao.getActiveDownloadsOnce()) {
+            if (job.workManagerId.isNotBlank()) {
+                runCatching {
+                    WorkManager.getInstance(context).cancelWorkById(
+                        java.util.UUID.fromString(job.workManagerId)
+                    )
+                }
+            }
+            downloadJobDao.updateDownload(job.copy(state = DownloadState.CANCELLED))
+        }
+    }
+
+    /**
+     * Stops syncing one playlist: cancels its [PlaylistSyncWorker] (via the
+     * `playlist_sync_$playlistId` tag) and cancels every active download job
+     * belonging to that playlist.
+     */
+    suspend fun cancelPlaylistSync(playlistId: Long) {
+        WorkManager.getInstance(context).cancelAllWorkByTag("playlist_sync_$playlistId")
+        for (job in downloadJobDao.getActiveDownloadsForPlaylistOnce(playlistId)) {
+            if (job.workManagerId.isNotBlank()) {
+                runCatching {
+                    WorkManager.getInstance(context).cancelWorkById(
+                        java.util.UUID.fromString(job.workManagerId)
+                    )
+                }
+            }
+            downloadJobDao.updateDownload(job.copy(state = DownloadState.CANCELLED))
+        }
+    }
+
     suspend fun clearCompleted() {
         downloadJobDao.deleteDownloadsByState(DownloadState.COMPLETED)
     }

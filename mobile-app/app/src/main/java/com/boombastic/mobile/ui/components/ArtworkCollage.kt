@@ -21,19 +21,21 @@ import com.boombastic.mobile.ui.theme.SurfaceDark
 /**
  * Spotify/desktop-home-style square: the first four track artworks each
  * occupy one quadrant of the square (2x2 collage).  Missing cells render
- * the standard artwork placeholder.
+ * the standard artwork placeholder.  Callers supply the width/size via
+ * [modifier] (e.g. `fillMaxWidth()` or `size(48.dp)`); the collage always
+ * stays square.
  */
 @Composable
 fun ArtworkCollage(
     tracks: List<Track>,
     modifier: Modifier = Modifier,
-    placeholderIconSize: Dp = 36.dp
+    placeholderIconSize: Dp = 36.dp,
+    shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(Dimens.cornerSmall)
 ) {
     Column(
         modifier = modifier
-            .fillMaxWidth()
             .aspectRatio(1f)
-            .clip(RoundedCornerShape(Dimens.cornerLarge))
+            .clip(shape)
             .background(SurfaceDark)
     ) {
         for (row in 0 until 2) {

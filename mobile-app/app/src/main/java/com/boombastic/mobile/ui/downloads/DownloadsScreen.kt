@@ -24,6 +24,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -158,11 +159,31 @@ fun DownloadsScreen() {
 
         // Active downloads
         item {
-            Text(
-                text = "Download Queue (${downloads.size})",
-                style = MaterialTheme.typography.titleMedium,
-                color = PrimaryText
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Download Queue (${downloads.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = PrimaryText,
+                    modifier = Modifier.weight(1f)
+                )
+                if (downloads.any { it.state == DownloadState.QUEUED || it.state == DownloadState.DOWNLOADING }) {
+                    TextButton(onClick = {
+                        scope.launch { app.downloadRepository.stopAllActive() }
+                    }) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = null,
+                            tint = AccentGreen,
+                            modifier = Modifier.size(Dimens.iconSizeSmall)
+                        )
+                        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                        Text("Stop All", color = AccentGreen)
+                    }
+                }
+            }
         }
 
         if (downloads.isEmpty()) {

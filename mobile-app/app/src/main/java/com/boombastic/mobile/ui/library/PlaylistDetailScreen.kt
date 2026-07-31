@@ -120,7 +120,9 @@ fun PlaylistDetailScreen(
             item {
                 ArtworkCollage(
                     tracks = tracks,
-                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Dimens.paddingLarge)
                 )
             }
             item {
@@ -145,7 +147,9 @@ fun PlaylistDetailScreen(
             item {
                 ArtworkCollage(
                     tracks = tracks,
-                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Dimens.paddingLarge)
                 )
             }
 

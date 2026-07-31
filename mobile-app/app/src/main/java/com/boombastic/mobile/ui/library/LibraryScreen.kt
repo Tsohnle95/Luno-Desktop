@@ -80,8 +80,16 @@ fun LibraryScreen(
     val allTracks by app.libraryRepository.getAllTracks().collectAsState(initial = emptyList())
     val playlistsWithTracks by app.playlistRepository.getAllPlaylistsWithTracks()
         .collectAsState(initial = emptyList())
+    val downloads by app.downloadRepository.getAllDownloads().collectAsState(initial = emptyList())
     var query by rememberSaveable { mutableStateOf("") }
     var playlistView by rememberSaveable { mutableStateOf(false) }
+
+    fun playlistHasActiveJobs(playlistId: Long): Boolean =
+        downloads.any {
+            it.playlistId == playlistId &&
+                (it.state == com.boombastic.mobile.data.db.entity.DownloadState.QUEUED ||
+                    it.state == com.boombastic.mobile.data.db.entity.DownloadState.DOWNLOADING)
+        }
 
     // URL edit + delete dialogs hosted here (the shared PlaylistCard menu
     // only signals intent via its callbacks).
@@ -126,7 +134,7 @@ fun LibraryScreen(
         }
 
         // (4-quadrant collage header disabled — see change record)
-        // Play / Shuffle (stacked) + "Playlist view" filter tab (desktop All Music)
+        // Play (left) — Shuffle (right) — desktop All Music layout
         item {
             Row(
                 modifier = Modifier
@@ -135,50 +143,55 @@ fun LibraryScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (allTracks.isNotEmpty()) {
-                    Column {
-                        Button(
-                            onClick = { musicController.play(mediaTracks, 0) },
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.PlayArrow,
-                                contentDescription = null,
-                                modifier = Modifier.size(Dimens.iconSize)
-                            )
-                            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                            Text("Play")
-                        }
-                        Spacer(modifier = Modifier.height(Dimens.paddingMedium))
-                        // Shuffle — icon + text only, no box; text in accent green
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(Dimens.cornerMedium))
-                                .clickable {
-                                    musicController.play(mediaTracks, 0)
-                                    musicController.setShuffle(true)
-                                }
-                                .padding(vertical = Dimens.paddingSmall),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Shuffle,
-                                contentDescription = null,
-                                tint = AccentGreen,
-                                modifier = Modifier.size(Dimens.iconSize)
-                            )
-                            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                            Text(
-                                text = "Shuffle",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = AccentGreen
-                            )
-                        }
+                    Button(
+                        onClick = { musicController.play(mediaTracks, 0) },
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(Dimens.iconSize)
+                        )
+                        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                        Text("Play")
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
+                    // Shuffle — icon + text only, no box; text in accent green
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(Dimens.cornerMedium))
+                            .clickable {
+                                musicController.play(mediaTracks, 0)
+                                musicController.setShuffle(true)
+                            }
+                            .padding(vertical = Dimens.paddingSmall),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Shuffle,
+                            contentDescription = null,
+                            tint = AccentGreen,
+                            modifier = Modifier.size(Dimens.iconSize)
+                        )
+                        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                        Text(
+                            text = "Shuffle",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = AccentGreen
+                        )
                     }
                 }
+            }
+        }
 
-                Spacer(modifier = Modifier.weight(1f))
-
-                // Playlist-view filter tab (right side of the row)
+        // Playlist-view filter tab — sits under the Play button
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Dimens.paddingLarge),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(Dimens.cornerMedium))
@@ -265,7 +278,7 @@ fun LibraryScreen(
                 items(filteredPlaylists, key = { it.playlist.id }) { playlistWithTracks ->
                     PlaylistCard(
                         playlist = playlistWithTracks.playlist,
-                        thumbnailUri = playlistWithTracks.tracks.firstOrNull()?.albumArtUri(),
+                        tracks = playlistWithTracks.tracks,
                         onClick = { onOpenPlaylist(playlistWithTracks.playlist.id) },
                         onSync = {
                             if (playlistWithTracks.playlist.playlistUrl.isNotBlank()) {
@@ -277,6 +290,15 @@ fun LibraryScreen(
                                     )
                                 }
                             }
+                        },
+                        onStopSync = if (playlistHasActiveJobs(playlistWithTracks.playlist.id)) {
+                            {
+                                scope.launch {
+                                    app.downloadRepository.cancelPlaylistSync(playlistWithTracks.playlist.id)
+                                }
+                            }
+                        } else {
+                            null
                         },
                         onUrlChanged = { urlDialogPlaylist = playlistWithTracks.playlist },
                         onDelete = { deleteDialogPlaylist = playlistWithTracks.playlist },

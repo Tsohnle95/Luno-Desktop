@@ -42,6 +42,7 @@ class PlaylistSyncWorker(
         val db = AppDatabase.getInstance(context)
         val jobDao = db.downloadJobDao()
         val trackDao = db.trackDao()
+        val playlistDao = db.playlistDao()
 
         setForeground(createForegroundInfo(playlistName))
 
@@ -64,11 +65,23 @@ class PlaylistSyncWorker(
                 for (video in videos) {
                     if (isStopped) break
 
-                    val exists = existingTracks.any {
+                    val existing = existingTracks.firstOrNull {
                         it.title.contains(video.title, ignoreCase = true) ||
                         it.uri.contains(video.videoId, ignoreCase = true)
                     }
-                    if (exists) continue
+                    if (existing != null) {
+                        // Track already in the library — make sure it is in
+                        // this playlist (idempotent via IGNORE conflict).
+                        val sortOrder = playlistDao.maxSortOrder(playlistId) + 1
+                        playlistDao.addTrackToPlaylist(
+                            com.boombastic.mobile.data.db.entity.PlaylistTrack(
+                                playlistId = playlistId,
+                                trackUri = existing.uri,
+                                sortOrder = sortOrder
+                            )
+                        )
+                        continue
+                    }
 
                     val queuedCount = jobDao.countByVideoQuery(video.videoId)
                     if (queuedCount > 0) continue

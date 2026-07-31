@@ -44,6 +44,12 @@ interface DownloadJobDao {
     @Query("SELECT COUNT(*) FROM download_jobs WHERE state = :state")
     suspend fun countByState(state: DownloadState): Int
 
+    @Query("SELECT * FROM download_jobs WHERE state IN ('QUEUED', 'DOWNLOADING')")
+    suspend fun getActiveDownloadsOnce(): List<DownloadJob>
+
+    @Query("SELECT * FROM download_jobs WHERE state IN ('QUEUED', 'DOWNLOADING') AND playlistId = :playlistId")
+    suspend fun getActiveDownloadsForPlaylistOnce(playlistId: Long): List<DownloadJob>
+
     @Query("SELECT COUNT(*) FROM download_jobs WHERE sourceUrl LIKE '%' || :videoId || '%' AND state IN ('QUEUED', 'DOWNLOADING')")
     suspend fun countByVideoQuery(videoId: String): Int
 }

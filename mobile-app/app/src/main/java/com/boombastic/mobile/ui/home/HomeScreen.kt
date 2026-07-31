@@ -38,8 +38,8 @@ import com.boombastic.mobile.BoomBasticApp
 import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
+import com.boombastic.mobile.ui.components.ArtworkCollage
 import com.boombastic.mobile.ui.components.ArtworkImage
-import com.boombastic.mobile.ui.components.PlaylistCard
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryBackground
@@ -215,16 +215,55 @@ fun HomeScreen(
                     contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
                 ) {
                     items(playlistsWithTracks, key = { it.playlist.id }) { playlistWithTracks ->
-                        PlaylistCard(
-                            playlist = playlistWithTracks.playlist,
-                            thumbnailUri = playlistWithTracks.tracks.firstOrNull()?.albumArtUri(),
-                            onClick = { onOpenPlaylist(playlistWithTracks.playlist.id) },
-                            modifier = Modifier.width(200.dp)
+                        HomePlaylistCard(
+                            name = playlistWithTracks.playlist.name,
+                            tracks = playlistWithTracks.tracks,
+                            onClick = { onOpenPlaylist(playlistWithTracks.playlist.id) }
                         )
                     }
                 }
             }
         }
+    }
+}
+
+/**
+ * Home-only playlist card matching the "Made for you" TrackCard layout:
+ * square 4-quadrant collage artwork on top, name below, track count as
+ * the subtitle.
+ */
+@Composable
+private fun HomePlaylistCard(
+    name: String,
+    tracks: List<Track>,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .width(140.dp)
+            .clickable(onClick = onClick)
+    ) {
+        ArtworkCollage(
+            tracks = tracks,
+            modifier = Modifier.size(Dimens.albumArtMedium),
+            placeholderIconSize = 40.dp,
+            shape = RoundedCornerShape(Dimens.cornerLarge)
+        )
+        Spacer(modifier = Modifier.height(Dimens.paddingSmall))
+        Text(
+            text = name,
+            style = MaterialTheme.typography.titleSmall,
+            color = PrimaryText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = "${tracks.size} songs",
+            style = MaterialTheme.typography.bodySmall,
+            color = SecondaryText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 

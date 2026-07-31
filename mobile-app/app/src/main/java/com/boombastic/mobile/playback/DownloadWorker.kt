@@ -49,6 +49,7 @@ class DownloadWorker(
         val db = AppDatabase.getInstance(context)
         val jobDao = db.downloadJobDao()
         val trackDao = db.trackDao()
+        val playlistDao = db.playlistDao()
 
         val job = jobDao.getDownload(jobId) ?: run {
             Log.e(TAG, "doWork: job $jobId not found")
@@ -181,6 +182,19 @@ class DownloadWorker(
                 addedAt = System.currentTimeMillis()
             )
             trackDao.insertTrack(track)
+
+            // Playlist-sync downloads must land inside their playlist too —
+            // otherwise "Sync" would download songs without adding them.
+            job.playlistId?.let { playlistId ->
+                val sortOrder = playlistDao.maxSortOrder(playlistId) + 1
+                playlistDao.addTrackToPlaylist(
+                    com.boombastic.mobile.data.db.entity.PlaylistTrack(
+                        playlistId = playlistId,
+                        trackUri = track.uri,
+                        sortOrder = sortOrder
+                    )
+                )
+            }
 
             jobDao.markCompleted(jobId, DownloadState.COMPLETED, file.toURI().toString(), System.currentTimeMillis())
             Log.d(TAG, "Job $jobId complete")
