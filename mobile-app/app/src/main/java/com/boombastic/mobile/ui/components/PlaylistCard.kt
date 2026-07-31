@@ -86,7 +86,8 @@ fun PlaylistCard(
         ArtworkCollage(
             tracks = tracks,
             modifier = Modifier.size(Dimens.albumArtSmall),
-            placeholderIconSize = 14.dp
+            placeholderIconSize = 14.dp,
+            decodeSizePx = 256
         )
 
         Spacer(modifier = Modifier.width(Dimens.paddingSmall))

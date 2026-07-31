@@ -30,6 +30,7 @@ fun ArtworkCollage(
     tracks: List<Track>,
     modifier: Modifier = Modifier,
     placeholderIconSize: Dp = 36.dp,
+    decodeSizePx: Int = 512,
     shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(Dimens.cornerSmall)
 ) {
     Column(
@@ -52,7 +53,8 @@ fun ArtworkCollage(
                         ArtworkImage(
                             artworkUri = track?.albumArtUri(),
                             modifier = Modifier.fillMaxSize(),
-                            placeholderIconSize = placeholderIconSize
+                            placeholderIconSize = placeholderIconSize,
+                            decodeSizePx = decodeSizePx
                         )
                     }
                 }

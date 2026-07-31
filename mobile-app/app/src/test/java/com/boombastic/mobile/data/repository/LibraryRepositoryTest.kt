@@ -109,6 +109,27 @@ class LibraryRepositoryTest {
     }
 
     @Test
+    fun importLibraryTree_samsungStyleTree_importsViaDocQueryFallbacks() = runBlocking<Unit> {
+        // Samsung-style provider: `.../children` tree queries are
+        // unsupported; children come from querying the folder document
+        // (the bare tree URI for the root).  The whole tree — root songs
+        // plus every nested playlist folder — must still be imported.
+        FakeDocumentsProvider.samsungStyle = true
+        val result = repository.importLibraryTree(treeRootUri())
+
+        assertThat(result.imported).isEqualTo(5)
+        assertThat(result.duplicates).isEqualTo(0)
+        assertThat(result.errors).isEqualTo(0)
+
+        assertThat(trackTitles()).containsExactly(
+            "album1", "song1", "song2", "deep1", "only"
+        )
+        assertThat(playlistNames()).containsExactly(
+            "Unsorted", "Folder A", "Folder B", "Sub"
+        )
+    }
+
+    @Test
     fun importMultipleUris_folderSelected_importsContentsAsPlaylist() = runBlocking<Unit> {
         val folderUri = Uri.parse(
             "content://${FakeDocumentsProvider.AUTHORITY}/document/root%2FFolder%20A"
@@ -134,6 +155,22 @@ class LibraryRepositoryTest {
         assertThat(result.errors).isEqualTo(0)
         assertThat(trackTitles()).containsExactly("album1")
         assertThat(playlistNames()).isEmpty()
+    }
+
+    @Test
+    fun importMultipleUris_nonAudioDocumentIsAnErrorNotATrack() = runBlocking<Unit> {
+        // The picker launches with `*/*` (so playlist folders can be
+        // selected), which surfaces non-audio files too — they must be
+        // rejected, never imported as bogus tracks.
+        val txtUri = Uri.parse(
+            "content://${FakeDocumentsProvider.AUTHORITY}/document/root%2Fnotes.txt"
+        )
+        val result = repository.importMultipleUris(listOf(txtUri))
+
+        assertThat(result.imported).isEqualTo(0)
+        assertThat(result.duplicates).isEqualTo(0)
+        assertThat(result.errors).isEqualTo(1)
+        assertThat(trackTitles()).isEmpty()
     }
 
     @Test
@@ -200,16 +237,28 @@ class LibraryRepositoryTest {
         ): Cursor {
             val segments = uri.pathSegments ?: return emptyCursor(projection)
             return when {
-                // Bare tree URI → the tree root's children.
+                // Bare tree URI → the tree root document itself (AOSP
+                // behavior: the bare tree URI never lists children).
+                // Samsung-style: querying the folder document returns its
+                // children, so the bare tree URI lists the root's children.
                 segments.size == 2 && segments[0] == "tree" ->
-                    childrenCursor(ROOT_ID, projection)
-                // tree/<treeId>/document/<docId> → the document itself.
+                    if (samsungStyle) childrenCursor(ROOT_ID, projection)
+                    else documentCursor(ROOT_ID, projection)
+                // tree/<treeId>/document/<docId> → the document itself
+                // (AOSP), or the folder's children Samsung-style (files
+                // return their own row even Samsung-style).
                 segments.size == 4 && segments[0] == "tree" && segments[2] == "document" ->
-                    documentCursor(segments[3], projection)
-                // tree/<treeId>/document/<docId>/children → the folder's children.
+                    if (samsungStyle && docs[segments[3]]?.mime == DIR) {
+                        childrenCursor(segments[3], projection)
+                    } else {
+                        documentCursor(segments[3], projection)
+                    }
+                // tree/<treeId>/document/<docId>/children → the folder's
+                // children (unsupported Samsung-style).
                 segments.size == 5 && segments[0] == "tree" &&
                     segments[2] == "document" && segments[4] == "children" ->
-                    childrenCursor(segments[3], projection)
+                    if (samsungStyle) emptyCursor(projection)
+                    else childrenCursor(segments[3], projection)
                 // document/<docId> → the document itself (or its children,
                 // Samsung-style, when the document is a folder).
                 segments.size == 2 && segments[0] == "document" ->

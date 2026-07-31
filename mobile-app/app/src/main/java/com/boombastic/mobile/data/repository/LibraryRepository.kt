@@ -37,6 +37,16 @@ class LibraryRepository(
                 )
             }
 
+            // A non-audio document is never a track either.  The multi-file
+            // picker launches with `*/*` (so playlist folders can be
+            // selected), which also surfaces non-audio files — reject them
+            // instead of importing bogus tracks.
+            if (!isAudio(documentMimeType(uri) ?: "", documentDisplayName(uri) ?: "")) {
+                return@withContext Result.failure(
+                    ImportException("Not an audio file", ImportError.IO_ERROR)
+                )
+            }
+
             // Persist read URI permission using the injectable persister
             uriPermissionPersister.persistReadPermission(uri)
 
@@ -251,13 +261,46 @@ class LibraryRepository(
 
     /**
      * Lists `(documentId, displayName, mimeType)` for [folderDocumentId]
-     * under [treeUri].  The bare tree URI lists the root's children
-     * directly; deeper folders are queried via
-     * `buildChildDocumentsUriUsingTree` (`.../children`).
+     * under [treeUri].
+     *
+     * Root listing: the canonical children URI for the tree root is
+     * `buildChildDocumentsUriUsingTree(treeUri, getTreeDocumentId(treeUri))`.
+     * Querying the **bare tree URI** returns the tree root document's own
+     * row on standard (AOSP-style) providers — never its children — so the
+     * root's contents must come from the canonical `.../children` URI.
+     * Samsung-style providers that don't answer `.../children` return
+     * children when the folder document itself is queried, so the bare
+     * tree URI is kept as a fallback for the root and
+     * `buildDocumentUriUsingTree` (a folder-document query) as the
+     * fallback for deeper folders.
      */
     private fun queryTreeChildren(
         treeUri: Uri,
         folderDocumentId: String
+    ): List<Triple<String, String, String>> {
+        val queryUris = if (folderDocumentId.isEmpty()) {
+            val rootChildrenUri = runCatching {
+                DocumentsContract.buildChildDocumentsUriUsingTree(
+                    treeUri,
+                    DocumentsContract.getTreeDocumentId(treeUri)
+                )
+            }.getOrNull() ?: treeUri
+            listOf(rootChildrenUri, treeUri)
+        } else {
+            listOf(
+                DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, folderDocumentId),
+                DocumentsContract.buildDocumentUriUsingTree(treeUri, folderDocumentId)
+            )
+        }
+        for (queryUri in queryUris) {
+            val children = queryTreeRows(queryUri)
+            if (children.isNotEmpty()) return children
+        }
+        return emptyList()
+    }
+
+    private fun queryTreeRows(
+        queryUri: Uri
     ): List<Triple<String, String, String>> {
         val children = mutableListOf<Triple<String, String, String>>()
         val resolver = context.contentResolver
@@ -267,11 +310,6 @@ class LibraryRepository(
             DocumentsContract.Document.COLUMN_MIME_TYPE
         )
         runCatching {
-            val queryUri = if (folderDocumentId.isEmpty()) {
-                treeUri
-            } else {
-                DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, folderDocumentId)
-            }
             resolver.query(queryUri, projection, null, null, null)?.use { cursor ->
                 val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
@@ -388,6 +426,13 @@ class LibraryRepository(
 
     private fun documentDisplayName(uri: Uri): String? = runCatching {
         val projection = arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+        context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull()
+
+    private fun documentMimeType(uri: Uri): String? = runCatching {
+        val projection = arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE)
         context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
             if (cursor.moveToFirst()) cursor.getString(0) else null
         }

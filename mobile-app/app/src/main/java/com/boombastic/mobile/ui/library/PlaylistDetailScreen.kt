@@ -72,6 +72,10 @@ fun PlaylistDetailScreen(
         playlistWithTracks = app.playlistRepository.getPlaylistWithTracks(playlistId)
     }
 
+    // Track actions sheet — hoisted out of the LazyColumn: composing a
+    // ModalBottomSheet inside a lazy item makes it scroll with the list.
+    var actionsTrack by remember { mutableStateOf<Track?>(null) }
+
     val data = playlistWithTracks
     val playlist = data?.playlist
     val tracks = data?.tracks ?: emptyList()
@@ -171,10 +175,20 @@ fun PlaylistDetailScreen(
                     onClick = {
                         val index = tracks.indexOfFirst { it.uri == track.uri }
                         musicController.play(tracks.map { it.toMediaTrack() }, index.coerceAtLeast(0))
-                    }
+                    },
+                    onLongPress = { actionsTrack = track }
                 )
             }
         }
+    }
+
+    // Track actions sheet — outside the LazyColumn so it overlays the
+    // list instead of scrolling with it.
+    actionsTrack?.let { track ->
+        TrackActionsSheet(
+            track = track,
+            onDismiss = { actionsTrack = null }
+        )
     }
 }
 
@@ -232,16 +246,15 @@ private fun PlaylistHeader(
 @Composable
 private fun PlaylistTrackRow(
     track: Track,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongPress: () -> Unit
 ) {
-    var showActions by remember { mutableStateOf(false) }
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
                 onClick = onClick,
-                onLongClick = { showActions = true }
+                onLongClick = onLongPress
             )
             .padding(horizontal = Dimens.paddingLarge, vertical = Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
@@ -251,7 +264,8 @@ private fun PlaylistTrackRow(
             modifier = Modifier
                 .size(Dimens.albumArtSmall)
                 .clip(RoundedCornerShape(Dimens.cornerSmall)),
-            placeholderIconSize = 20.dp
+            placeholderIconSize = 20.dp,
+            decodeSizePx = 192
         )
         Spacer(modifier = Modifier.width(Dimens.paddingMedium))
         Column(modifier = Modifier.weight(1f)) {
@@ -270,13 +284,6 @@ private fun PlaylistTrackRow(
                 overflow = TextOverflow.Ellipsis
             )
         }
-    }
-
-    if (showActions) {
-        TrackActionsSheet(
-            track = track,
-            onDismiss = { showActions = false }
-        )
     }
 }
 

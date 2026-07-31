@@ -72,7 +72,8 @@ fun TrackRowCard(
             modifier = Modifier
                 .size(Dimens.albumArtSmall)
                 .clip(RoundedCornerShape(Dimens.cornerSmall)),
-            placeholderIconSize = 20.dp
+            placeholderIconSize = 20.dp,
+            decodeSizePx = 192
         )
 
         Spacer(modifier = Modifier.width(Dimens.paddingSmall))

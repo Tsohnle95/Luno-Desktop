@@ -66,6 +66,7 @@ import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.playback.ExtractionResult
 import com.boombastic.mobile.playback.WebSearchResult
 import com.boombastic.mobile.playback.WebSearchService
+import com.boombastic.mobile.ui.components.TrackActionsSheet
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
@@ -182,7 +183,12 @@ fun SearchScreen(
                 onQueryChange = { query = it },
                 displayTracks = if (query.isBlank()) emptyList() else searchResults,
                 onPlay = onPlay,
-                onImport = { importLauncher.launch(arrayOf("audio/*")) },
+                // `*/*` (not `audio/*`): with `audio/*` the system picker
+                // hides folders from selection, so "Select all" only ever
+                // returned the loose songs at the root and the playlist
+                // folders were never imported.  `importMultipleUris` recurses
+                // into picked folders itself.
+                onImport = { importLauncher.launch(arrayOf("*/*")) },
                 onImportFolder = { folderImportLauncher.launch(null) },
                 folderImportState = folderImportState
             )
@@ -235,7 +241,7 @@ private fun LibrarySearchContent(
         modifier = Modifier.padding(vertical = Dimens.paddingMedium),
         colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
     ) {
-        Text(text = "Import audio files", color = PrimaryText)
+        Text(text = "Import songs or playlist folders", color = PrimaryText)
     }
 
     OutlinedButton(
@@ -282,6 +288,9 @@ private fun LibrarySearchContent(
             )
         }
     } else {
+        // Track actions sheet — hoisted out of the LazyColumn: composing a
+        // ModalBottomSheet inside a lazy item makes it scroll with the list.
+        var actionsTrack by remember { mutableStateOf<Track?>(null) }
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(2.dp),
             contentPadding = PaddingValues(bottom = Dimens.paddingLarge)
@@ -300,9 +309,16 @@ private fun LibrarySearchContent(
                                 artworkUri = track.albumArtUri()
                             )
                         )
-                    }
+                    },
+                    onLongPress = { actionsTrack = track }
                 )
             }
+        }
+        actionsTrack?.let { track ->
+            TrackActionsSheet(
+                track = track,
+                onDismiss = { actionsTrack = null }
+            )
         }
     }
 }
@@ -774,16 +790,15 @@ private fun WebResultRow(
 @Composable
 fun TrackRow(
     track: Track,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongPress: () -> Unit = {}
 ) {
-    var showActions by androidx.compose.runtime.remember { mutableStateOf(false) }
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
                 onClick = onClick,
-                onLongClick = { showActions = true }
+                onLongClick = onLongPress
             )
             .padding(vertical = Dimens.paddingSmall, horizontal = Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
@@ -804,13 +819,6 @@ fun TrackRow(
                 maxLines = 1
             )
         }
-    }
-
-    if (showActions) {
-        com.boombastic.mobile.ui.components.TrackActionsSheet(
-            track = track,
-            onDismiss = { showActions = false }
-        )
     }
 }
 

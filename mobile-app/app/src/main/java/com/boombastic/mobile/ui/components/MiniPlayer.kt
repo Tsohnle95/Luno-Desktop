@@ -78,7 +78,8 @@ fun MiniPlayer(
                 modifier = Modifier
                     .size(Dimens.albumArtSmall)
                     .clip(RoundedCornerShape(Dimens.cornerSmall)),
-                placeholderIconSize = 24.dp
+                placeholderIconSize = 24.dp,
+                decodeSizePx = 192
             )
 
             Spacer(modifier = Modifier.width(Dimens.paddingMedium))

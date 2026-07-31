@@ -41,20 +41,34 @@ import kotlinx.coroutines.withContext
  * Renders cached embedded artwork (a `file://` URI produced by
  * [ArtworkStorage]) with a gradient + music-note placeholder while
  * loading or when the track has no artwork.
+ *
+ * [decodeSizePx] caps the Coil decode resolution (Coil's default is the
+ * original image size, and every row decoding full 512px art while
+ * scrolling causes memory churn + GC jank).  The stored artwork is at
+ * most 512px, so the default never downscales; thumbnail call sites pass
+ * a smaller cap so rows decode only what they display.
  */
 @Composable
 fun ArtworkImage(
     artworkUri: String?,
     modifier: Modifier = Modifier,
     shape: Shape = androidx.compose.foundation.shape.RoundedCornerShape(Dimens.cornerMedium),
-    placeholderIconSize: Dp = 40.dp
+    placeholderIconSize: Dp = 40.dp,
+    decodeSizePx: Int = 512
 ) {
     if (artworkUri.isNullOrBlank()) {
         ArtworkPlaceholder(modifier = modifier.clip(shape), iconSize = placeholderIconSize)
         return
     }
+    val context = LocalContext.current
+    val request = remember(artworkUri, decodeSizePx) {
+        coil.request.ImageRequest.Builder(context)
+            .data(artworkUri)
+            .size(width = decodeSizePx, height = decodeSizePx)
+            .build()
+    }
     SubcomposeAsyncImage(
-        model = artworkUri,
+        model = request,
         contentDescription = null,
         modifier = modifier.clip(shape),
         contentScale = ContentScale.Crop,

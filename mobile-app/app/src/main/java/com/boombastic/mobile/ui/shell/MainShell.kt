@@ -352,9 +352,11 @@ fun MainShell(musicController: MusicController) {
                 ) {
                     // App header: "Luno" with the small green bar to its
                     // right (desktop sidebar logo style).  Hidden on the
-                    // full player, which is truly full-screen.
+                    // full player, which is truly full-screen.  The title
+                    // itself is a button: tapping it opens the Settings
+                    // drawer, like the Home green-circle icon.
                     if (currentRoute != Routes.FULL_PLAYER) {
-                        AppHeader()
+                        AppHeader(onClick = { scope.launch { drawerState.open() } })
                     }
                     Box(
                         modifier = Modifier
@@ -386,17 +388,22 @@ fun MainShell(musicController: MusicController) {
 /**
  * Desktop-style app header: bold "Luno" wordmark with the small green
  * rounded bar (the desktop's green "▮") immediately to its right,
- * vertically centered with the title text.
+ * vertically centered with the title text.  The whole title is tappable
+ * ([onClick]) and opens the Settings drawer.
  */
 @Composable
-private fun AppHeader() {
+private fun AppHeader(onClick: () -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(
-            start = Dimens.paddingLarge,
-            top = Dimens.paddingMedium,
-            bottom = Dimens.paddingSmall
-        )
+        modifier = Modifier
+            .clip(RoundedCornerShape(Dimens.cornerMedium))
+            .clickable(onClick = onClick)
+            .padding(
+                start = Dimens.paddingLarge,
+                top = Dimens.paddingMedium,
+                bottom = Dimens.paddingSmall,
+                end = Dimens.paddingMedium
+            )
     ) {
         Text(
             text = "Luno",

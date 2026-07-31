@@ -247,7 +247,8 @@ private fun HomePlaylistCard(
             modifier = Modifier
                 .size(Dimens.albumArtMedium)
                 .clip(RoundedCornerShape(Dimens.cornerLarge)),
-            placeholderIconSize = 40.dp
+            placeholderIconSize = 40.dp,
+            decodeSizePx = 384
         )
         Spacer(modifier = Modifier.height(Dimens.paddingSmall))
         Text(
@@ -301,7 +302,8 @@ fun TrackCard(
             modifier = Modifier
                 .size(Dimens.albumArtMedium)
                 .clip(RoundedCornerShape(Dimens.cornerLarge)),
-            placeholderIconSize = 40.dp
+            placeholderIconSize = 40.dp,
+            decodeSizePx = 384
         )
         Spacer(modifier = Modifier.height(Dimens.paddingSmall))
         Text(

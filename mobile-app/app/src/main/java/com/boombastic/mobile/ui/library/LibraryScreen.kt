@@ -99,6 +99,10 @@ fun LibraryScreen(
     var showBatchPlaylistPicker by remember { mutableStateOf(false) }
     var showBatchRemoveConfirm by remember { mutableStateOf(false) }
 
+    // Track actions sheet — hoisted out of the LazyColumn: composing a
+    // ModalBottomSheet inside a lazy item makes it scroll with the list.
+    var actionsTrack by remember { mutableStateOf<Track?>(null) }
+
     fun playlistHasActiveJobs(playlistId: Long): Boolean =
         downloads.any {
             it.playlistId == playlistId &&
@@ -131,14 +135,20 @@ fun LibraryScreen(
 
     // Tracks always alphabetical (desktop convention); playlists are
     // alphabetical by default with an optional "recently added" sort.
-    val sortedTracks = filteredTracks.sortedBy { it.title.lowercase() }
-    val displayPlaylists = if (playlistSortRecent) {
-        filteredPlaylists.sortedByDescending { it.playlist.createdAt }
-    } else {
-        filteredPlaylists.sortedBy { it.playlist.name.lowercase() }
+    // Derived lists are memoized so recompositions (selection toggles,
+    // dialog state, etc.) don't re-sort/re-map the whole library.
+    val sortedTracks = remember(filteredTracks) {
+        filteredTracks.sortedBy { it.title.lowercase() }
+    }
+    val displayPlaylists = remember(filteredPlaylists, playlistSortRecent) {
+        if (playlistSortRecent) {
+            filteredPlaylists.sortedByDescending { it.playlist.createdAt }
+        } else {
+            filteredPlaylists.sortedBy { it.playlist.name.lowercase() }
+        }
     }
 
-    val mediaTracks = sortedTracks.map { it.toMediaTrack() }
+    val mediaTracks = remember(sortedTracks) { sortedTracks.map { it.toMediaTrack() } }
 
     // Batch-action helpers: keys are track URIs in songs view, "p<id>" in
     // playlist view.
@@ -426,7 +436,6 @@ fun LibraryScreen(
                 }
             } else {
                 items(sortedTracks, key = { it.uri }) { track ->
-                    var showActions by remember { mutableStateOf(false) }
                     TrackRowCard(
                         track = track,
                         selected = if (selectionMode) track.uri in selectedKeys else null,
@@ -446,18 +455,21 @@ fun LibraryScreen(
                                 )
                             }
                         },
-                        onMenuClick = { showActions = true },
+                        onMenuClick = { actionsTrack = track },
                         modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                     )
-                    if (showActions) {
-                        TrackActionsSheet(
-                            track = track,
-                            onDismiss = { showActions = false }
-                        )
-                    }
                 }
             }
         }
+    }
+
+    // Track actions sheet — lives outside the LazyColumn so it overlays
+    // the list instead of scrolling with it.
+    actionsTrack?.let { track ->
+        TrackActionsSheet(
+            track = track,
+            onDismiss = { actionsTrack = null }
+        )
     }
 
     // URL edit dialog (menu action from any playlist card)
