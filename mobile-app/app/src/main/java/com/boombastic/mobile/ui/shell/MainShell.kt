@@ -296,7 +296,8 @@ fun MainShell(musicController: MusicController) {
                     modifier = Modifier.padding(innerPadding),
                     onCreatePlaylist = { showCreateSheet = true },
                     onPlay = onPlay,
-                    onOpenOptions = { scope.launch { drawerState.open() } }
+                    onOpenOptions = { scope.launch { drawerState.open() } },
+                    onOpenPlayer = { navController.navigate(Routes.FULL_PLAYER) }
                 )
             }
 

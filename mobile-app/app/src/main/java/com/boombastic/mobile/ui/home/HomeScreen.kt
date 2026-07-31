@@ -1,7 +1,9 @@
 package com.boombastic.mobile.ui.home
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -19,7 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -27,10 +30,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.boombastic.mobile.BoomBasticApp
+import com.boombastic.mobile.data.db.entity.Track
+import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.components.ArtworkImage
+import com.boombastic.mobile.ui.components.PlaylistCard
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryBackground
@@ -41,78 +50,90 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * Spotify-inspired Home: greeting with green-circle settings icon,
+ * edge-clipped "Recently played" and "Made for you" carousels, and a
+ * quick-action playlist grid.
+ */
 @Composable
 fun HomeScreen(
     musicController: MusicController,
-    onOpenOptions: () -> Unit = {}
+    onOpenOptions: () -> Unit = {},
+    onPlay: (MediaTrack) -> Unit = {},
+    onOpenPlaylist: (Long) -> Unit = {},
+    onOpenPlayer: () -> Unit = {}
 ) {
+    val context = LocalContext.current
+    val app = context.applicationContext as BoomBasticApp
     val currentTrack by musicController.currentTrack.collectAsState()
+    val allTracks by app.libraryRepository.getAllTracks().collectAsState(initial = emptyList())
+    val playlistsWithTracks by app.playlistRepository.getAllPlaylistsWithTracks()
+        .collectAsState(initial = emptyList())
 
     val greeting = getGreeting()
     val displayName = "Listener" // Editable in future
 
+    // Edge-to-edge column; each section supplies its own horizontal padding
+    // so carousels clip visibly at the screen edges.
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = Dimens.paddingLarge),
-        verticalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
-        contentPadding = PaddingValues(vertical = Dimens.paddingLarge)
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(top = Dimens.paddingLarge, bottom = Dimens.paddingXLarge)
     ) {
         // Greeting header
         item {
-            Column {
+            Column(modifier = Modifier.padding(horizontal = Dimens.paddingLarge)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Profile/options entry point (top-left, green circle) —
-                    // opens the local-function drawer (downloads, settings,
-                    // about, ...)
-                    IconButton(
-                        onClick = onOpenOptions,
+                    // Profile/settings entry point (top-left, green circle)
+                    Box(
                         modifier = Modifier
-                            .size(Dimens.touchTargetMin)
+                            .size(36.dp)
                             .clip(CircleShape)
                             .background(AccentGreen)
+                            .clickable(onClick = onOpenOptions),
+                        contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Person,
                             contentDescription = "Options",
                             tint = PrimaryBackground,
-                            modifier = Modifier.size(Dimens.iconSize)
+                            modifier = Modifier.size(22.dp)
                         )
                     }
                     Spacer(modifier = Modifier.weight(1f))
                 }
+                Spacer(modifier = Modifier.height(14.dp))
                 Text(
                     text = "Good $greeting",
-                    style = androidx.compose.material3.MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyLarge,
                     color = SecondaryText
                 )
                 Text(
                     text = displayName,
-                    style = androidx.compose.material3.MaterialTheme.typography.headlineLarge,
+                    style = MaterialTheme.typography.headlineLarge,
                     color = PrimaryText
                 )
             }
         }
 
-        // Recently played section
+        // Recently played — horizontal carousel, edge-clipped
         item {
             SectionHeader(title = "Recently played")
         }
-
         if (currentTrack != null) {
             item {
                 LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium)
+                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+                    contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
                 ) {
-                    // Show current track as recently played
                     item {
                         TrackCard(
                             title = currentTrack?.title ?: "Unknown",
                             artist = currentTrack?.artist ?: "Unknown",
-                            artworkUri = currentTrack?.artworkUri
+                            artworkUri = currentTrack?.artworkUri,
+                            onClick = onOpenPlayer
                         )
                     }
                 }
@@ -121,29 +142,84 @@ fun HomeScreen(
             item {
                 EmptyStateCard(
                     title = "No tracks yet",
-                    subtitle = "Import audio from the Search tab to get started"
+                    subtitle = "Import audio from the Search tab to get started",
+                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                 )
             }
         }
 
-        // Import hint
+        // Made for you — library tracks until Last.fm recommendations land
         item {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = Dimens.paddingLarge)
-            ) {
-                Text(
-                    text = "Import Music",
-                    style = androidx.compose.material3.MaterialTheme.typography.titleLarge,
-                    color = PrimaryText
+            SectionHeader(title = "Made for you")
+        }
+        if (allTracks.isEmpty()) {
+            item {
+                EmptyStateCard(
+                    title = "Nothing here yet",
+                    subtitle = "Songs from your library will appear here",
+                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                 )
-                Text(
-                    text = "Use the search tab to import audio files from your device",
-                    style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
-                    color = SecondaryText,
-                    modifier = Modifier.padding(top = Dimens.paddingSmall)
+            }
+        } else {
+            item {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+                    contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
+                ) {
+                    items(allTracks.take(10), key = { it.uri }) { track ->
+                        TrackCard(
+                            title = track.title,
+                            artist = track.artist,
+                            artworkUri = track.albumArtUri(),
+                            onClick = {
+                                onPlay(
+                                    MediaTrack(
+                                        uri = track.uri,
+                                        title = track.title,
+                                        artist = track.artist,
+                                        album = track.album,
+                                        durationMs = track.durationMs,
+                                        artworkUri = track.albumArtUri()
+                                    )
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Quick-action playlists — two cards per horizontal block
+        item {
+            SectionHeader(title = "Your playlists")
+        }
+        if (playlistsWithTracks.isEmpty()) {
+            item {
+                EmptyStateCard(
+                    title = "No playlists yet",
+                    subtitle = "Create one from Your Library",
+                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                 )
+            }
+        } else {
+            playlistsWithTracks.chunked(2).forEach { rowPlaylists ->
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = Dimens.paddingLarge),
+                        horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium)
+                    ) {
+                        rowPlaylists.forEach { playlistWithTracks ->
+                            PlaylistCard(
+                                playlist = playlistWithTracks.playlist,
+                                thumbnailUri = playlistWithTracks.tracks.firstOrNull()?.albumArtUri(),
+                                onClick = { onOpenPlaylist(playlistWithTracks.playlist.id) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -153,10 +229,15 @@ fun HomeScreen(
 fun SectionHeader(title: String) {
     Text(
         text = title,
-        style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+        style = MaterialTheme.typography.titleMedium,
         color = PrimaryText,
         fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(vertical = Dimens.paddingSmall)
+        modifier = Modifier.padding(
+            start = Dimens.paddingLarge,
+            end = Dimens.paddingLarge,
+            top = Dimens.paddingLarge,
+            bottom = Dimens.paddingSmall
+        )
     )
 }
 
@@ -164,11 +245,13 @@ fun SectionHeader(title: String) {
 fun TrackCard(
     title: String,
     artist: String,
-    artworkUri: String? = null
+    artworkUri: String? = null,
+    onClick: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
-            .padding(top = Dimens.paddingSmall)
+            .width(140.dp)
+            .clickable(onClick = onClick)
     ) {
         // Album art (120dp rounded square), real artwork when available
         ArtworkImage(
@@ -181,15 +264,17 @@ fun TrackCard(
         Spacer(modifier = Modifier.height(Dimens.paddingSmall))
         Text(
             text = title,
-            style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
+            style = MaterialTheme.typography.titleSmall,
             color = PrimaryText,
-            maxLines = 1
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
         Text(
             text = artist,
-            style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.bodySmall,
             color = SecondaryText,
-            maxLines = 1
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -197,21 +282,22 @@ fun TrackCard(
 @Composable
 fun EmptyStateCard(
     title: String,
-    subtitle: String
+    subtitle: String,
+    modifier: Modifier = Modifier
 ) {
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .padding(Dimens.paddingLarge)
+            .padding(vertical = Dimens.paddingMedium)
     ) {
         Text(
             text = title,
-            style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleMedium,
             color = PrimaryText
         )
         Text(
             text = subtitle,
-            style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodyMedium,
             color = SecondaryText,
             modifier = Modifier.padding(top = Dimens.paddingSmall)
         )

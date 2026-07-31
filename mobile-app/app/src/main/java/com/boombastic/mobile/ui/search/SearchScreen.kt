@@ -4,8 +4,10 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -754,15 +756,21 @@ private fun DownloadJobRow(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TrackRow(
     track: Track,
     onClick: () -> Unit
 ) {
+    var showActions by androidx.compose.runtime.remember { mutableStateOf(false) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { showActions = true }
+            )
             .padding(vertical = Dimens.paddingSmall, horizontal = Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -782,6 +790,13 @@ fun TrackRow(
                 maxLines = 1
             )
         }
+    }
+
+    if (showActions) {
+        com.boombastic.mobile.ui.components.TrackActionsSheet(
+            track = track,
+            onDismiss = { showActions = false }
+        )
     }
 }
 
