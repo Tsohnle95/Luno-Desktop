@@ -3,6 +3,7 @@ package com.boombastic.mobile.playback
 import android.content.ComponentName
 import android.content.Context
 import android.os.Bundle
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -79,6 +80,12 @@ class MusicController @JvmOverloads constructor(
     private val _hasActiveItem = MutableStateFlow(false)
     val hasActiveItem: StateFlow<Boolean> = _hasActiveItem.asStateFlow()
 
+    private val _repeatMode = MutableStateFlow(Player.REPEAT_MODE_OFF)
+    val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
+
+    private val _shuffleEnabled = MutableStateFlow(false)
+    val shuffleEnabled: StateFlow<Boolean> = _shuffleEnabled.asStateFlow()
+
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
@@ -144,6 +151,14 @@ class MusicController @JvmOverloads constructor(
             if (playbackState == Player.STATE_READY) {
                 _duration.value = controller?.duration?.coerceAtLeast(0L) ?: 0L
             }
+        }
+
+        override fun onRepeatModeChanged(repeatMode: Int) {
+            _repeatMode.value = repeatMode
+        }
+
+        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+            _shuffleEnabled.value = shuffleModeEnabled
         }
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
@@ -273,6 +288,75 @@ class MusicController @JvmOverloads constructor(
         controller?.seekToPreviousMediaItem()
     }
 
+    /**
+     * Cycles repeat mode OFF → ALL → ONE → OFF on the connected player.
+     * No-op before connection.
+     */
+    fun toggleRepeatMode() {
+        if (released) return
+        controller?.let { ctrl ->
+            ctrl.repeatMode = when (ctrl.repeatMode) {
+                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                else -> Player.REPEAT_MODE_OFF
+            }
+        }
+    }
+
+    /**
+     * Toggles ExoPlayer shuffle mode on the connected player.  No-op before
+     * connection.
+     */
+    fun toggleShuffle() {
+        if (released) return
+        controller?.let { ctrl ->
+            ctrl.shuffleModeEnabled = !ctrl.shuffleModeEnabled
+        }
+    }
+
+    /**
+     * Snapshot of the current playback queue (in playback order) derived from
+     * the connected player's media items.  Empty before connection.
+     */
+    fun getQueue(): List<MediaTrack> {
+        val ctrl = controller ?: return emptyList()
+        return (0 until ctrl.mediaItemCount).map { index ->
+            val item = ctrl.getMediaItemAt(index)
+            val meta = item.mediaMetadata
+            MediaTrack(
+                uri = item.mediaId,
+                title = meta.title?.toString() ?: "Unknown",
+                artist = meta.artist?.toString() ?: "Unknown",
+                album = meta.albumTitle?.toString() ?: "",
+                durationMs = metadataDuration(meta, -1L),
+            )
+        }
+    }
+
+    /**
+     * Inserts the track immediately after the currently playing item
+     * ("Play next").  No-op before connection.
+     */
+    fun playNext(track: MediaTrack) {
+        if (released) return
+        val ctrl = controller ?: return
+        val insertAt = if (ctrl.currentMediaItemIndex == C.INDEX_UNSET) {
+            ctrl.mediaItemCount
+        } else {
+            (ctrl.currentMediaItemIndex + 1).coerceAtMost(ctrl.mediaItemCount)
+        }
+        ctrl.addMediaItem(insertAt, buildMediaItem(track))
+    }
+
+    /**
+     * Appends the track to the end of the playback queue.  No-op before
+     * connection.
+     */
+    fun addToQueue(track: MediaTrack) {
+        if (released) return
+        controller?.addMediaItem(buildMediaItem(track))
+    }
+
     fun stop() {
         if (released) return
         controller?.stop()
@@ -327,6 +411,8 @@ class MusicController @JvmOverloads constructor(
         _isConnected.value = true
         _isPlaying.value = ctrl.isPlaying
         _hasActiveItem.value = ctrl.mediaItemCount > 0
+        _repeatMode.value = ctrl.repeatMode
+        _shuffleEnabled.value = ctrl.shuffleModeEnabled
 
         val currentMediaItem = ctrl.currentMediaItem
         if (currentMediaItem != null) {

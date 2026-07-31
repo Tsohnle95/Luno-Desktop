@@ -4,7 +4,7 @@
 > **MAINTENANCE INSTRUCTIONS FOR AI/HUMANS:**
 > This document is the authoritative knowledge base for the **implemented** BoomBastic native Android app under `mobile-app/`, including its planned extensions. It must be updated whenever settled decisions change.
 >
-> **Last verified and updated:** 2026-07-30 (Updated for vendored NewPipeExtractor v0.26.4 composite build + downloader hardening: M4A/Opus itag selection, `check` token preservation, redacted download logging; on-device runtime verification pending)
+> **Last verified and updated:** 2026-07-30 (Updated for Full Player Screen: artwork placeholder, scrub bar, queue sheet, action sheet, repeat/shuffle transport controls; on-device runtime verification pending)
 >
 > **Authority policy (descending):**
 > 1. **Source code + tests + config** in this repo (highest truth)
@@ -100,16 +100,20 @@ boomtastic/
 │   │       │       │       └── PlaylistRepository.kt # CRUD, validation, sort order mgmt
 │   │       │       └── ui/
 │   │       │           ├── shell/
-│   │       │           │   └── MainShell.kt          # Scaffold + BottomNav (4 tabs + Create) + MiniPlayer
+│   │       │           │   └── MainShell.kt          # Scaffold + BottomNav (4 tabs + Create) + MiniPlayer (hidden on full player)
 │   │       │           ├── navigation/
-│   │       │           │   └── NavGraph.kt           # NavHost: Home / Search / Library / Discover
+│   │       │           │   └── NavGraph.kt           # NavHost: Home / Search / Library / Discover / Downloads / full_player
 │   │       │           ├── theme/
 │   │       │           │   ├── Color.kt              # Dark palette (visual spec colors)
 │   │       │           │   ├── Theme.kt              # BoomBasticTheme (Material3 dark color scheme)
 │   │       │           │   ├── Type.kt               # Sans-serif typography scale
 │   │       │           │   └── Dimens.kt             # 24dp icons, 48dp touch targets, 64dp mini-player
 │   │       │           ├── components/
-│   │       │           │   └── MiniPlayer.kt         # Persistent progress + title + play/pause
+│   │       │           │   └── MiniPlayer.kt         # Persistent progress + title + play/pause; tap → full player
+│   │       │           ├── player/
+│   │       │           │   ├── FullPlayerScreen.kt   # 280dp artwork, scrub bar, transport row, queue/action triggers
+│   │       │           │   ├── QueueSheet.kt         # "Playing Next" read-only modal bottom sheet
+│   │       │           │   └── ActionSheet.kt        # Add-to-playlist/play-next/add-to-queue/artist/share sheet
 │   │       │           ├── home/
 │   │       │           │   └── HomeScreen.kt         # Greeting, recently played, import hint
 │   │       │           ├── search/
@@ -286,7 +290,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 | Component | Technology | Status |
 |-----------|-----------|--------|
 | Language | Kotlin 2.0.0 | ✅ **Implemented** — source in `playback/`, `data/`, `ui/` |
-| UI | Jetpack Compose (BOM 2024.06.00) | ✅ **Implemented** — 4 screens + shell + theme + mini-player |
+| UI | Jetpack Compose (BOM 2024.06.00) | ✅ **Implemented** — 5 screens + full player + sheets + shell + theme + mini-player |
 | Playback | Media3 (ExoPlayer 1.3.1) | ✅ **Implemented** — `MusicService` (MediaSessionService) + `MusicController` (StateFlow wrapper) |
 | Local DB | Room 2.6.1 | ✅ **Implemented** — 4 entities, 3 DAOs (v3 schema — playlistUrl added to Playlist) |
 | Background downloads | WorkManager + Foreground Service | ✅ **Implemented** — `DownloadWorker` + `DownloadRepository` + `DownloadJob` Room entity (v2 schema) |
@@ -295,7 +299,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 
 **Playback architecture (current implementation):**
 - `MusicService` extends `MediaSessionService` — single ExoPlayer instance. `onDestroy()` releases `MediaSession` before ExoPlayer (correct Media3 teardown order).
-- `MusicController` wraps `MediaController` with `StateFlow` for `isPlaying`, `currentTrack`, `progress`, `duration`, `hasActiveItem`, `isConnected`; supports **pending-play semantics** via a single immutable `PlaybackRequest(items, startIndex)` (last-user-request wins).
+- `MusicController` wraps `MediaController` with `StateFlow` for `isPlaying`, `currentTrack`, `progress`, `duration`, `hasActiveItem`, `isConnected`, `repeatMode`, `shuffleEnabled`; supports **pending-play semantics** via a single immutable `PlaybackRequest(items, startIndex)` (last-user-request wins).
 - **Reliability merge (2026-07-30):** The pending-play implementation is now production‑ready:
   - `AsyncConnector` injectable seam for deterministic testing without a live service.
   - Terminal `released` flag + `generation` counter prevents late‑arriving controller futures from attaching listeners or starting playback after `release()`.
@@ -311,7 +315,8 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 - `onTaskRemoved` stops service if nothing is playing.
 - `MainShell` collects `connectionError` and `playbackError` via `SnackbarHostState` and shows one‑shot Snackbars.
 - `MediaTrack` extended with `album: String` and `durationMs: Long`. SearchScreen/LibraryScreen construct `MediaTrack` from Room `Track` with exact title, artist, album, durationMs; `MiniPlayer` displays `Artist · Album` when available.
-- **Not yet implemented:** Full player screen, queue/history screens, Bluetooth AVRCP metadata publication, Android Auto.
+- **Full player screen implemented (2026-07-30):** `ui/player/FullPlayerScreen.kt` (280dp gradient artwork placeholder, m:ss scrub bar, shuffle/prev/play-pause/next/repeat transport row, queue + action-sheet triggers, back arrow), `ui/player/QueueSheet.kt` ("Playing Next" read-only modal sheet from `MusicController.getQueue()`), `ui/player/ActionSheet.kt` (Add to playlist sub-sheet via `PlaylistRepository`, Play next, Add to queue, Go to artist toast placeholder, Android Sharesheet). Repeat cycles OFF→ALL→ONE (ExoPlayer `REPEAT_MODE_*`), shuffle toggles `shuffleModeEnabled`; both exposed as `StateFlow` on `MusicController`. MiniPlayer track-info tap navigates to `Routes.FULL_PLAYER`; bottom bar hidden on the full-player route.
+- **Not yet implemented:** Queue reordering/history screens, Bluetooth AVRCP metadata publication, Android Auto.
 
 **Queue/history:**
 - Queue is **local only** — never synced to a server
@@ -369,7 +374,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 
 ### Visual Specification (Authoritative Fallback)
 
-> Note: The current desktop/Flet theme (`theme.py`) uses different colors (#121212, #181818, #282828, etc.). The colors below are **implemented** in `ui/theme/Color.kt` and match the visual spec. Full screen contracts (full player, queue, etc.) remain **planned**.
+> Note: The current desktop/Flet theme (`theme.py`) uses different colors (#121212, #181818, #282828, etc.). The colors below are **implemented** in `ui/theme/Color.kt` and match the visual spec. The full player screen contract (below) is **implemented** in `ui/player/` (artwork placeholder only — Coil artwork loading, queue reordering, and volume slider remain deferred).
 
 **Color palette:**
 | Role | Hex | Usage |
@@ -415,7 +420,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 **Screen contracts (comprehensive):**
 
 1. **Home:** Greeting (editable display name), "Good morning/afternoon/evening", recently played horizontal carousel, "Made for you" recommendations carousel, quick-action playlists, your top genres
-2. **Full player:** Large artwork (center), title, artist, scrub bar with time, repeat/shuffle/prev/play-pause/next, volume slider, queue button, go-to-artist button, action sheet trigger
+2. **Full player:** ✅ **Implemented** in `ui/player/FullPlayerScreen.kt` — Large artwork placeholder (280dp static gradient — real artwork needs Coil, **planned**), title, artist, scrub bar with m:ss time labels, repeat/shuffle/prev/play-pause/next transport, queue button (`ui/player/QueueSheet.kt`), action sheet trigger (`ui/player/ActionSheet.kt` with add-to-playlist, play next, add to queue, go-to-artist, share). **Deferred:** volume slider (device hardware volume keys only — per scope decision), dynamic artwork, go-to-artist/album detail wiring.
 3. **Action sheet (bottom sheet):** Add to playlist, play next, add to queue, go to album, go to artist, share, view credits, remove from playlist
 4. **Playlist detail:** Header with artwork/title/owner/description/track count/total duration, sort options, search within playlist, track list with drag-to-reorder, download all toggle
 5. **Playlist tools:** Rename, delete, export JSON, import JSON (merge/replace), duplicate track resolution

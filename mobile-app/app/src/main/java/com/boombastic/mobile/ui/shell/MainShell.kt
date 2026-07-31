@@ -121,81 +121,87 @@ fun MainShell(musicController: MusicController) {
             containerColor = PrimaryBackground,
             snackbarHost = { SnackbarHost(snackbarHostState) },
             bottomBar = {
-                Column {
-                    // Mini player
-                    AnimatedVisibility(
-                        visible = hasActiveItem,
-                        enter = slideInVertically(initialOffsetY = { it }),
-                        exit = slideOutVertically(targetOffsetY = { it })
-                    ) {
-                        MiniPlayer(musicController = musicController)
-                    }
+                // Full player is truly full-screen — hide mini player + nav bar.
+                if (currentRoute != Routes.FULL_PLAYER) {
+                    Column {
+                        // Mini player
+                        AnimatedVisibility(
+                            visible = hasActiveItem,
+                            enter = slideInVertically(initialOffsetY = { it }),
+                            exit = slideOutVertically(targetOffsetY = { it })
+                        ) {
+                            MiniPlayer(
+                                musicController = musicController,
+                                onMiniPlayerTap = { navController.navigate(Routes.FULL_PLAYER) }
+                            )
+                        }
 
-                    // Bottom navigation
-                    NavigationBar(
-                        containerColor = NavBarSurface,
-                        tonalElevation = 0.dp
-                    ) {
-                        bottomNavItems.forEach { item ->
-                            val selected = currentRoute == item.route
-                            NavigationBarItem(
-                                selected = selected,
-                                onClick = {
-                                    if (item.route == currentRoute) return@NavigationBarItem
-                                    navController.navigate(item.route) {
-                                        popUpTo(navController.graph.startDestinationId) {
-                                            saveState = true
+                        // Bottom navigation
+                        NavigationBar(
+                            containerColor = NavBarSurface,
+                            tonalElevation = 0.dp
+                        ) {
+                            bottomNavItems.forEach { item ->
+                                val selected = currentRoute == item.route
+                                NavigationBarItem(
+                                    selected = selected,
+                                    onClick = {
+                                        if (item.route == currentRoute) return@NavigationBarItem
+                                        navController.navigate(item.route) {
+                                            popUpTo(navController.graph.startDestinationId) {
+                                                saveState = true
+                                            }
+                                            launchSingleTop = true
+                                            restoreState = true
                                         }
-                                        launchSingleTop = true
-                                        restoreState = true
-                                    }
-                                },
+                                    },
+                                    icon = {
+                                        Icon(
+                                            imageVector = ImageVector.vectorResource(id = item.icon),
+                                            contentDescription = item.label,
+                                            modifier = Modifier.padding(Dimens.paddingSmall)
+                                        )
+                                    },
+                                    label = {
+                                        Text(
+                                            text = item.label,
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = AccentGreen,
+                                        selectedTextColor = AccentGreen,
+                                        unselectedIconColor = NavBarUnselected,
+                                        unselectedTextColor = NavBarUnselected,
+                                        indicatorColor = NavBarSurface
+                                    )
+                                )
+                            }
+
+                            // Create action item (does not navigate)
+                            NavigationBarItem(
+                                selected = false,
+                                onClick = { showCreateSheet = true },
                                 icon = {
                                     Icon(
-                                        imageVector = ImageVector.vectorResource(id = item.icon),
-                                        contentDescription = item.label,
+                                        imageVector = ImageVector.vectorResource(id = R.drawable.ic_create),
+                                        contentDescription = "Create",
                                         modifier = Modifier.padding(Dimens.paddingSmall)
                                     )
                                 },
                                 label = {
                                     Text(
-                                        text = item.label,
+                                        text = "Create",
                                         style = MaterialTheme.typography.labelSmall
                                     )
                                 },
                                 colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = AccentGreen,
-                                    selectedTextColor = AccentGreen,
                                     unselectedIconColor = NavBarUnselected,
                                     unselectedTextColor = NavBarUnselected,
                                     indicatorColor = NavBarSurface
                                 )
                             )
                         }
-
-                        // Create action item (does not navigate)
-                        NavigationBarItem(
-                            selected = false,
-                            onClick = { showCreateSheet = true },
-                            icon = {
-                                Icon(
-                                    imageVector = ImageVector.vectorResource(id = R.drawable.ic_create),
-                                    contentDescription = "Create",
-                                    modifier = Modifier.padding(Dimens.paddingSmall)
-                                )
-                            },
-                            label = {
-                                Text(
-                                    text = "Create",
-                                    style = MaterialTheme.typography.labelSmall
-                                )
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                unselectedIconColor = NavBarUnselected,
-                                unselectedTextColor = NavBarUnselected,
-                                indicatorColor = NavBarSurface
-                            )
-                        )
                     }
                 }
             }

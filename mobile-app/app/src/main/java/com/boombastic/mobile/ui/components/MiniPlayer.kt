@@ -1,6 +1,7 @@
 package com.boombastic.mobile.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,7 +35,8 @@ import com.boombastic.mobile.ui.theme.SecondaryText
 
 @Composable
 fun MiniPlayer(
-    musicController: MusicController
+    musicController: MusicController,
+    onMiniPlayerTap: () -> Unit = {}
 ) {
     val isPlaying by musicController.isPlaying.collectAsState()
     val currentTrack by musicController.currentTrack.collectAsState()
@@ -67,10 +69,11 @@ fun MiniPlayer(
                 .padding(horizontal = Dimens.paddingMedium),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Track info (non-clickable — full player is deferred)
+            // Track info (tap to open the full player)
             Column(
                 modifier = Modifier
                     .weight(1f)
+                    .clickable(onClick = onMiniPlayerTap)
             ) {
                 Text(
                     text = currentTrack?.title ?: "Unknown Track",

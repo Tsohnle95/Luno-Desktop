@@ -1,6 +1,7 @@
 package com.boombastic.mobile.playback
 
 import android.content.Context
+import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -249,6 +250,41 @@ class MusicControllerTest {
         assertThat(controller.duration.value).isEqualTo(0L)
         assertThat(controller.hasActiveItem.value).isFalse()
         assertThat(controller.isConnected.value).isFalse()
+    }
+
+    // ── Repeat / shuffle / queue API ─────────────────────────────────────
+
+    @Test
+    fun `repeatMode and shuffleEnabled have initial values`() {
+        assertThat(controller.repeatMode.value).isEqualTo(Player.REPEAT_MODE_OFF)
+        assertThat(controller.shuffleEnabled.value).isFalse()
+    }
+
+    @Test
+    fun `toggleRepeatMode does not throw before connection`() {
+        controller.toggleRepeatMode()
+        assertThat(controller.repeatMode.value).isEqualTo(Player.REPEAT_MODE_OFF)
+    }
+
+    @Test
+    fun `toggleShuffle does not throw before connection`() {
+        controller.toggleShuffle()
+        assertThat(controller.shuffleEnabled.value).isFalse()
+    }
+
+    @Test
+    fun `getQueue returns empty before connection`() {
+        assertThat(controller.getQueue()).isEmpty()
+    }
+
+    @Test
+    fun `playNext does not throw before connection`() {
+        controller.playNext(track("next"))
+    }
+
+    @Test
+    fun `addToQueue does not throw before connection`() {
+        controller.addToQueue(track("append"))
     }
 
     // ── Error emission ───────────────────────────────────────────────────
