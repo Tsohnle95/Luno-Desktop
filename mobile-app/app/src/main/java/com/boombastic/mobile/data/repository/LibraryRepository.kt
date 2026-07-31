@@ -8,10 +8,22 @@ import android.provider.OpenableColumns
 import com.boombastic.mobile.data.artwork.ArtworkStorage
 import com.boombastic.mobile.data.db.dao.TrackDao
 import com.boombastic.mobile.data.db.entity.Track
+import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 class LibraryRepository(
     private val context: Context,
@@ -140,13 +152,13 @@ class LibraryRepository(
                 else -> {
                     val result = importAudioUri(uri, counters.existingDocIds)
                     if (result.isSuccess) {
-                        counters.imported++
+                        counters.incrementImported()
                     } else {
                         val error = result.exceptionOrNull()
                         if (error is ImportException && error.error == ImportError.DUPLICATE) {
-                            counters.duplicates++
+                            counters.incrementDuplicates()
                         } else {
-                            counters.errors++
+                            counters.incrementErrors()
                         }
                     }
                 }
@@ -207,17 +219,30 @@ class LibraryRepository(
         onProgress: (imported: Int, duplicates: Int, errors: Int) -> Unit
     ) {
         val playlistId = playlistIdFor(playlistName)
-        for ((documentId, name, mime) in queryTreeChildren(treeUri, folderDocumentId)) {
-            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                importTreeFolder(treeUri, documentId, name, counters, onProgress)
-            } else if (isAudio(mime, name)) {
-                handleAudioChild(
-                    childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId),
-                    playlistId = playlistId,
-                    counters = counters,
-                    onProgress = onProgress
-                )
-            }
+        counters.seedSortOrder(playlistId, playlistId?.let { playlistDao?.maxSortOrder(it) })
+        val children = queryTreeChildren(treeUri, folderDocumentId)
+
+        // Process the folder's children with bounded parallelism: a single
+        // bad file must not stall a 4k-song import, and 4 workers make a
+        // full import 3-4x faster.  Folder recursion shares the semaphore.
+        val semaphore = Semaphore(PARALLELISM)
+        coroutineScope {
+            children.map { (documentId, name, mime) ->
+                async {
+                    semaphore.withPermit {
+                        if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                            importTreeFolder(treeUri, documentId, name, counters, onProgress)
+                        } else if (isAudio(mime, name)) {
+                            handleAudioChild(
+                                childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId),
+                                playlistId = playlistId,
+                                counters = counters,
+                                onProgress = onProgress
+                            )
+                        }
+                    }
+                }
+            }.awaitAll()
         }
     }
 
@@ -234,17 +259,27 @@ class LibraryRepository(
         counters: ImportCounters
     ) {
         val playlistId = playlistIdFor(playlistName)
-        for ((childUri, name, mime) in queryDocumentChildren(folderUri)) {
-            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                importDocumentFolder(childUri, name, counters)
-            } else if (isAudio(mime, name)) {
-                handleAudioChild(
-                    childUri = childUri,
-                    playlistId = playlistId,
-                    counters = counters,
-                    onProgress = null
-                )
-            }
+        counters.seedSortOrder(playlistId, playlistId?.let { playlistDao?.maxSortOrder(it) })
+        val children = queryDocumentChildren(folderUri)
+
+        val semaphore = Semaphore(PARALLELISM)
+        coroutineScope {
+            children.map { (childUri, name, mime) ->
+                async {
+                    semaphore.withPermit {
+                        if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                            importDocumentFolder(childUri, name, counters)
+                        } else if (isAudio(mime, name)) {
+                            handleAudioChild(
+                                childUri = childUri,
+                                playlistId = playlistId,
+                                counters = counters,
+                                onProgress = null
+                            )
+                        }
+                    }
+                }
+            }.awaitAll()
         }
     }
 
@@ -265,7 +300,7 @@ class LibraryRepository(
                 val track = result.getOrThrow()
                 if (playlistId != null) {
                     runCatching {
-                        val sortOrder = playlistDao?.maxSortOrder(playlistId)?.plus(1) ?: 0
+                        val sortOrder = counters.nextSortOrder(playlistId) ?: 0
                         playlistDao?.addTrackToPlaylist(
                             com.boombastic.mobile.data.db.entity.PlaylistTrack(
                                 playlistId = playlistId,
@@ -275,13 +310,13 @@ class LibraryRepository(
                         )
                     }
                 }
-                counters.imported++
+                counters.incrementImported()
             }
             result.exceptionOrNull() is ImportException &&
                 (result.exceptionOrNull() as ImportException).error == ImportError.DUPLICATE -> {
-                counters.duplicates++
+                counters.incrementDuplicates()
             }
-            else -> counters.errors++
+            else -> counters.incrementErrors()
         }
         onProgress?.invoke(counters.imported, counters.duplicates, counters.errors)
     }
@@ -538,7 +573,31 @@ class LibraryRepository(
         return ext in AUDIO_EXTENSIONS
     }
 
-    private suspend fun extractMetadata(uri: Uri): Track = withContext(Dispatchers.IO) {
+    /**
+     * Extracts track metadata with a hard timeout.  Metadata/artwork
+     * extraction runs on a dedicated cached-thread pool (not the shared
+     * IO dispatcher): `MediaMetadataRetriever.setDataSource` and some
+     * provider queries can block **forever** on a corrupt file, and a
+     * permanently blocked thread must not freeze a whole serial import.
+     * When the timeout fires the stuck thread is abandoned (it may never
+     * finish) and a filename-based fallback track is imported instead.
+     */
+    private suspend fun extractMetadata(uri: Uri): Track =
+        withTimeoutOrNull(EXTRACTION_TIMEOUT_MS) {
+            suspendCancellableCoroutine { continuation ->
+                extractionExecutor.execute {
+                    if (!continuation.isActive) return@execute
+                    runCatching { continuation.resume(extractMetadataBlocking(uri)) }
+                }
+            }
+        } ?: Track(
+            uri = uri.toString(),
+            title = "Unknown Track",
+            artist = "Unknown Artist",
+            addedAt = System.currentTimeMillis()
+        )
+
+    private fun extractMetadataBlocking(uri: Uri): Track {
         val cursor = context.contentResolver.query(uri, null, null, null, null)
         var title = "Unknown Track"
         var artist = "Unknown Artist"
@@ -572,7 +631,7 @@ class LibraryRepository(
         }
 
             // Try MediaMetadataRetriever for more accurate metadata
-        try {
+        return try {
             val retriever = android.media.MediaMetadataRetriever()
             retriever.setDataSource(context, uri)
             val extractedTitle = retriever.extractMetadata(
@@ -650,20 +709,63 @@ class LibraryRepository(
         val persistFailures: Int = 0
     )
 
-    /** Mutable counters threaded through recursive folder imports. */
-    private class ImportCounters(
-        var imported: Int = 0,
-        var duplicates: Int = 0,
-        var errors: Int = 0,
-        var persistFailures: Int = 0
-    ) {
+    /**
+     * Thread-safe counters shared by the parallel folder import workers:
+     * atomic counts, a concurrent document-id set, and per-playlist
+     * monotonically increasing sort orders (seeded from the DB once per
+     * folder so parallel inserts never collide on `maxSortOrder + 1`).
+     */
+    private class ImportCounters {
+        private val importedAtomic = AtomicInteger()
+        private val duplicatesAtomic = AtomicInteger()
+        private val errorsAtomic = AtomicInteger()
+
+        var persistFailures = 0
+
+        val imported: Int get() = importedAtomic.get()
+        val duplicates: Int get() = duplicatesAtomic.get()
+        val errors: Int get() = errorsAtomic.get()
+
+        fun incrementImported() = importedAtomic.incrementAndGet()
+        fun incrementDuplicates() = duplicatesAtomic.incrementAndGet()
+        fun incrementErrors() = errorsAtomic.incrementAndGet()
+
         /** Document ids of all known tracks (preloaded + grown as the run imports). */
-        val existingDocIds: MutableSet<String> = mutableSetOf()
+        val existingDocIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        private val nextSortOrders = ConcurrentHashMap<Long, AtomicInteger>()
+
+        fun seedSortOrder(playlistId: Long?, currentMax: Int?) {
+            if (playlistId == null) return
+            nextSortOrders.putIfAbsent(playlistId, AtomicInteger((currentMax ?: 0) + 1))
+        }
+
+        fun nextSortOrder(playlistId: Long?): Int? {
+            if (playlistId == null) return null
+            return nextSortOrders[playlistId]?.getAndIncrement()
+        }
     }
 
     companion object {
         /** Desktop convention: files at the music root belong to "Unsorted". */
         const val UNSORTED_PLAYLIST = "Unsorted"
+
+        /** Bounded parallelism for folder imports (one bad file can't stall
+         *  a whole 4k-song import, and the run is 3-4x faster). */
+        private const val PARALLELISM = 4
+
+        /** Hard cap per file for metadata/artwork extraction; on timeout the
+         *  stuck thread is abandoned and a filename-based track is imported. */
+        private const val EXTRACTION_TIMEOUT_MS = 20_000L
+
+        /**
+         * Dedicated cached-thread pool for blocking metadata extraction.
+         * Cached (not fixed): threads that hang on corrupt files are
+         * abandoned and never returned to the pool.
+         */
+        private val extractionExecutor: ExecutorService = Executors.newCachedThreadPool { runnable ->
+            Thread(runnable, "track-extraction").apply { isDaemon = true }
+        }
 
         private val AUDIO_EXTENSIONS = setOf(
             "mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff", "alac"

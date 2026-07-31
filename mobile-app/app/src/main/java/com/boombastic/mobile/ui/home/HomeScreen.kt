@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -66,6 +67,14 @@ fun HomeScreen(
     val greeting = getGreeting()
     val displayName = "Listener" // Editable in future
 
+    // Hoisted carousel scroll states: remembered at screen level so each
+    // carousel keeps its exact scroll position even when its section
+    // swaps content (e.g. EmptyStateCard <-> carousel while the library
+    // changes) — with per-item remembers the state could reset or jump.
+    val recentlyPlayedListState = rememberLazyListState()
+    val madeForYouListState = rememberLazyListState()
+    val playlistsListState = rememberLazyListState()
+
     // Edge-to-edge column; each section supplies its own horizontal padding
     // so carousels clip visibly at the screen edges.  Vertical rhythm is
     // standardized: 16dp above the greeting, then every section is broken
@@ -75,7 +84,7 @@ fun HomeScreen(
         contentPadding = PaddingValues(top = Dimens.paddingLarge, bottom = Dimens.paddingXLarge)
     ) {
         // Greeting header
-        item {
+        item(key = "greeting") {
             Column(modifier = Modifier.padding(horizontal = Dimens.paddingLarge)) {
                 Text(
                     text = "Good $greeting",
@@ -93,11 +102,11 @@ fun HomeScreen(
 
         // Recently played — swipeable horizontal carousel of the full
         // in-session history, edge-clipped like "Made for you"
-        item {
+        item(key = "recently-header") {
             SectionHeader(title = "Recently played")
         }
         if (recentlyPlayed.isEmpty() && currentTrack == null) {
-            item {
+            item(key = "recently-empty") {
                 EmptyStateCard(
                     title = "No tracks yet",
                     subtitle = "Import audio from the Search tab to get started",
@@ -105,13 +114,13 @@ fun HomeScreen(
                 )
             }
         } else {
-            item {
-                val history = if (recentlyPlayed.isNotEmpty()) {
-                    recentlyPlayed.take(20)
-                } else {
-                    listOfNotNull(currentTrack)
-                }
+            item(key = "recently-carousel") {
+                // distinctBy: a track may legitimately appear twice in
+                // history (non-consecutive plays); duplicate keys would
+                // make the LazyRow jump or throw.
+                val history = recentlyPlayed.distinctBy { it.uri }.take(20)
                 LazyRow(
+                    state = recentlyPlayedListState,
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
                     contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
                 ) {
@@ -128,11 +137,11 @@ fun HomeScreen(
         }
 
         // Made for you — library tracks until Last.fm recommendations land
-        item {
+        item(key = "made-header") {
             SectionHeader(title = "Made for you")
         }
         if (allTracks.isEmpty()) {
-            item {
+            item(key = "made-empty") {
                 EmptyStateCard(
                     title = "Nothing here yet",
                     subtitle = "Songs from your library will appear here",
@@ -140,8 +149,9 @@ fun HomeScreen(
                 )
             }
         } else {
-            item {
+            item(key = "made-carousel") {
                 LazyRow(
+                    state = madeForYouListState,
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
                     contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
                 ) {
@@ -170,11 +180,11 @@ fun HomeScreen(
 
         // Quick-action playlists — horizontal carousel (same layout as
         // "Made for you"), edge-clipped
-        item {
+        item(key = "playlists-header") {
             SectionHeader(title = "Your playlists")
         }
         if (playlistsWithTracks.isEmpty()) {
-            item {
+            item(key = "playlists-empty") {
                 EmptyStateCard(
                     title = "No playlists yet",
                     subtitle = "Create one from Your Library",
@@ -182,8 +192,9 @@ fun HomeScreen(
                 )
             }
         } else {
-            item {
+            item(key = "playlists-carousel") {
                 LazyRow(
+                    state = playlistsListState,
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
                     contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
                 ) {
