@@ -68,6 +68,7 @@ import com.boombastic.mobile.playback.ExtractionResult
 import com.boombastic.mobile.playback.WebSearchResult
 import com.boombastic.mobile.playback.WebSearchService
 import com.boombastic.mobile.ui.components.TrackActionsSheet
+import com.boombastic.mobile.ui.shell.FolderImportStatus
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
@@ -80,18 +81,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** Live counters shown while a folder (desktop-style) import is running. */
-private data class FolderImportState(
-    val imported: Int,
-    val duplicates: Int,
-    val errors: Int
-)
-
-/** No progress for this long = the import is stuck (provider hang). */
-private const val IMPORT_STALL_TIMEOUT_MS = 60_000L
-
-/** How often the stall watchdog checks for progress. */
-private const val IMPORT_STALL_CHECK_MS = 15_000L
-
 @Composable
 fun SearchScreen(
     musicController: MusicController,
@@ -118,72 +107,20 @@ fun SearchScreen(
 
     // Desktop-style folder import: subfolders become playlists (folder name
     // = playlist name), files at the root land in "Unsorted".  The chosen
-    // folder is persisted as the app's music-folder destination.
-    var folderImportState by remember { mutableStateOf<FolderImportState?>(null) }
+    // folder is persisted as the app's music-folder destination.  The
+    // import job, its stall watchdog and the "Import complete!" strip
+    // lifecycle are owned by MusicFolderImportManager (process-lifetime,
+    // shared with the Settings-drawer launcher), so the strip always
+    // resolves instead of sitting at the final counts.
+    val importManager = remember {
+        (context.applicationContext as BoomBasticApp).musicFolderImportManager
+    }
+    val importStatus by importManager.status.collectAsState()
     val folderImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         if (uri != null) {
-            folderImportState = FolderImportState(0, 0, 0)
-            // appScope: the import must survive leaving this screen.
-            // try/finally + stall watchdog: the "Importing…" state must
-            // always clear — success, exception, or a stalled provider.
-            var lastTickAt = android.os.SystemClock.elapsedRealtime()
-            var completed = false
-            var lastProgressAt = 0L
-            val importJob = app.appScope.launch {
-                try {
-                    app.musicFolderRepository.saveTreeUri(uri)
-                    val result = app.libraryRepository.importLibraryTree(
-                        treeUri = uri,
-                        onProgress = { imported, duplicates, errors ->
-                            lastTickAt = android.os.SystemClock.elapsedRealtime()
-                            // Throttle UI updates (~10/s) — 4 parallel workers
-                            // would otherwise recompose per file.
-                            val now = android.os.SystemClock.elapsedRealtime()
-                            if (now - lastProgressAt >= 100L) {
-                                lastProgressAt = now
-                                folderImportState = FolderImportState(imported, duplicates, errors)
-                            }
-                        }
-                    )
-                    val persistWarning = if (result.persistFailures > 0) {
-                        " — storage access not persisted (${result.persistFailures}): " +
-                            "these songs may not play after a restart"
-                    } else {
-                        ""
-                    }
-                    Toast.makeText(
-                        context,
-                        "Imported ${result.imported} songs " +
-                            "(${result.duplicates} duplicates, ${result.errors} errors)$persistWarning",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    completed = true
-                } finally {
-                    // Never leave a stale "Importing…" state behind.
-                    folderImportState = null
-                }
-            }
-            // Stall watchdog: no progress for over a minute = stuck (provider
-            // hang outside the timeouts); cancel so the UI always clears.
-            app.appScope.launch {
-                while (importJob.isActive) {
-                    delay(IMPORT_STALL_CHECK_MS)
-                    if (importJob.isActive &&
-                        android.os.SystemClock.elapsedRealtime() - lastTickAt > IMPORT_STALL_TIMEOUT_MS
-                    ) {
-                        importJob.cancel()
-                    }
-                }
-                if (!completed) {
-                    Toast.makeText(
-                        context,
-                        "Import stalled and was cancelled — please try again",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
+            importManager.start(uri)
         }
     }
 
@@ -242,7 +179,7 @@ fun SearchScreen(
                 // into picked folders itself.
                 onImport = { importLauncher.launch(arrayOf("*/*")) },
                 onImportFolder = { folderImportLauncher.launch(null) },
-                folderImportState = folderImportState
+                importStatus = importStatus
             )
             1 -> WebSearchContent(
                 downloadRepository = app.downloadRepository,
@@ -260,7 +197,7 @@ private fun LibrarySearchContent(
     onPlay: (MediaTrack) -> Unit,
     onImport: () -> Unit,
     onImportFolder: () -> Unit,
-    folderImportState: FolderImportState?
+    importStatus: FolderImportStatus?
 ) {
     OutlinedTextField(
         value = query,
@@ -304,17 +241,38 @@ private fun LibrarySearchContent(
         Text("Import music folder (playlists by folder)")
     }
 
-    folderImportState?.let { state ->
-        Text(
-            text = if (state.errors > 0) {
-                "Importing... ${state.imported} added, ${state.duplicates} duplicates, ${state.errors} errors"
-            } else {
-                "Importing... ${state.imported} added, ${state.duplicates} duplicates"
-            },
-            color = AccentGreen,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(top = Dimens.paddingSmall)
-        )
+    // Live import progress strip — flips to "Import complete!" (green)
+    // when the folder import finishes, then auto-clears after a couple of
+    // seconds (the manager owns that lifecycle).
+    importStatus?.let { status ->
+        when (status) {
+            is FolderImportStatus.Importing -> Text(
+                text = "Importing music folder… ${status.imported} added, " +
+                    "${status.duplicates} duplicates, ${status.errors} errors",
+                color = AccentGreen,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = Dimens.paddingSmall)
+            )
+            is FolderImportStatus.Finished -> Text(
+                text = when {
+                    status.failed ->
+                        "Import failed — please try again" +
+                            status.errorMessage?.let { " ($it)" }.orEmpty()
+                    status.stalled -> "Import is taking longer than expected… still working"
+                    else ->
+                        "Import complete! ${status.imported} added, " +
+                            "${status.duplicates} duplicates, " +
+                            "${status.errors} errors${status.persistWarning.orEmpty()}"
+                },
+                color = if (status.failed || status.stalled) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    AccentGreen
+                },
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = Dimens.paddingSmall)
+            )
+        }
     }
 
     if (query.isBlank()) {

@@ -15,6 +15,7 @@ import com.boombastic.mobile.data.db.AppDatabase
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -52,6 +53,8 @@ class LibraryRepositoryTest {
             uriPermissionPersister = LibraryRepository.UriPermissionPersister { }
         )
         FakeDocumentsProvider.samsungStyle = false
+        FakeDocumentsProvider.withEmptyFolder = false
+        FakeDocumentsProvider.selfAsChild = false
         Robolectric.setupContentProvider(
             FakeDocumentsProvider::class.java,
             FakeDocumentsProvider.AUTHORITY
@@ -173,6 +176,46 @@ class LibraryRepositoryTest {
     }
 
     @Test
+    fun importLibraryTree_emptySubfolder_doesNotRecurseForever() = runBlocking<Unit> {
+        // AOSP-style provider behavior: an EMPTY subfolder's `.../children`
+        // query returns an empty cursor, so queryTreeChildren falls back to
+        // a folder-document query — which returns the folder's OWN row.
+        // Without the self-row guard the import would recurse into the same
+        // folder forever and crash the app with a StackOverflowError (the
+        // "Luno closed" bug).  The import must terminate instead.
+        FakeDocumentsProvider.withEmptyFolder = true
+        val result = withTimeout(10_000) { repository.importLibraryTree(treeRootUri()) }
+
+        assertThat(result.imported).isEqualTo(5)
+        assertThat(result.duplicates).isEqualTo(0)
+        assertThat(result.errors).isEqualTo(0)
+        assertThat(trackTitles()).containsExactly(
+            "album1", "song1", "song2", "deep1", "only"
+        )
+        // The empty folder still becomes a (memberless) playlist.
+        assertThat(playlistNames()).containsExactly(
+            "Unsorted", "Folder A", "Folder B", "Sub", "Empty"
+        )
+    }
+
+    @Test
+    fun importLibraryTree_providerReturnsFolderAsOwnChild_terminates() = runBlocking<Unit> {
+        // A misbehaving provider lists a folder as its own child; the
+        // import must skip self-rows instead of recursing until the stack
+        // blows up.  (The tree root recurses once — its self-row has a
+        // different id than the `""` root — then every level is filtered.)
+        // Counters may be inflated by the concurrent double-pass, but the
+        // DB rows dedupe by URI and the import must terminate.
+        FakeDocumentsProvider.selfAsChild = true
+        val result = withTimeout(10_000) { repository.importLibraryTree(treeRootUri()) }
+
+        assertThat(result.errors).isEqualTo(0)
+        assertThat(trackTitles()).containsExactly(
+            "album1", "song1", "song2", "deep1", "only"
+        )
+    }
+
+    @Test
     fun importMultipleUris_folderSelected_importsContentsAsPlaylist() = runBlocking<Unit> {
         val folderUri = Uri.parse(
             "content://${FakeDocumentsProvider.AUTHORITY}/document/root%2FFolder%20A"
@@ -266,7 +309,8 @@ class LibraryRepositoryTest {
             FakeDoc("root/Folder A/Sub", "Sub", DIR, listOf("root/Folder A/Sub/deep1.flac")),
             FakeDoc("root/Folder A/Sub/deep1.flac", "deep1.flac", AUDIO),
             FakeDoc("root/Folder B", "Folder B", DIR, listOf("root/Folder B/only.mp3")),
-            FakeDoc("root/Folder B/only.mp3", "only.mp3", AUDIO)
+            FakeDoc("root/Folder B/only.mp3", "only.mp3", AUDIO),
+            FakeDoc("root/Empty", "Empty", DIR)
         ).associateBy { it.id }
 
         override fun onCreate(): Boolean = true
@@ -358,9 +402,12 @@ class LibraryRepositoryTest {
 
         private fun childrenCursor(documentId: String, projection: Array<out String>?): Cursor {
             val parent = docs[documentId] ?: return emptyCursor(projection)
+            val children = parent.children.toMutableList()
+            if (withEmptyFolder && documentId == ROOT_ID) children.add(EMPTY_ID)
+            if (selfAsChild) children.add(0, documentId)
             return matrixCursor(
                 projection,
-                parent.children.mapNotNull { childId ->
+                children.mapNotNull { childId ->
                     docs[childId]?.let { rowOf(it.id, it.name, it.mime) }
                 }
             )
@@ -396,11 +443,20 @@ class LibraryRepositoryTest {
         companion object {
             const val AUTHORITY = "com.boombastic.test.externalstorage.documents"
             const val ROOT_ID = "root"
+            private const val EMPTY_ID = "root/Empty"
             private const val DIR = DocumentsContract.Document.MIME_TYPE_DIR
             private const val AUDIO = "audio/mpeg"
 
             /** Samsung-style provider: folder doc queries return children. */
             var samsungStyle = false
+
+            /** Also list an empty subfolder at the root (fallback-query
+             *  self-row recursion regression). */
+            var withEmptyFolder = false
+
+            /** Each folder lists itself as its own first child (self-row
+             *  guard regression). */
+            var selfAsChild = false
         }
     }
 }

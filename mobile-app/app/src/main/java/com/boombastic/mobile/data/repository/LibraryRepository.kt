@@ -9,6 +9,7 @@ import com.boombastic.mobile.data.artwork.ArtworkStorage
 import com.boombastic.mobile.data.db.dao.TrackDao
 import com.boombastic.mobile.data.db.entity.Track
 import kotlin.coroutines.resume
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -22,7 +23,10 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class LibraryRepository(
@@ -132,10 +136,12 @@ class LibraryRepository(
                 // root (folder name = playlist name).
                 DocumentsContract.isTreeUri(uri) -> {
                     val persisted = runCatching {
-                        uriPermissionPersister.persistReadPermission(uri)
+                        withAbandonableTimeout(GRANT_TIMEOUT_MS) {
+                            uriPermissionPersister.persistReadPermission(uri)
+                        }
                     }.isSuccess
                     if (!persisted) counters.persistFailures++
-                    importTreeFolder(uri, "", folderDisplayName(uri), counters) { _, _, _ -> }
+                    importTreeFolder(uri, "", folderDisplayName(uri), counters, 0) { _, _, _ -> }
                 }
                 // A folder selected in the file picker: import its audio
                 // contents desktop-style (folder name = playlist name)
@@ -146,8 +152,12 @@ class LibraryRepository(
                     // provider that extends it to descendants keeps them
                     // readable.  Some providers don't support persistence —
                     // then the songs still import and play this session.
-                    runCatching { uriPermissionPersister.persistReadPermission(uri) }
-                    importDocumentFolder(uri, folderDisplayName(uri), counters)
+                    runCatching {
+                        withAbandonableTimeout(GRANT_TIMEOUT_MS) {
+                            uriPermissionPersister.persistReadPermission(uri)
+                        }
+                    }
+                    importDocumentFolder(uri, folderDisplayName(uri), counters, 0)
                 }
                 else -> {
                     val result = importAudioUri(uri, counters.existingDocIds)
@@ -187,12 +197,18 @@ class LibraryRepository(
         withContext(Dispatchers.IO) {
             // Persisting the root grant is what keeps every imported song
             // playable after an app restart — never swallow the failure
-            // silently; report it so the UI can warn the user.
+            // silently; report it so the UI can warn the user.  The call is
+            // a blocking Binder transaction that can hang under provider
+            // load, so it runs with the abandonable timeout (it happens
+            // before the first progress tick — an unbounded hang here
+            // would read as a stall).
             val persisted = runCatching {
-                uriPermissionPersister.persistReadPermission(treeUri)
+                withAbandonableTimeout(GRANT_TIMEOUT_MS) {
+                    uriPermissionPersister.persistReadPermission(treeUri)
+                }
             }.isSuccess
             if (!persisted) counters.persistFailures++
-            importTreeFolder(treeUri, "", UNSORTED_PLAYLIST, counters, onProgress)
+            importTreeFolder(treeUri, "", UNSORTED_PLAYLIST, counters, 0, onProgress)
         }
 
         return ImportResult(counters.imported, counters.duplicates, counters.errors, counters.persistFailures)
@@ -210,17 +226,46 @@ class LibraryRepository(
      * cannot resolve (it only parses the first document segment), and
      * querying a document URI returns the document itself, not its
      * children — so subfolder contents were silently skipped.
+     *
+     * Recursion safety: some providers answer a folder-document query with
+     * the folder's **own row** (the fallback in [queryTreeChildren]), and
+     * for an empty folder that is the only row — without a self-row guard
+     * the import would recurse into the same folder forever and crash the
+     * app with a StackOverflowError mid-import.  Rows whose document id
+     * equals the folder being listed are skipped, the recursion depth is
+     * capped, and a Throwable in one folder (e.g. a provider that returns
+     * itself as its own child anyway) is contained so it can never kill
+     * the whole import or the app.
      */
     private suspend fun importTreeFolder(
         treeUri: Uri,
         folderDocumentId: String,
         playlistName: String,
         counters: ImportCounters,
+        depth: Int,
         onProgress: (imported: Int, duplicates: Int, errors: Int) -> Unit
     ) {
-        val playlistId = playlistIdFor(playlistName)
-        counters.seedSortOrder(playlistId, playlistId?.let { playlistDao?.maxSortOrder(it) })
+        if (depth > MAX_FOLDER_DEPTH) return
+        // Progress tick FIRST — before any Room work or listing: every call
+        // below is timeout-bounded, so a tick at folder entry guarantees
+        // the stall watchdog sees activity at least every ~50s no matter
+        // which provider/Room call happens to hang.
+        onProgress(counters.imported, counters.duplicates, counters.errors)
+        val playlistId = withTimeoutOrNull(ROOM_TIMEOUT_MS) { playlistIdFor(playlistName) }
+        counters.seedSortOrder(
+            playlistId,
+            withTimeoutOrNull(ROOM_TIMEOUT_MS) { playlistId?.let { playlistDao?.maxSortOrder(it) } }
+        )
         val children = queryTreeChildren(treeUri, folderDocumentId)
+        if (children == null) {
+            // The folder could not be listed even after retries — report
+            // it instead of silently skipping its files (a silent skip is
+            // exactly what produced the random 1000–1800-duplicate counts
+            // with 0 errors).
+            counters.incrementErrors()
+            onProgress(counters.imported, counters.duplicates, counters.errors)
+            return
+        }
 
         // Process the folder's children with bounded parallelism: a single
         // bad file must not stall a 4k-song import, and 4 workers make a
@@ -232,17 +277,31 @@ class LibraryRepository(
         coroutineScope {
             children.map { (documentId, name, mime) ->
                 async {
-                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                        importTreeFolder(treeUri, documentId, name, counters, onProgress)
-                    } else if (isAudio(mime, name)) {
-                        semaphore.withPermit {
-                            handleAudioChild(
-                                childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId),
-                                playlistId = playlistId,
-                                counters = counters,
-                                onProgress = onProgress
-                            )
+                    try {
+                        // A folder must never recurse into itself: when a
+                        // provider returns the folder's own row as a
+                        // "child", skip it or we loop until SOE.
+                        if (documentId == folderDocumentId) return@async
+                        if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                            importTreeFolder(treeUri, documentId, name, counters, depth + 1, onProgress)
+                        } else if (isAudio(mime, name)) {
+                            semaphore.withPermit {
+                                handleAudioChild(
+                                    childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId),
+                                    playlistId = playlistId,
+                                    counters = counters,
+                                    onProgress = onProgress
+                                )
+                            }
                         }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
+                        // One bad folder must never crash the app
+                        // mid-import — but it must be counted, never
+                        // silently dropped.
+                        counters.incrementErrors()
+                        onProgress(counters.imported, counters.duplicates, counters.errors)
                     }
                 }
             }.awaitAll()
@@ -254,32 +313,53 @@ class LibraryRepository(
      * `ACTION_OPEN_DOCUMENT` (folders selected in the file picker).
      * Children are only readable when the provider extends the grant to
      * descendants; otherwise they surface as import errors instead of
-     * bogus folder-as-track imports.
+     * bogus folder-as-track imports.  Same self-row guard + depth cap as
+     * the tree walk.
      */
     private suspend fun importDocumentFolder(
         folderUri: Uri,
         playlistName: String,
-        counters: ImportCounters
+        counters: ImportCounters,
+        depth: Int
     ) {
-        val playlistId = playlistIdFor(playlistName)
-        counters.seedSortOrder(playlistId, playlistId?.let { playlistDao?.maxSortOrder(it) })
+        if (depth > MAX_FOLDER_DEPTH) return
+        val playlistId = withTimeoutOrNull(ROOM_TIMEOUT_MS) { playlistIdFor(playlistName) }
+        counters.seedSortOrder(
+            playlistId,
+            withTimeoutOrNull(ROOM_TIMEOUT_MS) { playlistId?.let { playlistDao?.maxSortOrder(it) } }
+        )
         val children = queryDocumentChildren(folderUri)
+        if (children == null) {
+            // Unlistable folder — report it instead of silently skipping.
+            counters.incrementErrors()
+            return
+        }
 
         val semaphore = Semaphore(PARALLELISM)
         coroutineScope {
             children.map { (childUri, name, mime) ->
                 async {
-                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                        importDocumentFolder(childUri, name, counters)
-                    } else if (isAudio(mime, name)) {
-                        semaphore.withPermit {
-                            handleAudioChild(
-                                childUri = childUri,
-                                playlistId = playlistId,
-                                counters = counters,
-                                onProgress = null
-                            )
+                    try {
+                        if (childUri == folderUri) return@async
+                        if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                            importDocumentFolder(childUri, name, counters, depth + 1)
+                        } else if (isAudio(mime, name)) {
+                            semaphore.withPermit {
+                                handleAudioChild(
+                                    childUri = childUri,
+                                    playlistId = playlistId,
+                                    counters = counters,
+                                    onProgress = null
+                                )
+                            }
                         }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
+                        // One bad folder must never crash the app
+                        // mid-import — but it must be counted, never
+                        // silently dropped.
+                        counters.incrementErrors()
                     }
                 }
             }.awaitAll()
@@ -290,6 +370,12 @@ class LibraryRepository(
      * Imports one audio [childUri] and books it in [counters]: dedupe,
      * metadata extraction, track insert, playlist membership when
      * [playlistId] is non-null.
+     *
+     * The whole pipeline is wrapped in a hard timeout: the Room DAO calls
+     * (dedupe, insert, playlist membership) are cancellable suspends, so a
+     * wedged SQLite/SD card or a backed-up Room executor can delay a file
+     * forever without any progress tick firing — a stuck file must fail
+     * as an error, never freeze the import or trip the stall watchdog.
      */
     private suspend fun handleAudioChild(
         childUri: Uri,
@@ -297,22 +383,26 @@ class LibraryRepository(
         counters: ImportCounters,
         onProgress: ((imported: Int, duplicates: Int, errors: Int) -> Unit)?
     ) {
-        val result = importTrackFromGrantedUri(childUri, counters.existingDocIds)
+        val result = withTimeoutOrNull(FILE_WORK_TIMEOUT_MS) {
+            val r = importTrackFromGrantedUri(childUri, counters.existingDocIds)
+            if (r.isSuccess && playlistId != null) {
+                runCatching {
+                    val sortOrder = counters.nextSortOrder(playlistId) ?: 0
+                    playlistDao?.addTrackToPlaylist(
+                        com.boombastic.mobile.data.db.entity.PlaylistTrack(
+                            playlistId = playlistId,
+                            trackUri = r.getOrThrow().uri,
+                            sortOrder = sortOrder
+                        )
+                    )
+                }
+            }
+            r
+        } ?: Result.failure(
+            ImportException("Timed out importing file", ImportError.IO_ERROR)
+        )
         when {
             result.isSuccess -> {
-                val track = result.getOrThrow()
-                if (playlistId != null) {
-                    runCatching {
-                        val sortOrder = counters.nextSortOrder(playlistId) ?: 0
-                        playlistDao?.addTrackToPlaylist(
-                            com.boombastic.mobile.data.db.entity.PlaylistTrack(
-                                playlistId = playlistId,
-                                trackUri = track.uri,
-                                sortOrder = sortOrder
-                            )
-                        )
-                    }
-                }
                 counters.incrementImported()
             }
             result.exceptionOrNull() is ImportException &&
@@ -330,17 +420,26 @@ class LibraryRepository(
 
     private suspend fun playlistIdFor(folderName: String): Long? {
         val dao = playlistDao ?: return null
-        return runCatching {
+        return try {
             dao.getPlaylistByName(folderName)?.id
                 ?: dao.insertPlaylist(
                     com.boombastic.mobile.data.db.entity.Playlist(name = folderName)
                 )
-        }.getOrNull()
+        } catch (e: CancellationException) {
+            // Never swallow cancellation — a cancelled import must unwind.
+            throw e
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     /**
      * Lists `(documentId, displayName, mimeType)` for [folderDocumentId]
-     * under [treeUri].
+     * under [treeUri].  Returns `null` when the folder could NOT be listed
+     * at all (every retry timed out / was rejected) — the caller reports
+     * that as an import error instead of silently skipping the folder's
+     * files.  An empty list means the folder is genuinely empty (both
+     * query paths answered successfully with no rows).
      *
      * Root listing: the canonical children URI for the tree root is
      * `buildChildDocumentsUriUsingTree(treeUri, getTreeDocumentId(treeUri))`.
@@ -356,7 +455,7 @@ class LibraryRepository(
     private suspend fun queryTreeChildren(
         treeUri: Uri,
         folderDocumentId: String
-    ): List<Triple<String, String, String>> {
+    ): List<Triple<String, String, String>>? {
         val queryUris = if (folderDocumentId.isEmpty()) {
             val rootChildrenUri = runCatching {
                 DocumentsContract.buildChildDocumentsUriUsingTree(
@@ -371,18 +470,45 @@ class LibraryRepository(
                 DocumentsContract.buildDocumentUriUsingTree(treeUri, folderDocumentId)
             )
         }
-        for (queryUri in queryUris) {
-            val children = queryTreeRows(queryUri)
-            if (children.isNotEmpty()) return children
+        // The canonical children query gets the full timeout.  The fallback
+        // (folder-document query) gets a short one: it only exists for
+        // providers that answer instantly instead of supporting
+        // `.../children` (Samsung-style) — a provider that HANGS on it is
+        // wasting the import.  If the primary path times out or is
+        // rejected, the fallback is still tried before giving up.
+        for ((index, queryUri) in queryUris.withIndex()) {
+            val timeoutMs = if (index == 0) QUERY_TIMEOUT_MS else FALLBACK_QUERY_TIMEOUT_MS
+            val rows = queryTreeRows(queryUri, timeoutMs)
+            if (rows == null) continue // unlistable — try the fallback path
+            if (rows.isNotEmpty()) return rows
         }
+        // Both query paths answered successfully with no rows: genuinely
+        // empty folder.
         return emptyList()
     }
 
+    /**
+     * Queries [queryUri] with retries.  Returns the rows, or `null` when
+     * every attempt timed out or was rejected.
+     *
+     * A single timeout/rejection means the provider was slow or the
+     * extraction executor was momentarily busy — neither proves the folder
+     * is empty.  Treating a failed listing as "empty" silently dropped
+     * whole folders from the import (the random 1000–1800-duplicate
+     * results with 0 errors).  Retrying recovers folders whose provider
+     * answers slowly, and the caller reports a folder that stays
+     * unlistable as an error instead of hiding it.
+     */
     private suspend fun queryTreeRows(
-        queryUri: Uri
-    ): List<Triple<String, String, String>> =
-        withAbandonableTimeout(QUERY_TIMEOUT_MS) { queryTreeRowsBlocking(queryUri) }
-            ?: emptyList()
+        queryUri: Uri,
+        timeoutMs: Long
+    ): List<Triple<String, String, String>>? {
+        repeat(QUERY_RETRIES) {
+            val rows = withAbandonableTimeout(timeoutMs) { queryTreeRowsBlocking(queryUri) }
+            if (rows != null) return rows
+        }
+        return null
+    }
 
     private fun queryTreeRowsBlocking(
         queryUri: Uri
@@ -423,41 +549,65 @@ class LibraryRepository(
      * Samsung My Files) return the children when the folder document itself
      * is queried (the folder's own row — same document id — is not a
      * child).  Both forms are tried.
+     *
+     * Returns `null` when neither form answered even after retries (the
+     * caller reports the folder as an error instead of silently skipping
+     * its files).
      */
-    private suspend fun queryDocumentChildren(folderUri: Uri): List<Triple<Uri, String, String>> {
+    private suspend fun queryDocumentChildren(
+        folderUri: Uri
+    ): List<Triple<Uri, String, String>>? {
         val authority = folderUri.authority ?: return emptyList()
         val folderId = DocumentsContract.getDocumentId(folderUri)
 
         val viaChildren = queryDocumentRows(
             DocumentsContract.buildChildDocumentsUri(authority, folderId)
         ) { id ->
-            DocumentsContract.buildDocumentUri(authority, id)
+            // A folder must never list itself as its own child.
+            if (id == folderId) null else DocumentsContract.buildDocumentUri(authority, id)
         }
-        if (viaChildren.isNotEmpty()) return viaChildren
+        if (viaChildren != null) {
+            if (viaChildren.isNotEmpty()) return viaChildren
+            // Answered empty: try the fallback form (Samsung-style folders
+            // return children on the folder-document query).
+        } else {
+            // `.../children` never answered — try the folder-document form.
+        }
 
         // Fallback: querying the folder document itself returns its
         // children on some providers; the folder's own row is excluded.
         val selfId = folderId
-        return queryDocumentRows(folderUri) { id ->
+        val viaSelf = queryDocumentRows(folderUri) { id ->
             if (id == selfId) {
                 null
             } else {
                 DocumentsContract.buildDocumentUri(authority, id)
             }
         }
+        if (viaSelf != null) return viaSelf
+        // Neither form answered — unlistable.
+        return null
     }
 
     /**
      * Queries [queryUri] for `(documentId, displayName, mimeType)` rows and
      * maps them to document URIs via [toUri]; rows that map to `null` are
-     * skipped.  Returns an empty list when the query fails or has no rows.
+     * skipped.  Returns the rows, or `null` when every retry timed out /
+     * was rejected (the caller reports the folder as an error instead of
+     * treating it as empty).
      */
     private suspend fun queryDocumentRows(
         queryUri: Uri,
         toUri: (String) -> Uri?
-    ): List<Triple<Uri, String, String>> =
-        withAbandonableTimeout(QUERY_TIMEOUT_MS) { queryDocumentRowsBlocking(queryUri, toUri) }
-            ?: emptyList()
+    ): List<Triple<Uri, String, String>>? {
+        repeat(QUERY_RETRIES) {
+            val rows = withAbandonableTimeout(QUERY_TIMEOUT_MS) {
+                queryDocumentRowsBlocking(queryUri, toUri)
+            }
+            if (rows != null) return rows
+        }
+        return null
+    }
 
     private fun queryDocumentRowsBlocking(
         queryUri: Uri,
@@ -499,7 +649,7 @@ class LibraryRepository(
      */
     private suspend fun isFolderDocument(uri: Uri): Boolean {
         if (DocumentsContract.isTreeUri(uri)) return true
-        if (queryDocumentChildren(uri).isNotEmpty()) return true
+        if (queryDocumentChildren(uri)?.isNotEmpty() == true) return true
         return isDirectoryDocument(uri)
     }
 
@@ -557,11 +707,17 @@ class LibraryRepository(
      * physical file) are detected without an O(n²) per-file scan.
      */
     private suspend fun loadExistingDocumentIds(): Set<String> = withContext(Dispatchers.IO) {
-        buildSet {
-            trackDao.getAllTracksOnce().forEach { track ->
-                documentIdOf(track.uri)?.let { add(it) }
+        // Bounded: a wedged DB read at import start must not freeze the
+        // whole import before a single progress tick fires.  On timeout
+        // the run continues with an empty id set (URI-string dedupe in
+        // `trackDao.exists` still guards re-imports of the same flow).
+        withTimeoutOrNull(DOCIDS_TIMEOUT_MS) {
+            buildSet {
+                trackDao.getAllTracksOnce().forEach { track ->
+                    documentIdOf(track.uri)?.let { add(it) }
+                }
             }
-        }
+        } ?: emptySet()
     }
 
     private fun isDocumentIdDuplicate(uri: Uri, existingDocIds: Set<String>?): Boolean {
@@ -621,9 +777,15 @@ class LibraryRepository(
     private suspend fun <T> withAbandonableTimeout(timeoutMs: Long, block: () -> T): T? =
         withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { continuation ->
-                extractionExecutor.execute {
-                    if (!continuation.isActive) return@execute
-                    runCatching { continuation.resume(block()) }
+                try {
+                    extractionExecutor.execute {
+                        if (!continuation.isActive) return@execute
+                        runCatching { continuation.resume(block()) }
+                    }
+                } catch (e: RejectedExecutionException) {
+                    // Every extraction thread is wedged on blocked files —
+                    // fall back immediately instead of hanging the import.
+                    continuation.resume(null)
                 }
             }
         }
@@ -662,8 +824,8 @@ class LibraryRepository(
         }
 
             // Try MediaMetadataRetriever for more accurate metadata
+        val retriever = android.media.MediaMetadataRetriever()
         return try {
-            val retriever = android.media.MediaMetadataRetriever()
             retriever.setDataSource(context, uri)
             val extractedTitle = retriever.extractMetadata(
                 android.media.MediaMetadataRetriever.METADATA_KEY_TITLE
@@ -675,7 +837,6 @@ class LibraryRepository(
                 android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
             )
             val albumArtPath = ArtworkStorage.saveEmbeddedArtwork(context, uri)
-            retriever.release()
 
             if (!extractedTitle.isNullOrBlank()) title = extractedTitle
             if (!extractedArtist.isNullOrBlank()) artist = extractedArtist
@@ -700,6 +861,11 @@ class LibraryRepository(
                 durationMs = durationMs,
                 addedAt = System.currentTimeMillis()
             )
+        } finally {
+            // release() must ALWAYS run: a leaked native retriever leaks
+            // file descriptors and native memory — over a large import
+            // that accumulates until the app is killed.
+            runCatching { retriever.release() }
         }
     }
 
@@ -793,14 +959,57 @@ class LibraryRepository(
          *  the folder is treated as empty rather than hanging the import. */
         private const val QUERY_TIMEOUT_MS = 15_000L
 
+        /** Listing attempts per folder — a timeout/rejection means the
+         *  provider was slow, NOT that the folder is empty; retrying
+         *  recovers folders that answer slowly. */
+        private const val QUERY_RETRIES = 3
+
+        /** Short cap for the fallback folder-document query — it only
+         *  exists for providers that answer it instantly, so a hang here
+         *  must not compound into a stalled import. */
+        private const val FALLBACK_QUERY_TIMEOUT_MS = 4_000L
+
+        /** Cap per Room DAO call inside the import (cancellable suspends —
+         *  a wedged SQLite/SD card or backed-up executor cannot freeze the
+         *  import anymore). */
+        private const val ROOM_TIMEOUT_MS = 10_000L
+
+        /** Cap for one file's whole import pipeline (dedupe + insert +
+         *  playlist membership) — a stuck file becomes an error, never a
+         *  stall. */
+        private const val FILE_WORK_TIMEOUT_MS = 30_000L
+
+        /** Cap for the pre-run document-id preload. */
+        private const val DOCIDS_TIMEOUT_MS = 30_000L
+
+        /** Cap for persisting the URI grant (a blocking Binder call that
+         *  must not freeze the import before the first progress tick). */
+        private const val GRANT_TIMEOUT_MS = 15_000L
+
+        /** Safety cap for the folder recursion (a provider that returns a
+         *  folder as its own child must not recurse into a crash). */
+        private const val MAX_FOLDER_DEPTH = 24
+
+        /** Upper bound for [extractionExecutor]; abandoned threads (blocked
+         *  on corrupt files) count against it and never return. */
+        private const val MAX_EXTRACTION_THREADS = 32
+
         /**
          * Dedicated cached-thread pool for blocking metadata extraction.
-         * Cached (not fixed): threads that hang on corrupt files are
-         * abandoned and never returned to the pool.
+         * Threads that hang on corrupt files are abandoned (they may never
+         * finish, so they are never returned to the pool) — the pool is
+         * bounded so abandoned threads can never exhaust the device's
+         * native thread budget and crash the app; once every thread is
+         * wedged, further extraction calls fall back immediately.
          */
-        private val extractionExecutor: ExecutorService = Executors.newCachedThreadPool { runnable ->
-            Thread(runnable, "track-extraction").apply { isDaemon = true }
-        }
+        private val extractionExecutor: ExecutorService = ThreadPoolExecutor(
+            0,
+            MAX_EXTRACTION_THREADS,
+            60L,
+            TimeUnit.SECONDS,
+            SynchronousQueue(),
+            { runnable -> Thread(runnable, "track-extraction").apply { isDaemon = true } }
+        )
 
         private val AUDIO_EXTENSIONS = setOf(
             "mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff", "alac"

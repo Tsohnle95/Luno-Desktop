@@ -1,6 +1,7 @@
 package com.boombastic.mobile.ui.downloads
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -19,6 +20,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -48,8 +50,24 @@ fun DownloadsScreen() {
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
     val scope = rememberCoroutineScope()
-    val downloads by app.downloadRepository.getAllDownloads().collectAsState(initial = emptyList())
-    val playlistsWithUrls by app.playlistRepository.getPlaylistsWithUrls().collectAsState(initial = emptyList())
+    // Rendered from the app-warmed LibraryData flows — the queue and sync
+    // list are present in the same frame as the transition.
+    val libraryData = app.libraryData
+    val downloads by libraryData.downloads.collectAsState()
+    val playlistsWithUrls by libraryData.playlistsWithUrls.collectAsState()
+    val libraryLoaded by libraryData.loaded.collectAsState()
+
+    // All-or-nothing first render (same as the other tabs): normally the
+    // library data is already warm from startup.
+    if (!libraryLoaded) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(color = AccentGreen)
+        }
+        return
+    }
 
     LazyColumn(
         modifier = Modifier

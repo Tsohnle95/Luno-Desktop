@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -86,14 +87,33 @@ fun LibraryScreen(
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
     val scope = rememberCoroutineScope()
-    val allTracks by app.libraryRepository.getAllTracks().collectAsState(initial = emptyList())
-    val playlistsWithTracks by app.playlistRepository.getAllPlaylistsWithTracks()
-        .collectAsState(initial = emptyList())
-    val downloads by app.downloadRepository.getAllDownloads().collectAsState(initial = emptyList())
+    // Rendered from the app-warmed LibraryData flows (queries run once at
+    // startup, so switching to this tab shows the full content in the same
+    // frame as the transition — no progressive pop-in, no spinner churn).
+    val libraryData = app.libraryData
+    val allTracks by libraryData.tracks.collectAsState()
+    val playlistsWithTracks by libraryData.playlists.collectAsState()
+    val downloads by libraryData.downloads.collectAsState()
+    val libraryLoaded by libraryData.loaded.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
     var playlistView by rememberSaveable { mutableStateOf(false) }
     var sortMode by rememberSaveable { mutableStateOf(SortMode.AZ) }
     var showSortMenu by remember { mutableStateOf(false) }
+
+    // All-or-nothing first render: hold the whole screen behind one static
+    // placeholder until the library data has emitted its first values
+    // (normally already done at startup — this only shows on the very
+    // first app frames).  Rendering the chrome before the data arrived
+    // made the screen visibly "load in pieces".
+    if (!libraryLoaded) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(color = AccentGreen)
+        }
+        return
+    }
 
     // Multi-select / batch actions (3-dot menu on the section header)
     var selectionMode by remember { mutableStateOf(false) }

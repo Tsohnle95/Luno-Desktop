@@ -6,10 +6,12 @@ import android.app.NotificationManager
 import androidx.work.Configuration
 import com.boombastic.mobile.data.db.AppDatabase
 import com.boombastic.mobile.data.repository.DownloadRepository
+import com.boombastic.mobile.data.repository.LibraryData
 import com.boombastic.mobile.data.repository.LibraryRepository
 import com.boombastic.mobile.data.repository.MusicFolderRepository
 import com.boombastic.mobile.data.repository.PlaylistRepository
 import com.boombastic.mobile.playback.NewPipeDownloader
+import com.boombastic.mobile.ui.shell.MusicFolderImportManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,6 +32,10 @@ class BoomBasticApp : Application(), Configuration.Provider {
         private set
     lateinit var musicFolderRepository: MusicFolderRepository
         private set
+    lateinit var musicFolderImportManager: MusicFolderImportManager
+        private set
+    lateinit var libraryData: LibraryData
+        private set
 
     /**
      * Process-lifetime scope for long-running work (library imports) that
@@ -46,6 +52,21 @@ class BoomBasticApp : Application(), Configuration.Provider {
         playlistRepository = PlaylistRepository(database.playlistDao(), database.trackDao())
         downloadRepository = DownloadRepository(database.downloadJobDao(), this)
         musicFolderRepository = MusicFolderRepository(this)
+        musicFolderImportManager = MusicFolderImportManager(
+            appScope = appScope,
+            libraryRepository = libraryRepository,
+            musicFolderRepository = musicFolderRepository,
+            context = this
+        )
+        // Warm the library data eagerly at startup so every screen renders
+        // its full content in the same frame as the navigation transition
+        // (no per-tab-switch query latency, no loading-spinner pop-in).
+        libraryData = LibraryData(
+            appScope = appScope,
+            trackDao = database.trackDao(),
+            playlistDao = database.playlistDao(),
+            downloadJobDao = database.downloadJobDao()
+        )
 
         createDownloadNotificationChannel()
         CookieHandler.setDefault(CookieManager(null, CookiePolicy.ACCEPT_ALL))

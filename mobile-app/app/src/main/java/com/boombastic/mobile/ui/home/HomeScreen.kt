@@ -3,6 +3,7 @@ package com.boombastic.mobile.ui.home
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -18,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -25,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
@@ -60,9 +63,25 @@ fun HomeScreen(
     val app = context.applicationContext as BoomBasticApp
     val currentTrack by musicController.currentTrack.collectAsState()
     val recentlyPlayed by musicController.recentlyPlayed.collectAsState()
-    val allTracks by app.libraryRepository.getAllTracks().collectAsState(initial = emptyList())
-    val playlistsWithTracks by app.playlistRepository.getAllPlaylistsWithTracks()
-        .collectAsState(initial = emptyList())
+    // Rendered from the app-warmed LibraryData flows — switching back to
+    // Home shows the full carousels in the same frame as the transition.
+    val libraryData = app.libraryData
+    val allTracks by libraryData.tracks.collectAsState()
+    val playlistsWithTracks by libraryData.playlists.collectAsState()
+    val libraryLoaded by libraryData.loaded.collectAsState()
+
+    // All-or-nothing first render (same as the other tabs): normally the
+    // library data is already warm from startup, so this only shows on the
+    // very first app frames.
+    if (!libraryLoaded) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(color = AccentGreen)
+        }
+        return
+    }
 
     val greeting = getGreeting()
     val displayName = "Listener" // Editable in future

@@ -1,10 +1,7 @@
 package com.boombastic.mobile.ui.navigation
 
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
@@ -40,26 +37,30 @@ fun BoomBasticNavHost(
     musicController: MusicController,
     modifier: Modifier = Modifier,
     onCreatePlaylist: () -> Unit,
-    onPlay: (MediaTrack) -> Unit = {}
+    onPlay: (MediaTrack) -> Unit = {},
+    onNavigate: () -> Unit = {}
 ) {
     NavHost(
         navController = navController,
         startDestination = Routes.HOME,
         modifier = modifier,
-        // Quick fades: short durations with minimal overlap keep tab
-        // switches snappy — long 350ms cross-fades over heavy screens
-        // (4k-track library) felt laggy.  Enter is eased, exit is linear
-        // so the outgoing screen fades out while the new one fades in.
-        enterTransition = { fadeIn(animationSpec = tween(150, easing = FastOutSlowInEasing)) },
-        exitTransition = { fadeOut(animationSpec = tween(100, easing = LinearEasing)) },
-        popEnterTransition = { fadeIn(animationSpec = tween(150, easing = FastOutSlowInEasing)) },
-        popExitTransition = { fadeOut(animationSpec = tween(100, easing = LinearEasing)) }
+        // Instant screen swaps: the incoming screen appears fully-formed
+        // UNDER the shell's green-loader transition mask, which then fades
+        // away on its own — a screen-side fade would run simultaneously
+        // with the mask reveal and read as jumpy/fidgety.
+        enterTransition = { EnterTransition.None },
+        exitTransition = { ExitTransition.None },
+        popEnterTransition = { EnterTransition.None },
+        popExitTransition = { ExitTransition.None }
     ) {
         composable(Routes.HOME) {
             HomeScreen(
                 musicController = musicController,
                 onPlay = onPlay,
                 onOpenPlaylist = { playlistId ->
+                    // Mask-first: the shell's transition mask covers the
+                    // content area before the new screen composes.
+                    onNavigate()
                     navController.navigate(Routes.playlistDetail(playlistId))
                 }
             )
@@ -72,6 +73,7 @@ fun BoomBasticNavHost(
                 musicController = musicController,
                 onPlay = onPlay,
                 onOpenPlaylist = { playlistId ->
+                    onNavigate()
                     navController.navigate(Routes.playlistDetail(playlistId))
                 }
             )
@@ -85,7 +87,10 @@ fun BoomBasticNavHost(
         composable(Routes.FULL_PLAYER) {
             FullPlayerScreen(
                 musicController = musicController,
-                onBack = { navController.navigateUp() }
+                onBack = {
+                    onNavigate()
+                    navController.navigateUp()
+                }
             )
         }
         composable(
@@ -96,7 +101,10 @@ fun BoomBasticNavHost(
             PlaylistDetailScreen(
                 playlistId = playlistId,
                 musicController = musicController,
-                onBack = { navController.navigateUp() }
+                onBack = {
+                    onNavigate()
+                    navController.navigateUp()
+                }
             )
         }
     }

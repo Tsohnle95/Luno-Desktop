@@ -7,6 +7,10 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
@@ -30,6 +34,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -86,10 +91,18 @@ import com.boombastic.mobile.ui.theme.SurfaceDark
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private const val IMPORT_STALL_TIMEOUT_MS = 60_000L
-private const val STALL_CHECK_INTERVAL_MS = 15_000L
+/** How long the green-loader transition mask stays fully visible (the
+ *  "black screen" moment with the spinner). */
+private const val TRANSITION_MASK_HOLD_MS = 300L
 
-data class BottomNavItem(
+/** How long the transition mask takes to fade away (revealing the screen). */
+private const val TRANSITION_MASK_FADE_MS = 400
+
+/** Hard cap for the mask while waiting on first-launch data — beyond this
+ *  the reveal happens even if the library is still loading. */
+private const val TRANSITION_MASK_MAX_MS = 6_000L
+
+private data class BottomNavItem(
     val label: String,
     val icon: Int,
     val route: String
@@ -113,6 +126,28 @@ fun MainShell(musicController: MusicController) {
     val snackbarHostState = remember { SnackbarHostState() }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+
+    // Green-loader transition mask.  It is set to `true` BEFORE every
+    // navigation (see the call sites below) so the black layer with the
+    // spinner is already opaque when the new screen composes — the screen
+    // can never flash in early.  The release waits for a deliberate
+    // "black screen" moment AND for the library data to be loaded, so the
+    // reveal always lands on a fully rendered screen (no loading gate
+    // popping in after the spinner).
+    var transitionMask by remember { mutableStateOf(false) }
+    val app = context.applicationContext as com.boombastic.mobile.BoomBasticApp
+    val libraryLoaded by app.libraryData.loaded.collectAsState()
+    LaunchedEffect(transitionMask) {
+        if (!transitionMask) return@LaunchedEffect
+        val startedAt = SystemClock.elapsedRealtime()
+        while (
+            SystemClock.elapsedRealtime() - startedAt < TRANSITION_MASK_HOLD_MS ||
+            (!libraryLoaded && SystemClock.elapsedRealtime() - startedAt < TRANSITION_MASK_MAX_MS)
+        ) {
+            delay(16)
+        }
+        transitionMask = false
+    }
 
     // ── Error Snackbar collection ───────────────────────────────────────────
     LaunchedEffect(Unit) {
@@ -138,71 +173,17 @@ fun MainShell(musicController: MusicController) {
     // and imports it desktop-style (subfolders become playlists).  Live
     // progress is shown in the shell (progress strip under the header);
     // re-imports of a large folder take a while, so silence looks broken.
-    var folderImportState by remember { mutableStateOf<FolderImportState?>(null) }
+    // The import itself, its stall watchdog and the strip's final
+    // "Import complete!" state are owned by MusicFolderImportManager
+    // (process-lifetime), so the strip can never sit frozen at the final
+    // counts.
+    val importManager = remember { app.musicFolderImportManager }
+    val importStatus by importManager.status.collectAsState()
     val folderImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: android.net.Uri? ->
         if (uri != null) {
-            val app = context.applicationContext as com.boombastic.mobile.BoomBasticApp
-            folderImportState = FolderImportState(0, 0, 0)
-            // appScope: the import must survive rotation/navigation.
-            // try/finally: whatever happens (completion, exception, stall
-            // cancellation), the progress strip must clear — a stale
-            // "Importing music folder…" strip looks like a frozen import.
-            var lastTickAt = SystemClock.elapsedRealtime()
-            var completed = false
-            var lastProgressAt = 0L
-            val importJob = app.appScope.launch {
-                try {
-                    app.musicFolderRepository.saveTreeUri(uri)
-                    val result = app.libraryRepository.importLibraryTree(uri) { imported, duplicates, errors ->
-                        lastTickAt = SystemClock.elapsedRealtime()
-                        // Throttle UI updates (~10/s) — 4 parallel workers
-                        // would otherwise recompose the shell per file.
-                        val now = SystemClock.elapsedRealtime()
-                        if (now - lastProgressAt >= 100L) {
-                            lastProgressAt = now
-                            folderImportState = FolderImportState(imported, duplicates, errors)
-                        }
-                    }
-                    val persistWarning = if (result.persistFailures > 0) {
-                        " — storage access not persisted (${result.persistFailures}): " +
-                            "these songs may not play after a restart"
-                    } else {
-                        ""
-                    }
-                    Toast.makeText(
-                        context,
-                        "Music folder set: ${result.imported} songs imported, " +
-                            "${result.duplicates} duplicates, ${result.errors} errors$persistWarning",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    completed = true
-                } finally {
-                    folderImportState = null
-                }
-            }
-            // Stall watchdog: an import that stops producing progress for
-            // over a minute is stuck (provider hang outside the timeouts);
-            // cancel it so the strip always clears instead of sitting
-            // forever at the final counts.
-            app.appScope.launch {
-                while (importJob.isActive) {
-                    delay(STALL_CHECK_INTERVAL_MS)
-                    if (importJob.isActive &&
-                        SystemClock.elapsedRealtime() - lastTickAt > IMPORT_STALL_TIMEOUT_MS
-                    ) {
-                        importJob.cancel()
-                    }
-                }
-                if (!completed) {
-                    Toast.makeText(
-                        context,
-                        "Import stalled and was cancelled — try again, or run it from the Search tab",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
+            importManager.start(uri)
         }
     }
 
@@ -254,6 +235,7 @@ fun MainShell(musicController: MusicController) {
                     label = "Downloads",
                     onClick = {
                         scope.launch { drawerState.close() }
+                        transitionMask = true
                         navController.navigate(Routes.DOWNLOADS) {
                             launchSingleTop = true
                         }
@@ -310,7 +292,10 @@ fun MainShell(musicController: MusicController) {
                             ) {
                                 MiniPlayer(
                                     musicController = musicController,
-                                    onMiniPlayerTap = { navController.navigate(Routes.FULL_PLAYER) }
+                                    onMiniPlayerTap = {
+                                        transitionMask = true
+                                        navController.navigate(Routes.FULL_PLAYER)
+                                    }
                                 )
                             }
 
@@ -327,6 +312,11 @@ fun MainShell(musicController: MusicController) {
                                         selected = selected,
                                         onClick = {
                                             if (item.route == currentRoute) return@NavigationBarItem
+                                            // Mask FIRST: the black layer
+                                            // is opaque before the new
+                                            // screen composes, so it never
+                                            // flashes in early.
+                                            transitionMask = true
                                             if (item.route == Routes.HOME) {
                                                 // Home always returns to the Home screen,
                                                 // even from drawer/deep routes (Downloads,
@@ -426,25 +416,54 @@ fun MainShell(musicController: MusicController) {
                     // flow) — re-imports of large folders take a while, so
                     // show that work is happening.  The bar is a custom
                     // smooth sweep: m3 1.2.1's built-in indeterminate
-                    // indicator snaps back at its loop point.
-                    folderImportState?.let { state ->
+                    // indicator snaps back at its loop point.  When the
+                    // import finishes the green text flips to "Import
+                    // complete!" and auto-clears after a couple of seconds
+                    // (the manager owns that lifecycle).
+                    importStatus?.let { status ->
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = Dimens.paddingLarge)
                         ) {
-                            SmoothProgressBar(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(Dimens.progressBarHeight)
-                            )
-                            Text(
-                                text = "Importing music folder… ${state.imported} added, " +
-                                    "${state.duplicates} duplicates, ${state.errors} errors",
-                                color = AccentGreen,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(vertical = Dimens.paddingSmall)
-                            )
+                            when (status) {
+                                is FolderImportStatus.Importing -> {
+                                    SmoothProgressBar(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(Dimens.progressBarHeight)
+                                    )
+                                    Text(
+                                        text = "Importing music folder… ${status.imported} added, " +
+                                            "${status.duplicates} duplicates, ${status.errors} errors",
+                                        color = AccentGreen,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(vertical = Dimens.paddingSmall)
+                                    )
+                                }
+                                is FolderImportStatus.Finished -> {
+                                    Text(
+                                        text = when {
+                                            status.failed ->
+                                                "Import failed — please try again" +
+                                                    status.errorMessage?.let { " ($it)" }.orEmpty()
+                                            status.stalled ->
+                                                "Import is taking longer than expected… still working"
+                                            else ->
+                                                "Import complete! ${status.imported} added, " +
+                                                    "${status.duplicates} duplicates, " +
+                                                    "${status.errors} errors${status.persistWarning.orEmpty()}"
+                                        },
+                                        color = if (status.failed || status.stalled) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            AccentGreen
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(vertical = Dimens.paddingSmall)
+                                    )
+                                }
+                            }
                         }
                     }
                     Box(
@@ -457,8 +476,13 @@ fun MainShell(musicController: MusicController) {
                             musicController = musicController,
                             modifier = Modifier.fillMaxSize(),
                             onCreatePlaylist = { showCreateSheet = true },
-                            onPlay = onPlay
+                            onPlay = onPlay,
+                            onNavigate = { transitionMask = true }
                         )
+                        // Green-loader transition mask (see above): covers
+                        // the content area while the new screen fades in
+                        // underneath, then fades away to reveal it.
+                        TransitionMask(visible = transitionMask)
                     }
                 }
             }
@@ -473,16 +497,8 @@ fun MainShell(musicController: MusicController) {
     }
 }
 
-/** Live counters for the Settings-drawer music-folder import. */
-private data class FolderImportState(
-    val imported: Int,
-    val duplicates: Int,
-    val errors: Int
-)
-
 /**
  * Indeterminate progress bar with a perfectly smooth left-to-right sweep.
- *
  * The phase is a pure function of wall-clock time (`withFrameNanos`), so
  * dropped frames during heavy scanning shift the bar forward instead of
  * making it jump — a repeating tween can visibly skip at its loop point
@@ -518,6 +534,41 @@ private fun SmoothProgressBar(
             size = Size(barWidth, size.height),
             cornerRadius = CornerRadius(size.height / 2f, size.height / 2f)
         )
+    }
+}
+
+/**
+ * Green-loader transition mask: a solid full-area layer with the centered
+ * spinner.  It appears instantly on a route change, holds for a deliberate
+ * "black screen" moment while the new screen (swapped in instantly by the
+ * NavHost) sits fully rendered underneath, and then fades away smoothly
+ * (FastOutSlowIn) to reveal it — the switch reads as one calm motion
+ * instead of a rush of overlapping fades.  Kept in its own composable so
+ * the plain (non-scope-extension) AnimatedVisibility resolves correctly
+ * inside the nested Box.
+ */
+@Composable
+private fun TransitionMask(visible: Boolean) {
+    AnimatedVisibility(
+        visible = visible,
+        // No enter animation: the layer must be fully opaque in the very
+        // first frame it appears, or the screen underneath flashes through.
+        enter = EnterTransition.None,
+        exit = fadeOut(
+            animationSpec = tween(
+                TRANSITION_MASK_FADE_MS,
+                easing = FastOutSlowInEasing
+            )
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(PrimaryBackground),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(color = AccentGreen)
+        }
     }
 }
 

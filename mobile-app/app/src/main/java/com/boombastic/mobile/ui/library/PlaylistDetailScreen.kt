@@ -4,6 +4,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -22,12 +23,14 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,18 +71,31 @@ fun PlaylistDetailScreen(
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
 
-    var playlistWithTracks by remember { mutableStateOf<PlaylistWithTracks?>(null) }
-    LaunchedEffect(playlistId) {
-        playlistWithTracks = app.playlistRepository.getPlaylistWithTracks(playlistId)
-    }
-
     // Track actions sheet — hoisted out of the LazyColumn: composing a
     // ModalBottomSheet inside a lazy item makes it scroll with the list.
     var actionsTrack by remember { mutableStateOf<Track?>(null) }
 
-    val data = playlistWithTracks
-    val playlist = data?.playlist
-    val tracks = data?.tracks ?: emptyList()
+    // Reads from the app-warmed LibraryData playlists flow: the detail
+    // screen is only reachable via a playlist card, so the list is already
+    // loaded and the header + tracks render in the same frame as the
+    // transition (membership changes flow in live too).
+    val playlists by app.libraryData.playlists.collectAsState()
+    val playlistWithTracks = playlists.firstOrNull { it.playlist.id == playlistId }
+
+    // All-or-nothing first render: hold the screen behind one static
+    // placeholder instead of showing the top bar and then the header and
+    // track list popping in afterwards.
+    if (playlistWithTracks == null) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(color = AccentGreen)
+        }
+        return
+    }
+    val playlist = playlistWithTracks.playlist
+    val tracks = playlistWithTracks.tracks
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -111,16 +127,7 @@ fun PlaylistDetailScreen(
             }
         }
 
-        if (playlist == null) {
-            item {
-                Text(
-                    text = "Loading...",
-                    color = SecondaryText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(Dimens.paddingLarge)
-                )
-            }
-        } else if (tracks.isEmpty()) {
+        if (tracks.isEmpty()) {
             // Header without tracks
             item {
                 ArtworkCollage(
