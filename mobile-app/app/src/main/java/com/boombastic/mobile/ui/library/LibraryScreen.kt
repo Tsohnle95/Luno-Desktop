@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -91,7 +92,8 @@ fun LibraryScreen(
     val downloads by app.downloadRepository.getAllDownloads().collectAsState(initial = emptyList())
     var query by rememberSaveable { mutableStateOf("") }
     var playlistView by rememberSaveable { mutableStateOf(false) }
-    var playlistSortRecent by rememberSaveable { mutableStateOf(false) }
+    var sortMode by rememberSaveable { mutableStateOf(SortMode.AZ) }
+    var showSortMenu by remember { mutableStateOf(false) }
 
     // Multi-select / batch actions (3-dot menu on the section header)
     var selectionMode by remember { mutableStateOf(false) }
@@ -134,18 +136,22 @@ fun LibraryScreen(
         }
     }
 
-    // Tracks always alphabetical (desktop convention); playlists are
-    // alphabetical by default with an optional "recently added" sort.
-    // Derived lists are memoized so recompositions (selection toggles,
-    // dialog state, etc.) don't re-sort/re-map the whole library.
-    val sortedTracks = remember(filteredTracks) {
-        filteredTracks.sortedBy { it.title.lowercase() }
+    // Tracks and playlists share one sort mode (A–Z / Z–A / Recent),
+    // available in both views.  Derived lists are memoized so
+    // recompositions (selection toggles, dialog state, etc.) don't
+    // re-sort/re-map the whole library.
+    val sortedTracks = remember(filteredTracks, sortMode) {
+        when (sortMode) {
+            SortMode.AZ -> filteredTracks.sortedBy { it.title.lowercase() }
+            SortMode.ZA -> filteredTracks.sortedByDescending { it.title.lowercase() }
+            SortMode.RECENT -> filteredTracks.sortedByDescending { it.addedAt }
+        }
     }
-    val displayPlaylists = remember(filteredPlaylists, playlistSortRecent) {
-        if (playlistSortRecent) {
-            filteredPlaylists.sortedByDescending { it.playlist.createdAt }
-        } else {
-            filteredPlaylists.sortedBy { it.playlist.name.lowercase() }
+    val displayPlaylists = remember(filteredPlaylists, sortMode) {
+        when (sortMode) {
+            SortMode.AZ -> filteredPlaylists.sortedBy { it.playlist.name.lowercase() }
+            SortMode.ZA -> filteredPlaylists.sortedByDescending { it.playlist.name.lowercase() }
+            SortMode.RECENT -> filteredPlaylists.sortedByDescending { it.playlist.createdAt }
         }
     }
 
@@ -244,8 +250,9 @@ fun LibraryScreen(
             }
         }
 
-        // Playlist-view filter tab — sits under the Play button, with an
-        // alphabetical / recently-added sort toggle while playlist view is on
+        // View filter + sort row — sits under the Play button.  The view
+        // toggle is always accent green (like the Play/Shuffle controls);
+        // the sort chip (A–Z / Z–A / Recent) is available in both views.
         item {
             Row(
                 modifier = Modifier
@@ -267,35 +274,63 @@ fun LibraryScreen(
                     Icon(
                         imageVector = Icons.Filled.FilterList,
                         contentDescription = null,
-                        tint = if (playlistView) AccentGreen else SecondaryText,
+                        tint = AccentGreen,
                         modifier = Modifier.size(Dimens.iconSize)
                     )
                     Spacer(modifier = Modifier.width(Dimens.paddingSmall))
                     Text(
                         text = if (playlistView) "All songs view" else "Playlist view",
                         style = MaterialTheme.typography.labelLarge,
-                        color = if (playlistView) AccentGreen else SecondaryText
+                        color = AccentGreen
                     )
                 }
 
-                if (playlistView) {
-                    Spacer(modifier = Modifier.width(Dimens.paddingLarge))
+                Spacer(modifier = Modifier.width(Dimens.paddingLarge))
+
+                // Sort chip — dropdown with A–Z / Z–A / Recent
+                Box {
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(Dimens.cornerMedium))
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
-                                onClick = { playlistSortRecent = !playlistSortRecent }
+                                onClick = { showSortMenu = true }
                             )
                             .padding(Dimens.paddingSmall),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = if (playlistSortRecent) "Sort: Recent" else "Sort: A–Z",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (playlistSortRecent) AccentGreen else SecondaryText
+                        Icon(
+                            imageVector = Icons.Filled.Sort,
+                            contentDescription = null,
+                            tint = AccentGreen,
+                            modifier = Modifier.size(Dimens.iconSize)
                         )
+                        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                        Text(
+                            text = "Sort: ${sortMode.label}",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = AccentGreen
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showSortMenu,
+                        onDismissRequest = { showSortMenu = false }
+                    ) {
+                        SortMode.entries.forEach { mode ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = mode.label,
+                                        color = if (mode == sortMode) AccentGreen else PrimaryText
+                                    )
+                                },
+                                onClick = {
+                                    showSortMenu = false
+                                    sortMode = mode
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -633,6 +668,16 @@ fun LibraryScreen(
             onDismiss = { showBatchPlaylistPicker = false }
         )
     }
+}
+
+/**
+ * Sort modes shared by the songs and playlist views (A–Z, Z–A, and
+ * Recently added).  Label text is displayed on the sort chip.
+ */
+private enum class SortMode(val label: String) {
+    AZ("A–Z"),
+    ZA("Z–A"),
+    RECENT("Recent")
 }
 
 /**
