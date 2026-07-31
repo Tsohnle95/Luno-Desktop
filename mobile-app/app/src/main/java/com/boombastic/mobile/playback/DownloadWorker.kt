@@ -6,6 +6,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.boombastic.mobile.R
+import com.boombastic.mobile.data.artwork.ArtworkStorage
 import com.boombastic.mobile.data.db.AppDatabase
 import com.boombastic.mobile.data.db.entity.DownloadState
 import com.boombastic.mobile.data.db.entity.Track
@@ -157,11 +158,15 @@ class DownloadWorker(
                 0L
             }
 
+            val albumArtPath =
+                ArtworkStorage.saveEmbeddedArtworkFromPath(context, file.absolutePath)
+
             val track = Track(
                 uri = file.toURI().toString(),
                 title = job.title,
                 artist = job.artist,
                 durationMs = durationMs,
+                albumArtPath = albumArtPath,
                 addedAt = System.currentTimeMillis()
             )
             trackDao.insertTrack(track)

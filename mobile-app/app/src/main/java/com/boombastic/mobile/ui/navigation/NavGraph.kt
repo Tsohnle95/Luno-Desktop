@@ -29,7 +29,8 @@ fun BoomBasticNavHost(
     musicController: MusicController,
     modifier: Modifier = Modifier,
     onCreatePlaylist: () -> Unit,
-    onPlay: (MediaTrack) -> Unit = {}
+    onPlay: (MediaTrack) -> Unit = {},
+    onOpenOptions: () -> Unit = {}
 ) {
     NavHost(
         navController = navController,
@@ -37,7 +38,10 @@ fun BoomBasticNavHost(
         modifier = modifier
     ) {
         composable(Routes.HOME) {
-            HomeScreen(musicController = musicController)
+            HomeScreen(
+                musicController = musicController,
+                onOpenOptions = onOpenOptions
+            )
         }
         composable(Routes.SEARCH) {
             SearchScreen(musicController = musicController, onPlay = onPlay)

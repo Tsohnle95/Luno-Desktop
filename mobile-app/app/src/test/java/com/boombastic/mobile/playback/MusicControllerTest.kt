@@ -287,6 +287,40 @@ class MusicControllerTest {
         controller.addToQueue(track("append"))
     }
 
+    @Test
+    fun `moveQueueItem does not throw before connection`() {
+        controller.moveQueueItem(0, 1)
+    }
+
+    @Test
+    fun `moveQueueItem to same index is a no-op before connection`() {
+        controller.moveQueueItem(2, 2)
+    }
+
+    @Test
+    fun `artworkUri is preserved on the built MediaItem`() {
+        val original = MediaTrack(
+            uri = "content://track/art",
+            title = "Artwork Song",
+            artist = "Artist",
+            album = "Album",
+            durationMs = 1000L,
+            artworkUri = "file:///data/user/0/com.boombastic.mobile/files/artwork/abc.jpg"
+        )
+
+        val item = controller.buildMediaItem(original)
+
+        assertThat(item.mediaMetadata.artworkUri.toString())
+            .isEqualTo(original.artworkUri)
+    }
+
+    @Test
+    fun `buildMediaItem without artwork leaves artworkUri null`() {
+        val item = controller.buildMediaItem(track("plain"))
+
+        assertThat(item.mediaMetadata.artworkUri).isNull()
+    }
+
     // ── Error emission ───────────────────────────────────────────────────
 
     @Test

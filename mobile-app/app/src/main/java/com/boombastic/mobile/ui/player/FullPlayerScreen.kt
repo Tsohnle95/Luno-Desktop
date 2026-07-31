@@ -18,7 +18,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.QueueMusic
@@ -32,7 +31,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -49,18 +47,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.Player
 import com.boombastic.mobile.playback.MusicController
+import com.boombastic.mobile.ui.components.ArtworkImage
+import com.boombastic.mobile.ui.components.rememberArtworkColors
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.MiniPlayerBorder
 import com.boombastic.mobile.ui.theme.PrimaryBackground
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
-import com.boombastic.mobile.ui.theme.SurfaceDark
-import com.boombastic.mobile.ui.theme.SurfaceElevated
 
 /**
- * Full-screen player: large artwork placeholder, title/artist, scrub bar with
- * m:ss time labels, transport row (shuffle / previous / play-pause / next /
+ * Full-screen player: large artwork (real embedded artwork with a
+ * dominant-color gradient backdrop), title/artist, scrub bar with m:ss
+ * time labels, transport row (shuffle / previous / play-pause / next /
  * repeat), queue sheet trigger, and action-sheet trigger.
  */
 @Composable
@@ -78,9 +77,17 @@ fun FullPlayerScreen(
     var showQueueSheet by rememberSaveable { mutableStateOf(false) }
     var showActionSheet by rememberSaveable { mutableStateOf(false) }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = PrimaryBackground
+    val artworkUri = currentTrack?.artworkUri
+    val (gradientTop, gradientBottom) = rememberArtworkColors(artworkUri)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(gradientTop, gradientBottom, PrimaryBackground)
+                )
+            )
     ) {
         Column(
             modifier = Modifier
@@ -124,25 +131,14 @@ fun FullPlayerScreen(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            // Artwork placeholder (static gradient — Coil integration deferred)
-            Box(
+            // Artwork: real embedded artwork, gradient placeholder fallback
+            ArtworkImage(
+                artworkUri = artworkUri,
                 modifier = Modifier
                     .size(Dimens.albumArtLarge)
-                    .clip(RoundedCornerShape(Dimens.cornerMedium))
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(SurfaceDark, SurfaceElevated)
-                        )
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.MusicNote,
-                    contentDescription = null,
-                    tint = PrimaryText.copy(alpha = 0.3f),
-                    modifier = Modifier.size(96.dp)
-                )
-            }
+                    .clip(RoundedCornerShape(Dimens.cornerMedium)),
+                placeholderIconSize = 96.dp
+            )
 
             Spacer(modifier = Modifier.height(Dimens.paddingXLarge))
 

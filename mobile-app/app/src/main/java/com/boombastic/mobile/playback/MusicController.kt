@@ -140,6 +140,7 @@ class MusicController @JvmOverloads constructor(
                     artist = it.artist?.toString() ?: "Unknown",
                     album = it.albumTitle?.toString() ?: "",
                     durationMs = metadataDuration(it, sessionDuration),
+                    artworkUri = it.artworkUri?.toString()
                 )
             }
             _hasActiveItem.value = mediaItem != null
@@ -329,6 +330,7 @@ class MusicController @JvmOverloads constructor(
                 artist = meta.artist?.toString() ?: "Unknown",
                 album = meta.albumTitle?.toString() ?: "",
                 durationMs = metadataDuration(meta, -1L),
+                artworkUri = meta.artworkUri?.toString(),
             )
         }
     }
@@ -355,6 +357,21 @@ class MusicController @JvmOverloads constructor(
     fun addToQueue(track: MediaTrack) {
         if (released) return
         controller?.addMediaItem(buildMediaItem(track))
+    }
+
+    /**
+     * Moves the queue item at [fromIndex] so it plays at [toIndex].
+     * Indexes are clamped to the current queue bounds; no-op before
+     * connection or when both indexes are equal.
+     */
+    fun moveQueueItem(fromIndex: Int, toIndex: Int) {
+        if (released) return
+        val ctrl = controller ?: return
+        if (ctrl.mediaItemCount == 0) return
+        val from = fromIndex.coerceIn(0, ctrl.mediaItemCount - 1)
+        val to = toIndex.coerceIn(0, ctrl.mediaItemCount - 1)
+        if (from == to) return
+        ctrl.moveMediaItem(from, to)
     }
 
     fun stop() {
@@ -423,7 +440,8 @@ class MusicController @JvmOverloads constructor(
                 title = meta.title?.toString() ?: "Unknown",
                 artist = meta.artist?.toString() ?: "Unknown",
                 album = meta.albumTitle?.toString() ?: "",
-                durationMs = hydratedDuration
+                durationMs = hydratedDuration,
+                artworkUri = meta.artworkUri?.toString()
             )
             _duration.value = hydratedDuration
             _progress.value = ctrl.currentPosition.coerceAtLeast(0L)
@@ -479,17 +497,16 @@ class MusicController @JvmOverloads constructor(
         val extras = Bundle().apply {
             putLong(METADATA_DURATION_MS, track.durationMs)
         }
+        val metadataBuilder = MediaMetadata.Builder()
+            .setTitle(track.title)
+            .setArtist(track.artist)
+            .setAlbumTitle(track.album)
+            .setExtras(extras)
+        track.artworkUri?.let { metadataBuilder.setArtworkUri(android.net.Uri.parse(it)) }
         return MediaItem.Builder()
             .setMediaId(track.uri)
             .setUri(track.uri)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(track.title)
-                    .setArtist(track.artist)
-                    .setAlbumTitle(track.album)
-                    .setExtras(extras)
-                    .build()
-            )
+            .setMediaMetadata(metadataBuilder.build())
             .build()
     }
 
@@ -556,11 +573,16 @@ data class PlaybackRequest(
  * When originating from a Room [Track][com.boombastic.mobile.data.db.entity.Track],
  * title, artist, album, and durationMs contain the exact values supplied by
  * the database, including original Unicode, case, and whitespace.
+ *
+ * [artworkUri] is a `file://` URI pointing at cached embedded artwork
+ * (see [com.boombastic.mobile.data.artwork.ArtworkStorage]); `null` when
+ * the item has no artwork.
  */
 data class MediaTrack(
     val uri: String,
     val title: String = "Unknown",
     val artist: String = "Unknown",
     val album: String = "",
-    val durationMs: Long = 0L
+    val durationMs: Long = 0L,
+    val artworkUri: String? = null
 )

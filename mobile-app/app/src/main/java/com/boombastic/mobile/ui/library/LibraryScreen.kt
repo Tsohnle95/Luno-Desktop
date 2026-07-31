@@ -169,7 +169,8 @@ fun LibraryScreen(
                                 title = track.title,
                                 artist = track.artist,
                                 album = track.album,
-                                durationMs = track.durationMs
+                                durationMs = track.durationMs,
+                                artworkUri = track.albumArtUri()
                             )
                         )
                     }

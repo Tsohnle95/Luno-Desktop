@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -23,8 +24,10 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
@@ -69,6 +72,17 @@ fun MiniPlayer(
                 .padding(horizontal = Dimens.paddingMedium),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Artwork thumbnail
+            ArtworkImage(
+                artworkUri = currentTrack?.artworkUri,
+                modifier = Modifier
+                    .size(Dimens.albumArtSmall)
+                    .clip(RoundedCornerShape(Dimens.cornerSmall)),
+                placeholderIconSize = 24.dp
+            )
+
+            Spacer(modifier = Modifier.width(Dimens.paddingMedium))
+
             // Track info (tap to open the full player)
             Column(
                 modifier = Modifier

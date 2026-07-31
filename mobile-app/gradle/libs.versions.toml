@@ -22,6 +22,8 @@ work = "2.9.0"
 newpipeExtractor = "v0.26.4"
 okhttp = "4.12.0"
 desugarJdkLibsNio = "2.1.4"
+coil = "2.6.0"
+palette = "1.0.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -78,6 +80,12 @@ okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhtt
 
 # Core library desugaring — required by NewPipeExtractor v0.26.4 on minSdk < 33
 desugar-jdk-libs-nio = { group = "com.android.tools", name = "desugar_jdk_libs_nio", version.ref = "desugarJdkLibsNio" }
+
+# Image loading (artwork)
+coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
+
+# Dominant color extraction (dynamic artwork gradients)
+androidx-palette-ktx = { group = "androidx.palette", name = "palette-ktx", version.ref = "palette" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

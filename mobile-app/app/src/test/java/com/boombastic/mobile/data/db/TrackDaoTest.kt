@@ -135,4 +135,25 @@ class TrackDaoTest : AppDatabaseTest() {
         trackDao.insertTrack(Track(uri = "content://test/2", title = "T2"))
         assertThat(trackDao.trackCount()).isEqualTo(2)
     }
+
+    @Test
+    fun albumArtPath_roundTripsAndDefaultsToNull() = runBlocking {
+        val withArt = Track(
+            uri = "content://test/art",
+            title = "With Art",
+            albumArtPath = "/data/user/0/com.boombastic.mobile/files/artwork/abc.jpg"
+        )
+        trackDao.insertTrack(withArt)
+
+        val retrieved = trackDao.getTrack("content://test/art")
+        assertThat(retrieved!!.albumArtPath)
+            .isEqualTo("/data/user/0/com.boombastic.mobile/files/artwork/abc.jpg")
+        assertThat(retrieved.albumArtUri())
+            .isEqualTo("file:///data/user/0/com.boombastic.mobile/files/artwork/abc.jpg")
+
+        trackDao.insertTrack(Track(uri = "content://test/noart", title = "No Art"))
+        val plain = trackDao.getTrack("content://test/noart")
+        assertThat(plain!!.albumArtPath).isNull()
+        assertThat(plain.albumArtUri()).isNull()
+    }
 }

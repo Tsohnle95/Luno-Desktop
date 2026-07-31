@@ -4,16 +4,22 @@ import android.app.PendingIntent
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.boombastic.mobile.MainActivity
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
+import java.util.concurrent.Executors
 
 class MusicService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
     private var player: ExoPlayer? = null
+    private val artworkExecutor = Executors.newSingleThreadExecutor()
 
     override fun onCreate() {
         super.onCreate()
@@ -41,7 +47,58 @@ class MusicService : MediaSessionService() {
         val p = player ?: return
         mediaSession = MediaSession.Builder(this, p)
             .setSessionActivity(pendingIntent)
+            .setCallback(ArtworkEnrichingCallback())
             .build()
+    }
+
+    /**
+     * Enriches incoming media items with `artworkData` bytes loaded from
+     * their `artworkUri` (cached embedded artwork).  The media-session
+     * notification and lock-screen controls render artwork from
+     * `artworkData`, so without this enrichment those surfaces would
+     * show no artwork even though the in-app UI loads the same file.
+     */
+    private inner class ArtworkEnrichingCallback : MediaSession.Callback {
+        @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+        override fun onAddMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: List<MediaItem>
+        ): ListenableFuture<List<MediaItem>> {
+            val output = SettableFuture.create<List<MediaItem>>()
+            artworkExecutor.execute {
+                try {
+                    val enriched = mediaItems.map { item ->
+                        val metadata = item.mediaMetadata
+                        val artworkUri = metadata.artworkUri
+                        if (artworkUri != null && metadata.artworkData == null) {
+                            val bytes = try {
+                                contentResolver.openInputStream(artworkUri)?.use { it.readBytes() }
+                            } catch (_: Exception) {
+                                null
+                            }
+                            if (bytes != null && bytes.isNotEmpty()) {
+                                item.buildUpon()
+                                    .setMediaMetadata(
+                                        metadata.buildUpon()
+                                            .setArtworkData(bytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                                            .build()
+                                    )
+                                    .build()
+                            } else {
+                                item
+                            }
+                        } else {
+                            item
+                        }
+                    }
+                    output.set(enriched)
+                } catch (e: Exception) {
+                    output.setException(e)
+                }
+            }
+            return output
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
@@ -66,6 +123,7 @@ class MusicService : MediaSessionService() {
             release()
             player = null
         }
+        artworkExecutor.shutdown()
         super.onDestroy()
     }
 }

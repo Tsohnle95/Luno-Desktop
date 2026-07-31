@@ -99,6 +99,12 @@ dependencies {
     // OkHttp
     implementation(libs.okhttp)
 
+    // Coil — artwork loading
+    implementation(libs.coil.compose)
+
+    // Dominant color extraction for dynamic artwork gradients
+    implementation(libs.androidx.palette.ktx)
+
     // Core library desugaring (NewPipeExtractor v0.26.4 on minSdk 29)
     coreLibraryDesugaring(libs.desugar.jdk.libs.nio)
 

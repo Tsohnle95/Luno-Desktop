@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.boombastic.mobile.data.artwork.ArtworkStorage
 import com.boombastic.mobile.data.db.dao.TrackDao
 import com.boombastic.mobile.data.db.entity.Track
 import kotlinx.coroutines.Dispatchers
@@ -94,7 +95,7 @@ class LibraryRepository(
             }
         }
 
-        // Try MediaMetadataRetriever for more accurate metadata
+            // Try MediaMetadataRetriever for more accurate metadata
         try {
             val retriever = android.media.MediaMetadataRetriever()
             retriever.setDataSource(context, uri)
@@ -107,6 +108,7 @@ class LibraryRepository(
             val extractedDuration = retriever.extractMetadata(
                 android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
             )
+            val albumArtPath = ArtworkStorage.saveEmbeddedArtwork(context, uri)
             retriever.release()
 
             if (!extractedTitle.isNullOrBlank()) title = extractedTitle
@@ -114,17 +116,25 @@ class LibraryRepository(
             if (!extractedDuration.isNullOrBlank()) {
                 durationMs = extractedDuration.toLongOrNull() ?: durationMs
             }
+
+            Track(
+                uri = uri.toString(),
+                title = title,
+                artist = artist,
+                durationMs = durationMs,
+                albumArtPath = albumArtPath,
+                addedAt = System.currentTimeMillis()
+            )
         } catch (_: Exception) {
             // Metadata extraction failed, use file-name-based fallback
+            Track(
+                uri = uri.toString(),
+                title = title,
+                artist = artist,
+                durationMs = durationMs,
+                addedAt = System.currentTimeMillis()
+            )
         }
-
-        Track(
-            uri = uri.toString(),
-            title = title,
-            artist = artist,
-            durationMs = durationMs,
-            addedAt = System.currentTimeMillis()
-        )
     }
 
     fun getAllTracks() = trackDao.getAllTracks()
