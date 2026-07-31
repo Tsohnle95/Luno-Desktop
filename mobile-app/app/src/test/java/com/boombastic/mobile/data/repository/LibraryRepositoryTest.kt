@@ -51,6 +51,7 @@ class LibraryRepositoryTest {
             playlistDao = database.playlistDao(),
             uriPermissionPersister = LibraryRepository.UriPermissionPersister { }
         )
+        FakeDocumentsProvider.samsungStyle = false
         Robolectric.setupContentProvider(
             FakeDocumentsProvider::class.java,
             FakeDocumentsProvider.AUTHORITY
@@ -135,6 +136,32 @@ class LibraryRepositoryTest {
         assertThat(playlistNames()).isEmpty()
     }
 
+    @Test
+    fun importMultipleUris_samsungStyleFolder_importsContentsAsPlaylist() = runBlocking<Unit> {
+        // Samsung My Files: querying a folder document returns its
+        // children and `document/<id>/children` is unsupported — the
+        // folder must still be recognized and imported recursively.
+        FakeDocumentsProvider.samsungStyle = true
+        val folderUri = Uri.parse(
+            "content://${FakeDocumentsProvider.AUTHORITY}/document/root%2FFolder%20A"
+        )
+        val result = repository.importMultipleUris(listOf(folderUri))
+
+        assertThat(result.imported).isEqualTo(3)
+        assertThat(result.errors).isEqualTo(0)
+        assertThat(trackTitles()).containsExactly("song1", "song2", "deep1")
+        assertThat(playlistNames()).containsExactly("Folder A", "Sub")
+    }
+
+    @Test
+    fun importMultipleUris_treeUri_importsRootContentsAsPlaylist() = runBlocking<Unit> {
+        val result = repository.importMultipleUris(listOf(treeRootUri()))
+
+        assertThat(result.imported).isEqualTo(5)
+        assertThat(result.errors).isEqualTo(0)
+        assertThat(playlistNames()).containsExactly("root", "Folder A", "Folder B", "Sub")
+    }
+
     /**
      * Minimal in-memory SAF provider emulating an external-storage
      * DocumentsProvider: querying a document URI returns the document
@@ -183,12 +210,18 @@ class LibraryRepositoryTest {
                 segments.size == 5 && segments[0] == "tree" &&
                     segments[2] == "document" && segments[4] == "children" ->
                     childrenCursor(segments[3], projection)
-                // document/<docId> → the document itself.
+                // document/<docId> → the document itself (or its children,
+                // Samsung-style, when the document is a folder).
                 segments.size == 2 && segments[0] == "document" ->
-                    documentCursor(segments[1], projection)
-                // document/<docId>/children → the folder's children.
+                    if (samsungStyle && docs[segments[1]]?.mime == DIR) {
+                        childrenCursor(segments[1], projection)
+                    } else {
+                        documentCursor(segments[1], projection)
+                    }
+                // document/<docId>/children → the folder's children
+                // (unsupported Samsung-style).
                 segments.size == 3 && segments[0] == "document" && segments[2] == "children" ->
-                    childrenCursor(segments[1], projection)
+                    if (samsungStyle) emptyCursor(projection) else childrenCursor(segments[1], projection)
                 else -> emptyCursor(projection)
             }
         }
@@ -269,10 +302,13 @@ class LibraryRepositoryTest {
             MatrixCursor(projection ?: arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID))
 
         companion object {
-            const val AUTHORITY = "com.boombastic.test.documents"
+            const val AUTHORITY = "com.boombastic.test.externalstorage.documents"
             const val ROOT_ID = "root"
             private const val DIR = DocumentsContract.Document.MIME_TYPE_DIR
             private const val AUDIO = "audio/mpeg"
+
+            /** Samsung-style provider: folder doc queries return children. */
+            var samsungStyle = false
         }
     }
 }

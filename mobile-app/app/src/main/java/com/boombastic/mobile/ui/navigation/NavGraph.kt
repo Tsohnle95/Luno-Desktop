@@ -1,5 +1,8 @@
 package com.boombastic.mobile.ui.navigation
 
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
@@ -41,7 +44,13 @@ fun BoomBasticNavHost(
     NavHost(
         navController = navController,
         startDestination = Routes.HOME,
-        modifier = modifier
+        modifier = modifier,
+        // Default NavHost crossfade is 700ms; halved to 350ms for snappier
+        // tab switching.
+        enterTransition = { fadeIn(animationSpec = tween(350)) },
+        exitTransition = { fadeOut(animationSpec = tween(350)) },
+        popEnterTransition = { fadeIn(animationSpec = tween(350)) },
+        popExitTransition = { fadeOut(animationSpec = tween(350)) }
     ) {
         composable(Routes.HOME) {
             HomeScreen(

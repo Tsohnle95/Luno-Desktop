@@ -386,12 +386,12 @@ fun MainShell(musicController: MusicController) {
 /**
  * Desktop-style app header: bold "Luno" wordmark with the small green
  * rounded bar (the desktop's green "▮") immediately to its right,
- * aligned to the text baseline.
+ * vertically centered with the title text.
  */
 @Composable
 private fun AppHeader() {
     Row(
-        verticalAlignment = Alignment.Bottom,
+        verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.padding(
             start = Dimens.paddingLarge,
             top = Dimens.paddingMedium,
@@ -400,14 +400,14 @@ private fun AppHeader() {
     ) {
         Text(
             text = "Luno",
-            style = MaterialTheme.typography.headlineMedium,
+            style = MaterialTheme.typography.headlineLarge,
             fontWeight = FontWeight.Bold,
             color = PrimaryText
         )
-        Spacer(modifier = Modifier.width(4.dp))
+        Spacer(modifier = Modifier.width(6.dp))
         Box(
             modifier = Modifier
-                .size(width = 5.dp, height = 13.dp)
+                .size(width = 6.dp, height = 16.dp)
                 .clip(RoundedCornerShape(2.dp))
                 .background(AccentGreen)
         )

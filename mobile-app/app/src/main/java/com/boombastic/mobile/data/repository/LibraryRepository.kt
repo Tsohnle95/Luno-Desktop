@@ -79,25 +79,33 @@ class LibraryRepository(
         val counters = ImportCounters()
 
         for (uri in uris) {
-            if (isDirectoryDocument(uri)) {
-                // A folder selected in the file picker (some pickers, e.g.
-                // Samsung's, allow selecting folders): import its audio
+            when {
+                // Some pickers (e.g. Samsung's) return selected folders as
+                // tree URIs — import them like an `ACTION_OPEN_DOCUMENT_TREE`
+                // root (folder name = playlist name).
+                DocumentsContract.isTreeUri(uri) -> {
+                    runCatching {
+                        uriPermissionPersister.persistReadPermission(uri)
+                    }
+                    importTreeFolder(uri, "", folderDisplayName(uri), counters) { _, _, _ -> }
+                }
+                // A folder selected in the file picker: import its audio
                 // contents desktop-style (folder name = playlist name)
                 // instead of treating the folder as a single track.
-                val name = documentDisplayName(uri)?.takeIf { it.isNotBlank() }
-                    ?: uri.lastPathSegment?.substringAfterLast('/')
-                    ?: UNSORTED_PLAYLIST
-                importDocumentFolder(uri, name, counters)
-            } else {
-                val result = importAudioUri(uri)
-                if (result.isSuccess) {
-                    counters.imported++
-                } else {
-                    val error = result.exceptionOrNull()
-                    if (error is ImportException && error.error == ImportError.DUPLICATE) {
-                        counters.duplicates++
+                isFolderDocument(uri) -> {
+                    importDocumentFolder(uri, folderDisplayName(uri), counters)
+                }
+                else -> {
+                    val result = importAudioUri(uri)
+                    if (result.isSuccess) {
+                        counters.imported++
                     } else {
-                        counters.errors++
+                        val error = result.exceptionOrNull()
+                        if (error is ImportException && error.error == ImportError.DUPLICATE) {
+                            counters.duplicates++
+                        } else {
+                            counters.errors++
+                        }
                     }
                 }
             }
@@ -286,9 +294,46 @@ class LibraryRepository(
      * a plain document URI.  Children are addressed as
      * `content://<authority>/document/<childId>` — document ids carry the
      * full path, so this never nests.
+     *
+     * Providers disagree on how to enumerate a folder document's children:
+     * standard ones answer `document/<id>/children`, while some (e.g.
+     * Samsung My Files) return the children when the folder document itself
+     * is queried (the folder's own row — same document id — is not a
+     * child).  Both forms are tried.
      */
     private fun queryDocumentChildren(folderUri: Uri): List<Triple<Uri, String, String>> {
-        val children = mutableListOf<Triple<Uri, String, String>>()
+        val authority = folderUri.authority ?: return emptyList()
+        val folderId = DocumentsContract.getDocumentId(folderUri)
+
+        val viaChildren = queryDocumentRows(
+            DocumentsContract.buildChildDocumentsUri(authority, folderId)
+        ) { id ->
+            DocumentsContract.buildDocumentUri(authority, id)
+        }
+        if (viaChildren.isNotEmpty()) return viaChildren
+
+        // Fallback: querying the folder document itself returns its
+        // children on some providers; the folder's own row is excluded.
+        val selfId = folderId
+        return queryDocumentRows(folderUri) { id ->
+            if (id == selfId) {
+                null
+            } else {
+                DocumentsContract.buildDocumentUri(authority, id)
+            }
+        }
+    }
+
+    /**
+     * Queries [queryUri] for `(documentId, displayName, mimeType)` rows and
+     * maps them to document URIs via [toUri]; rows that map to `null` are
+     * skipped.  Returns an empty list when the query fails or has no rows.
+     */
+    private fun queryDocumentRows(
+        queryUri: Uri,
+        toUri: (String) -> Uri?
+    ): List<Triple<Uri, String, String>> {
+        val rows = mutableListOf<Triple<Uri, String, String>>()
         val resolver = context.contentResolver
         val projection = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -296,11 +341,7 @@ class LibraryRepository(
             DocumentsContract.Document.COLUMN_MIME_TYPE
         )
         runCatching {
-            val childrenUri = DocumentsContract.buildChildDocumentsUri(
-                folderUri.authority,
-                DocumentsContract.getDocumentId(folderUri)
-            )
-            resolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+            resolver.query(queryUri, projection, null, null, null)?.use { cursor ->
                 val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
                 val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
@@ -309,18 +350,27 @@ class LibraryRepository(
                     val name = cursor.getString(nameIndex)
                     val mime = cursor.getString(mimeIndex)
                     if (id != null) {
-                        children.add(
-                            Triple(
-                                DocumentsContract.buildDocumentUri(folderUri.authority, id),
-                                name ?: "",
-                                mime ?: ""
-                            )
-                        )
+                        val docUri = toUri(id)
+                        if (docUri != null) {
+                            rows.add(Triple(docUri, name ?: "", mime ?: ""))
+                        }
                     }
                 }
             }
         }
-        return children
+        return rows
+    }
+
+    /**
+     * True when [uri] is a directory document.  A file never has children,
+     * so a non-empty children listing is the definitive test; folders
+     * whose children cannot be listed fall back to the document's own MIME
+     * type.  Tree URIs are always folders.
+     */
+    private fun isFolderDocument(uri: Uri): Boolean {
+        if (DocumentsContract.isTreeUri(uri)) return true
+        if (queryDocumentChildren(uri).isNotEmpty()) return true
+        return isDirectoryDocument(uri)
     }
 
     /**
@@ -342,6 +392,26 @@ class LibraryRepository(
             if (cursor.moveToFirst()) cursor.getString(0) else null
         }
     }.getOrNull()
+
+    /**
+     * Best-effort folder name for a picker-returned folder URI.
+     *
+     * External-storage providers encode the folder path in the URI's last
+     * path segment, which is always correct; Samsung-style providers
+     * additionally return a folder's *children* when its document is
+     * queried, so the queried display name would be the first song's name.
+     * For other providers the queried display name is preferred (e.g. the
+     * Downloads provider, whose document ids are opaque).
+     */
+    private fun folderDisplayName(uri: Uri): String {
+        val pathName = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+        val name = if (uri.authority?.contains("externalstorage") == true) {
+            pathName ?: documentDisplayName(uri)
+        } else {
+            documentDisplayName(uri) ?: pathName
+        }
+        return name?.takeIf { it.isNotBlank() } ?: UNSORTED_PLAYLIST
+    }
 
     private fun isAudio(mime: String, name: String): Boolean {
         if (mime.startsWith("audio/")) return true
