@@ -9,15 +9,33 @@ import com.boombastic.mobile.R
 import com.boombastic.mobile.data.db.AppDatabase
 import com.boombastic.mobile.data.db.entity.DownloadState
 import com.boombastic.mobile.data.db.entity.Track
+import okhttp3.ConnectionSpec
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 class DownloadWorker(
     private val context: Context,
     params: WorkerParameters
 ) : CoroutineWorker(context, params) {
+
+    companion object {
+        const val TAG = "DownloadWorker"
+        const val KEY_DOWNLOAD_JOB_ID = "download_job_id"
+        const val KEY_DOWNLOAD_DIR = "downloads"
+        private const val NOTIFICATION_ID_BASE = 1000
+    }
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .connectionSpecs(listOf(ConnectionSpec.MODERN_TLS, ConnectionSpec.COMPATIBLE_TLS))
+        .build()
 
     override suspend fun doWork(): Result {
         val jobId = inputData.getLong(KEY_DOWNLOAD_JOB_ID, -1L)
@@ -30,39 +48,54 @@ class DownloadWorker(
         val jobDao = db.downloadJobDao()
         val trackDao = db.trackDao()
 
-        val job = jobDao.getDownload(jobId)
-        if (job == null) {
-            Log.e(TAG, "doWork: job $jobId not found in database")
+        val job = jobDao.getDownload(jobId) ?: run {
+            Log.e(TAG, "doWork: job $jobId not found")
             return Result.failure()
         }
 
-        Log.d(TAG, "Starting download job $jobId: ${job.title} by ${job.artist}")
-        Log.d(TAG, "Source URL (truncated): ${job.sourceUrl.take(120)}")
+        val srcUrl = if (job.sourceUrl.startsWith("http://")) {
+            job.sourceUrl.replaceFirst("http://", "https://")
+        } else job.sourceUrl
+
+        Log.d(TAG, "Downloading $jobId: ${job.title}")
 
         jobDao.updateProgress(jobId, DownloadState.DOWNLOADING, 0)
         setForeground(createForegroundInfo(job.title))
 
-        return try {
-            val url = URL(job.sourceUrl)
-            val connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 30000
-            connection.readTimeout = 30000
-            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.165 Mobile Safari/537.36")
-            connection.setRequestProperty("Referer", "https://www.youtube.com")
-            connection.connect()
+        val request = Request.Builder()
+            .url(srcUrl)
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.165 Mobile Safari/537.36")
+            .header("Referer", "https://www.youtube.com")
+            .header("Origin", "https://www.youtube.com")
+            .header("Range", "bytes=0-")
+            .build()
 
-            val responseCode = connection.responseCode
-            Log.d(TAG, "HTTP response code: $responseCode for job $jobId")
-            if (responseCode != 200) {
-                val errorMsg = "HTTP $responseCode downloading ${job.title}"
-                Log.w(TAG, errorMsg)
-                jobDao.markFailed(jobId, DownloadState.FAILED, errorMsg)
+        try {
+            val response = client.newCall(request).execute()
+
+            val protocol = response.protocol
+            Log.d(TAG, "Protocol: $protocol, code: ${response.code}")
+
+            if (response.code != 200 && response.code != 206) {
+                Log.w(TAG, "HTTP ${response.code} from ${response.request.url.host}")
+                for ((name, values) in response.headers) {
+                    Log.w(TAG, "  header: $name = $values")
+                }
+                response.close()
+                jobDao.markFailed(jobId, DownloadState.FAILED, "HTTP ${response.code} - YouTube blocked download")
                 return Result.failure()
             }
 
-            val contentLength = connection.contentLengthLong
-            Log.d(TAG, "Content-Length: $contentLength for job $jobId")
-            val inputStream = connection.inputStream
+            val body = response.body
+            if (body == null) {
+                response.close()
+                jobDao.markFailed(jobId, DownloadState.FAILED, "Empty response body")
+                return Result.failure()
+            }
+
+            val contentLength = body.contentLength()
+            Log.d(TAG, "Content-Length: $contentLength, protocol: $protocol")
+            val inputStream = body.byteStream()
 
             val downloadDir = File(context.filesDir, KEY_DOWNLOAD_DIR)
             downloadDir.mkdirs()
@@ -71,16 +104,28 @@ class DownloadWorker(
                 .replace(Regex("[^a-zA-Z0-9_\\- ]"), "")
                 .trim()
                 .ifBlank { "download_$jobId" }
-            val file = File(downloadDir, "$safeFileName.mp3")
-            var bytesRead: Int
-            val buffer = ByteArray(8192)
+
+            val contentType = body.contentType()?.toString() ?: ""
+            val ext = when {
+                contentType.contains("opus") || contentType.contains("webm") -> ".opus"
+                contentType.contains("mp4") || contentType.contains("m4a") -> ".m4a"
+                contentType.contains("mp3") || contentType.contains("mpeg") -> ".mp3"
+                contentType.contains("ogg") -> ".ogg"
+                else -> ".audio"
+            }
+            val file = File(downloadDir, "$safeFileName$ext")
+            Log.d(TAG, "Saving as: $ext (from contentType: $contentType)")
+
             var totalBytes = 0L
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
 
             FileOutputStream(file).use { outputStream ->
                 while (inputStream.read(buffer).also { bytesRead = it } != -1) {
                     if (isStopped) {
-                        Log.d(TAG, "Download job $jobId cancelled by user")
+                        Log.d(TAG, "Cancelled job $jobId")
                         file.delete()
+                        response.close()
                         jobDao.markFailed(jobId, DownloadState.FAILED, "Cancelled")
                         return Result.failure()
                     }
@@ -93,22 +138,19 @@ class DownloadWorker(
                 }
             }
 
-            inputStream.close()
-            connection.disconnect()
-            Log.d(TAG, "Downloaded $totalBytes bytes for job $jobId to ${file.absolutePath}")
+            response.close()
+            Log.d(TAG, "Downloaded $totalBytes bytes to ${file.absolutePath}")
 
             val durationMs = try {
                 val retriever = android.media.MediaMetadataRetriever()
                 retriever.setDataSource(file.absolutePath)
-                val durStr = retriever.extractMetadata(
+                val dur = retriever.extractMetadata(
                     android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
-                )
+                )?.toLongOrNull() ?: 0L
                 retriever.release()
-                val d = durStr?.toLongOrNull() ?: 0L
-                Log.d(TAG, "Extracted duration: ${d}ms for job $jobId")
-                d
+                dur
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to extract duration for job $jobId", e)
+                Log.w(TAG, "Duration extraction failed", e)
                 0L
             }
 
@@ -120,35 +162,19 @@ class DownloadWorker(
                 addedAt = System.currentTimeMillis()
             )
             trackDao.insertTrack(track)
-            Log.d(TAG, "Track inserted for job $jobId: ${track.title}")
 
-            jobDao.markCompleted(
-                jobId,
-                DownloadState.COMPLETED,
-                file.toURI().toString(),
-                System.currentTimeMillis()
-            )
-
-            Log.d(TAG, "Download job $jobId completed successfully")
-            Result.success()
-        } catch (e: Exception) {
-            Log.e(TAG, "Download job $jobId failed", e)
+            jobDao.markCompleted(jobId, DownloadState.COMPLETED, file.toURI().toString(), System.currentTimeMillis())
+            Log.d(TAG, "Job $jobId complete")
+            return Result.success()
+        } catch (e: IOException) {
+            Log.e(TAG, "Download failed for job $jobId", e)
             jobDao.markFailed(jobId, DownloadState.FAILED, "${e::class.simpleName}: ${e.message}")
-            if (runAttemptCount < 3) {
-                Log.d(TAG, "Will retry job $jobId (attempt ${runAttemptCount + 1})")
-                Result.retry()
-            } else {
-                Log.w(TAG, "Job $jobId exhausted retries")
-                Result.failure()
-            }
+            return if (runAttemptCount < 3) Result.retry() else Result.failure()
         }
     }
 
     private fun createForegroundInfo(title: String): ForegroundInfo {
-        val notification = android.app.Notification.Builder(
-            context,
-            "download_channel"
-        )
+        val notification = android.app.Notification.Builder(context, "download_channel")
             .setContentTitle("Downloading")
             .setContentText(title)
             .setSmallIcon(R.drawable.ic_download)
@@ -159,12 +185,5 @@ class DownloadWorker(
             NOTIFICATION_ID_BASE + inputData.getLong(KEY_DOWNLOAD_JOB_ID, -1L).toInt(),
             notification
         )
-    }
-
-    companion object {
-        const val TAG = "DownloadWorker"
-        const val KEY_DOWNLOAD_JOB_ID = "download_job_id"
-        const val KEY_DOWNLOAD_DIR = "downloads"
-        private const val NOTIFICATION_ID_BASE = 1000
     }
 }

@@ -93,6 +93,9 @@ dependencies {
     // NewPipe Extractor
     implementation(libs.newpipe.extractor)
 
+    // OkHttp
+    implementation(libs.okhttp)
+
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.ext.junit)

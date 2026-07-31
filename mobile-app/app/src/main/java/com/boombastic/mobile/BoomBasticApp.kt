@@ -10,6 +10,9 @@ import com.boombastic.mobile.data.repository.LibraryRepository
 import com.boombastic.mobile.data.repository.PlaylistRepository
 import com.boombastic.mobile.playback.NewPipeDownloader
 import org.schabi.newpipe.extractor.NewPipe
+import java.net.CookieManager
+import java.net.CookiePolicy
+import java.net.CookieHandler
 
 class BoomBasticApp : Application(), Configuration.Provider {
 
@@ -30,6 +33,7 @@ class BoomBasticApp : Application(), Configuration.Provider {
         downloadRepository = DownloadRepository(database.downloadJobDao(), this)
 
         createDownloadNotificationChannel()
+        CookieHandler.setDefault(CookieManager(null, CookiePolicy.ACCEPT_ALL))
         NewPipe.init(NewPipeDownloader())
     }
 
