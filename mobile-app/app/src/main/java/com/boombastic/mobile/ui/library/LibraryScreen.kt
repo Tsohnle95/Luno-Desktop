@@ -2,7 +2,6 @@ package com.boombastic.mobile.ui.library
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
@@ -49,7 +49,6 @@ import com.boombastic.mobile.data.db.entity.Playlist
 import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
-import com.boombastic.mobile.ui.components.ArtworkCollage
 import com.boombastic.mobile.ui.components.PlaylistCard
 import com.boombastic.mobile.ui.components.TrackActionsSheet
 import com.boombastic.mobile.ui.components.TrackRowCard
@@ -126,23 +125,8 @@ fun LibraryScreen(
             )
         }
 
-        // Centered 2x2 collage of the first four album covers (~60% width)
-        item {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Dimens.paddingLarge),
-                contentAlignment = Alignment.Center
-            ) {
-                ArtworkCollage(
-                    tracks = allTracks.take(4),
-                    modifier = Modifier.fillMaxWidth(0.6f),
-                    placeholderIconSize = 40.dp
-                )
-            }
-        }
-
-        // Play / Shuffle row + "Playlist view" filter tab (desktop All Music)
+        // (4-quadrant collage header disabled — see change record)
+        // Play / Shuffle (stacked) + "Playlist view" filter tab (desktop All Music)
         item {
             Row(
                 modifier = Modifier
@@ -151,37 +135,48 @@ fun LibraryScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (allTracks.isNotEmpty()) {
-                    Button(
-                        onClick = { musicController.play(mediaTracks, 0) },
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(Dimens.iconSize)
-                        )
-                        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                        Text("Play")
+                    Column {
+                        Button(
+                            onClick = { musicController.play(mediaTracks, 0) },
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(Dimens.iconSize)
+                            )
+                            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                            Text("Play")
+                        }
+                        Spacer(modifier = Modifier.height(Dimens.paddingMedium))
+                        // Shuffle — icon + text only, no box; text in accent green
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(Dimens.cornerMedium))
+                                .clickable {
+                                    musicController.play(mediaTracks, 0)
+                                    musicController.setShuffle(true)
+                                }
+                                .padding(vertical = Dimens.paddingSmall),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Shuffle,
+                                contentDescription = null,
+                                tint = AccentGreen,
+                                modifier = Modifier.size(Dimens.iconSize)
+                            )
+                            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                            Text(
+                                text = "Shuffle",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = AccentGreen
+                            )
+                        }
                     }
-                    Spacer(modifier = Modifier.width(Dimens.paddingMedium))
-                    Button(
-                        onClick = {
-                            musicController.play(mediaTracks, 0)
-                            musicController.setShuffle(true)
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceElevated)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Shuffle,
-                            contentDescription = null,
-                            tint = AccentGreen,
-                            modifier = Modifier.size(Dimens.iconSize)
-                        )
-                        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                        Text("Shuffle", color = PrimaryText)
-                    }
-                    Spacer(modifier = Modifier.weight(1f))
                 }
+
+                Spacer(modifier = Modifier.weight(1f))
 
                 // Playlist-view filter tab (right side of the row)
                 Row(
@@ -222,6 +217,18 @@ fun LibraryScreen(
                         contentDescription = null,
                         tint = SecondaryText
                     )
+                },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        Icon(
+                            imageVector = Icons.Filled.Clear,
+                            contentDescription = "Clear search",
+                            tint = SecondaryText,
+                            modifier = Modifier
+                                .clickable { query = "" }
+                                .padding(Dimens.paddingSmall)
+                        )
+                    }
                 },
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(

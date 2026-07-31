@@ -250,6 +250,7 @@ class MusicControllerTest {
         assertThat(controller.duration.value).isEqualTo(0L)
         assertThat(controller.hasActiveItem.value).isFalse()
         assertThat(controller.isConnected.value).isFalse()
+        assertThat(controller.recentlyPlayed.value).isEmpty()
     }
 
     // ── Repeat / shuffle / queue API ─────────────────────────────────────

@@ -278,7 +278,7 @@ fun MainShell(musicController: MusicController) {
                                         Icon(
                                             imageVector = ImageVector.vectorResource(id = R.drawable.ic_create),
                                             contentDescription = "Create",
-                                            modifier = Modifier.size(Dimens.iconSizeMedium)
+                                            modifier = Modifier.size(Dimens.iconSizeLarge)
                                         )
                                     },
                                     label = {
@@ -304,8 +304,7 @@ fun MainShell(musicController: MusicController) {
                     modifier = Modifier.padding(innerPadding),
                     onCreatePlaylist = { showCreateSheet = true },
                     onPlay = onPlay,
-                    onOpenOptions = { scope.launch { drawerState.open() } },
-                    onOpenPlayer = { navController.navigate(Routes.FULL_PLAYER) }
+                    onOpenOptions = { scope.launch { drawerState.open() } }
                 )
             }
 

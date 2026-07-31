@@ -60,12 +60,12 @@ fun HomeScreen(
     musicController: MusicController,
     onOpenOptions: () -> Unit = {},
     onPlay: (MediaTrack) -> Unit = {},
-    onOpenPlaylist: (Long) -> Unit = {},
-    onOpenPlayer: () -> Unit = {}
+    onOpenPlaylist: (Long) -> Unit = {}
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
     val currentTrack by musicController.currentTrack.collectAsState()
+    val recentlyPlayed by musicController.recentlyPlayed.collectAsState()
     val allTracks by app.libraryRepository.getAllTracks().collectAsState(initial = emptyList())
     val playlistsWithTracks by app.playlistRepository.getAllPlaylistsWithTracks()
         .collectAsState(initial = emptyList())
@@ -118,33 +118,39 @@ fun HomeScreen(
             }
         }
 
-        // Recently played — horizontal carousel, edge-clipped
+        // Recently played — swipeable horizontal carousel of the full
+        // in-session history, edge-clipped like "Made for you"
         item {
             SectionHeader(title = "Recently played")
         }
-        if (currentTrack != null) {
-            item {
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
-                    contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
-                ) {
-                    item {
-                        TrackCard(
-                            title = currentTrack?.title ?: "Unknown",
-                            artist = currentTrack?.artist ?: "Unknown",
-                            artworkUri = currentTrack?.artworkUri,
-                            onClick = onOpenPlayer
-                        )
-                    }
-                }
-            }
-        } else {
+        if (recentlyPlayed.isEmpty() && currentTrack == null) {
             item {
                 EmptyStateCard(
                     title = "No tracks yet",
                     subtitle = "Import audio from the Search tab to get started",
                     modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                 )
+            }
+        } else {
+            item {
+                val history = if (recentlyPlayed.isNotEmpty()) {
+                    recentlyPlayed.take(20)
+                } else {
+                    listOfNotNull(currentTrack)
+                }
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+                    contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
+                ) {
+                    items(history, key = { it.uri }) { track ->
+                        TrackCard(
+                            title = track.title,
+                            artist = track.artist,
+                            artworkUri = track.artworkUri,
+                            onClick = { onPlay(track) }
+                        )
+                    }
+                }
             }
         }
 

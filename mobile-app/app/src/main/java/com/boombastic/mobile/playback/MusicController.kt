@@ -86,6 +86,14 @@ class MusicController @JvmOverloads constructor(
     private val _shuffleEnabled = MutableStateFlow(false)
     val shuffleEnabled: StateFlow<Boolean> = _shuffleEnabled.asStateFlow()
 
+    /**
+     * In-session playback history, most recent first (max 100, following the
+     * desktop convention).  Populated from media-item transitions; not yet
+     * persisted across app restarts.
+     */
+    private val _recentlyPlayed = MutableStateFlow<List<MediaTrack>>(emptyList())
+    val recentlyPlayed: StateFlow<List<MediaTrack>> = _recentlyPlayed.asStateFlow()
+
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
@@ -146,6 +154,7 @@ class MusicController @JvmOverloads constructor(
             _hasActiveItem.value = mediaItem != null
             _duration.value = _currentTrack.value?.durationMs ?: 0L
             _progress.value = 0L
+            _currentTrack.value?.let(::recordRecentlyPlayed)
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -444,7 +453,7 @@ class MusicController @JvmOverloads constructor(
         if (currentMediaItem != null) {
             val meta = currentMediaItem.mediaMetadata
             val hydratedDuration = metadataDuration(meta, ctrl.duration)
-            _currentTrack.value = MediaTrack(
+            val hydrated = MediaTrack(
                 uri = currentMediaItem.mediaId,
                 title = meta.title?.toString() ?: "Unknown",
                 artist = meta.artist?.toString() ?: "Unknown",
@@ -452,8 +461,10 @@ class MusicController @JvmOverloads constructor(
                 durationMs = hydratedDuration,
                 artworkUri = meta.artworkUri?.toString()
             )
+            _currentTrack.value = hydrated
             _duration.value = hydratedDuration
             _progress.value = ctrl.currentPosition.coerceAtLeast(0L)
+            recordRecentlyPlayed(hydrated)
         }
 
         if (ctrl.isPlaying) startProgressUpdates()
@@ -544,6 +555,20 @@ class MusicController @JvmOverloads constructor(
         progressUpdater = null
     }
 
+    /**
+     * Appends a track to the front of the recently-played history,
+     * de-duplicating consecutive repeats and capping at 100 entries.
+     */
+    private fun recordRecentlyPlayed(track: MediaTrack) {
+        val current = _recentlyPlayed.value
+        val updated = if (current.firstOrNull()?.uri == track.uri) {
+            current
+        } else {
+            listOf(track) + current
+        }
+        _recentlyPlayed.value = updated.take(MAX_RECENTLY_PLAYED)
+    }
+
     // ── Async connector (injectable seam for testing) ────────────────────
 
     fun interface AsyncConnector {
@@ -559,6 +584,7 @@ class MusicController @JvmOverloads constructor(
 
     companion object {
         private const val PROGRESS_UPDATE_INTERVAL_MS = 250L
+        private const val MAX_RECENTLY_PLAYED = 100
         internal const val METADATA_DURATION_MS =
             "com.boombastic.mobile.playback.DURATION_MS"
     }
