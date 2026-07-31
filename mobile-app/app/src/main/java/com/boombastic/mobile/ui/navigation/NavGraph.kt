@@ -1,5 +1,7 @@
 package com.boombastic.mobile.ui.navigation
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -44,12 +46,14 @@ fun BoomBasticNavHost(
         navController = navController,
         startDestination = Routes.HOME,
         modifier = modifier,
-        // Default NavHost crossfade is 700ms; halved to 350ms for snappier
-        // tab switching.
-        enterTransition = { fadeIn(animationSpec = tween(350)) },
-        exitTransition = { fadeOut(animationSpec = tween(350)) },
-        popEnterTransition = { fadeIn(animationSpec = tween(350)) },
-        popExitTransition = { fadeOut(animationSpec = tween(350)) }
+        // Quick fades: short durations with minimal overlap keep tab
+        // switches snappy — long 350ms cross-fades over heavy screens
+        // (4k-track library) felt laggy.  Enter is eased, exit is linear
+        // so the outgoing screen fades out while the new one fades in.
+        enterTransition = { fadeIn(animationSpec = tween(150, easing = FastOutSlowInEasing)) },
+        exitTransition = { fadeOut(animationSpec = tween(100, easing = LinearEasing)) },
+        popEnterTransition = { fadeIn(animationSpec = tween(150, easing = FastOutSlowInEasing)) },
+        popExitTransition = { fadeOut(animationSpec = tween(100, easing = LinearEasing)) }
     ) {
         composable(Routes.HOME) {
             HomeScreen(

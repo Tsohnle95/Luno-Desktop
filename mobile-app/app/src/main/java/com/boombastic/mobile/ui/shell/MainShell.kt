@@ -2,12 +2,14 @@ package com.boombastic.mobile.ui.shell
 
 import android.Manifest
 import android.os.Build
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -30,7 +32,6 @@ import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -51,9 +52,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.vectorResource
@@ -77,7 +83,11 @@ import com.boombastic.mobile.ui.theme.PrimaryBackground
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
 import com.boombastic.mobile.ui.theme.SurfaceDark
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+private const val IMPORT_STALL_TIMEOUT_MS = 60_000L
+private const val STALL_CHECK_INTERVAL_MS = 15_000L
 
 data class BottomNavItem(
     val label: String,
@@ -136,24 +146,62 @@ fun MainShell(musicController: MusicController) {
             val app = context.applicationContext as com.boombastic.mobile.BoomBasticApp
             folderImportState = FolderImportState(0, 0, 0)
             // appScope: the import must survive rotation/navigation.
+            // try/finally: whatever happens (completion, exception, stall
+            // cancellation), the progress strip must clear — a stale
+            // "Importing music folder…" strip looks like a frozen import.
+            var lastTickAt = SystemClock.elapsedRealtime()
+            var completed = false
+            var lastProgressAt = 0L
+            val importJob = app.appScope.launch {
+                try {
+                    app.musicFolderRepository.saveTreeUri(uri)
+                    val result = app.libraryRepository.importLibraryTree(uri) { imported, duplicates, errors ->
+                        lastTickAt = SystemClock.elapsedRealtime()
+                        // Throttle UI updates (~10/s) — 4 parallel workers
+                        // would otherwise recompose the shell per file.
+                        val now = SystemClock.elapsedRealtime()
+                        if (now - lastProgressAt >= 100L) {
+                            lastProgressAt = now
+                            folderImportState = FolderImportState(imported, duplicates, errors)
+                        }
+                    }
+                    val persistWarning = if (result.persistFailures > 0) {
+                        " — storage access not persisted (${result.persistFailures}): " +
+                            "these songs may not play after a restart"
+                    } else {
+                        ""
+                    }
+                    Toast.makeText(
+                        context,
+                        "Music folder set: ${result.imported} songs imported, " +
+                            "${result.duplicates} duplicates, ${result.errors} errors$persistWarning",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    completed = true
+                } finally {
+                    folderImportState = null
+                }
+            }
+            // Stall watchdog: an import that stops producing progress for
+            // over a minute is stuck (provider hang outside the timeouts);
+            // cancel it so the strip always clears instead of sitting
+            // forever at the final counts.
             app.appScope.launch {
-                app.musicFolderRepository.saveTreeUri(uri)
-                val result = app.libraryRepository.importLibraryTree(uri) { imported, duplicates, errors ->
-                    folderImportState = FolderImportState(imported, duplicates, errors)
+                while (importJob.isActive) {
+                    delay(STALL_CHECK_INTERVAL_MS)
+                    if (importJob.isActive &&
+                        SystemClock.elapsedRealtime() - lastTickAt > IMPORT_STALL_TIMEOUT_MS
+                    ) {
+                        importJob.cancel()
+                    }
                 }
-                val persistWarning = if (result.persistFailures > 0) {
-                    " — storage access not persisted (${result.persistFailures}): " +
-                        "these songs may not play after a restart"
-                } else {
-                    ""
+                if (!completed) {
+                    Toast.makeText(
+                        context,
+                        "Import stalled and was cancelled — try again, or run it from the Search tab",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
-                Toast.makeText(
-                    context,
-                    "Music folder set: ${result.imported} songs imported, " +
-                        "${result.duplicates} duplicates, ${result.errors} errors$persistWarning",
-                    Toast.LENGTH_LONG
-                ).show()
-                folderImportState = null
             }
         }
     }
@@ -376,19 +424,19 @@ fun MainShell(musicController: MusicController) {
                     }
                     // Live music-folder import progress (Settings drawer
                     // flow) — re-imports of large folders take a while, so
-                    // show that work is happening.
+                    // show that work is happening.  The bar is a custom
+                    // smooth sweep: m3 1.2.1's built-in indeterminate
+                    // indicator snaps back at its loop point.
                     folderImportState?.let { state ->
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = Dimens.paddingLarge)
                         ) {
-                            LinearProgressIndicator(
+                            SmoothProgressBar(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(Dimens.progressBarHeight),
-                                color = AccentGreen,
-                                trackColor = SurfaceDark
+                                    .height(Dimens.progressBarHeight)
                             )
                             Text(
                                 text = "Importing music folder… ${state.imported} added, " +
@@ -431,6 +479,47 @@ private data class FolderImportState(
     val duplicates: Int,
     val errors: Int
 )
+
+/**
+ * Indeterminate progress bar with a perfectly smooth left-to-right sweep.
+ *
+ * The phase is a pure function of wall-clock time (`withFrameNanos`), so
+ * dropped frames during heavy scanning shift the bar forward instead of
+ * making it jump — a repeating tween can visibly skip at its loop point
+ * when frames are missed.  The bar is fully off-screen at both ends of
+ * the loop, so the wrap-around is invisible.
+ */
+@Composable
+private fun SmoothProgressBar(
+    modifier: Modifier = Modifier,
+    color: Color = AccentGreen,
+    trackColor: Color = SurfaceDark
+) {
+    val sweepMillis = 1100f
+    var phase by remember { mutableStateOf(0f) }
+    LaunchedEffect(Unit) {
+        var lastNanos = 0L
+        while (true) {
+            withFrameNanos { nanos ->
+                if (lastNanos != 0L) {
+                    phase = ((nanos / 1_000_000f) / sweepMillis) % 1f
+                }
+                lastNanos = nanos
+            }
+        }
+    }
+    Canvas(modifier = modifier) {
+        drawRect(color = trackColor)
+        val barWidth = size.width * 0.3f
+        val x = phase * (size.width + barWidth) - barWidth
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(x, 0f),
+            size = Size(barWidth, size.height),
+            cornerRadius = CornerRadius(size.height / 2f, size.height / 2f)
+        )
+    }
+}
 
 /**
  * Desktop-style app header: bold "Luno" wordmark with the small green

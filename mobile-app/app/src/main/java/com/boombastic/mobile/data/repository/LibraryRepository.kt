@@ -224,15 +224,18 @@ class LibraryRepository(
 
         // Process the folder's children with bounded parallelism: a single
         // bad file must not stall a 4k-song import, and 4 workers make a
-        // full import 3-4x faster.  Folder recursion shares the semaphore.
+        // full import 3-4x faster.  The semaphore serializes only the
+        // file work — directory recursion runs without a permit, so a
+        // parent can never hold a permit its own children are waiting for
+        // (that would deadlock the whole import at the final counts).
         val semaphore = Semaphore(PARALLELISM)
         coroutineScope {
             children.map { (documentId, name, mime) ->
                 async {
-                    semaphore.withPermit {
-                        if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                            importTreeFolder(treeUri, documentId, name, counters, onProgress)
-                        } else if (isAudio(mime, name)) {
+                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                        importTreeFolder(treeUri, documentId, name, counters, onProgress)
+                    } else if (isAudio(mime, name)) {
+                        semaphore.withPermit {
                             handleAudioChild(
                                 childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId),
                                 playlistId = playlistId,
@@ -266,10 +269,10 @@ class LibraryRepository(
         coroutineScope {
             children.map { (childUri, name, mime) ->
                 async {
-                    semaphore.withPermit {
-                        if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                            importDocumentFolder(childUri, name, counters)
-                        } else if (isAudio(mime, name)) {
+                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                        importDocumentFolder(childUri, name, counters)
+                    } else if (isAudio(mime, name)) {
+                        semaphore.withPermit {
                             handleAudioChild(
                                 childUri = childUri,
                                 playlistId = playlistId,
@@ -318,7 +321,11 @@ class LibraryRepository(
             }
             else -> counters.incrementErrors()
         }
-        onProgress?.invoke(counters.imported, counters.duplicates, counters.errors)
+        // A callback failure must never cancel the whole import (it would
+        // silently kill the appScope coroutine and freeze the progress UI).
+        runCatching {
+            onProgress?.invoke(counters.imported, counters.duplicates, counters.errors)
+        }
     }
 
     private suspend fun playlistIdFor(folderName: String): Long? {
@@ -346,7 +353,7 @@ class LibraryRepository(
      * `buildDocumentUriUsingTree` (a folder-document query) as the
      * fallback for deeper folders.
      */
-    private fun queryTreeChildren(
+    private suspend fun queryTreeChildren(
         treeUri: Uri,
         folderDocumentId: String
     ): List<Triple<String, String, String>> {
@@ -371,7 +378,13 @@ class LibraryRepository(
         return emptyList()
     }
 
-    private fun queryTreeRows(
+    private suspend fun queryTreeRows(
+        queryUri: Uri
+    ): List<Triple<String, String, String>> =
+        withAbandonableTimeout(QUERY_TIMEOUT_MS) { queryTreeRowsBlocking(queryUri) }
+            ?: emptyList()
+
+    private fun queryTreeRowsBlocking(
         queryUri: Uri
     ): List<Triple<String, String, String>> {
         val children = mutableListOf<Triple<String, String, String>>()
@@ -411,7 +424,7 @@ class LibraryRepository(
      * is queried (the folder's own row — same document id — is not a
      * child).  Both forms are tried.
      */
-    private fun queryDocumentChildren(folderUri: Uri): List<Triple<Uri, String, String>> {
+    private suspend fun queryDocumentChildren(folderUri: Uri): List<Triple<Uri, String, String>> {
         val authority = folderUri.authority ?: return emptyList()
         val folderId = DocumentsContract.getDocumentId(folderUri)
 
@@ -439,7 +452,14 @@ class LibraryRepository(
      * maps them to document URIs via [toUri]; rows that map to `null` are
      * skipped.  Returns an empty list when the query fails or has no rows.
      */
-    private fun queryDocumentRows(
+    private suspend fun queryDocumentRows(
+        queryUri: Uri,
+        toUri: (String) -> Uri?
+    ): List<Triple<Uri, String, String>> =
+        withAbandonableTimeout(QUERY_TIMEOUT_MS) { queryDocumentRowsBlocking(queryUri, toUri) }
+            ?: emptyList()
+
+    private fun queryDocumentRowsBlocking(
         queryUri: Uri,
         toUri: (String) -> Uri?
     ): List<Triple<Uri, String, String>> {
@@ -477,7 +497,7 @@ class LibraryRepository(
      * whose children cannot be listed fall back to the document's own MIME
      * type.  Tree URIs are always folders.
      */
-    private fun isFolderDocument(uri: Uri): Boolean {
+    private suspend fun isFolderDocument(uri: Uri): Boolean {
         if (DocumentsContract.isTreeUri(uri)) return true
         if (queryDocumentChildren(uri).isNotEmpty()) return true
         return isDirectoryDocument(uri)
@@ -583,19 +603,30 @@ class LibraryRepository(
      * finish) and a filename-based fallback track is imported instead.
      */
     private suspend fun extractMetadata(uri: Uri): Track =
-        withTimeoutOrNull(EXTRACTION_TIMEOUT_MS) {
+        withAbandonableTimeout(EXTRACTION_TIMEOUT_MS) { extractMetadataBlocking(uri) }
+            ?: Track(
+                uri = uri.toString(),
+                title = "Unknown Track",
+                artist = "Unknown Artist",
+                addedAt = System.currentTimeMillis()
+            )
+
+    /**
+     * Runs [block] on the extraction thread pool with a hard timeout and
+     * returns `null` when it does not finish in time.  The blocked thread
+     * is abandoned (it may never finish — `MediaMetadataRetriever` and
+     * some DocumentsProvider queries can block forever on corrupt files),
+     * so the import can never be frozen by a single file or query.
+     */
+    private suspend fun <T> withAbandonableTimeout(timeoutMs: Long, block: () -> T): T? =
+        withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { continuation ->
                 extractionExecutor.execute {
                     if (!continuation.isActive) return@execute
-                    runCatching { continuation.resume(extractMetadataBlocking(uri)) }
+                    runCatching { continuation.resume(block()) }
                 }
             }
-        } ?: Track(
-            uri = uri.toString(),
-            title = "Unknown Track",
-            artist = "Unknown Artist",
-            addedAt = System.currentTimeMillis()
-        )
+        }
 
     private fun extractMetadataBlocking(uri: Uri): Track {
         val cursor = context.contentResolver.query(uri, null, null, null, null)
@@ -757,6 +788,10 @@ class LibraryRepository(
         /** Hard cap per file for metadata/artwork extraction; on timeout the
          *  stuck thread is abandoned and a filename-based track is imported. */
         private const val EXTRACTION_TIMEOUT_MS = 20_000L
+
+        /** Hard cap per DocumentsProvider query (folder listings); on timeout
+         *  the folder is treated as empty rather than hanging the import. */
+        private const val QUERY_TIMEOUT_MS = 15_000L
 
         /**
          * Dedicated cached-thread pool for blocking metadata extraction.

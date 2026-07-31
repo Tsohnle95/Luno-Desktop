@@ -86,6 +86,12 @@ private data class FolderImportState(
     val errors: Int
 )
 
+/** No progress for this long = the import is stuck (provider hang). */
+private const val IMPORT_STALL_TIMEOUT_MS = 60_000L
+
+/** How often the stall watchdog checks for progress. */
+private const val IMPORT_STALL_CHECK_MS = 15_000L
+
 @Composable
 fun SearchScreen(
     musicController: MusicController,
@@ -120,26 +126,63 @@ fun SearchScreen(
         if (uri != null) {
             folderImportState = FolderImportState(0, 0, 0)
             // appScope: the import must survive leaving this screen.
-            app.appScope.launch {
-                app.musicFolderRepository.saveTreeUri(uri)
-                val result = app.libraryRepository.importLibraryTree(
-                    treeUri = uri,
-                    onProgress = { imported, duplicates, errors ->
-                        folderImportState = FolderImportState(imported, duplicates, errors)
+            // try/finally + stall watchdog: the "Importing…" state must
+            // always clear — success, exception, or a stalled provider.
+            var lastTickAt = android.os.SystemClock.elapsedRealtime()
+            var completed = false
+            var lastProgressAt = 0L
+            val importJob = app.appScope.launch {
+                try {
+                    app.musicFolderRepository.saveTreeUri(uri)
+                    val result = app.libraryRepository.importLibraryTree(
+                        treeUri = uri,
+                        onProgress = { imported, duplicates, errors ->
+                            lastTickAt = android.os.SystemClock.elapsedRealtime()
+                            // Throttle UI updates (~10/s) — 4 parallel workers
+                            // would otherwise recompose per file.
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            if (now - lastProgressAt >= 100L) {
+                                lastProgressAt = now
+                                folderImportState = FolderImportState(imported, duplicates, errors)
+                            }
+                        }
+                    )
+                    val persistWarning = if (result.persistFailures > 0) {
+                        " — storage access not persisted (${result.persistFailures}): " +
+                            "these songs may not play after a restart"
+                    } else {
+                        ""
                     }
-                )
-                val persistWarning = if (result.persistFailures > 0) {
-                    " — storage access not persisted (${result.persistFailures}): " +
-                        "these songs may not play after a restart"
-                } else {
-                    ""
+                    Toast.makeText(
+                        context,
+                        "Imported ${result.imported} songs " +
+                            "(${result.duplicates} duplicates, ${result.errors} errors)$persistWarning",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    completed = true
+                } finally {
+                    // Never leave a stale "Importing…" state behind.
+                    folderImportState = null
                 }
-                Toast.makeText(
-                    context,
-                    "Imported ${result.imported} songs " +
-                        "(${result.duplicates} duplicates, ${result.errors} errors)$persistWarning",
-                    Toast.LENGTH_LONG
-                ).show()
+            }
+            // Stall watchdog: no progress for over a minute = stuck (provider
+            // hang outside the timeouts); cancel so the UI always clears.
+            app.appScope.launch {
+                while (importJob.isActive) {
+                    delay(IMPORT_STALL_CHECK_MS)
+                    if (importJob.isActive &&
+                        android.os.SystemClock.elapsedRealtime() - lastTickAt > IMPORT_STALL_TIMEOUT_MS
+                    ) {
+                        importJob.cancel()
+                    }
+                }
+                if (!completed) {
+                    Toast.makeText(
+                        context,
+                        "Import stalled and was cancelled — please try again",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
         }
     }
