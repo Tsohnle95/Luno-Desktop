@@ -28,7 +28,7 @@ class BoomBasticApp : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         database = AppDatabase.getInstance(this)
-        libraryRepository = LibraryRepository(this, database.trackDao())
+        libraryRepository = LibraryRepository(this, database.trackDao(), database.playlistDao())
         playlistRepository = PlaylistRepository(database.playlistDao(), database.trackDao())
         downloadRepository = DownloadRepository(database.downloadJobDao(), this)
 

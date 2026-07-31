@@ -52,6 +52,7 @@ fun PlaylistCard(
     onSync: (() -> Unit)? = null,
     onStopSync: (() -> Unit)? = null,
     onUrlChanged: ((String) -> Unit)? = null,
+    onClearPlaylist: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -129,6 +130,15 @@ fun PlaylistCard(
                         onClick = {
                             showMenu = false
                             onUrlChanged(playlist.playlistUrl)
+                        }
+                    )
+                }
+                if (onClearPlaylist != null && tracks.isNotEmpty()) {
+                    DropdownMenuItem(
+                        text = { Text("Clear playlist", color = PrimaryText) },
+                        onClick = {
+                            showMenu = false
+                            onClearPlaylist()
                         }
                     )
                 }

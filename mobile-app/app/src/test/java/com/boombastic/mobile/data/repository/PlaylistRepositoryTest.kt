@@ -74,4 +74,24 @@ class PlaylistRepositoryTest {
         val playlists = repository.getAllPlaylists().first()
         assertThat(playlists).isEmpty()
     }
+
+    @Test
+    fun clearPlaylist_removesTracksButKeepsPlaylistAndTracks() = runBlocking {
+        val playlist = repository.createPlaylist("Clear Me").getOrNull()!!
+        val track = com.boombastic.mobile.data.db.entity.Track(
+            uri = "content://test/1",
+            title = "Song"
+        )
+        database.trackDao().insertTrack(track)
+        repository.addTrackToPlaylist(playlist.id, track.uri)
+
+        repository.clearPlaylist(playlist.id)
+
+        val withTracks = repository.getPlaylistWithTracks(playlist.id)
+        assertThat(withTracks).isNotNull()
+        assertThat(withTracks!!.tracks).isEmpty()
+        // Playlist itself and the track both survive (metadata-only removal).
+        assertThat(repository.getAllPlaylists().first()).hasSize(1)
+        assertThat(database.trackDao().getAllTracksOnce()).hasSize(1)
+    }
 }

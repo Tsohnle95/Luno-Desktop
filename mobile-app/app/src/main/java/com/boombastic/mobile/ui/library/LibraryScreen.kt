@@ -83,6 +83,7 @@ fun LibraryScreen(
     val downloads by app.downloadRepository.getAllDownloads().collectAsState(initial = emptyList())
     var query by rememberSaveable { mutableStateOf("") }
     var playlistView by rememberSaveable { mutableStateOf(false) }
+    var playlistSortRecent by rememberSaveable { mutableStateOf(false) }
 
     fun playlistHasActiveJobs(playlistId: Long): Boolean =
         downloads.any {
@@ -95,6 +96,7 @@ fun LibraryScreen(
     // only signals intent via its callbacks).
     var urlDialogPlaylist by remember { mutableStateOf<Playlist?>(null) }
     var deleteDialogPlaylist by remember { mutableStateOf<Playlist?>(null) }
+    var clearDialogPlaylist by remember { mutableStateOf<Playlist?>(null) }
 
     val filteredPlaylists = if (query.isBlank()) {
         playlistsWithTracks
@@ -113,7 +115,16 @@ fun LibraryScreen(
         }
     }
 
-    val mediaTracks = allTracks.map { it.toMediaTrack() }
+    // Tracks always alphabetical (desktop convention); playlists are
+    // alphabetical by default with an optional "recently added" sort.
+    val sortedTracks = filteredTracks.sortedBy { it.title.lowercase() }
+    val displayPlaylists = if (playlistSortRecent) {
+        filteredPlaylists.sortedByDescending { it.playlist.createdAt }
+    } else {
+        filteredPlaylists.sortedBy { it.playlist.name.lowercase() }
+    }
+
+    val mediaTracks = sortedTracks.map { it.toMediaTrack() }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -134,7 +145,7 @@ fun LibraryScreen(
         }
 
         // (4-quadrant collage header disabled — see change record)
-        // Play (left) — Shuffle (right) — desktop All Music layout
+        // Play — Shuffle sits ~1rem (16dp) to the right, desktop style
         item {
             Row(
                 modifier = Modifier
@@ -155,7 +166,7 @@ fun LibraryScreen(
                         Spacer(modifier = Modifier.width(Dimens.paddingSmall))
                         Text("Play")
                     }
-                    Spacer(modifier = Modifier.weight(1f))
+                    Spacer(modifier = Modifier.width(Dimens.paddingLarge))
                     // Shuffle — icon + text only, no box; text in accent green
                     Row(
                         modifier = Modifier
@@ -184,7 +195,8 @@ fun LibraryScreen(
             }
         }
 
-        // Playlist-view filter tab — sits under the Play button
+        // Playlist-view filter tab — sits under the Play button, with an
+        // alphabetical / recently-added sort toggle while playlist view is on
         item {
             Row(
                 modifier = Modifier
@@ -211,6 +223,23 @@ fun LibraryScreen(
                         style = MaterialTheme.typography.labelLarge,
                         color = if (playlistView) AccentGreen else SecondaryText
                     )
+                }
+
+                if (playlistView) {
+                    Spacer(modifier = Modifier.width(Dimens.paddingLarge))
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(Dimens.cornerMedium))
+                            .clickable { playlistSortRecent = !playlistSortRecent }
+                            .padding(Dimens.paddingSmall),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (playlistSortRecent) "Sort: Recent" else "Sort: A–Z",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (playlistSortRecent) AccentGreen else SecondaryText
+                        )
+                    }
                 }
             }
         }
@@ -259,9 +288,9 @@ fun LibraryScreen(
         if (playlistView) {
             // Playlist view — all playlists, full-width cards
             item {
-                SectionHeader(title = "Playlists (${filteredPlaylists.size})")
+                SectionHeader(title = "Playlists (${displayPlaylists.size})")
             }
-            if (filteredPlaylists.isEmpty()) {
+            if (displayPlaylists.isEmpty()) {
                 item {
                     Text(
                         text = if (query.isBlank()) {
@@ -275,7 +304,7 @@ fun LibraryScreen(
                     )
                 }
             } else {
-                items(filteredPlaylists, key = { it.playlist.id }) { playlistWithTracks ->
+                items(displayPlaylists, key = { it.playlist.id }) { playlistWithTracks ->
                     PlaylistCard(
                         playlist = playlistWithTracks.playlist,
                         tracks = playlistWithTracks.tracks,
@@ -301,6 +330,7 @@ fun LibraryScreen(
                             null
                         },
                         onUrlChanged = { urlDialogPlaylist = playlistWithTracks.playlist },
+                        onClearPlaylist = { clearDialogPlaylist = playlistWithTracks.playlist },
                         onDelete = { deleteDialogPlaylist = playlistWithTracks.playlist },
                         modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                     )
@@ -309,9 +339,9 @@ fun LibraryScreen(
         } else {
             // All-songs view — every track in the track card layout
             item {
-                SectionHeader(title = "Tracks (${filteredTracks.size})")
+                SectionHeader(title = "Tracks (${sortedTracks.size})")
             }
-            if (filteredTracks.isEmpty()) {
+            if (sortedTracks.isEmpty()) {
                 item {
                     Text(
                         text = if (query.isBlank()) {
@@ -325,7 +355,7 @@ fun LibraryScreen(
                     )
                 }
             } else {
-                items(filteredTracks, key = { it.uri }) { track ->
+                items(sortedTracks, key = { it.uri }) { track ->
                     var showActions by remember { mutableStateOf(false) }
                     TrackRowCard(
                         track = track,
@@ -369,7 +399,8 @@ fun LibraryScreen(
         )
     }
 
-    // Delete confirm dialog (menu action from any playlist card)
+    // Delete confirm dialog (menu action from any playlist card) — removing
+    // a playlist never deletes songs from the phone.
     deleteDialogPlaylist?.let { playlist ->
         AlertDialog(
             onDismissRequest = { deleteDialogPlaylist = null },
@@ -377,7 +408,7 @@ fun LibraryScreen(
             titleContentColor = PrimaryText,
             textContentColor = SecondaryText,
             title = { Text("Delete playlist?") },
-            text = { Text("\"${playlist.name}\" will be removed. Tracks are not deleted.") },
+            text = { Text("\"${playlist.name}\" will be removed from the app. Tracks stay in your library and the audio files stay on your phone.") },
             confirmButton = {
                 TextButton(onClick = {
                     scope.launch {
@@ -390,6 +421,33 @@ fun LibraryScreen(
             },
             dismissButton = {
                 TextButton(onClick = { deleteDialogPlaylist = null }) {
+                    Text("Cancel", color = SecondaryText)
+                }
+            }
+        )
+    }
+
+    // Clear-playlist confirm dialog — metadata-only, songs stay on the phone.
+    clearDialogPlaylist?.let { playlist ->
+        AlertDialog(
+            onDismissRequest = { clearDialogPlaylist = null },
+            containerColor = SurfaceDark,
+            titleContentColor = PrimaryText,
+            textContentColor = SecondaryText,
+            title = { Text("Clear playlist?") },
+            text = { Text("All songs will be removed from \"${playlist.name}\". They stay in your library and the audio files stay on your phone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        app.playlistRepository.clearPlaylist(playlist.id)
+                    }
+                    clearDialogPlaylist = null
+                }) {
+                    Text("Clear", color = AccentGreen)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { clearDialogPlaylist = null }) {
                     Text("Cancel", color = SecondaryText)
                 }
             }

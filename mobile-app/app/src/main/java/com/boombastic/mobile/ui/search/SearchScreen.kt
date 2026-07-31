@@ -77,6 +77,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** Live counters shown while a folder (desktop-style) import is running. */
+private data class FolderImportState(
+    val imported: Int,
+    val duplicates: Int,
+    val errors: Int
+)
+
 @Composable
 fun SearchScreen(
     musicController: MusicController,
@@ -89,7 +96,6 @@ fun SearchScreen(
     var tabIndex by rememberSaveable { mutableIntStateOf(0) }
     var query by rememberSaveable { mutableStateOf("") }
     val searchResults by app.libraryRepository.searchTracks(query).collectAsState(initial = emptyList())
-    val allTracks by app.libraryRepository.getAllTracks().collectAsState(initial = emptyList())
 
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
@@ -97,6 +103,25 @@ fun SearchScreen(
         if (uris.isNotEmpty()) {
             scope.launch {
                 app.libraryRepository.importMultipleUris(uris)
+            }
+        }
+    }
+
+    // Desktop-style folder import: subfolders become playlists (folder name
+    // = playlist name), files at the root land in "Unsorted".
+    var folderImportState by remember { mutableStateOf<FolderImportState?>(null) }
+    val folderImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            folderImportState = FolderImportState(0, 0, 0)
+            scope.launch {
+                app.libraryRepository.importLibraryTree(
+                    treeUri = uri,
+                    onProgress = { imported, duplicates, errors ->
+                        folderImportState = FolderImportState(imported, duplicates, errors)
+                    }
+                )
             }
         }
     }
@@ -147,9 +172,11 @@ fun SearchScreen(
             0 -> LibrarySearchContent(
                 query = query,
                 onQueryChange = { query = it },
-                displayTracks = if (query.isBlank()) allTracks else searchResults,
+                displayTracks = if (query.isBlank()) emptyList() else searchResults,
                 onPlay = onPlay,
-                onImport = { importLauncher.launch(arrayOf("audio/*")) }
+                onImport = { importLauncher.launch(arrayOf("audio/*")) },
+                onImportFolder = { folderImportLauncher.launch(null) },
+                folderImportState = folderImportState
             )
             1 -> WebSearchContent(
                 downloadRepository = app.downloadRepository,
@@ -165,7 +192,9 @@ private fun LibrarySearchContent(
     onQueryChange: (String) -> Unit,
     displayTracks: List<Track>,
     onPlay: (MediaTrack) -> Unit,
-    onImport: () -> Unit
+    onImport: () -> Unit,
+    onImportFolder: () -> Unit,
+    folderImportState: FolderImportState?
 ) {
     OutlinedTextField(
         value = query,
@@ -201,14 +230,45 @@ private fun LibrarySearchContent(
         Text(text = "Import audio files", color = PrimaryText)
     }
 
-    if (displayTracks.isEmpty()) {
+    OutlinedButton(
+        onClick = onImportFolder,
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentGreen)
+    ) {
+        Text("Import music folder (playlists by folder)")
+    }
+
+    folderImportState?.let { state ->
+        Text(
+            text = if (state.errors > 0) {
+                "Importing... ${state.imported} added, ${state.duplicates} duplicates, ${state.errors} errors"
+            } else {
+                "Importing... ${state.imported} added, ${state.duplicates} duplicates"
+            },
+            color = AccentGreen,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(top = Dimens.paddingSmall)
+        )
+    }
+
+    if (query.isBlank()) {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = if (query.isBlank()) "Import audio to see your tracks here"
-                else "No results for \"$query\"",
+                text = "Songs appear here when you search.",
+                color = SecondaryText,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    } else if (displayTracks.isEmpty()) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "No results for \"$query\"",
                 color = SecondaryText,
                 style = MaterialTheme.typography.bodyMedium
             )

@@ -28,6 +28,8 @@ class DownloadWorker(
         const val KEY_DOWNLOAD_JOB_ID = "download_job_id"
         const val KEY_THUMBNAIL_URL = "thumbnail_url"
         const val KEY_DOWNLOAD_DIR = "downloads"
+        /** Common tag for every download work — enables bulk cancel (Stop All). */
+        const val TAG_DOWNLOAD = "download"
         private const val NOTIFICATION_ID_BASE = 1000
     }
 

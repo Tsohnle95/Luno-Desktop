@@ -35,6 +35,9 @@ interface PlaylistDao {
     @Query("SELECT * FROM playlists WHERE id = :id")
     suspend fun getPlaylist(id: Long): Playlist?
 
+    @Query("SELECT * FROM playlists WHERE name = :name LIMIT 1")
+    suspend fun getPlaylistByName(name: String): Playlist?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlaylist(playlist: Playlist): Long
 
@@ -63,6 +66,9 @@ interface PlaylistDao {
 
     @Query("DELETE FROM playlist_tracks WHERE playlistId = :playlistId AND trackUri = :trackUri")
     suspend fun removeTrackFromPlaylist(playlistId: Long, trackUri: String)
+
+    @Query("DELETE FROM playlist_tracks WHERE playlistId = :playlistId")
+    suspend fun clearPlaylist(playlistId: Long)
 
     @Query("SELECT COUNT(*) FROM playlist_tracks WHERE playlistId = :playlistId")
     suspend fun trackCount(playlistId: Long): Int

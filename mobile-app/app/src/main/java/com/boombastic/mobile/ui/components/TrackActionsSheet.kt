@@ -153,8 +153,8 @@ fun TrackActionsSheet(
             containerColor = SurfaceDark,
             titleContentColor = PrimaryText,
             textContentColor = SecondaryText,
-            title = { Text("Delete track?") },
-            text = { Text("\"${track.title}\" will be removed from your library and all playlists.") },
+            title = { Text("Remove from library?") },
+            text = { Text("\"${track.title}\" will be removed from your library and all playlists. The audio file stays on your phone.") },
             confirmButton = {
                 TextButton(onClick = {
                     scope.launch {
@@ -164,7 +164,7 @@ fun TrackActionsSheet(
                     onDeleted()
                     onDismiss()
                 }) {
-                    Text("Delete", color = AccentGreen)
+                    Text("Remove", color = AccentGreen)
                 }
             },
             dismissButton = {
@@ -204,7 +204,7 @@ fun TrackActionsSheet(
                 )
                 TrackActionRow(
                     icon = Icons.Filled.Delete,
-                    label = "Delete from library",
+                    label = "Remove from library",
                     onClick = { showDeleteConfirm = true }
                 )
 

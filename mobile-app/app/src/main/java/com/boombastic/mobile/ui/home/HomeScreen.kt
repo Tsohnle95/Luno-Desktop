@@ -38,7 +38,6 @@ import com.boombastic.mobile.BoomBasticApp
 import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
-import com.boombastic.mobile.ui.components.ArtworkCollage
 import com.boombastic.mobile.ui.components.ArtworkImage
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
@@ -229,8 +228,8 @@ fun HomeScreen(
 
 /**
  * Home-only playlist card matching the "Made for you" TrackCard layout:
- * square 4-quadrant collage artwork on top, name below, track count as
- * the subtitle.
+ * square artwork (first track's image — no collage on Home) on top, name
+ * below, track count as the subtitle.
  */
 @Composable
 private fun HomePlaylistCard(
@@ -243,11 +242,12 @@ private fun HomePlaylistCard(
             .width(140.dp)
             .clickable(onClick = onClick)
     ) {
-        ArtworkCollage(
-            tracks = tracks,
-            modifier = Modifier.size(Dimens.albumArtMedium),
-            placeholderIconSize = 40.dp,
-            shape = RoundedCornerShape(Dimens.cornerLarge)
+        ArtworkImage(
+            artworkUri = tracks.firstOrNull()?.albumArtUri(),
+            modifier = Modifier
+                .size(Dimens.albumArtMedium)
+                .clip(RoundedCornerShape(Dimens.cornerLarge)),
+            placeholderIconSize = 40.dp
         )
         Spacer(modifier = Modifier.height(Dimens.paddingSmall))
         Text(

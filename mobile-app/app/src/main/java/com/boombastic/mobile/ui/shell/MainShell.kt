@@ -231,12 +231,27 @@ fun MainShell(musicController: MusicController) {
                                         selected = selected,
                                         onClick = {
                                             if (item.route == currentRoute) return@NavigationBarItem
-                                            navController.navigate(item.route) {
-                                                popUpTo(navController.graph.startDestinationId) {
-                                                    saveState = true
+                                            if (item.route == Routes.HOME) {
+                                                // Home always returns to the Home screen,
+                                                // even from drawer/deep routes (Downloads,
+                                                // playlist detail, etc.).
+                                                val popped = navController.popBackStack(
+                                                    Routes.HOME,
+                                                    inclusive = false
+                                                )
+                                                if (!popped) {
+                                                    navController.navigate(Routes.HOME) {
+                                                        launchSingleTop = true
+                                                    }
                                                 }
-                                                launchSingleTop = true
-                                                restoreState = true
+                                            } else {
+                                                navController.navigate(item.route) {
+                                                    popUpTo(navController.graph.startDestinationId) {
+                                                        saveState = true
+                                                    }
+                                                    launchSingleTop = true
+                                                    restoreState = true
+                                                }
                                             }
                                         },
                                         icon = {

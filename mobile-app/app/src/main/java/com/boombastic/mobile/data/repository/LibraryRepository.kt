@@ -3,6 +3,7 @@ package com.boombastic.mobile.data.repository
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import com.boombastic.mobile.data.artwork.ArtworkStorage
 import com.boombastic.mobile.data.db.dao.TrackDao
@@ -15,6 +16,7 @@ import java.io.InputStreamReader
 class LibraryRepository(
     private val context: Context,
     private val trackDao: TrackDao,
+    private val playlistDao: com.boombastic.mobile.data.db.dao.PlaylistDao? = null,
     private val uriPermissionPersister: UriPermissionPersister =
         UriPermissionPersister.Default(context)
 ) {
@@ -60,6 +62,119 @@ class LibraryRepository(
             }
         }
         return ImportResult(imported, duplicates, errors)
+    }
+
+    /**
+     * Desktop-style library import: pick a music root folder (SAF tree)
+     * and every audio file is imported into a playlist named after its
+     * folder; files directly in the root land in the "Unsorted" playlist.
+     * Mirrors desktop `scan_library` semantics (subdirs = playlists, root =
+     * Unsorted).
+     *
+     * [onProgress] receives `(imported, duplicates, errors)` after each file.
+     */
+    suspend fun importLibraryTree(
+        treeUri: Uri,
+        onProgress: (imported: Int, duplicates: Int, errors: Int) -> Unit = { _, _, _ -> }
+    ): ImportResult {
+        var imported = 0
+        var duplicates = 0
+        var errors = 0
+
+        withContext(Dispatchers.IO) {
+            runCatching {
+                uriPermissionPersister.persistReadPermission(treeUri)
+            }
+
+            suspend fun playlistIdFor(folderName: String): Long? {
+                val dao = playlistDao ?: return null
+                return runCatching {
+                    dao.getPlaylistByName(folderName)?.id
+                        ?: dao.insertPlaylist(
+                            com.boombastic.mobile.data.db.entity.Playlist(name = folderName)
+                        )
+                }.getOrNull()
+            }
+
+            suspend fun importFolder(folderUri: Uri, playlistName: String) {
+                val playlistId = playlistIdFor(playlistName)
+                val children = queryChildren(folderUri)
+                for (child in children) {
+                    val childUri = child.first
+                    val name = child.second
+                    val mime = child.third
+                    val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
+                    if (isDir) {
+                        importFolder(childUri, name)
+                    } else if (isAudio(mime, name)) {
+                        val result = importAudioUri(childUri)
+                        when {
+                            result.isSuccess -> {
+                                val track = result.getOrThrow()
+                                if (playlistId != null) {
+                                    runCatching {
+                                        val sortOrder =
+                                            playlistDao?.maxSortOrder(playlistId)?.plus(1) ?: 0
+                                        playlistDao?.addTrackToPlaylist(
+                                            com.boombastic.mobile.data.db.entity.PlaylistTrack(
+                                                playlistId = playlistId,
+                                                trackUri = track.uri,
+                                                sortOrder = sortOrder
+                                            )
+                                        )
+                                    }
+                                }
+                                imported++
+                            }
+                            result.exceptionOrNull() is ImportException &&
+                                (result.exceptionOrNull() as ImportException).error == ImportError.DUPLICATE -> {
+                                duplicates++
+                            }
+                            else -> errors++
+                        }
+                        onProgress(imported, duplicates, errors)
+                    }
+                }
+            }
+
+            importFolder(treeUri, UNSORTED_PLAYLIST)
+        }
+
+        return ImportResult(imported, duplicates, errors)
+    }
+
+    /** Lists `(documentUri, displayName, mimeType)` for the folder's children. */
+    private fun queryChildren(folderUri: Uri): List<Triple<Uri, String, String>> {
+        val children = mutableListOf<Triple<Uri, String, String>>()
+        val resolver = context.contentResolver
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE
+        )
+        runCatching {
+            resolver.query(folderUri, projection, null, null, null)?.use { cursor ->
+                val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                while (cursor.moveToNext()) {
+                    val id = cursor.getString(idIndex)
+                    val name = cursor.getString(nameIndex)
+                    val mime = cursor.getString(mimeIndex)
+                    if (id != null) {
+                        val docUri = DocumentsContract.buildDocumentUriUsingTree(folderUri, id)
+                        children.add(Triple(docUri, name ?: "", mime ?: ""))
+                    }
+                }
+            }
+        }
+        return children
+    }
+
+    private fun isAudio(mime: String, name: String): Boolean {
+        if (mime.startsWith("audio/")) return true
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return ext in AUDIO_EXTENSIONS
     }
 
     private suspend fun extractMetadata(uri: Uri): Track = withContext(Dispatchers.IO) {
@@ -170,6 +285,15 @@ class LibraryRepository(
         val duplicates: Int,
         val errors: Int
     )
+
+    companion object {
+        /** Desktop convention: files at the music root belong to "Unsorted". */
+        const val UNSORTED_PLAYLIST = "Unsorted"
+
+        private val AUDIO_EXTENSIONS = setOf(
+            "mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff", "alac"
+        )
+    }
 }
 
 data class ImportException(

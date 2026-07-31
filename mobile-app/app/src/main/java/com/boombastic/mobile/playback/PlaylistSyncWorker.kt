@@ -27,6 +27,8 @@ class PlaylistSyncWorker(
         const val KEY_PLAYLIST_ID = "playlist_id"
         const val KEY_PLAYLIST_NAME = "playlist_name"
         const val KEY_PLAYLIST_URL = "playlist_url"
+        /** Common tag for every playlist-sync work — enables bulk cancel. */
+        const val TAG_PLAYLIST_SYNC = "playlist_sync"
     }
 
     override suspend fun doWork(): Result {
@@ -126,6 +128,7 @@ class PlaylistSyncWorker(
                                     30,
                                     TimeUnit.SECONDS
                                 )
+                                .addTag(DownloadWorker.TAG_DOWNLOAD)
                                 .addTag("download_$jobId")
                                 .addTag("playlist_sync_$playlistId")
                                 .build()

@@ -70,6 +70,7 @@ class DownloadRepository(
                 30,
                 TimeUnit.SECONDS
             )
+            .addTag(DownloadWorker.TAG_DOWNLOAD)
             .addTag("download_$jobId")
             .build()
 
@@ -115,6 +116,7 @@ class DownloadRepository(
                 30,
                 TimeUnit.SECONDS
             )
+            .addTag(DownloadWorker.TAG_DOWNLOAD)
             .addTag("download_$id")
             .build()
 
@@ -141,18 +143,15 @@ class DownloadRepository(
     }
 
     /**
-     * Halts every active/pending download job (cancels its WorkManager work
-     * and marks it CANCELLED) — the "stop-all" action.
+     * Halts every active/pending download job AND every running playlist
+     * sync (whose worker keeps spawning new downloads).  Cancels all work
+     * sharing the common tags and marks active jobs CANCELLED.
      */
     suspend fun stopAllActive() {
+        val wm = WorkManager.getInstance(context)
+        wm.cancelAllWorkByTag(DownloadWorker.TAG_DOWNLOAD)
+        wm.cancelAllWorkByTag(PlaylistSyncWorker.TAG_PLAYLIST_SYNC)
         for (job in downloadJobDao.getActiveDownloadsOnce()) {
-            if (job.workManagerId.isNotBlank()) {
-                runCatching {
-                    WorkManager.getInstance(context).cancelWorkById(
-                        java.util.UUID.fromString(job.workManagerId)
-                    )
-                }
-            }
             downloadJobDao.updateDownload(job.copy(state = DownloadState.CANCELLED))
         }
     }
@@ -209,6 +208,7 @@ class DownloadRepository(
                 30,
                 TimeUnit.SECONDS
             )
+            .addTag(PlaylistSyncWorker.TAG_PLAYLIST_SYNC)
             .addTag("playlist_sync_$playlistId")
             .build()
 

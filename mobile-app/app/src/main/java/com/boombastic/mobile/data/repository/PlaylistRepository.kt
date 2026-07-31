@@ -54,5 +54,13 @@ class PlaylistRepository(
         playlistDao.removeTrackFromPlaylist(playlistId, trackUri)
     }
 
+    /**
+     * Removes every track from the playlist.  Metadata-only — the songs
+     * stay in the library and the audio files stay on the device.
+     */
+    suspend fun clearPlaylist(playlistId: Long) {
+        playlistDao.clearPlaylist(playlistId)
+    }
+
     suspend fun getPlaylistWithTracks(id: Long) = playlistDao.getPlaylistWithTracks(id)
 }
