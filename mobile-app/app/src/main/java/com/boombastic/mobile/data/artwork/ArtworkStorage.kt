@@ -60,6 +60,33 @@ object ArtworkStorage {
         }
     }
 
+    /**
+     * Decodes raw image [bytes] (e.g. a fetched YouTube video thumbnail),
+     * downsizes them like embedded artwork, and saves them to the cache.
+     * Returns the absolute file path, or `null` when the bytes are not a
+     * decodable image.
+     */
+    fun saveImageBytes(context: Context, bytes: ByteArray): String? {
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+        val scaled = if (maxOf(bitmap.width, bitmap.height) > MAX_DIMENSION_PX) {
+            val scale = MAX_DIMENSION_PX.toFloat() / maxOf(bitmap.width, bitmap.height)
+            Bitmap.createScaledBitmap(
+                bitmap,
+                (bitmap.width * scale).toInt().coerceAtLeast(1),
+                (bitmap.height * scale).toInt().coerceAtLeast(1),
+                true
+            )
+        } else {
+            bitmap
+        }
+
+        val target = File(dir(context), "${keyFor(scaled.hashCode().toString())}.jpg")
+        target.outputStream().use { out ->
+            scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+        }
+        return target.absolutePath
+    }
+
     /** Decodes a previously saved artwork file, downsampled for color analysis. */
     fun loadBitmap(context: Context, path: String?): Bitmap? {
         if (path.isNullOrBlank()) return null

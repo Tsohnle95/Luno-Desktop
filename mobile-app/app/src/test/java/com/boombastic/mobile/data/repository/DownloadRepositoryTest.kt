@@ -52,6 +52,21 @@ class DownloadRepositoryTest {
         assertThat(job.sourceUrl).isEqualTo("https://example.com/audio.mp3")
         assertThat(job.title).isEqualTo("Test Song")
         assertThat(job.artist).isEqualTo("Test Artist")
+        assertThat(job.thumbnailUrl).isEmpty()
+    }
+
+    @Test
+    fun enqueueDownload_persistsThumbnailUrl() = runBlocking {
+        val id = repository.enqueueDownload(
+            sourceUrl = "https://example.com/audio.m4a",
+            title = "Thumb Track",
+            thumbnailUrl = "https://i.ytimg.com/vi/abc123/mqdefault.jpg"
+        )
+
+        val job = database.downloadJobDao().getDownload(id)
+        assertThat(job).isNotNull()
+        assertThat(job!!.thumbnailUrl)
+            .isEqualTo("https://i.ytimg.com/vi/abc123/mqdefault.jpg")
     }
 
     @Test

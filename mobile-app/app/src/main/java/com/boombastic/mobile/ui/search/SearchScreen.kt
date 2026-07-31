@@ -389,7 +389,8 @@ private fun WebSearchContent(
                                     downloadRepository.enqueueDownload(
                                         sourceUrl = audioResult.data.url,
                                         title = title,
-                                        artist = artist
+                                        artist = artist,
+                                        thumbnailUrl = r.thumbnailUrl
                                     )
                                 }
                             }
@@ -444,7 +445,8 @@ private fun WebSearchContent(
                                             downloadRepository.enqueueDownload(
                                                 sourceUrl = audioResult.data.url,
                                                 title = trackTitle,
-                                                artist = artist
+                                                artist = artist,
+                                                thumbnailUrl = result.thumbnailUrl
                                             )
                                             Toast.makeText(ctx, "Download queued: $trackTitle", Toast.LENGTH_SHORT).show()
                                         }

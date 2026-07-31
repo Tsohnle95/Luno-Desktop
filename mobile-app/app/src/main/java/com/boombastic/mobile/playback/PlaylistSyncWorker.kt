@@ -91,12 +91,14 @@ class PlaylistSyncWorker(
                                 artist = artist,
                                 state = DownloadState.QUEUED,
                                 playlistId = playlistId,
+                                thumbnailUrl = video.thumbnailUrl,
                                 addedAt = System.currentTimeMillis()
                             )
                             val jobId = jobDao.insertDownload(job)
 
                             val inputData = Data.Builder()
                                 .putLong(DownloadWorker.KEY_DOWNLOAD_JOB_ID, jobId)
+                                .putString(DownloadWorker.KEY_THUMBNAIL_URL, video.thumbnailUrl)
                                 .build()
 
                             val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()

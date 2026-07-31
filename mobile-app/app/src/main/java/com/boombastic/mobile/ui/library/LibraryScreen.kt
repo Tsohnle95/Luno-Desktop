@@ -1,7 +1,9 @@
 package com.boombastic.mobile.ui.library
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -12,20 +14,26 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -36,14 +44,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.BoomBasticApp
+import com.boombastic.mobile.data.db.dao.PlaylistWithTracks
 import com.boombastic.mobile.data.db.entity.Playlist
 import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
+import com.boombastic.mobile.ui.components.ArtworkImage
 import com.boombastic.mobile.ui.home.SectionHeader
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
@@ -62,17 +73,20 @@ fun LibraryScreen(
     val app = context.applicationContext as BoomBasticApp
     val scope = rememberCoroutineScope()
     val allTracks by app.libraryRepository.getAllTracks().collectAsState(initial = emptyList())
-    val playlists by app.playlistRepository.getAllPlaylists().collectAsState(initial = emptyList())
+    val playlistsWithTracks by app.playlistRepository.getAllPlaylistsWithTracks()
+        .collectAsState(initial = emptyList())
     var showNewPlaylist by remember { mutableStateOf(false) }
 
-    LazyColumn(
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = Dimens.paddingLarge),
         verticalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+        horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
         contentPadding = PaddingValues(vertical = Dimens.paddingLarge)
     ) {
-        item {
+        item(span = { GridItemSpan(maxLineSpan) }) {
             Text(
                 text = "Your Library",
                 style = MaterialTheme.typography.headlineLarge,
@@ -82,7 +96,7 @@ fun LibraryScreen(
         }
 
         // New playlist
-        item {
+        item(span = { GridItemSpan(maxLineSpan) }) {
             Button(
                 onClick = { showNewPlaylist = !showNewPlaylist },
                 colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
@@ -94,7 +108,7 @@ fun LibraryScreen(
         }
 
         if (showNewPlaylist) {
-            item {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 NewPlaylistForm(
                     onCreate = { name, desc, url ->
                         scope.launch {
@@ -106,13 +120,13 @@ fun LibraryScreen(
             }
         }
 
-        // Playlists section
-        item {
-            SectionHeader(title = "Playlists (${playlists.size})")
+        // Playlists section — two cards per horizontal block
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            SectionHeader(title = "Playlists (${playlistsWithTracks.size})")
         }
 
-        if (playlists.isEmpty()) {
-            item {
+        if (playlistsWithTracks.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 Text(
                     text = "No playlists yet. Create one above.",
                     color = SecondaryText,
@@ -121,23 +135,29 @@ fun LibraryScreen(
                 )
             }
         } else {
-            items(playlists, key = { it.id }) { playlist ->
+            items(playlistsWithTracks, key = { it.playlist.id }) { playlistWithTracks ->
                 PlaylistCard(
-                    playlist = playlist,
+                    playlist = playlistWithTracks.playlist,
+                    thumbnailUri = playlistWithTracks.tracks.firstOrNull()?.albumArtUri(),
                     onSync = {
-                        if (playlist.playlistUrl.isNotBlank()) {
+                        if (playlistWithTracks.playlist.playlistUrl.isNotBlank()) {
                             scope.launch {
                                 app.downloadRepository.syncPlaylist(
-                                    playlistId = playlist.id,
-                                    playlistName = playlist.name,
-                                    playlistUrl = playlist.playlistUrl
+                                    playlistId = playlistWithTracks.playlist.id,
+                                    playlistName = playlistWithTracks.playlist.name,
+                                    playlistUrl = playlistWithTracks.playlist.playlistUrl
                                 )
                             }
                         }
                     },
                     onUrlChanged = { url ->
                         scope.launch {
-                            app.playlistRepository.updatePlaylistUrl(playlist.id, url)
+                            app.playlistRepository.updatePlaylistUrl(playlistWithTracks.playlist.id, url)
+                        }
+                    },
+                    onDelete = {
+                        scope.launch {
+                            app.playlistRepository.deletePlaylist(playlistWithTracks.playlist.id)
                         }
                     }
                 )
@@ -145,12 +165,12 @@ fun LibraryScreen(
         }
 
         // Tracks section
-        item {
+        item(span = { GridItemSpan(maxLineSpan) }) {
             SectionHeader(title = "Tracks (${allTracks.size})")
         }
 
         if (allTracks.isEmpty()) {
-            item {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 Text(
                     text = "Import audio files or search the web from the Search tab.",
                     color = SecondaryText,
@@ -255,101 +275,179 @@ private fun NewPlaylistForm(
     }
 }
 
+/**
+ * Playlist card for the 2-column grid: thumbnail on the left, name to the
+ * right of it, green 3-dot options on the right, all on a dark gray
+ * surface that stands out against the black screen background.
+ */
 @Composable
 private fun PlaylistCard(
     playlist: Playlist,
+    thumbnailUri: String?,
     onSync: () -> Unit,
-    onUrlChanged: (String) -> Unit
+    onUrlChanged: (String) -> Unit,
+    onDelete: () -> Unit
 ) {
-    var editingUrl by rememberSaveable(playlist.id) { mutableStateOf(false) }
-    var urlInput by rememberSaveable(playlist.id) { mutableStateOf(playlist.playlistUrl) }
+    var showMenu by remember { mutableStateOf(false) }
+    var showUrlDialog by rememberSaveable(playlist.id) { mutableStateOf(false) }
+    var showDeleteDialog by rememberSaveable(playlist.id) { mutableStateOf(false) }
 
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = Dimens.paddingSmall)
+            .background(SurfaceDark, RoundedCornerShape(Dimens.cornerMedium))
+            .padding(Dimens.paddingSmall),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = playlist.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = PrimaryText
-                )
-                if (playlist.description.isNotBlank()) {
-                    Text(
-                        text = playlist.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = SecondaryText,
-                        maxLines = 1
-                    )
-                }
-            }
+        ArtworkImage(
+            artworkUri = thumbnailUri,
+            modifier = Modifier
+                .size(Dimens.albumArtSmall)
+                .clip(RoundedCornerShape(Dimens.cornerSmall)),
+            placeholderIconSize = 20.dp
+        )
 
-            if (playlist.playlistUrl.isNotBlank()) {
-                IconButton(onClick = onSync) {
-                    Icon(
-                        Icons.Default.Sync,
-                        contentDescription = "Sync playlist",
-                        tint = AccentGreen,
-                        modifier = Modifier.size(Dimens.iconSize)
-                    )
-                }
-                IconButton(onClick = { editingUrl = !editingUrl }) {
-                    Icon(
-                        Icons.Default.Download,
-                        contentDescription = "Edit URL",
-                        tint = SecondaryText,
-                        modifier = Modifier.size(Dimens.iconSize)
-                    )
-                }
-            } else {
-                IconButton(onClick = { editingUrl = !editingUrl }) {
-                    Icon(
-                        Icons.Default.Download,
-                        contentDescription = "Set playlist URL",
-                        tint = SecondaryText,
-                        modifier = Modifier.size(Dimens.iconSize)
-                    )
-                }
-            }
+        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .clickable { showMenu = true }
+        ) {
+            Text(
+                text = playlist.name,
+                style = MaterialTheme.typography.titleSmall,
+                color = PrimaryText,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
         }
 
-        if (editingUrl) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                OutlinedTextField(
-                    value = urlInput,
-                    onValueChange = { urlInput = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("YouTube playlist URL", color = SecondaryText) },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = PrimaryText,
-                        unfocusedTextColor = PrimaryText,
-                        cursorColor = AccentGreen,
-                        focusedBorderColor = AccentGreen,
-                        unfocusedBorderColor = SurfaceElevated,
-                        focusedContainerColor = SurfaceDark,
-                        unfocusedContainerColor = SurfaceDark
-                    )
+        // Green 3-dot options
+        Box {
+            IconButton(onClick = { showMenu = true }) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "Playlist options",
+                    tint = AccentGreen,
+                    modifier = Modifier.size(Dimens.iconSize)
                 )
-                Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                Button(
-                    onClick = {
-                        onUrlChanged(urlInput.trim())
-                        editingUrl = false
+            }
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false }
+            ) {
+                if (playlist.playlistUrl.isNotBlank()) {
+                    DropdownMenuItem(
+                        text = { Text("Sync playlist", color = PrimaryText) },
+                        onClick = {
+                            showMenu = false
+                            onSync()
+                        }
+                    )
+                }
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            if (playlist.playlistUrl.isNotBlank()) "Edit YouTube URL" else "Set YouTube URL",
+                            color = PrimaryText
+                        )
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
-                ) { Text("Save") }
+                    onClick = {
+                        showMenu = false
+                        showUrlDialog = true
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Delete playlist", color = PrimaryText) },
+                    onClick = {
+                        showMenu = false
+                        showDeleteDialog = true
+                    }
+                )
             }
         }
     }
+
+    if (showUrlDialog) {
+        PlaylistUrlDialog(
+            initialUrl = playlist.playlistUrl,
+            onDismiss = { showUrlDialog = false },
+            onSave = { url ->
+                onUrlChanged(url)
+                showUrlDialog = false
+            }
+        )
+    }
+
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            containerColor = SurfaceDark,
+            titleContentColor = PrimaryText,
+            textContentColor = SecondaryText,
+            title = { Text("Delete playlist?") },
+            text = { Text("\"${playlist.name}\" will be removed. Tracks are not deleted.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteDialog = false
+                    onDelete()
+                }) {
+                    Text("Delete", color = AccentGreen)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Cancel", color = SecondaryText)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun PlaylistUrlDialog(
+    initialUrl: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var urlInput by rememberSaveable { mutableStateOf(initialUrl) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SurfaceDark,
+        titleContentColor = PrimaryText,
+        textContentColor = PrimaryText,
+        title = { Text("YouTube playlist URL") },
+        text = {
+            OutlinedTextField(
+                value = urlInput,
+                onValueChange = { urlInput = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("https://www.youtube.com/playlist?list=...", color = SecondaryText) },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = PrimaryText,
+                    unfocusedTextColor = PrimaryText,
+                    cursorColor = AccentGreen,
+                    focusedBorderColor = AccentGreen,
+                    unfocusedBorderColor = SurfaceElevated,
+                    focusedContainerColor = SurfaceDark,
+                    unfocusedContainerColor = SurfaceDark
+                )
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(urlInput.trim()) }) {
+                Text("Save", color = AccentGreen)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = SecondaryText)
+            }
+        }
+    )
 }
 
 @Composable

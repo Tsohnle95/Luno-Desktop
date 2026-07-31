@@ -24,5 +24,6 @@ data class DownloadJob(
     val addedAt: Long = System.currentTimeMillis(),
     val completedAt: Long = 0L,
     val playlistId: Long? = null,
-    val workManagerId: String = ""
+    val workManagerId: String = "",
+    val thumbnailUrl: String = ""
 )

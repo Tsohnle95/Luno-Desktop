@@ -22,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.DrawerValue
@@ -151,7 +150,7 @@ fun MainShell(musicController: MusicController) {
             ) {
                 // Drawer header
                 Text(
-                    text = "BoomBastic",
+                    text = "Settings",
                     style = MaterialTheme.typography.headlineSmall,
                     color = PrimaryText,
                     modifier = Modifier.padding(
@@ -170,14 +169,6 @@ fun MainShell(musicController: MusicController) {
                         navController.navigate(Routes.DOWNLOADS) {
                             launchSingleTop = true
                         }
-                    }
-                )
-                DrawerItem(
-                    icon = Icons.Filled.Settings,
-                    label = "Settings",
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        Toast.makeText(context, "Settings coming soon", Toast.LENGTH_SHORT).show()
                     }
                 )
                 DrawerItem(

@@ -35,7 +35,8 @@ class DownloadRepository(
         sourceUrl: String,
         title: String,
         artist: String = "",
-        playlistId: Long? = null
+        playlistId: Long? = null,
+        thumbnailUrl: String = ""
     ): Long {
         Log.d(TAG, "enqueueDownload: $title by $artist")
         Log.d(TAG, "Source URL (truncated): ${sourceUrl.take(120)}")
@@ -46,13 +47,15 @@ class DownloadRepository(
             artist = artist,
             state = DownloadState.QUEUED,
             addedAt = System.currentTimeMillis(),
-            playlistId = playlistId
+            playlistId = playlistId,
+            thumbnailUrl = thumbnailUrl
         )
         val jobId = downloadJobDao.insertDownload(job)
         Log.d(TAG, "Inserted download job with id=$jobId")
 
         val inputData = Data.Builder()
             .putLong(DownloadWorker.KEY_DOWNLOAD_JOB_ID, jobId)
+            .putString(DownloadWorker.KEY_THUMBNAIL_URL, thumbnailUrl)
             .build()
 
         val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
@@ -97,6 +100,7 @@ class DownloadRepository(
 
         val inputData = Data.Builder()
             .putLong(DownloadWorker.KEY_DOWNLOAD_JOB_ID, id)
+            .putString(DownloadWorker.KEY_THUMBNAIL_URL, job.thumbnailUrl)
             .build()
 
         val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()

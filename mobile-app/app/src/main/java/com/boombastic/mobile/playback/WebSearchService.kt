@@ -29,7 +29,8 @@ data class PlaylistVideo(
     val videoId: String,
     val title: String,
     val artist: String,
-    val duration: Long
+    val duration: Long,
+    val thumbnailUrl: String = ""
 )
 
 object WebSearchService {
@@ -104,7 +105,8 @@ object WebSearchService {
                     videoId = vidId,
                     title = item.name,
                     artist = item.uploaderName ?: "",
-                    duration = item.duration
+                    duration = item.duration,
+                    thumbnailUrl = item.thumbnails?.lastOrNull()?.url ?: ""
                 )
             }
 

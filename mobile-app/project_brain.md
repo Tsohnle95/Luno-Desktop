@@ -4,7 +4,7 @@
 > **MAINTENANCE INSTRUCTIONS FOR AI/HUMANS:**
 > This document is the authoritative knowledge base for the **implemented** BoomBastic native Android app under `mobile-app/`, including its planned extensions. It must be updated whenever settled decisions change.
 >
-> **Last verified and updated:** 2026-07-30 (Full player artwork implemented — Coil + dominant-color gradients; queue reordering; options drawer; 5-item bottom nav; Room v4; refreshed baseline checks — 88/88 unit tests, lint PASS)
+> **Last verified and updated:** 2026-07-30 (Download thumbnails for YouTube tracks; Settings drawer header; green profile circle; 2-column playlist grid; Room v5; refreshed baseline checks — 89/89 unit tests, lint PASS)
 >
 > **Authority policy (descending):**
 > 1. **Source code + tests + config** in this repo (highest truth)
@@ -100,7 +100,7 @@ boomtastic/
 │   │       │       │       └── PlaylistRepository.kt # CRUD, validation, sort order mgmt
 │   │       │       └── ui/
 │   │       │           ├── shell/
-│   │       │           │   └── MainShell.kt          # ModalNavigationDrawer + Scaffold + BottomNav (Home/Search/Library/Discover/Create) + MiniPlayer (hidden on full player); options drawer hosts Downloads, Settings, About, Export/Import, Update check
+│   │       │           │   └── MainShell.kt          # ModalNavigationDrawer ("Settings" header: Downloads, Export/Import, About, Update check) + Scaffold + BottomNav (Home/Search/Library/Discover/Create) + MiniPlayer (hidden on full player)
 │   │       │           ├── navigation/
 │   │       │           │   └── NavGraph.kt           # NavHost: Home / Search / Library / Discover / Downloads (drawer) / full_player
 │   │       │           ├── theme/
@@ -116,11 +116,11 @@ boomtastic/
 │   │       │           │   ├── QueueSheet.kt         # "Playing Next" modal bottom sheet with artwork rows + long-press drag-to-reorder
 │   │       │           │   └── ActionSheet.kt        # Add-to-playlist/play-next/add-to-queue/artist/share sheet
 │   │       │           ├── home/
-│   │       │           │   └── HomeScreen.kt         # Greeting, profile icon (top-left → options drawer), recently played w/ artwork, import hint
+│   │       │           │   └── HomeScreen.kt         # Greeting, green-circle profile icon (top-left → Settings drawer), recently played w/ artwork, import hint
 │   │       │           ├── search/
 │   │       │           │   └── SearchScreen.kt       # Library search + Web search + download with loading spinner
 │   │       │           ├── library/
-│   │       │           │   └── LibraryScreen.kt      # Playlists + tracks list
+│   │       │           │   └── LibraryScreen.kt      # 2-column playlist grid (thumbnail + name + green 3-dot menu: sync/URL/delete) + tracks list
 │   │       │           ├── discover/
 │   │       │           │   └── DiscoverScreen.kt     # Honest empty state (Last.fm TBD)
 │   │       │           ├── downloads/
@@ -295,7 +295,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 | Language | Kotlin 2.0.0 | ✅ **Implemented** — source in `playback/`, `data/`, `ui/` |
 | UI | Jetpack Compose (BOM 2024.06.00) | ✅ **Implemented** — 5 screens + full player + sheets + shell + theme + mini-player |
 | Playback | Media3 (ExoPlayer 1.3.1) | ✅ **Implemented** — `MusicService` (MediaSessionService) + `MusicController` (StateFlow wrapper) |
-| Local DB | Room 2.6.1 | ✅ **Implemented** — 4 entities, 3 DAOs (v4 schema — playlistUrl on Playlist, albumArtPath on Track) |
+| Local DB | Room 2.6.1 | ✅ **Implemented** — 4 entities, 3 DAOs (v5 schema — playlistUrl on Playlist, albumArtPath on Track, thumbnailUrl on DownloadJob) |
 | Background downloads | WorkManager + Foreground Service | ✅ **Implemented** — `DownloadWorker` + `DownloadRepository` + `DownloadJob` Room entity (v2 schema) |
 | Media scanning | MediaStore / SAF | ✅ **Implemented** — SAF `OpenMultipleDocuments` import via `LibraryRepository` |
 | Dependency injection | Manual singleton (BoomBasticApp) | ✅ **Implemented** — Hilt deferred; manual DI in Application class |
@@ -321,7 +321,9 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 - **Full player screen implemented (2026-07-30):** `ui/player/FullPlayerScreen.kt` (280dp artwork, m:ss scrub bar, shuffle/prev/play-pause/next/repeat transport row, queue + action-sheet triggers, back arrow), `ui/player/QueueSheet.kt` ("Playing Next" modal sheet from `MusicController.getQueue()`), `ui/player/ActionSheet.kt` (Add to playlist sub-sheet via `PlaylistRepository`, Play next, Add to queue, Go to artist toast placeholder, Android Sharesheet). Repeat cycles OFF→ALL→ONE (ExoPlayer `REPEAT_MODE_*`), shuffle toggles `shuffleModeEnabled`; both exposed as `StateFlow` on `MusicController`. MiniPlayer track-info tap navigates to `Routes.FULL_PLAYER`; bottom bar hidden on the full-player route.
 - **Real artwork + dynamic gradients implemented (2026-07-30):** Embedded album art is extracted at import/download time (`ArtworkStorage.saveEmbeddedArtwork*` via `MediaMetadataRetriever.getEmbeddedPicture`), downsampled to ≤512px JPEG and cached in `filesDir/artwork/`; the path is stored on `Track.albumArtPath` (Room **v4** migration `3_4`). `MediaTrack` carries `artworkUri` (file://) through `MusicController.buildMediaItem` (MediaMetadata `artworkUri`), and `MusicService`'s `ArtworkEnrichingCallback` (`MediaSession.Callback.onAddMediaItems`) loads `artworkData` bytes so the **notification and lock-screen show artwork**. UI renders via Coil (`ui/components/ArtworkImage.kt`): full player (280dp), MiniPlayer (48dp thumb), Home recently-played card, and QueueSheet rows. `rememberArtworkColors()` extracts the dominant color (androidx Palette vibrant→muted→dominant) and animates a vertical gradient backdrop behind the full player (600ms `animateColorAsState`), satisfying "gradients animate subtly on transition".
 - **Queue reordering implemented (2026-07-30):** `MusicController.moveQueueItem(from, to)` → `Player.moveMediaItem`; `QueueSheet` rows show artwork + drag handle and support **long-press drag-to-reorder** (`detectDragGesturesAfterLongPress`, row translation + scale feedback, drop-target index computed from drag delta; snapshot refreshed after each move).
-- **Navigation restructure (2026-07-30):** Bottom nav is exactly **5 items** — Home, Search, Your Library, Discover, Create (Downloads removed from the tray). A **profile icon at the Home screen top-left** opens a `ModalNavigationDrawer` ("local-function drawer" per visual spec) containing Downloads (navigates to `Routes.DOWNLOADS`), Settings / Export-Import / About / Check for updates (honest "coming soon" toasts). The drawer never contains cloud account/login/logout items.
+- **Download thumbnails implemented (2026-07-30):** YouTube audio streams carry no embedded album art, so downloaded songs previously had no artwork anywhere (full player, mini player, queue, home). Now the video thumbnail is captured at enqueue time: `WebSearchResult.thumbnailUrl` (search + CSV import) and `PlaylistVideo.thumbnailUrl` (playlist sync) flow through `DownloadJob.thumbnailUrl` (Room **v5** migration `4_5`) and WorkManager inputData (`DownloadWorker.KEY_THUMBNAIL_URL`). After the audio file is saved, `DownloadWorker` falls back to fetching the thumbnail via OkHttp (`ArtworkStorage.saveImageBytes`, ≤512px JPEG in `filesDir/artwork/`) when `MediaMetadataRetriever` found no embedded picture; the path lands on `Track.albumArtPath` so every artwork surface picks it up. Manual retries re-read the URL from the job entity.
+- **Navigation restructure (2026-07-30):** Bottom nav is exactly **5 items** — Home, Search, Your Library, Discover, Create (Downloads removed from the tray). A **green-circle profile icon at the Home screen top-left** opens a `ModalNavigationDrawer` whose header reads **"Settings"** (the standalone Settings item was removed) containing Downloads (navigates to `Routes.DOWNLOADS`), Export-Import, About, Check for updates (honest "coming soon" toasts). The drawer never contains cloud account/login/logout items.
+- **Library playlist grid (2026-07-30):** `LibraryScreen` now renders playlists in a **2-column grid** (two cards per horizontal block, `LazyVerticalGrid` with full-span headers). Each card: first-track artwork thumbnail (or placeholder) on the left, playlist name beside it, **green 3-dot options icon** on the right (menu: Sync playlist, Set/Edit YouTube URL via dialog, Delete with confirm dialog), on a `SurfaceDark` (#202020) rounded background that stands out against the black screen.
 - **Not yet implemented:** Queue/history persistence, Bluetooth AVRCP metadata publication, Android Auto, volume slider (deferred — hardware keys only).
 
 **Queue/history:**
@@ -421,7 +423,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
   3. **Your Library** — Playlists, artists, albums, downloaded
   4. **Discover** — Last.fm-powered recommendations
   5. **Create** — One-action create playlist modal
-- **Local-function drawer** (ModalNavigationDrawer, opened from the Home profile icon): Downloads (functional route), Settings, Export/Import, About, Check for updates (honest "coming soon" toasts). Never contains cloud account/login/logout.
+- **Local-function drawer** (ModalNavigationDrawer, opened from the green-circle Home profile icon): header reads **"Settings"**; items are Downloads (functional route), Export/Import, About, Check for updates (honest "coming soon" toasts). No standalone Settings item (the header is the settings entry). Never contains cloud account/login/logout.
 - No "Premium" tab, no podcast/audiobook tab
 
 **Screen contracts (comprehensive):**
@@ -674,7 +676,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `app/build.gradle.kts` | App module: compileSdk 35, minSdk 29, Compose BOM 2024.06.00, all dependencies | ✅ |
 | `app/proguard-rules.pro` | Keep Room entity annotations | ✅ |
 | `vendor/NewPipeExtractor/` | Git submodule pinned to tag `v0.26.4` (shallow). Built via Gradle composite build; **requires a JDK 11 toolchain** (set in its root `build.gradle.kts`); **requires core-library desugaring** in the app (minSdk 29 < 33). GPLv3 licensed. | ✅ |
-| `app/schemas/.../1.json` | v1–v4 Room schema exports (v1: tracks, playlists, playlist_tracks; v2: adds download_jobs; v3: adds playlistUrl to Playlist; v4: adds albumArtPath to Track) | ✅ |
+| `app/schemas/.../1.json` | v1–v5 Room schema exports (v1: tracks, playlists, playlist_tracks; v2: adds download_jobs; v3: adds playlistUrl to Playlist; v4: adds albumArtPath to Track; v5: adds thumbnailUrl to DownloadJob) | ✅ |
 
 ### Android System
 | File | Responsibility | Status |
@@ -694,7 +696,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `playback/MusicController.kt` | MediaController wrapper, StateFlow playback state, immutable PlaybackRequest, injectable AsyncConnector, playbackError flow, generation-gated release | ✅ Terminal lifecycle, full-queue pending, metadata-aware MediaItems (incl. artworkUri), moveQueueItem, error Snackbar propagation |
 | `playback/NotificationPermissionPolicy.kt` | One-shot `POST_NOTIFICATIONS` prompt policy using SharedPreferences | ✅ |
 | `data/artwork/ArtworkStorage.kt` | Embedded-artwork extraction + ≤512px JPEG cache (filesDir/artwork), sampled decode, Palette dominant color | ✅ |
-| `data/db/AppDatabase.kt` | Room database (4 entities, version 4, singleton, migrations 1→2→3→4) | ✅ |
+| `data/db/AppDatabase.kt` | Room database (4 entities, version 5, singleton, migrations 1→2→3→4→5) | ✅ |
 | `data/db/entity/Track.kt` | Track entity (uri PK, title, artist, album, durationMs, albumArtPath, addedAt) + albumArtUri() helper | ✅ |
 | `data/db/entity/Playlist.kt` | Playlist entity (autoId, name, description, createdAt) | ✅ |
 | `data/db/entity/PlaylistTrack.kt` | Junction entity (composite PK, FK cascade, sortOrder) | ✅ |
@@ -702,15 +704,15 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `data/db/dao/PlaylistDao.kt` | Playlist CRUD + relation queries + sort order | ✅ |
 | `data/repository/LibraryRepository.kt` | SAF import, MediaMetadataRetriever, embedded-artwork extraction via ArtworkStorage, dedupe, ImportResult; production-default injectable URI-permission persister for deterministic tests | ✅ |
 | `data/repository/PlaylistRepository.kt` | Playlist CRUD, name validation, sort order mgmt | ✅ |
-| `data/db/entity/DownloadJob.kt` | DownloadJob entity + DownloadState enum (QUEUED, DOWNLOADING, COMPLETED, FAILED, CANCELLED) | ✅ |
+| `data/db/entity/DownloadJob.kt` | DownloadJob entity + DownloadState enum (QUEUED, DOWNLOADING, COMPLETED, FAILED, CANCELLED); thumbnailUrl captures the YouTube video thumbnail | ✅ |
 | `data/db/dao/DownloadJobDao.kt` | DownloadJob CRUD + progress/state queries with Flow | ✅ |
-| `playback/DownloadWorker.kt` | WorkManager CoroutineWorker: HTTP download, progress tracking, Track insertion (with MediaMetadataRetriever duration + artwork extraction), foreground notification with app icon and stable notification ID | ✅ |
+| `playback/DownloadWorker.kt` | WorkManager CoroutineWorker: HTTP download, progress tracking, Track insertion (MediaMetadataRetriever duration + embedded-artwork extraction, thumbnail fetch fallback for YouTube), foreground notification with app icon and stable notification ID | ✅ |
 | `playback/PlaylistSyncWorker.kt` | WorkManager worker: fetches YouTube playlist videos via NewPipe Extractor, creates individual DownloadJob per track, deduplicates against existing library, reports extraction errors as failed jobs | ✅ |
 | `playback/WebSearchService.kt` | YouTube client: search, playlist extraction, and audio stream URL extraction via NewPipe Extractor (v0.26.4, vendored Git submodule at `vendor/NewPipeExtractor` via composite build). Replaces the previous 4-fallback InnerTube/Piped/Invidious chain with bundled native extraction. Returns typed `ExtractionResult` for error propagation. | ✅ |
 | `playback/NewPipeDownloader.kt` | `HttpURLConnection`-based implementation of NewPipe's `Downloader` interface. Handles GET/POST requests with proper User-Agent and redirects. | ✅ |
 | `playback/ExtractionResult.kt` | Sealed class for typed extraction results: `Success<T>` or `Error(message, details)`. Eliminates nullable/pair returns. | ✅ |
-| `data/repository/DownloadRepository.kt` | Enqueue, retry, cancel, delete downloads; bridges Room + WorkManager | ✅ |
-| `ui/shell/MainShell.kt` | ModalNavigationDrawer (options: Downloads/Settings/Export-Import/About/Update check) + Scaffold + BottomNav (Home/Search/Library/Discover/Create) + AnimatedVisibility MiniPlayer | ✅ |
+| `data/repository/DownloadRepository.kt` | Enqueue, retry, cancel, delete downloads; bridges Room + WorkManager; threads thumbnailUrl through job + inputData | ✅ |
+| `ui/shell/MainShell.kt` | ModalNavigationDrawer ("Settings" header: Downloads/Export-Import/About/Update check) + Scaffold + BottomNav (Home/Search/Library/Discover/Create) + AnimatedVisibility MiniPlayer | ✅ |
 | `ui/navigation/NavGraph.kt` | NavHost: Routes (HOME, SEARCH, LIBRARY, DISCOVER, DOWNLOADS, FULL_PLAYER) | ✅ |
 | `ui/theme/Color.kt` | Dark palette constants | ✅ |
 | `ui/theme/Theme.kt` | BoomBasticTheme (Material3 darkColorScheme) | ✅ |
@@ -721,9 +723,9 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `ui/player/FullPlayerScreen.kt` | Full-screen player: 280dp artwork, animated dominant-color gradient backdrop, title/artist, m:ss scrub bar, shuffle/prev/play-pause/next/repeat, queue + action-sheet triggers | ✅ |
 | `ui/player/QueueSheet.kt` | "Playing Next" bottom sheet: artwork rows, long-press drag-to-reorder via moveQueueItem | ✅ |
 | `ui/player/ActionSheet.kt` | Track action sheet: add to playlist (nested picker), play next, add to queue, go to artist, share | ✅ |
-| `ui/home/HomeScreen.kt` | Greeting, profile icon (top-left → options drawer), recently played (artwork), import hint | ✅ |
+| `ui/home/HomeScreen.kt` | Greeting, green-circle profile icon (top-left → Settings drawer), recently played (artwork), import hint | ✅ |
 | `ui/search/SearchScreen.kt` | Library search + Web Search (YouTube search, download with loading spinner per video ID, CSV import, direct URL download), SAF import | ✅ |
-| `ui/library/LibraryScreen.kt` | Playlists + tracks list | ✅ |
+| `ui/library/LibraryScreen.kt` | 2-column playlist grid (artwork thumbnail + name + green 3-dot menu: sync/URL/delete) + tracks list | ✅ |
 | `ui/discover/DiscoverScreen.kt` | Honest empty state (Last.fm TBD) | ✅ |
 | `ui/downloads/DownloadsScreen.kt` | Full download management screen: playlist sync controls, per-playlist sync, batch sync all, download queue with cancel/retry/delete | ✅ |
 | `ui/create/CreatePlaylistSheet.kt` | AlertDialog with name validation | ✅ |
@@ -736,7 +738,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `data/db/PlaylistDaoTest.kt` | 8 tests: CRUD, track-to-playlist, cascade, sortOrder | ✅ |
 | `data/repository/PlaylistRepositoryTest.kt` | 5 tests: blank name rejection, persistence, trim, list, delete | ✅ |
 | `data/db/DownloadJobDaoTest.kt` | 9 tests: insert, query, progress, complete, fail, state filter, delete, bulk delete, count | ✅ |
-| `data/repository/DownloadRepositoryTest.kt` | 6 tests: enqueue, list, state filter, cancel, delete, get-null | ✅ |
+| `data/repository/DownloadRepositoryTest.kt` | 7 tests: enqueue, thumbnailUrl persistence, list, state filter, cancel, delete, get-null | ✅ |
 | `playback/NotificationPermissionPolicyTest.kt` | 11 tests: API 29/33+ prompt policy, grant/deny/attempted behavior | ✅ |
 | `playback/MusicControllerTest.kt` | 39 contract tests: pending-play, empty-request handling, full-queue preservation, last-request-wins, index clamp, release idempotence, stale-future guard, exact MediaItem metadata (incl. artworkUri), moveQueueItem no-ops, and sanitized error emission | ✅ 39/39 passing |
 | `playback/MusicControllerInstrumentedTest.kt` | 7 instrumented tests: connection, error path, pre-connection queue dispatch, real playback-state transition, notification posting, and activity recreation | ✅ Compiles; emulator execution pending |
@@ -862,7 +864,7 @@ These are issues in the existing codebase that the native app should NOT reprodu
 
 | Level | Tool | Scope | Status |
 |-------|------|-------|--------|
-| Unit | JUnit 4 + Truth + Turbine + Robolectric | Room DAOs, Repositories | ✅ **38 tests** — `TrackDaoTest` (10), `PlaylistDaoTest` (8), `PlaylistRepositoryTest` (5), `DownloadJobDaoTest` (9), `DownloadRepositoryTest` (6) |
+| Unit | JUnit 4 + Truth + Turbine + Robolectric | Room DAOs, Repositories | ✅ **39 tests** — `TrackDaoTest` (10), `PlaylistDaoTest` (8), `PlaylistRepositoryTest` (5), `DownloadJobDaoTest` (9), `DownloadRepositoryTest` (7) |
 | Unit | JUnit 4 + Truth + Robolectric | Notification permission policy | ✅ **11 tests** |
 | Unit | JUnit 4 + Truth + Robolectric | MusicController pending-play/lifecycle contract | ✅ **39 tests** — full-queue preservation, empty-request handling, last-request-wins, index clamp, release idempotence, stale-future guard, exact MediaItem metadata (incl. artworkUri), moveQueueItem no-ops, and sanitized error emission |
 | Instrumentation | Android Instrumentation Test + emulator | Media3 connection, queue dispatch, playback state, notification posting, activity recreation, SAF import, and revoked URI access | ✅ **13 smoke tests compile** — `MusicControllerInstrumentedTest` (7), `LibrarySmokeTest` (6); emulator execution pending |
@@ -873,7 +875,7 @@ These are issues in the existing codebase that the native app should NOT reprodu
 
 **Latest verification status (2026-07-30):** ✅ All four baseline checks pass on Java 17:
 - `./gradlew clean :app:assembleDebug` — **PASS**
-- `./gradlew :app:testDebugUnitTest` — **88/88 PASS** (11 NotificationPermissionPolicy, 39 MusicController, 10 TrackDao, 8 PlaylistDao, 5 PlaylistRepository, 9 DownloadJobDao, 6 DownloadRepository)
+- `./gradlew :app:testDebugUnitTest` — **89/89 PASS** (11 NotificationPermissionPolicy, 39 MusicController, 10 TrackDao, 8 PlaylistDao, 5 PlaylistRepository, 9 DownloadJobDao, 7 DownloadRepository)
 - `./gradlew :app:lintDebug` — **PASS** (after removing the default `WorkManagerInitializer` from the merged manifest — see AndroidManifest.xml)
 - `./gradlew :app:compileDebugAndroidTestKotlin` — **PASS**
 
@@ -919,6 +921,7 @@ Instrumented smoke tests created for API 34 emulator (`./gradlew :app:connectedD
 
 | Date | Change |
 |------|--------|
+| 2026-07-30 | **Download thumbnails + UI polish.** YouTube tracks now get artwork: `WebSearchResult.thumbnailUrl` / `PlaylistVideo.thumbnailUrl` flow through `DownloadJob.thumbnailUrl` (Room **v5** migration) + WorkManager inputData; `DownloadWorker` fetches the thumbnail (OkHttp → `ArtworkStorage.saveImageBytes`) when the audio has no embedded picture, so full player / mini player / queue / home all show the song image for downloads. Home profile icon is now a green circle; the options drawer header reads **"Settings"** and the standalone Settings item was removed. `LibraryScreen` playlists became a **2-column grid**: first-track artwork thumbnail + name + green 3-dot menu (Sync / Set-Edit URL dialog / Delete confirm) on `SurfaceDark` cards. Baseline re-verified: `assembleDebug` ✓, `testDebugUnitTest` **89/89** ✓, `lintDebug` ✓. |
 | 2026-07-30 | **Full player artwork + navigation restructure.** Real artwork pipeline: `ArtworkStorage` (embedded-artwork extraction → ≤512px JPEG cache in `filesDir/artwork/`), `Track.albumArtPath` (Room **v4** migration), `MediaTrack.artworkUri` through `MusicController.buildMediaItem`, `MusicService` `ArtworkEnrichingCallback` loads `artworkData` for notification/lock-screen artwork. UI: Coil (`ui/components/ArtworkImage.kt`) in FullPlayerScreen (280dp) + MiniPlayer + Home card + QueueSheet; animated dominant-color gradient backdrop via androidx Palette (`rememberArtworkColors`, 600ms `animateColorAsState`). Queue reordering: `MusicController.moveQueueItem` (Player.moveMediaItem) + long-press drag-to-reorder in `QueueSheet`. Bottom nav trimmed to **5 items** (Home/Search/Library/Discover/Create — Downloads removed from tray); Home profile icon (top-left) opens the **local-function drawer** (Downloads, Settings, Export/Import, About, Check for updates; placeholders toast). New deps: Coil 2.6.0, palette-ktx 1.0.0. Baseline re-verified: `assembleDebug` ✓, `testDebugUnitTest` **88/88** ✓, `lintDebug` ✓. |
 | 2026-07-30 | **Downloader runtime-verified.** Confirmed on-device (S20 FE, API 33): YouTube search → audio extraction → download working. Refreshed baseline checks: `assembleDebug` ✓, `testDebugUnitTest` 83/83 ✓ (was recorded as 62 — MusicControllerTest is 35, not 29; adds DownloadJobDaoTest 9 + DownloadRepositoryTest 6), `lintDebug` ✓, `compileDebugAndroidTestKotlin` ✓. Fixed lint Error `RemoveWorkManagerInitializer`: app uses on-demand WorkManager init via `Configuration.Provider` (`BoomBasticApp`), so the default `WorkManagerInitializer` meta-data is now stripped from the merged manifest (`tools:node="remove"`). Synced stale facts: playlist-sync data flow now cites NewPipe `PlaylistExtractor` (not Piped API); `WRITE_EXTERNAL_STORAGE` rationale updated (downloads write to app-internal `filesDir/downloads/`). |
 | 2026-07-30 | Implemented Android downloader: `DownloadWorker`, `DownloadRepository`, `DownloadJob` Room entity (v2 schema), DownloadJobDao. Updated all status markers, file registry, data flow, architecture diagram, and file tree. |

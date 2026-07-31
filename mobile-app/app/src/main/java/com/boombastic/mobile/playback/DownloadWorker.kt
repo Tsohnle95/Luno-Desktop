@@ -26,6 +26,7 @@ class DownloadWorker(
     companion object {
         const val TAG = "DownloadWorker"
         const val KEY_DOWNLOAD_JOB_ID = "download_job_id"
+        const val KEY_THUMBNAIL_URL = "thumbnail_url"
         const val KEY_DOWNLOAD_DIR = "downloads"
         private const val NOTIFICATION_ID_BASE = 1000
     }
@@ -158,8 +159,18 @@ class DownloadWorker(
                 0L
             }
 
-            val albumArtPath =
-                ArtworkStorage.saveEmbeddedArtworkFromPath(context, file.absolutePath)
+            // YouTube audio streams carry no embedded album art, so fall
+            // back to the video thumbnail when one was captured at enqueue
+            // time (search results / playlist sync).
+            var albumArtPath = ArtworkStorage.saveEmbeddedArtworkFromPath(
+                context, file.absolutePath
+            )
+            if (albumArtPath == null) {
+                val thumbnailUrl = inputData.getString(KEY_THUMBNAIL_URL)
+                if (!thumbnailUrl.isNullOrBlank()) {
+                    albumArtPath = fetchThumbnail(thumbnailUrl)
+                }
+            }
 
             val track = Track(
                 uri = file.toURI().toString(),
@@ -178,6 +189,34 @@ class DownloadWorker(
             Log.e(TAG, "Download failed for job $jobId", e)
             jobDao.markFailed(jobId, DownloadState.FAILED, "${e::class.simpleName}: ${e.message}")
             return if (runAttemptCount < 3) Result.retry() else Result.failure()
+        }
+    }
+
+    /**
+     * Downloads a thumbnail image (YouTube i.ytimg.com) and caches it via
+     * [ArtworkStorage].  Returns the artwork file path or `null` on failure.
+     */
+    private fun fetchThumbnail(url: String): String? {
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (response.code != 200) {
+                    null
+                } else {
+                    val bytes = response.body?.bytes()
+                    if (bytes == null || bytes.isEmpty()) {
+                        null
+                    } else {
+                        ArtworkStorage.saveImageBytes(context, bytes)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Thumbnail fetch failed for $url", e)
+            null
         }
     }
 

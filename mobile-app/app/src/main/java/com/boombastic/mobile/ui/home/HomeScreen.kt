@@ -1,5 +1,6 @@
 package com.boombastic.mobile.ui.home
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Person
@@ -29,7 +31,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.components.ArtworkImage
+import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
+import com.boombastic.mobile.ui.theme.PrimaryBackground
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
 import com.boombastic.mobile.ui.theme.SurfaceDark
@@ -61,14 +65,21 @@ fun HomeScreen(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Profile/options entry point (top-left) — opens the
-                    // local-function drawer (downloads, settings, about, ...)
-                    IconButton(onClick = onOpenOptions) {
+                    // Profile/options entry point (top-left, green circle) —
+                    // opens the local-function drawer (downloads, settings,
+                    // about, ...)
+                    IconButton(
+                        onClick = onOpenOptions,
+                        modifier = Modifier
+                            .size(Dimens.touchTargetMin)
+                            .clip(CircleShape)
+                            .background(AccentGreen)
+                    ) {
                         Icon(
                             imageVector = Icons.Filled.Person,
                             contentDescription = "Options",
-                            tint = PrimaryText,
-                            modifier = Modifier.size(Dimens.iconSizeLarge)
+                            tint = PrimaryBackground,
+                            modifier = Modifier.size(Dimens.iconSize)
                         )
                     }
                     Spacer(modifier = Modifier.weight(1f))
