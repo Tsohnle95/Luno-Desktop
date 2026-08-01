@@ -84,7 +84,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun SearchScreen(
     musicController: MusicController,
-    onPlay: (MediaTrack) -> Unit = {}
+    onPlay: (List<MediaTrack>, Int) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
@@ -194,7 +194,7 @@ private fun LibrarySearchContent(
     query: String,
     onQueryChange: (String) -> Unit,
     displayTracks: List<Track>,
-    onPlay: (MediaTrack) -> Unit,
+    onPlay: (List<MediaTrack>, Int) -> Unit,
     onImport: () -> Unit,
     onImportFolder: () -> Unit,
     importStatus: FolderImportStatus?
@@ -301,6 +301,20 @@ private fun LibrarySearchContent(
         // Track actions sheet — hoisted out of the LazyColumn: composing a
         // ModalBottomSheet inside a lazy item makes it scroll with the list.
         var actionsTrack by remember { mutableStateOf<Track?>(null) }
+        // The full result set as the playback context: next/previous on the
+        // full player walk the search results, matching the desktop.
+        val mediaTracks = remember(displayTracks) {
+            displayTracks.map {
+                MediaTrack(
+                    uri = it.uri,
+                    title = it.title,
+                    artist = it.artist,
+                    album = it.album,
+                    durationMs = it.durationMs,
+                    artworkUri = it.albumArtUri()
+                )
+            }
+        }
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(2.dp),
             contentPadding = PaddingValues(bottom = Dimens.paddingLarge)
@@ -309,16 +323,8 @@ private fun LibrarySearchContent(
                 TrackRow(
                     track = track,
                     onClick = {
-                        onPlay(
-                            MediaTrack(
-                                uri = track.uri,
-                                title = track.title,
-                                artist = track.artist,
-                                album = track.album,
-                                durationMs = track.durationMs,
-                                artworkUri = track.albumArtUri()
-                            )
-                        )
+                        val index = displayTracks.indexOfFirst { it.uri == track.uri }
+                        onPlay(mediaTracks, index.coerceAtLeast(0))
                     },
                     onLongPress = { actionsTrack = track }
                 )

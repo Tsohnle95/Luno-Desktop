@@ -1,6 +1,7 @@
 package com.boombastic.mobile.ui.library
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -173,6 +175,10 @@ fun PlaylistDetailScreen(
                     totalDurationMs = tracks.sumOf { it.durationMs },
                     onPlayAll = {
                         musicController.play(tracks.map { it.toMediaTrack() }, 0)
+                    },
+                    onShuffleAll = {
+                        musicController.play(tracks.map { it.toMediaTrack() }, 0)
+                        musicController.setShuffle(true)
                     }
                 )
             }
@@ -206,7 +212,8 @@ private fun PlaylistHeader(
     description: String,
     trackCount: Int,
     totalDurationMs: Long,
-    onPlayAll: (() -> Unit)?
+    onPlayAll: (() -> Unit)?,
+    onShuffleAll: (() -> Unit)? = null
 ) {
     Column(modifier = Modifier.padding(horizontal = Dimens.paddingLarge)) {
         Spacer(modifier = Modifier.height(Dimens.paddingLarge))
@@ -234,17 +241,48 @@ private fun PlaylistHeader(
         Spacer(modifier = Modifier.height(Dimens.paddingLarge))
 
         if (onPlayAll != null) {
-            Button(
-                onClick = onPlayAll,
-                colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.size(Dimens.iconSize)
-                )
-                Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                Text("Play")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = onPlayAll,
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimens.iconSize)
+                    )
+                    Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                    Text("Play")
+                }
+                if (onShuffleAll != null) {
+                    Spacer(modifier = Modifier.width(Dimens.paddingLarge))
+                    // Shuffle — desktop All-Music style (icon + text,
+                    // no box), plays the playlist shuffled.
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(Dimens.cornerMedium))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = onShuffleAll
+                            )
+                            .padding(vertical = Dimens.paddingSmall),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Shuffle,
+                            contentDescription = null,
+                            tint = AccentGreen,
+                            modifier = Modifier.size(Dimens.iconSize)
+                        )
+                        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                        Text(
+                            text = "Shuffle",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = AccentGreen
+                        )
+                    }
+                }
             }
         }
     }

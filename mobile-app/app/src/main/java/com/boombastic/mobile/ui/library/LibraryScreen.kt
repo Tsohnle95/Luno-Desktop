@@ -81,7 +81,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun LibraryScreen(
     musicController: MusicController,
-    onPlay: (MediaTrack) -> Unit = {},
+    onPlay: (List<MediaTrack>, Int) -> Unit = { _, _ -> },
     onOpenPlaylist: (Long) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -226,7 +226,9 @@ fun LibraryScreen(
             ) {
                 if (allTracks.isNotEmpty()) {
                     Button(
-                        onClick = { musicController.play(mediaTracks, 0) },
+                        // Full sorted context — next/prev walk the whole
+                        // (filtered/sorted) list, not a single track.
+                        onClick = { onPlay(mediaTracks, 0) },
                         colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
                     ) {
                         Icon(
@@ -246,7 +248,7 @@ fun LibraryScreen(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
                                 onClick = {
-                                    musicController.play(mediaTracks, 0)
+                                    onPlay(mediaTracks, 0)
                                     musicController.setShuffle(true)
                                 }
                             )
@@ -515,15 +517,13 @@ fun LibraryScreen(
                             if (selectionMode) {
                                 toggleSelection(track.uri)
                             } else {
+                                // Play the track within the current sorted
+                                // (filtered) context — next/prev walk the
+                                // visible list, like the desktop.
+                                val index = sortedTracks.indexOfFirst { it.uri == track.uri }
                                 onPlay(
-                                    MediaTrack(
-                                        uri = track.uri,
-                                        title = track.title,
-                                        artist = track.artist,
-                                        album = track.album,
-                                        durationMs = track.durationMs,
-                                        artworkUri = track.albumArtUri()
-                                    )
+                                    mediaTracks,
+                                    index.coerceAtLeast(0)
                                 )
                             }
                         },

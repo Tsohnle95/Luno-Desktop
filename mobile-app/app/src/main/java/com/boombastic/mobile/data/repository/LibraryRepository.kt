@@ -20,6 +20,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
@@ -917,6 +918,34 @@ class LibraryRepository(
     suspend fun getTrack(uri: String) = trackDao.getTrack(uri)
 
     suspend fun deleteTrack(uri: String) = trackDao.deleteTrack(uri)
+
+    /**
+     * Desktop "Fetch missing album art for entire library"
+     * (`views/settings.py` `_on_fetch_artwork`), adapted for Android:
+     * every track whose cached artwork is missing (never extracted, or
+     * the cache file was deleted) is re-scanned for **embedded** artwork
+     * via [ArtworkStorage] against its persisted source (SAF grant /
+     * local file).  Offline by design — the desktop's Deezer/yt-dlp
+     * network fallbacks are not reproduced; YouTube downloads already
+     * store their video thumbnail at download time.
+     *
+     * Returns the number of tracks whose artwork was (re)filled.
+     */
+    suspend fun fetchMissingArtwork(): Int = withContext(Dispatchers.IO) {
+        var updated = 0
+        trackDao.getAllTracksOnce().forEach { track ->
+            val cached = track.albumArtPath
+            val missing = cached.isNullOrBlank() || !File(cached).exists()
+            if (missing) {
+                val path = ArtworkStorage.saveEmbeddedArtwork(context, Uri.parse(track.uri))
+                if (!path.isNullOrBlank()) {
+                    trackDao.updateTrack(track.copy(albumArtPath = path))
+                    updated++
+                }
+            }
+        }
+        updated
+    }
 
     /**
      * Injectable seam for URI-permission persistence.

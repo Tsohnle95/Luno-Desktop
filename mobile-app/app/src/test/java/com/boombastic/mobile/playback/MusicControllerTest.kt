@@ -305,6 +305,12 @@ class MusicControllerTest {
     }
 
     @Test
+    fun `clearRecentlyPlayed does not throw before connection`() {
+        controller.clearRecentlyPlayed()
+        assertThat(controller.recentlyPlayed.value).isEmpty()
+    }
+
+    @Test
     fun `artworkUri is preserved on the built MediaItem`() {
         val original = MediaTrack(
             uri = "content://track/art",

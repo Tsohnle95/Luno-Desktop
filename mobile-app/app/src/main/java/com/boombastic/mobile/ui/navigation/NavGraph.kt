@@ -37,7 +37,7 @@ fun BoomBasticNavHost(
     musicController: MusicController,
     modifier: Modifier = Modifier,
     onCreatePlaylist: () -> Unit,
-    onPlay: (MediaTrack) -> Unit = {},
+    onPlay: (List<MediaTrack>, Int) -> Unit = { _, _ -> },
     onNavigate: () -> Unit = {}
 ) {
     NavHost(

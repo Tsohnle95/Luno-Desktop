@@ -156,4 +156,22 @@ class TrackDaoTest : AppDatabaseTest() {
         assertThat(plain!!.albumArtPath).isNull()
         assertThat(plain.albumArtUri()).isNull()
     }
+
+    @Test
+    fun updateTrack_persistsAlbumArtPathForFetchArtwork() = runBlocking {
+        trackDao.insertTrack(Track(uri = "content://test/fetchart", title = "Fetch Art"))
+
+        trackDao.updateTrack(
+            trackDao.getTrack("content://test/fetchart")!!.copy(
+                albumArtPath = "/data/user/0/com.boombastic.mobile/files/artwork/fetched.jpg"
+            )
+        )
+
+        val updated = trackDao.getTrack("content://test/fetchart")
+        assertThat(updated!!.albumArtPath)
+            .isEqualTo("/data/user/0/com.boombastic.mobile/files/artwork/fetched.jpg")
+        // Update never loses the other columns.
+        assertThat(updated.title).isEqualTo("Fetch Art")
+        assertThat(updated.uri).isEqualTo("content://test/fetchart")
+    }
 }

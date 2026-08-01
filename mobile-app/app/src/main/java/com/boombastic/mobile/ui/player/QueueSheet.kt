@@ -62,8 +62,12 @@ fun QueueSheet(
     val currentTrack by musicController.currentTrack.collectAsState()
     var queueItems by remember { mutableStateOf(musicController.getQueue()) }
 
-    // Refresh the snapshot whenever the playing item changes (queue edits
-    // or track auto-advance).
+    // Refresh the snapshot when the sheet opens (queue may have changed
+    // since it was last shown) and whenever the playing item changes
+    // (queue edits or track auto-advance).
+    LaunchedEffect(Unit) {
+        queueItems = musicController.getQueue()
+    }
     LaunchedEffect(currentTrack?.uri) {
         queueItems = musicController.getQueue()
     }

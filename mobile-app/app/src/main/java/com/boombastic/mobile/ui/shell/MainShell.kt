@@ -24,13 +24,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.UploadFile
@@ -88,6 +94,7 @@ import com.boombastic.mobile.ui.theme.PrimaryBackground
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
 import com.boombastic.mobile.ui.theme.SurfaceDark
+import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -120,6 +127,10 @@ fun MainShell(musicController: MusicController) {
     val context = LocalContext.current
     val navController = rememberNavController()
     var showCreateSheet by rememberSaveable { mutableStateOf(false) }
+    // Drawer settings state: artwork-fetch busy flag + clear-history confirm.
+    var fetchingArtwork by remember { mutableStateOf(false) }
+    var showClearHistoryConfirm by remember { mutableStateOf(false) }
+    var showErrorLog by remember { mutableStateOf(false) }
     val hasActiveItem by musicController.hasActiveItem.collectAsState()
     val currentBackStack by navController.currentBackStackEntryAsState()
     val currentRoute = currentBackStack?.destination?.route
@@ -192,21 +203,25 @@ fun MainShell(musicController: MusicController) {
         contract = ActivityResultContracts.RequestPermission()
     ) { /* grant result intentionally ignored — playback already dispatched */ }
 
-    // Stable onPlay callback used by SearchScreen and LibraryScreen.
-    // Accepts full MediaTrack metadata so MediaItems carry accurate data.
-    val onPlay: (MediaTrack) -> Unit = remember(policy, notificationPermissionLauncher, musicController) {
-        { track: MediaTrack ->
-            if (policy.shouldPrompt(
-                    sdkInt = Build.VERSION.SDK_INT,
-                    isGranted = policy.isGranted(context)
-                )
-            ) {
-                policy.recordPromptAttempted()
-                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    // Stable onPlay callback used by SearchScreen, LibraryScreen and
+    // HomeScreen.  Accepts the FULL playback context (ordered track list +
+    // start index) so next/previous/shuffle work relative to where the
+    // track was picked from (search results, all songs, carousel, ...).
+    val onPlay: (List<MediaTrack>, Int) -> Unit = remember(policy, notificationPermissionLauncher, musicController) {
+        { tracks: List<MediaTrack>, startIndex: Int ->
+            if (tracks.isNotEmpty()) {
+                if (policy.shouldPrompt(
+                        sdkInt = Build.VERSION.SDK_INT,
+                        isGranted = policy.isGranted(context)
+                    )
+                ) {
+                    policy.recordPromptAttempted()
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+                // Playback proceeds regardless of permission state — per Android docs
+                // media-session notifications are exempt from POST_NOTIFICATIONS.
+                musicController.play(tracks, startIndex)
             }
-            // Playback proceeds regardless of permission state — per Android docs
-            // media-session notifications are exempt from POST_NOTIFICATIONS.
-            musicController.play(track)
         }
     }
 
@@ -258,11 +273,46 @@ fun MainShell(musicController: MusicController) {
                     }
                 )
                 DrawerItem(
+                    icon = Icons.Filled.Image,
+                    label = if (fetchingArtwork) "Fetching artwork…" else "Fetch missing artwork",
+                    onClick = {
+                        if (fetchingArtwork) return@DrawerItem
+                        scope.launch { drawerState.close() }
+                        fetchingArtwork = true
+                        app.appScope.launch {
+                            val updated = app.libraryRepository.fetchMissingArtwork()
+                            fetchingArtwork = false
+                            val message = if (updated > 0) {
+                                "Artwork fetched for $updated track(s)"
+                            } else {
+                                "All tracks already have artwork"
+                            }
+                            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
+                DrawerItem(
+                    icon = Icons.Filled.History,
+                    label = "Clear recent history",
+                    onClick = {
+                        scope.launch { drawerState.close() }
+                        showClearHistoryConfirm = true
+                    }
+                )
+                DrawerItem(
                     icon = Icons.Filled.Info,
                     label = "About",
                     onClick = {
                         scope.launch { drawerState.close() }
                         Toast.makeText(context, "Luno v0.1.0", Toast.LENGTH_SHORT).show()
+                    }
+                )
+                DrawerItem(
+                    icon = Icons.Filled.BugReport,
+                    label = "Error log",
+                    onClick = {
+                        scope.launch { drawerState.close() }
+                        showErrorLog = true
                     }
                 )
                 DrawerItem(
@@ -491,6 +541,66 @@ fun MainShell(musicController: MusicController) {
             if (showCreateSheet) {
                 CreatePlaylistSheet(
                     onDismiss = { showCreateSheet = false }
+                )
+            }
+
+            // Clear recent-history confirm (Settings drawer) — desktop
+            // "Clear History" action; in-session history only.
+            if (showClearHistoryConfirm) {
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { showClearHistoryConfirm = false },
+                    containerColor = SurfaceDark,
+                    titleContentColor = PrimaryText,
+                    textContentColor = SecondaryText,
+                    title = { Text("Clear recent history?") },
+                    text = { Text("Recently played tracks will be removed from Home. This cannot be undone.") },
+                    confirmButton = {
+                        androidx.compose.material3.TextButton(onClick = {
+                            musicController.clearRecentlyPlayed()
+                            showClearHistoryConfirm = false
+                            Toast.makeText(context, "Recent history cleared", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Text("Clear", color = AccentGreen)
+                        }
+                    },
+                    dismissButton = {
+                        androidx.compose.material3.TextButton(onClick = { showClearHistoryConfirm = false }) {
+                            Text("Cancel", color = SecondaryText)
+                        }
+                    }
+                )
+            }
+
+            // Error log (Settings drawer) — shows the last captured crash
+            // stack from crash_log.txt, so a crash can be reported without
+            // logcat (desktop error_log-view parity).
+            if (showErrorLog) {
+                val crashLog = remember {
+                    val file = File(context.filesDir, "crash_log.txt")
+                    if (file.exists()) file.readText() else ""
+                }
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { showErrorLog = false },
+                    containerColor = SurfaceDark,
+                    titleContentColor = PrimaryText,
+                    textContentColor = PrimaryText,
+                    title = { Text("Error log") },
+                    text = {
+                        Text(
+                            text = crashLog.ifBlank { "No crashes logged yet." },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SecondaryText,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 360.dp)
+                                .verticalScroll(rememberScrollState())
+                        )
+                    },
+                    confirmButton = {
+                        androidx.compose.material3.TextButton(onClick = { showErrorLog = false }) {
+                            Text("Close", color = AccentGreen)
+                        }
+                    }
                 )
             }
         }

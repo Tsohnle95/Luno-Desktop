@@ -3,6 +3,7 @@ package com.boombastic.mobile
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.util.Log
 import androidx.work.Configuration
 import com.boombastic.mobile.data.db.AppDatabase
 import com.boombastic.mobile.data.repository.DownloadRepository
@@ -16,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import org.schabi.newpipe.extractor.NewPipe
+import java.io.File
 import java.net.CookieManager
 import java.net.CookiePolicy
 import java.net.CookieHandler
@@ -71,6 +73,27 @@ class BoomBasticApp : Application(), Configuration.Provider {
         createDownloadNotificationChannel()
         CookieHandler.setDefault(CookieManager(null, CookiePolicy.ACCEPT_ALL))
         NewPipe.init(NewPipeDownloader())
+        installCrashCapture()
+    }
+
+    /**
+     * Captures any uncaught crash to `filesDir/crash_log.txt` (readable from
+     * the Settings drawer's "Error log" item) before the process dies, so a
+     * reproducible crash can be reported without logcat.  The previous
+     * default handler always runs afterwards.
+     */
+    private fun installCrashCapture() {
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            runCatching {
+                val logFile = File(filesDir, "crash_log.txt")
+                val stack = Log.getStackTraceString(throwable)
+                logFile.appendText(
+                    "=== ${System.currentTimeMillis()} — ${thread.name} ===\n$stack\n\n"
+                )
+            }
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
     }
 
     override val workManagerConfiguration: Configuration

@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import com.boombastic.mobile.data.db.entity.Track
 import kotlinx.coroutines.flow.Flow
 
@@ -23,6 +24,9 @@ interface TrackDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTracks(tracks: List<Track>)
+
+    @Update
+    suspend fun updateTrack(track: Track)
 
     @Query("DELETE FROM tracks WHERE uri = :uri")
     suspend fun deleteTrack(uri: String)

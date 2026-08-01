@@ -3,6 +3,7 @@ package com.boombastic.mobile.playback
 import android.content.ComponentName
 import android.content.Context
 import android.os.Bundle
+import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -129,37 +130,64 @@ class MusicController @JvmOverloads constructor(
     @Volatile internal var lastDispatchedRequest: PlaybackRequest? = null
         private set
 
+    /**
+     * URIs of tracks the user manually queued ("Play next" / "Add to queue").
+     *
+     * Mirrors the desktop `user_queue_count` model (`engine.py`): manually
+     * queued items play **before** the rest of the playback context.  A
+     * URI is removed when its item plays (or is skipped past), so later
+     * insertions still land right after the remaining manual items.
+     *
+     * Main-thread only (all public API runs on the main thread).
+     */
+    private val manualQueueUris = mutableSetOf<String>()
+
     // ── Player listener ──────────────────────────────────────────────────
 
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            _isPlaying.value = isPlaying
-            _hasActiveItem.value = isPlaying || (controller?.mediaItemCount ?: 0) > 0
-            if (isPlaying) startProgressUpdates() else stopProgressUpdates()
+            try {
+                _isPlaying.value = isPlaying
+                _hasActiveItem.value = isPlaying || (controller?.mediaItemCount ?: 0) > 0
+                if (isPlaying) startProgressUpdates() else stopProgressUpdates()
+            } catch (e: Exception) {
+                Log.e(TAG, "listener onIsPlayingChanged failed: ${e.message}")
+            }
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            val metadata = mediaItem?.mediaMetadata
-            _currentTrack.value = metadata?.let {
-                val sessionDuration = controller?.duration ?: 0L
-                MediaTrack(
-                    uri = mediaItem.mediaId,
-                    title = it.title?.toString() ?: "Unknown",
-                    artist = it.artist?.toString() ?: "Unknown",
-                    album = it.albumTitle?.toString() ?: "",
-                    durationMs = metadataDuration(it, sessionDuration),
-                    artworkUri = it.artworkUri?.toString()
-                )
+            try {
+                val metadata = mediaItem?.mediaMetadata
+                // The item we left just played (or was skipped past): it is no
+                // longer "up next", so drop it from the manual-queue set.
+                _currentTrack.value?.let { left -> manualQueueUris.remove(left.uri) }
+                _currentTrack.value = metadata?.let {
+                    val sessionDuration = controller?.duration ?: 0L
+                    MediaTrack(
+                        uri = mediaItem.mediaId,
+                        title = it.title?.toString() ?: "Unknown",
+                        artist = it.artist?.toString() ?: "Unknown",
+                        album = it.albumTitle?.toString() ?: "",
+                        durationMs = metadataDuration(it, sessionDuration),
+                        artworkUri = it.artworkUri?.toString()
+                    )
+                }
+                _hasActiveItem.value = mediaItem != null
+                _duration.value = _currentTrack.value?.durationMs ?: 0L
+                _progress.value = 0L
+                _currentTrack.value?.let(::recordRecentlyPlayed)
+            } catch (e: Exception) {
+                Log.e(TAG, "listener onMediaItemTransition failed: ${e.message}")
             }
-            _hasActiveItem.value = mediaItem != null
-            _duration.value = _currentTrack.value?.durationMs ?: 0L
-            _progress.value = 0L
-            _currentTrack.value?.let(::recordRecentlyPlayed)
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
-            if (playbackState == Player.STATE_READY) {
-                _duration.value = controller?.duration?.coerceAtLeast(0L) ?: 0L
+            try {
+                if (playbackState == Player.STATE_READY) {
+                    _duration.value = controller?.duration?.coerceAtLeast(0L) ?: 0L
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "listener onPlaybackStateChanged failed: ${e.message}")
             }
         }
 
@@ -278,24 +306,24 @@ class MusicController @JvmOverloads constructor(
 
     fun togglePlayPause() {
         if (released) return
-        controller?.let {
-            if (it.isPlaying) it.pause() else it.play()
+        safePlayerCommand("playPause") {
+            controller?.let { if (it.isPlaying) it.pause() else it.play() }
         }
     }
 
     fun seekTo(positionMs: Long) {
         if (released) return
-        controller?.seekTo(positionMs)
+        safePlayerCommand("seek") { controller?.seekTo(positionMs) }
     }
 
     fun skipToNext() {
         if (released) return
-        controller?.seekToNextMediaItem()
+        safePlayerCommand("next") { controller?.seekToNextMediaItem() }
     }
 
     fun skipToPrevious() {
         if (released) return
-        controller?.seekToPreviousMediaItem()
+        safePlayerCommand("previous") { controller?.seekToPreviousMediaItem() }
     }
 
     /**
@@ -304,11 +332,13 @@ class MusicController @JvmOverloads constructor(
      */
     fun toggleRepeatMode() {
         if (released) return
-        controller?.let { ctrl ->
-            ctrl.repeatMode = when (ctrl.repeatMode) {
-                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                else -> Player.REPEAT_MODE_OFF
+        safePlayerCommand("repeatMode") {
+            controller?.let { ctrl ->
+                ctrl.repeatMode = when (ctrl.repeatMode) {
+                    Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                    Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                    else -> Player.REPEAT_MODE_OFF
+                }
             }
         }
     }
@@ -319,8 +349,10 @@ class MusicController @JvmOverloads constructor(
      */
     fun toggleShuffle() {
         if (released) return
-        controller?.let { ctrl ->
-            ctrl.shuffleModeEnabled = !ctrl.shuffleModeEnabled
+        safePlayerCommand("shuffle") {
+            controller?.let { ctrl ->
+                ctrl.shuffleModeEnabled = !ctrl.shuffleModeEnabled
+            }
         }
     }
 
@@ -330,71 +362,111 @@ class MusicController @JvmOverloads constructor(
      */
     fun setShuffle(enabled: Boolean) {
         if (released) return
-        controller?.shuffleModeEnabled = enabled
+        safePlayerCommand("shuffle") { controller?.shuffleModeEnabled = enabled }
     }
 
     /**
      * Snapshot of the current playback queue (in playback order) derived from
-     * the connected player's media items.  Empty before connection.
+     * the connected player's media items.  Empty before connection — and
+     * empty (never a crash) if the player's cached timeline is momentarily
+     * inconsistent while it processes a queue change.
      */
     fun getQueue(): List<MediaTrack> {
         val ctrl = controller ?: return emptyList()
-        return (0 until ctrl.mediaItemCount).map { index ->
-            val item = ctrl.getMediaItemAt(index)
-            val meta = item.mediaMetadata
-            MediaTrack(
-                uri = item.mediaId,
-                title = meta.title?.toString() ?: "Unknown",
-                artist = meta.artist?.toString() ?: "Unknown",
-                album = meta.albumTitle?.toString() ?: "",
-                durationMs = metadataDuration(meta, -1L),
-                artworkUri = meta.artworkUri?.toString(),
-            )
+        return runCatching {
+            (0 until ctrl.mediaItemCount).map { index ->
+                val item = ctrl.getMediaItemAt(index)
+                val meta = item.mediaMetadata
+                MediaTrack(
+                    uri = item.mediaId,
+                    title = meta.title?.toString() ?: "Unknown",
+                    artist = meta.artist?.toString() ?: "Unknown",
+                    album = meta.albumTitle?.toString() ?: "",
+                    durationMs = metadataDuration(meta, -1L),
+                    artworkUri = meta.artworkUri?.toString(),
+                )
+            }
+        }.getOrElse {
+            Log.e(TAG, "getQueue failed: ${it.message}")
+            emptyList()
         }
     }
 
     /**
      * Inserts the track immediately after the currently playing item
-     * ("Play next").  No-op before connection.
+     * ("Play next", desktop `_ctx_play_next` semantics: the item plays
+     * before anything previously queued).  No-op before connection.
      */
     fun playNext(track: MediaTrack) {
         if (released) return
-        val ctrl = controller ?: return
-        val insertAt = if (ctrl.currentMediaItemIndex == C.INDEX_UNSET) {
-            ctrl.mediaItemCount
-        } else {
-            (ctrl.currentMediaItemIndex + 1).coerceAtMost(ctrl.mediaItemCount)
+        safePlayerCommand("playNext") {
+            val ctrl = controller ?: return@safePlayerCommand
+            val currentIndex = ctrl.currentMediaItemIndex
+            val insertAt = if (currentIndex == C.INDEX_UNSET) {
+                0
+            } else {
+                (currentIndex + 1).coerceAtMost(ctrl.mediaItemCount)
+            }
+            ctrl.addMediaItem(insertAt, buildMediaItem(track))
+            manualQueueUris.add(track.uri)
         }
-        ctrl.addMediaItem(insertAt, buildMediaItem(track))
     }
 
     /**
-     * Appends the track to the end of the playback queue.  No-op before
+     * Appends the track to the end of the user-queued ("Up Next") items so
+     * it plays right after the items already queued manually and **before**
+     * the rest of the playback context — the desktop
+     * `queue_idx + 1 + user_queue_count` model (`engine.py`).  No-op before
      * connection.
      */
     fun addToQueue(track: MediaTrack) {
         if (released) return
-        controller?.addMediaItem(buildMediaItem(track))
+        safePlayerCommand("addToQueue") {
+            val ctrl = controller ?: return@safePlayerCommand
+            val currentIndex = ctrl.currentMediaItemIndex
+            val insertAt = if (currentIndex == C.INDEX_UNSET) {
+                ctrl.mediaItemCount
+            } else {
+                (currentIndex + 1 + manualItemsAfterCurrent(ctrl)).coerceAtMost(ctrl.mediaItemCount)
+            }
+            ctrl.addMediaItem(insertAt, buildMediaItem(track))
+            manualQueueUris.add(track.uri)
+        }
     }
 
     /**
      * Moves the queue item at [fromIndex] so it plays at [toIndex].
      * Indexes are clamped to the current queue bounds; no-op before
      * connection or when both indexes are equal.
+     *
+     * A manual reorder resets the Up-Next accounting (the desktop
+     * reorder adjusts `user_queue_count` in place; with a flat queue the
+     * clean equivalent is to forget which items were manually queued).
      */
     fun moveQueueItem(fromIndex: Int, toIndex: Int) {
         if (released) return
-        val ctrl = controller ?: return
-        if (ctrl.mediaItemCount == 0) return
-        val from = fromIndex.coerceIn(0, ctrl.mediaItemCount - 1)
-        val to = toIndex.coerceIn(0, ctrl.mediaItemCount - 1)
-        if (from == to) return
-        ctrl.moveMediaItem(from, to)
+        safePlayerCommand("moveQueueItem") {
+            val ctrl = controller ?: return@safePlayerCommand
+            if (ctrl.mediaItemCount == 0) return@safePlayerCommand
+            val from = fromIndex.coerceIn(0, ctrl.mediaItemCount - 1)
+            val to = toIndex.coerceIn(0, ctrl.mediaItemCount - 1)
+            if (from == to) return@safePlayerCommand
+            ctrl.moveMediaItem(from, to)
+            manualQueueUris.clear()
+        }
+    }
+
+    /**
+     * Clears the in-session recently-played history (desktop
+     * "Clear History" action in `views/recent.py`).
+     */
+    fun clearRecentlyPlayed() {
+        _recentlyPlayed.value = emptyList()
     }
 
     fun stop() {
         if (released) return
-        controller?.stop()
+        safePlayerCommand("stop") { controller?.stop() }
         _isPlaying.value = false
         stopProgressUpdates()
     }
@@ -416,8 +488,10 @@ class MusicController @JvmOverloads constructor(
         stopProgressUpdates()
         scope.cancel()
         _isConnected.value = false
-        controller?.removeListener(listener)
-        controller?.release()
+        runCatching {
+            controller?.removeListener(listener)
+            controller?.release()
+        }
         controller = null
     }
 
@@ -426,16 +500,43 @@ class MusicController @JvmOverloads constructor(
     private fun playOnController(ctrl: MediaController, request: PlaybackRequest): Boolean {
         lastDispatchedRequest = request
         val items = request.items.map(::buildMediaItem)
-        ctrl.apply {
-            stop()
-            clearMediaItems()
-            addMediaItems(items)
-            prepare()
-            seekToDefaultPosition(request.startIndex.coerceIn(0, items.lastIndex))
-            play()
+        // A new playback context resets the Up-Next accounting (desktop:
+        // `play_with_context` resets `user_queue_count` to 0).
+        manualQueueUris.clear()
+        safePlayerCommand("play") {
+            // Atomic queue replacement: a single `setMediaItems` call (with
+            // position reset) replaces the old stop+clear+add sequence.  A
+            // burst of separate timeline commands leaves MediaController's
+            // cached timeline/position transiently inconsistent with the
+            // session (the crash class of androidx/media#86), and shuffle
+            // toggles right after the burst widen that window.
+            ctrl.setMediaItems(items)
+            ctrl.prepare()
+            ctrl.seekToDefaultPosition(request.startIndex.coerceIn(0, items.lastIndex))
+            ctrl.play()
         }
         startProgressUpdates()
         return true
+    }
+
+    /**
+     * Executes a MediaController command defensively: a Media3 race
+     * (controller cached state briefly out of sync with the session during
+     * a queue/shuffle change) must degrade to a logged, user-visible
+     * Snackbar — never a hard crash.
+     */
+    private inline fun safePlayerCommand(
+        operation: String,
+        block: () -> Unit
+    ) {
+        try {
+            block()
+        } catch (e: Exception) {
+            Log.e(TAG, "Player command '$operation' failed: ${e.message}")
+            _playbackError.tryEmit(
+                PlaybackError(sanitizeErrorMessage("$operation failed: ${e.message}"))
+            )
+        }
     }
 
     /**
@@ -491,6 +592,22 @@ class MusicController @JvmOverloads constructor(
         } catch (_: Exception) {
             // Stale future — nothing to clean up.
         }
+    }
+
+    /**
+     * Number of manually queued ("Up Next") items still sitting after the
+     * current one — the desktop `user_queue_count`.  Later manual
+     * insertions land right after them, so they play before the context.
+     */
+    private fun manualItemsAfterCurrent(ctrl: MediaController): Int {
+        if (manualQueueUris.isEmpty()) return 0
+        val currentIndex = ctrl.currentMediaItemIndex
+        if (currentIndex == C.INDEX_UNSET) return manualQueueUris.size
+        var count = 0
+        for (i in (currentIndex + 1) until ctrl.mediaItemCount) {
+            if (ctrl.getMediaItemAt(i).mediaId in manualQueueUris) count++
+        }
+        return count
     }
 
     private fun reportConnectionError(msg: String) {
@@ -556,17 +673,15 @@ class MusicController @JvmOverloads constructor(
     }
 
     /**
-     * Appends a track to the front of the recently-played history,
-     * de-duplicating consecutive repeats and capping at 100 entries.
+     * Records a track in the recently-played history, most recent first,
+     * capped at 100 entries.  Matches the desktop convention
+     * (`engine.py play_current`): a replay is moved to the front, not
+     * duplicated — consecutive or not.
      */
     private fun recordRecentlyPlayed(track: MediaTrack) {
         val current = _recentlyPlayed.value
-        val updated = if (current.firstOrNull()?.uri == track.uri) {
-            current
-        } else {
-            listOf(track) + current
-        }
-        _recentlyPlayed.value = updated.take(MAX_RECENTLY_PLAYED)
+        val withoutTrack = current.filterNot { it.uri == track.uri }
+        _recentlyPlayed.value = (listOf(track) + withoutTrack).take(MAX_RECENTLY_PLAYED)
     }
 
     // ── Async connector (injectable seam for testing) ────────────────────
@@ -587,6 +702,7 @@ class MusicController @JvmOverloads constructor(
         private const val MAX_RECENTLY_PLAYED = 100
         internal const val METADATA_DURATION_MS =
             "com.boombastic.mobile.playback.DURATION_MS"
+        private const val TAG = "MusicController"
     }
 }
 

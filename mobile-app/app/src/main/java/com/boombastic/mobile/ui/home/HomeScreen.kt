@@ -56,7 +56,7 @@ import java.util.Locale
 @Composable
 fun HomeScreen(
     musicController: MusicController,
-    onPlay: (MediaTrack) -> Unit = {},
+    onPlay: (List<MediaTrack>, Int) -> Unit = { _, _ -> },
     onOpenPlaylist: (Long) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -148,7 +148,12 @@ fun HomeScreen(
                             title = track.title,
                             artist = track.artist,
                             artworkUri = track.artworkUri,
-                            onClick = { onPlay(track) }
+                            // Next/prev walk the recent history (desktop
+                            // "Recently Played" context).
+                            onClick = {
+                                val index = history.indexOfFirst { it.uri == track.uri }
+                                onPlay(history, index.coerceAtLeast(0))
+                            }
                         )
                     }
                 }
@@ -169,26 +174,31 @@ fun HomeScreen(
             }
         } else {
             item(key = "made-carousel") {
+                val madeForYou = allTracks.take(10)
                 LazyRow(
                     state = madeForYouListState,
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
                     contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
                 ) {
-                    items(allTracks.take(10), key = { it.uri }) { track ->
+                    items(madeForYou, key = { it.uri }) { track ->
                         TrackCard(
                             title = track.title,
                             artist = track.artist,
                             artworkUri = track.albumArtUri(),
                             onClick = {
+                                val index = madeForYou.indexOfFirst { it.uri == track.uri }
                                 onPlay(
-                                    MediaTrack(
-                                        uri = track.uri,
-                                        title = track.title,
-                                        artist = track.artist,
-                                        album = track.album,
-                                        durationMs = track.durationMs,
-                                        artworkUri = track.albumArtUri()
-                                    )
+                                    madeForYou.map {
+                                        MediaTrack(
+                                            uri = it.uri,
+                                            title = it.title,
+                                            artist = it.artist,
+                                            album = it.album,
+                                            durationMs = it.durationMs,
+                                            artworkUri = it.albumArtUri()
+                                        )
+                                    },
+                                    index.coerceAtLeast(0)
                                 )
                             }
                         )
