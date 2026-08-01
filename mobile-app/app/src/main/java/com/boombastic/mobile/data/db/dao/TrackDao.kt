@@ -31,6 +31,9 @@ interface TrackDao {
     @Query("DELETE FROM tracks WHERE uri = :uri")
     suspend fun deleteTrack(uri: String)
 
+    @Query("UPDATE tracks SET playCount = playCount + 1 WHERE uri = :uri")
+    suspend fun incrementPlayCount(uri: String)
+
     @Query("SELECT COUNT(*) FROM tracks")
     suspend fun trackCount(): Int
 

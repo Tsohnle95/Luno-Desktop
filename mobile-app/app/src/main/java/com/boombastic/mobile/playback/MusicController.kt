@@ -53,7 +53,8 @@ import kotlinx.coroutines.launch
  */
 class MusicController @JvmOverloads constructor(
     private val context: Context,
-    internal val connector: AsyncConnector = AsyncConnector.Default
+    internal val connector: AsyncConnector = AsyncConnector.Default,
+    private val onTrackPlayed: (String) -> Unit = {}
 ) {
 
     // ── Exceptions / errors ──────────────────────────────────────────────
@@ -175,7 +176,10 @@ class MusicController @JvmOverloads constructor(
                 _hasActiveItem.value = mediaItem != null
                 _duration.value = _currentTrack.value?.durationMs ?: 0L
                 _progress.value = 0L
-                _currentTrack.value?.let(::recordRecentlyPlayed)
+                _currentTrack.value?.let { track ->
+                    recordRecentlyPlayed(track)
+                    runCatching { onTrackPlayed(track.uri) }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "listener onMediaItemTransition failed: ${e.message}")
             }

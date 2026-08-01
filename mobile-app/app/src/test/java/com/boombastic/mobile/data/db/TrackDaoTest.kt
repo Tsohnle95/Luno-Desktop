@@ -126,6 +126,16 @@ class TrackDaoTest : AppDatabaseTest() {
     }
 
     @Test
+    fun incrementPlayCount_recordsLocalPopularity() = runBlocking {
+        trackDao.insertTrack(Track(uri = "content://test/popular", title = "Popular"))
+
+        trackDao.incrementPlayCount("content://test/popular")
+        trackDao.incrementPlayCount("content://test/popular")
+
+        assertThat(trackDao.getTrack("content://test/popular")!!.playCount).isEqualTo(2)
+    }
+
+    @Test
     fun trackCount_returnsCorrectCount() = runBlocking {
         assertThat(trackDao.trackCount()).isEqualTo(0)
 

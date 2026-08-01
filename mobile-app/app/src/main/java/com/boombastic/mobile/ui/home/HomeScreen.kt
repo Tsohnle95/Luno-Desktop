@@ -56,8 +56,9 @@ import java.util.Locale
 
 /**
  * Spotify-inspired Home: greeting, edge-clipped "Recently played" and
- * randomized 50-song "Made for you" carousels, and a quick-action playlist grid.  The
- * Settings drawer is opened from the tappable "Luno" app header instead
+ * randomized 50-song "Made for you" carousel, and local "Most popular" song
+ * and playlist carousels. The Settings drawer is opened from the tappable
+ * "Luno" app header instead
  * of a profile icon.
  */
 @Composable
@@ -100,7 +101,8 @@ fun HomeScreen(
     // changes) — with per-item remembers the state could reset or jump.
     val recentlyPlayedListState = rememberLazyListState()
     val madeForYouListState = rememberLazyListState()
-    val playlistsListState = rememberLazyListState()
+    val popularTracksListState = rememberLazyListState()
+    val popularPlaylistsListState = rememberLazyListState()
 
     // Keep one random catalogue sample stable for the lifetime of the
     // current library snapshot. This avoids reshuffling while the screen
@@ -117,6 +119,37 @@ fun HomeScreen(
                 artworkUri = it.albumArtUri()
             )
         }
+    }
+    val popularTracks = remember(allTracks) {
+        allTracks
+            .filter { it.playCount > 0 }
+            .sortedWith(
+                compareByDescending<Track> { it.playCount }
+                    .thenBy { it.title.lowercase() }
+            )
+            .take(20)
+    }
+    val popularTracksMedia = remember(popularTracks) {
+        popularTracks.map {
+            MediaTrack(
+                uri = it.uri,
+                title = it.title,
+                artist = it.artist,
+                album = it.album,
+                durationMs = it.durationMs,
+                artworkUri = it.albumArtUri()
+            )
+        }
+    }
+    val popularPlaylists = remember(playlistsWithTracks) {
+        playlistsWithTracks
+            .map { playlistWithTracks ->
+                playlistWithTracks to playlistWithTracks.tracks.sumOf { it.playCount }
+            }
+            .filter { (_, playCount) -> playCount > 0 }
+            .sortedByDescending { it.second }
+            .map { it.first }
+            .take(10)
     }
 
     // Edge-to-edge column; each section supplies its own horizontal padding
@@ -227,30 +260,62 @@ fun HomeScreen(
             }
         }
 
-        // Quick-action playlists — horizontal carousel (same layout as
-        // "Made for you"), edge-clipped
-        item(key = "playlists-header") {
-            SectionHeader(title = "Your playlists")
+        // Most popular — local play counts are persisted in Room. Songs and
+        // playlists are kept in separate edge-clipped carousels.
+        item(key = "popular-header") {
+            SectionHeader(
+                title = "Most popular",
+                supportingText = "Based on your local play counts"
+            )
         }
-        if (playlistsWithTracks.isEmpty()) {
-            item(key = "playlists-empty") {
+        if (popularTracks.isEmpty() && popularPlaylists.isEmpty()) {
+            item(key = "popular-empty") {
                 EmptyStateCard(
-                    title = "No playlists yet",
-                    subtitle = "Create one from Your Library",
+                    title = "Nothing popular yet",
+                    subtitle = "Play songs to build your local favorites",
                     modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                 )
             }
-        } else {
-            item(key = "playlists-carousel") {
+        }
+        if (popularTracks.isNotEmpty()) {
+            item(key = "popular-songs-header") {
+                SectionHeader(title = "Popular songs")
+            }
+            item(key = "popular-songs-carousel") {
                 LazyRow(
-                    state = playlistsListState,
+                    state = popularTracksListState,
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
                     contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
                 ) {
-                    items(playlistsWithTracks, key = { it.playlist.id }) { playlistWithTracks ->
+                    items(popularTracks, key = { it.uri }) { track ->
+                        TrackCard(
+                            title = track.title,
+                            artist = track.artist,
+                            artworkUri = track.albumArtUri(),
+                            onClick = {
+                                val index = popularTracks.indexOfFirst { it.uri == track.uri }
+                                onPlay(popularTracksMedia, index.coerceAtLeast(0))
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        if (popularPlaylists.isNotEmpty()) {
+            item(key = "popular-playlists-header") {
+                SectionHeader(title = "Popular playlists")
+            }
+            item(key = "popular-playlists-carousel") {
+                LazyRow(
+                    state = popularPlaylistsListState,
+                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+                    contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
+                ) {
+                    items(popularPlaylists, key = { it.playlist.id }) { playlistWithTracks ->
                         HomePlaylistCard(
                             name = playlistWithTracks.playlist.name,
                             tracks = playlistWithTracks.tracks,
+                            subtitle = "${playlistWithTracks.tracks.sumOf { it.playCount }} plays",
                             onClick = { onOpenPlaylist(playlistWithTracks.playlist.id) }
                         )
                     }
@@ -263,12 +328,13 @@ fun HomeScreen(
 /**
  * Home-only playlist card matching the "Made for you" TrackCard layout:
  * square artwork (first track's image — no collage on Home) on top, name
- * below, track count as the subtitle.
+ * below, the popularity count as the subtitle.
  */
 @Composable
 private fun HomePlaylistCard(
     name: String,
     tracks: List<Track>,
+    subtitle: String,
     onClick: () -> Unit
 ) {
     Column(
@@ -297,7 +363,7 @@ private fun HomePlaylistCard(
             overflow = TextOverflow.Ellipsis
         )
         Text(
-            text = "${tracks.size} songs",
+            text = subtitle,
             style = MaterialTheme.typography.bodySmall,
             color = SecondaryText,
             maxLines = 1,

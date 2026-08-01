@@ -19,6 +19,7 @@ import com.boombastic.mobile.ui.discover.DiscoverScreen
 import com.boombastic.mobile.ui.downloads.DownloadsScreen
 import com.boombastic.mobile.ui.home.HomeScreen
 import com.boombastic.mobile.ui.library.LibraryScreen
+import com.boombastic.mobile.ui.library.DuplicateScreen
 import com.boombastic.mobile.ui.library.PlaylistDetailScreen
 import com.boombastic.mobile.ui.player.FullPlayerScreen
 import com.boombastic.mobile.ui.player.RecentsScreen
@@ -31,6 +32,7 @@ object Routes {
     const val DISCOVER = "discover"
     const val DOWNLOADS = "downloads"
     const val RECENTS = "recents"
+    const val DUPLICATES = "duplicates"
     const val FULL_PLAYER = "full_player"
     const val MADE_FOR_YOU = "made_for_you"
 
@@ -121,6 +123,14 @@ fun BoomBasticNavHost(
         composable(Routes.RECENTS) {
             RecentsScreen(
                 musicController = musicController,
+                onBack = {
+                    onNavigate()
+                    navController.navigateUp()
+                }
+            )
+        }
+        composable(Routes.DUPLICATES) {
+            DuplicateScreen(
                 onBack = {
                     onNavigate()
                     navController.navigateUp()

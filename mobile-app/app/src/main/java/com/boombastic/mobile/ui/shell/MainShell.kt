@@ -35,6 +35,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
@@ -136,6 +138,10 @@ fun MainShell(musicController: MusicController) {
     var showClearHistoryConfirm by remember { mutableStateOf(false) }
     var showErrorLog by remember { mutableStateOf(false) }
     var showLastfmKeyDialog by remember { mutableStateOf(false) }
+    var librarySettingsExpanded by rememberSaveable { mutableStateOf(true) }
+    var downloadsSettingsExpanded by rememberSaveable { mutableStateOf(true) }
+    var historySettingsExpanded by rememberSaveable { mutableStateOf(false) }
+    var appSettingsExpanded by rememberSaveable { mutableStateOf(false) }
     val hasActiveItem by musicController.hasActiveItem.collectAsState()
     val currentBackStack by navController.currentBackStackEntryAsState()
     val currentRoute = currentBackStack?.destination?.route
@@ -238,7 +244,9 @@ fun MainShell(musicController: MusicController) {
         drawerContent = {
             ModalDrawerSheet(
                 drawerContainerColor = SurfaceDark,
-                modifier = Modifier.fillMaxWidth(0.8f)
+                modifier = Modifier
+                    .fillMaxWidth(0.8f)
+                    .verticalScroll(rememberScrollState())
             ) {
                 // Drawer header
                 Text(
@@ -253,96 +261,135 @@ fun MainShell(musicController: MusicController) {
                 )
 
                 // Local-function drawer — never contains cloud accounts.
-                DrawerItem(
-                    icon = Icons.Filled.Download,
-                    label = "Downloads",
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        transitionMask = true
-                        navController.navigate(Routes.DOWNLOADS) {
-                            launchSingleTop = true
-                        }
-                    }
-                )
-                DrawerItem(
+                SettingsAccordion(
+                    title = "Library",
                     icon = Icons.Filled.Folder,
-                    label = "Music folder",
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        folderImportLauncher.launch(null)
-                    }
-                )
-                DrawerItem(
-                    icon = Icons.Filled.Key,
-                    label = "Last.fm API key",
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        showLastfmKeyDialog = true
-                    }
-                )
-                DrawerItem(
-                    icon = Icons.Filled.UploadFile,
-                    label = "Export / Import",
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        Toast.makeText(context, "Export / Import coming soon", Toast.LENGTH_SHORT).show()
-                    }
-                )
-                DrawerItem(
-                    icon = Icons.Filled.Image,
-                    label = if (artworkStatus is ArtworkFetchStatus.Progress) {
-                        "Fetching artwork…"
-                    } else {
-                        "Fetch missing artwork"
-                    },
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        app.artworkFetchManager.start()
-                    }
-                )
-                DrawerItem(
-                    icon = Icons.Filled.History,
-                    label = "Recently played",
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        transitionMask = true
-                        navController.navigate(Routes.RECENTS) {
-                            launchSingleTop = true
+                    expanded = librarySettingsExpanded,
+                    onToggle = { librarySettingsExpanded = !librarySettingsExpanded }
+                ) {
+                    DrawerItem(
+                        icon = Icons.Filled.Folder,
+                        label = "Music folder",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            folderImportLauncher.launch(null)
                         }
-                    }
-                )
-                DrawerItem(
-                    icon = Icons.Filled.DeleteSweep,
-                    label = "Clear recent history",
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        showClearHistoryConfirm = true
-                    }
-                )
-                DrawerItem(
+                    )
+                    DrawerItem(
+                        icon = Icons.Filled.DeleteSweep,
+                        label = "Duplicate checker",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            transitionMask = true
+                            navController.navigate(Routes.DUPLICATES) {
+                                launchSingleTop = true
+                            }
+                        }
+                    )
+                    DrawerItem(
+                        icon = Icons.Filled.Image,
+                        label = if (artworkStatus is ArtworkFetchStatus.Progress) {
+                            "Fetching artwork…"
+                        } else {
+                            "Fetch missing artwork"
+                        },
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            app.artworkFetchManager.start()
+                        }
+                    )
+                }
+                SettingsAccordion(
+                    title = "Downloads",
+                    icon = Icons.Filled.Download,
+                    expanded = downloadsSettingsExpanded,
+                    onToggle = { downloadsSettingsExpanded = !downloadsSettingsExpanded }
+                ) {
+                    DrawerItem(
+                        icon = Icons.Filled.Download,
+                        label = "Downloads",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            transitionMask = true
+                            navController.navigate(Routes.DOWNLOADS) {
+                                launchSingleTop = true
+                            }
+                        }
+                    )
+                    DrawerItem(
+                        icon = Icons.Filled.UploadFile,
+                        label = "Export / Import",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            Toast.makeText(context, "Export / Import coming soon", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                }
+                SettingsAccordion(
+                    title = "History & discovery",
+                    icon = Icons.Filled.History,
+                    expanded = historySettingsExpanded,
+                    onToggle = { historySettingsExpanded = !historySettingsExpanded }
+                ) {
+                    DrawerItem(
+                        icon = Icons.Filled.Key,
+                        label = "Last.fm API key",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            showLastfmKeyDialog = true
+                        }
+                    )
+                    DrawerItem(
+                        icon = Icons.Filled.History,
+                        label = "Recently played",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            transitionMask = true
+                            navController.navigate(Routes.RECENTS) {
+                                launchSingleTop = true
+                            }
+                        }
+                    )
+                    DrawerItem(
+                        icon = Icons.Filled.DeleteSweep,
+                        label = "Clear recent history",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            showClearHistoryConfirm = true
+                        }
+                    )
+                }
+                SettingsAccordion(
+                    title = "App",
                     icon = Icons.Filled.Info,
-                    label = "About",
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        Toast.makeText(context, "Luno v0.1.0", Toast.LENGTH_SHORT).show()
-                    }
-                )
-                DrawerItem(
-                    icon = Icons.Filled.BugReport,
-                    label = "Error log",
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        showErrorLog = true
-                    }
-                )
-                DrawerItem(
-                    icon = Icons.Filled.SystemUpdate,
-                    label = "Check for updates",
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        Toast.makeText(context, "Update check coming soon", Toast.LENGTH_SHORT).show()
-                    }
-                )
+                    expanded = appSettingsExpanded,
+                    onToggle = { appSettingsExpanded = !appSettingsExpanded }
+                ) {
+                    DrawerItem(
+                        icon = Icons.Filled.Info,
+                        label = "About",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            Toast.makeText(context, "Luno v0.1.0", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                    DrawerItem(
+                        icon = Icons.Filled.BugReport,
+                        label = "Error log",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            showErrorLog = true
+                        }
+                    )
+                    DrawerItem(
+                        icon = Icons.Filled.SystemUpdate,
+                        label = "Check for updates",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            Toast.makeText(context, "Update check coming soon", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                }
             }
         }
     ) {
@@ -804,6 +851,57 @@ private fun AppHeader(onClick: () -> Unit) {
                 .clip(RoundedCornerShape(2.dp))
                 .background(AccentGreen)
         )
+    }
+}
+
+@Composable
+private fun SettingsAccordion(
+    title: String,
+    icon: ImageVector,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(Dimens.cornerMedium))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onToggle
+                )
+                .padding(
+                    horizontal = Dimens.paddingLarge,
+                    vertical = Dimens.paddingMedium
+                ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = AccentGreen,
+                modifier = Modifier.size(Dimens.iconSize)
+            )
+            Spacer(modifier = Modifier.width(Dimens.paddingLarge))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = PrimaryText,
+                modifier = Modifier.weight(1f)
+            )
+            Icon(
+                imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "Collapse $title" else "Expand $title",
+                tint = SecondaryText
+            )
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column(modifier = Modifier.padding(start = Dimens.paddingMedium)) {
+                content()
+            }
+        }
     }
 }
 

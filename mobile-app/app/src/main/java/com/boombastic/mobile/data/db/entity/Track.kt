@@ -13,6 +13,7 @@ data class Track(
     val album: String = "",
     val durationMs: Long = 0L,
     val albumArtPath: String? = null,
+    val playCount: Int = 0,
     val addedAt: Long = System.currentTimeMillis()
 ) {
     /** `file://` URI of the cached artwork, or `null` when unavailable. */

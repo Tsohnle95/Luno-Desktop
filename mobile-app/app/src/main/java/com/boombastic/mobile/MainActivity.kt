@@ -12,6 +12,7 @@ import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.shell.MainShell
 import com.boombastic.mobile.ui.theme.BoomBasticTheme
 import com.boombastic.mobile.ui.theme.PrimaryBackground
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -22,7 +23,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        musicController = MusicController(this)
+        val app = application as BoomBasticApp
+        musicController = MusicController(
+            this,
+            onTrackPlayed = { uri ->
+                app.appScope.launch {
+                    app.libraryRepository.recordPlayback(uri)
+                }
+            }
+        )
         musicController.initialize()
 
         setContent {
