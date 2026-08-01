@@ -94,11 +94,11 @@ fun BoomBasticNavHost(
         }
         composable(Routes.SEARCH) {
             SearchScreen(
-                musicController = musicController,
-                onPlay = onPlay,
-                onOpenPlaylist = { playlistId ->
+                onOpenDownloads = {
                     onNavigate()
-                    navController.navigate(Routes.playlistDetail(playlistId))
+                    navController.navigate(Routes.DOWNLOADS) {
+                        launchSingleTop = true
+                    }
                 }
             )
         }

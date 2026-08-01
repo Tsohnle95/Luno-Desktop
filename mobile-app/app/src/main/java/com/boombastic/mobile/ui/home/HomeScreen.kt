@@ -152,7 +152,7 @@ fun HomeScreen(
             item(key = "recently-empty") {
                 EmptyStateCard(
                     title = "No tracks yet",
-                    subtitle = "Import audio from the Search tab to get started",
+                    subtitle = "Use Download to find music and get started",
                     modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                 )
             }

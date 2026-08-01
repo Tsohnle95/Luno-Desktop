@@ -207,7 +207,7 @@ fun DownloadsScreen() {
         if (downloads.isEmpty()) {
             item {
                 Text(
-                    text = "No downloads yet. Search for music in the Search tab.",
+                    text = "No downloads yet. Use Download to find music.",
                     color = SecondaryText,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(vertical = Dimens.paddingMedium)

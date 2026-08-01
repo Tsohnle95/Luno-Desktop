@@ -122,7 +122,7 @@ private data class BottomNavItem(
 
 private val bottomNavItems = listOf(
     BottomNavItem("Home", R.drawable.ic_home, Routes.HOME),
-    BottomNavItem("Search", R.drawable.ic_search, Routes.SEARCH),
+    BottomNavItem("Download", R.drawable.ic_download, Routes.SEARCH),
     BottomNavItem("Your Library", R.drawable.ic_library, Routes.LIBRARY),
     BottomNavItem("Discover", R.drawable.ic_discover, Routes.DISCOVER)
 )
@@ -211,10 +211,10 @@ fun MainShell(musicController: MusicController) {
         contract = ActivityResultContracts.RequestPermission()
     ) { /* grant result intentionally ignored — playback already dispatched */ }
 
-    // Stable onPlay callback used by SearchScreen, LibraryScreen and
-    // HomeScreen.  Accepts the FULL playback context (ordered track list +
+    // Stable onPlay callback used by LibraryScreen and HomeScreen.
+    // Accepts the FULL playback context (ordered track list +
     // start index) so next/previous/shuffle work relative to where the
-    // track was picked from (search results, all songs, carousel, ...).
+    // track was picked from (all songs, carousel, playlist, ...).
     val onPlay: (List<MediaTrack>, Int) -> Unit = remember(policy, notificationPermissionLauncher, musicController) {
         { tracks: List<MediaTrack>, startIndex: Int ->
             if (tracks.isNotEmpty()) {
@@ -369,7 +369,7 @@ fun MainShell(musicController: MusicController) {
                                 )
                             }
 
-                            // Bottom navigation: Home / Search / Library /
+                            // Bottom navigation: Home / Download / Library /
                             // Discover / Create.  Downloads and other local
                             // functions live in the options drawer.
                             NavigationBar(
@@ -414,7 +414,7 @@ fun MainShell(musicController: MusicController) {
                                             Icon(
                                                 imageVector = ImageVector.vectorResource(id = item.icon),
                                                 contentDescription = item.label,
-                                                // Search (and Create below) render at 28dp — their
+                                                // Download (and Create below) render at 28dp — their
                                                 // glyphs are optically smaller than the other tabs.
                                                 modifier = Modifier.size(
                                                     if (item.route == Routes.SEARCH) {

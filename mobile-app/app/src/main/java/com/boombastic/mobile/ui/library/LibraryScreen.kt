@@ -474,7 +474,7 @@ fun LibraryScreen(
                 item {
                     Text(
                         text = if (query.isBlank()) {
-                            "Import audio files or search the web from the Search tab."
+                            "Import audio files or use Download to find music."
                         } else {
                             "No tracks match \"$query\"."
                         },

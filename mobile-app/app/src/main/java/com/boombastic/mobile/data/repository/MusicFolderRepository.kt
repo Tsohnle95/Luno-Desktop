@@ -6,7 +6,7 @@ import android.net.Uri
 /**
  * Persists the user's chosen music folder (SAF tree URI) so the folder
  * destination survives app restarts and can be re-imported / changed from
- * the Settings drawer or the Search tab.
+ * the Settings drawer.
  */
 class MusicFolderRepository(context: Context) {
 

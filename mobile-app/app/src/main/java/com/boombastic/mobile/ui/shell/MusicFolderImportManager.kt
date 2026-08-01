@@ -17,7 +17,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Live state of the desktop-style music-folder import, rendered as a strip
- * in the shell (Settings-drawer launcher) and on the Search tab.  `null`
+ * in the shell from the Settings-drawer launcher.  `null`
  * means no import is running or being reported.
  */
 sealed interface FolderImportStatus {
