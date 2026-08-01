@@ -46,7 +46,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.BoomBasticApp
 import com.boombastic.mobile.data.db.dao.PlaylistWithTracks
@@ -106,6 +108,7 @@ fun PlaylistDetailScreen(
     // transition (membership changes flow in live too).
     val playlists by app.libraryData.playlists.collectAsState()
     val playlistWithTracks = playlists.firstOrNull { it.playlist.id == playlistId }
+    val shuffleEnabled by musicController.shuffleEnabled.collectAsState()
 
     // All-or-nothing first render: hold the screen behind one static
     // placeholder instead of showing the top bar and then the header and
@@ -215,7 +218,8 @@ fun PlaylistDetailScreen(
                     onSearch = { showSearch = !showSearch },
                     searchVisible = showSearch,
                     sortMode = sortMode,
-                    onSortModeChange = { sortMode = it }
+                    onSortModeChange = { sortMode = it },
+                    shuffleActive = shuffleEnabled
                 )
             }
 
@@ -315,7 +319,8 @@ private fun PlaylistHeader(
     onSearch: (() -> Unit)? = null,
     searchVisible: Boolean = false,
     sortMode: TrackSortMode = TrackSortMode.AZ,
-    onSortModeChange: ((TrackSortMode) -> Unit)? = null
+    onSortModeChange: ((TrackSortMode) -> Unit)? = null,
+    shuffleActive: Boolean = false
 ) {
     Column(modifier = Modifier.padding(horizontal = Dimens.paddingLarge)) {
         Spacer(modifier = Modifier.height(Dimens.paddingLarge))
@@ -360,7 +365,10 @@ private fun PlaylistHeader(
         Spacer(modifier = Modifier.height(Dimens.paddingLarge))
 
         if (onPlayAll != null) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Button(
                     onClick = onPlayAll,
                     colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
@@ -398,16 +406,25 @@ private fun PlaylistHeader(
                         Text(
                             text = "Shuffle",
                             style = MaterialTheme.typography.labelLarge,
-                            color = AccentGreen
+                            color = AccentGreen,
+                            fontWeight = if (shuffleActive) {
+                                FontWeight.Bold
+                            } else {
+                                FontWeight.Medium
+                            },
+                            textDecoration = if (shuffleActive) {
+                                TextDecoration.Underline
+                            } else {
+                                TextDecoration.None
+                            }
                         )
                     }
                 }
 
-                // Sort chip — the Library tab's filter button setup: the
-                // same shared SortChip (A–Z / Z–A / Recent / Duration,
-                // longest first), sitting under the Play button.
+                Spacer(modifier = Modifier.weight(1f))
+
+                // Filter menu stays opposite Play at the far right.
                 if (onSortModeChange != null) {
-                    Spacer(modifier = Modifier.height(Dimens.paddingSmall))
                     SortChip(
                         mode = sortMode,
                         onModeChange = onSortModeChange,

@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -50,7 +50,7 @@ fun List<Track>.sortedByMode(mode: TrackSortMode): List<Track> = when (mode) {
 
 /**
  * The accent-green sort control with its mode dropdown. In [compact] mode it
- * becomes a filter-icon-only control for dense headers; the selected mode
+ * becomes an arrow-only control for dense headers; the selected mode
  * still lives in the caller (rememberSaveable in the screens).
  */
 @Composable
@@ -64,7 +64,7 @@ fun SortChip(
         if (compact) {
             androidx.compose.material3.IconButton(onClick = { showMenu = true }) {
                 Icon(
-                    imageVector = Icons.Filled.FilterList,
+                    imageVector = Icons.Filled.KeyboardArrowDown,
                     contentDescription = "Sort: ${mode.label}",
                     tint = AccentGreen,
                     modifier = Modifier.size(Dimens.iconSize)
@@ -83,7 +83,7 @@ fun SortChip(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    imageVector = Icons.Filled.FilterList,
+                    imageVector = Icons.Filled.KeyboardArrowDown,
                     contentDescription = null,
                     tint = AccentGreen,
                     modifier = Modifier.size(Dimens.iconSize)

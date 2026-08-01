@@ -213,16 +213,26 @@ fun FullPlayerScreen(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
-                    onClick = { musicController.toggleShuffle() },
-                    modifier = Modifier.size(Dimens.touchTargetMin)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Shuffle,
-                        contentDescription = "Shuffle",
-                        tint = if (shuffleEnabled) AccentGreen else SecondaryText,
-                        modifier = Modifier.size(Dimens.iconSizeSmall)
-                    )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    IconButton(
+                        onClick = { musicController.toggleShuffle() },
+                        modifier = Modifier.size(Dimens.touchTargetMin)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Shuffle,
+                            contentDescription = "Shuffle",
+                            tint = if (shuffleEnabled) AccentGreen else SecondaryText,
+                            modifier = Modifier.size(Dimens.iconSizeSmall)
+                        )
+                    }
+                    if (shuffleEnabled) {
+                        Box(
+                            modifier = Modifier
+                                .width(Dimens.iconSizeSmall)
+                                .height(2.dp)
+                                .background(AccentGreen)
+                        )
+                    }
                 }
                 IconButton(
                     onClick = { musicController.skipToPrevious() },

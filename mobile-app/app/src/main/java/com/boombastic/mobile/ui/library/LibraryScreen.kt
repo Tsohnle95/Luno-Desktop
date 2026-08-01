@@ -50,7 +50,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.BoomBasticApp
 import com.boombastic.mobile.data.db.entity.Playlist
@@ -97,6 +99,7 @@ fun LibraryScreen(
     val playlistsWithTracks by libraryData.playlists.collectAsState()
     val downloads by libraryData.downloads.collectAsState()
     val libraryLoaded by libraryData.loaded.collectAsState()
+    val shuffleEnabled by musicController.shuffleEnabled.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
     var playlistView by rememberSaveable { mutableStateOf(false) }
     var sortMode by rememberSaveable { mutableStateOf(TrackSortMode.AZ) }
@@ -265,7 +268,17 @@ fun LibraryScreen(
                         Text(
                             text = "Shuffle",
                             style = MaterialTheme.typography.labelLarge,
-                            color = AccentGreen
+                            color = AccentGreen,
+                            fontWeight = if (shuffleEnabled) {
+                                FontWeight.Bold
+                            } else {
+                                FontWeight.Medium
+                            },
+                            textDecoration = if (shuffleEnabled) {
+                                TextDecoration.Underline
+                            } else {
+                                TextDecoration.None
+                            }
                         )
                     }
                 }
