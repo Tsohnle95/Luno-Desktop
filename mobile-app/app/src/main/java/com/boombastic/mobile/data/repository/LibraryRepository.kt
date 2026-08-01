@@ -23,6 +23,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
@@ -476,15 +477,29 @@ class LibraryRepository(
         // `.../children` (Samsung-style) — a provider that HANGS on it is
         // wasting the import.  If the primary path times out or is
         // rejected, the fallback is still tried before giving up.
+        val answered = booleanArrayOf(false, false)
         for ((index, queryUri) in queryUris.withIndex()) {
             val timeoutMs = if (index == 0) QUERY_TIMEOUT_MS else FALLBACK_QUERY_TIMEOUT_MS
             val rows = queryTreeRows(queryUri, timeoutMs)
             if (rows == null) continue // unlistable — try the fallback path
+            answered[index] = true
             if (rows.isNotEmpty()) return rows
         }
-        // Both query paths answered successfully with no rows: genuinely
-        // empty folder.
-        return emptyList()
+        if (answered.all { it }) {
+            // Both query paths answered successfully with no rows:
+            // genuinely empty folder.
+            return emptyList()
+        }
+        // Some path never answered.  An empty answer from ONE path is not
+        // proof of an empty folder: on Samsung-style providers the
+        // canonical `.../children` query always answers empty (it is
+        // unsupported), so the fallback is the authoritative listing —
+        // and a provider whose canonical listing is unlistable may be
+        // hiding rows the fallback could not reach.  The folder could NOT
+        // be verified as empty, so report it as unlistable instead of
+        // silently dropping its files (the silent-skip bug that produced
+        // random partial counts with 0 errors).
+        return null
     }
 
     /**
@@ -504,7 +519,7 @@ class LibraryRepository(
         timeoutMs: Long
     ): List<Triple<String, String, String>>? {
         repeat(QUERY_RETRIES) {
-            val rows = withAbandonableTimeout(timeoutMs) { queryTreeRowsBlocking(queryUri) }
+            val rows = withListingTimeout(timeoutMs) { queryTreeRowsBlocking(queryUri) }
             if (rows != null) return rows
         }
         return null
@@ -512,7 +527,7 @@ class LibraryRepository(
 
     private fun queryTreeRowsBlocking(
         queryUri: Uri
-    ): List<Triple<String, String, String>> {
+    ): List<Triple<String, String, String>>? {
         val children = mutableListOf<Triple<String, String, String>>()
         val resolver = context.contentResolver
         val projection = arrayOf(
@@ -520,7 +535,7 @@ class LibraryRepository(
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
             DocumentsContract.Document.COLUMN_MIME_TYPE
         )
-        runCatching {
+        return try {
             resolver.query(queryUri, projection, null, null, null)?.use { cursor ->
                 val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
@@ -534,8 +549,15 @@ class LibraryRepository(
                     }
                 }
             }
+            children
+        } catch (_: Throwable) {
+            // The query FAILED (rejected URI, TransactionTooLargeException
+            // on an enormous folder, provider crash...) — that is
+            // "unlistable", NEVER "empty".  Returning null lets the caller
+            // retry and finally report the folder as an error instead of
+            // silently dropping its files.
+            null
         }
-        return children
     }
 
     /**
@@ -601,7 +623,7 @@ class LibraryRepository(
         toUri: (String) -> Uri?
     ): List<Triple<Uri, String, String>>? {
         repeat(QUERY_RETRIES) {
-            val rows = withAbandonableTimeout(QUERY_TIMEOUT_MS) {
+            val rows = withListingTimeout(QUERY_TIMEOUT_MS) {
                 queryDocumentRowsBlocking(queryUri, toUri)
             }
             if (rows != null) return rows
@@ -612,7 +634,7 @@ class LibraryRepository(
     private fun queryDocumentRowsBlocking(
         queryUri: Uri,
         toUri: (String) -> Uri?
-    ): List<Triple<Uri, String, String>> {
+    ): List<Triple<Uri, String, String>>? {
         val rows = mutableListOf<Triple<Uri, String, String>>()
         val resolver = context.contentResolver
         val projection = arrayOf(
@@ -620,7 +642,7 @@ class LibraryRepository(
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
             DocumentsContract.Document.COLUMN_MIME_TYPE
         )
-        runCatching {
+        return try {
             resolver.query(queryUri, projection, null, null, null)?.use { cursor ->
                 val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
@@ -637,8 +659,12 @@ class LibraryRepository(
                     }
                 }
             }
+            rows
+        } catch (_: Throwable) {
+            // The query FAILED — "unlistable", never "empty" (see
+            // [queryTreeRowsBlocking]).
+            null
         }
-        return rows
     }
 
     /**
@@ -768,27 +794,42 @@ class LibraryRepository(
             )
 
     /**
-     * Runs [block] on the extraction thread pool with a hard timeout and
-     * returns `null` when it does not finish in time.  The blocked thread
-     * is abandoned (it may never finish — `MediaMetadataRetriever` and
-     * some DocumentsProvider queries can block forever on corrupt files),
-     * so the import can never be frozen by a single file or query.
+     * Runs [block] on [executor] with a hard timeout and returns `null`
+     * when it does not finish in time.  A blocked thread is abandoned (it
+     * may never finish — `MediaMetadataRetriever` and some
+     * DocumentsProvider queries can block forever on corrupt files), so
+     * the import can never be frozen by a single file or query.  A block
+     * failure resumes the caller with the exception immediately (never
+     * burning the full timeout window on every retry).
      */
-    private suspend fun <T> withAbandonableTimeout(timeoutMs: Long, block: () -> T): T? =
+    private suspend fun <T> withExecutorTimeout(
+        executor: ExecutorService,
+        timeoutMs: Long,
+        block: () -> T
+    ): T? =
         withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { continuation ->
                 try {
-                    extractionExecutor.execute {
+                    executor.execute {
                         if (!continuation.isActive) return@execute
-                        runCatching { continuation.resume(block()) }
+                        val result = try {
+                            Result.success(block())
+                        } catch (e: Throwable) {
+                            Result.failure(e)
+                        }
+                        runCatching { continuation.resumeWith(result) }
                     }
                 } catch (e: RejectedExecutionException) {
-                    // Every extraction thread is wedged on blocked files —
-                    // fall back immediately instead of hanging the import.
                     continuation.resume(null)
                 }
             }
         }
+
+    private suspend fun <T> withAbandonableTimeout(timeoutMs: Long, block: () -> T): T? =
+        withExecutorTimeout(extractionExecutor, timeoutMs, block)
+
+    private suspend fun <T> withListingTimeout(timeoutMs: Long, block: () -> T): T? =
+        withExecutorTimeout(listingExecutor, timeoutMs, block)
 
     private fun extractMetadataBlocking(uri: Uri): Track {
         val cursor = context.contentResolver.query(uri, null, null, null, null)
@@ -994,6 +1035,11 @@ class LibraryRepository(
          *  on corrupt files) count against it and never return. */
         private const val MAX_EXTRACTION_THREADS = 32
 
+        /** Fixed size of the folder-listing pool — listings are short
+         *  (ms) and queued, so 2 threads never bottleneck a 4k-song
+         *  import. */
+        private const val MAX_LISTING_THREADS = 2
+
         /**
          * Dedicated cached-thread pool for blocking metadata extraction.
          * Threads that hang on corrupt files are abandoned (they may never
@@ -1009,6 +1055,28 @@ class LibraryRepository(
             TimeUnit.SECONDS,
             SynchronousQueue(),
             { runnable -> Thread(runnable, "track-extraction").apply { isDaemon = true } }
+        )
+
+        /**
+         * Dedicated fixed pool for DocumentsProvider folder-listing
+         * queries, kept SEPARATE from [extractionExecutor] on purpose.
+         * Listings used to share the extraction pool: once the 32
+         * extraction threads were busy (or wedged) on files, every
+         * listing submitted via the `SynchronousQueue` was REJECTED —
+         * a whole folder import starved out ~25 of 59 folders and each
+         * one reported an error (previously they were silently skipped
+         * as "empty").  This pool is fixed-size with an unbounded queue,
+         * so listings are never rejected and never compete with file
+         * work; the abandonable timeout still protects against a
+         * provider that hangs on a listing.
+         */
+        private val listingExecutor: ExecutorService = ThreadPoolExecutor(
+            MAX_LISTING_THREADS,
+            MAX_LISTING_THREADS,
+            60L,
+            TimeUnit.SECONDS,
+            LinkedBlockingQueue(),
+            { runnable -> Thread(runnable, "folder-listing").apply { isDaemon = true } }
         )
 
         private val AUDIO_EXTENSIONS = setOf(

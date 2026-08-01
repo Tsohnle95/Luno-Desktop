@@ -24,7 +24,9 @@ This document is a high-level architectural map for the **Vibe Music Player**. I
 ├── theme.py                  # Color palette + playlist gradient system
 ├── utils.py                  # Shared helpers (resource_path, format_time, split_track_name, etc.)
 ├── widgets.py                # Custom Canvas widgets (RoundButton, SlimSlider, PlaylistArt, ModernScrollbar)
-├── icon.icns                 # macOS app icon
+├── icon.icns                 # macOS app icon (Apple Icon Image; regenerated from the current artwork)
+├── Pixel.png                 # User-provided icon artwork (kept; NOT currently used — the app uses its original vector music-note icon)
+├── mobile-app-icon.png       # Duplicate copy of the Pixel.png artwork (kept; not used by builds)
 ├── build.command             # Executable macOS build helper; activates .venv then runs PyInstaller spec
 ├── DevTunes.spec             # PyInstaller spec for macOS build
 ├── .gitignore                # Ignores local envs, Python caches, build/dist artifacts, and OS metadata

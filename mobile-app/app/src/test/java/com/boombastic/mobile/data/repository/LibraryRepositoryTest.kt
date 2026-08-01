@@ -55,6 +55,9 @@ class LibraryRepositoryTest {
         FakeDocumentsProvider.samsungStyle = false
         FakeDocumentsProvider.withEmptyFolder = false
         FakeDocumentsProvider.selfAsChild = false
+        FakeDocumentsProvider.largeLibrary = false
+        FakeDocumentsProvider.throwOnFolderId = null
+        FakeDocumentsProvider.queryDelayMs = 0L
         Robolectric.setupContentProvider(
             FakeDocumentsProvider::class.java,
             FakeDocumentsProvider.AUTHORITY
@@ -285,6 +288,85 @@ class LibraryRepositoryTest {
         assertThat(playlistNames()).containsExactly("root", "Folder A", "Folder B", "Sub")
     }
 
+    @Test
+    fun importLibraryTree_importsEntireLargeFolderTree() = runBlocking<Unit> {
+        // The reported bug: a ~4000-song music root (59 folders, 4047
+        // files) imported only a fraction.  Every file in every folder —
+        // plus root files into "Unsorted" — must land, with 0 errors.
+        FakeDocumentsProvider.largeLibrary = true
+        val result = repository.importLibraryTree(treeRootUri())
+
+        assertThat(result.imported).isEqualTo(4047)
+        assertThat(result.duplicates).isEqualTo(0)
+        assertThat(result.errors).isEqualTo(0)
+        assertThat(database.trackDao().trackCount()).isEqualTo(4047)
+
+        // Root files land in "Unsorted"; each folder becomes a playlist.
+        val playlists = playlistNames()
+        assertThat(playlists).contains("Unsorted")
+        assertThat(playlists).hasSize(60)
+        val unsorted = database.playlistDao().getPlaylistByName("Unsorted")!!
+        assertThat(database.playlistDao().trackCount(unsorted.id)).isEqualTo(35)
+    }
+
+    @Test
+    fun importLibraryTree_rescanOfLargeFolderReportsDuplicatesAndCompletes() =
+        runBlocking<Unit> {
+            // Scanning the folder a second time must find every already
+            // imported file as a duplicate and stop cleanly — no partial
+            // scan, no hang, no re-import.
+            FakeDocumentsProvider.largeLibrary = true
+            val first = repository.importLibraryTree(treeRootUri())
+            assertThat(first.imported).isEqualTo(4047)
+
+            val second = withTimeout(60_000) {
+                repository.importLibraryTree(treeRootUri())
+            }
+
+            assertThat(second.imported).isEqualTo(0)
+            assertThat(second.duplicates).isEqualTo(4047)
+            assertThat(second.errors).isEqualTo(0)
+            assertThat(database.trackDao().trackCount()).isEqualTo(4047)
+        }
+
+    @Test
+    fun importLibraryTree_unlistableFolderIsAnErrorNotSilentlySkipped() =
+        runBlocking<Unit> {
+            // A folder whose listings fail (wedged/broken provider) must
+            // NEVER be treated as empty: its files would silently vanish
+            // from the import (the partial-counts bug).  The folder is
+            // reported as an error and everything else still imports.
+            FakeDocumentsProvider.throwOnFolderId = "root/Folder B"
+            val result = repository.importLibraryTree(treeRootUri())
+
+            assertThat(result.imported).isEqualTo(4)
+            assertThat(result.duplicates).isEqualTo(0)
+            assertThat(result.errors).isEqualTo(1)
+            assertThat(trackTitles()).containsExactly(
+                "album1", "song1", "song2", "deep1"
+            )
+        }
+
+    @Test
+    fun importLibraryTree_slowFolderListingsDoNotStarveTheScan() = runBlocking<Unit> {
+        // The "25 errors" bug: folder listings shared the file-extraction
+        // thread pool.  Once the pool was busy on files, every listing
+        // submitted through its SynchronousQueue was REJECTED and the
+        // folder reported an error (~25 of 59 folders lost).  Listings
+        // now run on their own queued pool — even with a slow provider,
+        // every folder must be listed and imported with 0 errors.
+        FakeDocumentsProvider.largeLibrary = true
+        FakeDocumentsProvider.queryDelayMs = 25L
+        val result = withTimeout(120_000) {
+            repository.importLibraryTree(treeRootUri())
+        }
+
+        assertThat(result.imported).isEqualTo(4047)
+        assertThat(result.duplicates).isEqualTo(0)
+        assertThat(result.errors).isEqualTo(0)
+        assertThat(database.trackDao().trackCount()).isEqualTo(4047)
+    }
+
     /**
      * Minimal in-memory SAF provider emulating an external-storage
      * DocumentsProvider: querying a document URI returns the document
@@ -300,20 +382,48 @@ class LibraryRepositoryTest {
             val children: List<String> = emptyList()
         )
 
-        private val docs: Map<String, FakeDoc> = listOf(
-            FakeDoc(ROOT_ID, "Music", DIR, listOf("root/album1.mp3", "root/Folder A", "root/Folder B")),
-            FakeDoc("root/album1.mp3", "album1.mp3", AUDIO),
-            FakeDoc("root/Folder A", "Folder A", DIR, listOf("root/Folder A/song1.mp3", "root/Folder A/song2.mp3", "root/Folder A/Sub")),
-            FakeDoc("root/Folder A/song1.mp3", "song1.mp3", AUDIO),
-            FakeDoc("root/Folder A/song2.mp3", "song2.mp3", AUDIO),
-            FakeDoc("root/Folder A/Sub", "Sub", DIR, listOf("root/Folder A/Sub/deep1.flac")),
-            FakeDoc("root/Folder A/Sub/deep1.flac", "deep1.flac", AUDIO),
-            FakeDoc("root/Folder B", "Folder B", DIR, listOf("root/Folder B/only.mp3")),
-            FakeDoc("root/Folder B/only.mp3", "only.mp3", AUDIO),
-            FakeDoc("root/Empty", "Empty", DIR)
-        ).associateBy { it.id }
+        private val docs: Map<String, FakeDoc> by lazy { buildDocs() }
 
         override fun onCreate(): Boolean = true
+
+        private fun buildDocs(): Map<String, FakeDoc> {
+            if (!largeLibrary) {
+                return listOf(
+                    FakeDoc(ROOT_ID, "Music", DIR, listOf("root/album1.mp3", "root/Folder A", "root/Folder B")),
+                    FakeDoc("root/album1.mp3", "album1.mp3", AUDIO),
+                    FakeDoc("root/Folder A", "Folder A", DIR, listOf("root/Folder A/song1.mp3", "root/Folder A/song2.mp3", "root/Folder A/Sub")),
+                    FakeDoc("root/Folder A/song1.mp3", "song1.mp3", AUDIO),
+                    FakeDoc("root/Folder A/song2.mp3", "song2.mp3", AUDIO),
+                    FakeDoc("root/Folder A/Sub", "Sub", DIR, listOf("root/Folder A/Sub/deep1.flac")),
+                    FakeDoc("root/Folder A/Sub/deep1.flac", "deep1.flac", AUDIO),
+                    FakeDoc("root/Folder B", "Folder B", DIR, listOf("root/Folder B/only.mp3")),
+                    FakeDoc("root/Folder B/only.mp3", "only.mp3", AUDIO),
+                    FakeDoc("root/Empty", "Empty", DIR)
+                ).associateBy { it.id }
+            }
+            // Desktop-scale library: 59 folders x 68 songs + 35 root songs
+            // = 4047 audio files (the reported import shape).
+            val map = LinkedHashMap<String, FakeDoc>()
+            val rootChildren = mutableListOf<String>()
+            repeat(35) { i ->
+                val id = "root/root$i.mp3"
+                map[id] = FakeDoc(id, "root$i.mp3", AUDIO)
+                rootChildren.add(id)
+            }
+            repeat(59) { f ->
+                val folderId = "root/Folder ${f.toString().padStart(3, '0')}"
+                val children = mutableListOf<String>()
+                repeat(68) { i ->
+                    val id = "$folderId/song$i.mp3"
+                    map[id] = FakeDoc(id, "song$i.mp3", AUDIO)
+                    children.add(id)
+                }
+                map[folderId] = FakeDoc(folderId, folderId.substringAfterLast('/'), DIR, children)
+                rootChildren.add(folderId)
+            }
+            map[ROOT_ID] = FakeDoc(ROOT_ID, "Music", DIR, rootChildren)
+            return map
+        }
 
         override fun query(
             uri: Uri,
@@ -323,6 +433,19 @@ class LibraryRepositoryTest {
             sortOrder: String?
         ): Cursor {
             val segments = uri.pathSegments ?: return emptyCursor(projection)
+            // A folder whose queries throw simulates a wedged/broken
+            // provider — the import must report it, never treat it as
+            // empty.
+            if (throwOnFolderId != null && documentIdOf(uri) == throwOnFolderId) {
+                throw SecurityException("provider busy")
+            }
+            if (queryDelayMs > 0) {
+                try {
+                    Thread.sleep(queryDelayMs)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }
             return when {
                 // Bare tree URI → the tree root document itself (AOSP
                 // behavior: the bare tree URI never lists children).
@@ -457,6 +580,15 @@ class LibraryRepositoryTest {
             /** Each folder lists itself as its own first child (self-row
              *  guard regression). */
             var selfAsChild = false
+
+            /** Desktop-scale tree (4047 files) instead of the small one. */
+            var largeLibrary = false
+
+            /** Queries for this document id throw (wedged provider). */
+            var throwOnFolderId: String? = null
+
+            /** Every provider query sleeps this long (slow provider). */
+            var queryDelayMs: Long = 0L
         }
     }
 }
