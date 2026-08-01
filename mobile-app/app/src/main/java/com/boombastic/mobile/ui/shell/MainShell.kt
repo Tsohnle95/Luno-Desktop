@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -138,10 +139,7 @@ fun MainShell(musicController: MusicController) {
     var showClearHistoryConfirm by remember { mutableStateOf(false) }
     var showErrorLog by remember { mutableStateOf(false) }
     var showLastfmKeyDialog by remember { mutableStateOf(false) }
-    var librarySettingsExpanded by rememberSaveable { mutableStateOf(true) }
-    var downloadsSettingsExpanded by rememberSaveable { mutableStateOf(true) }
-    var historySettingsExpanded by rememberSaveable { mutableStateOf(false) }
-    var appSettingsExpanded by rememberSaveable { mutableStateOf(false) }
+    var expandedSettingsSection by rememberSaveable { mutableStateOf<String?>(null) }
     val hasActiveItem by musicController.hasActiveItem.collectAsState()
     val currentBackStack by navController.currentBackStackEntryAsState()
     val currentRoute = currentBackStack?.destination?.route
@@ -246,6 +244,7 @@ fun MainShell(musicController: MusicController) {
                 drawerContainerColor = SurfaceDark,
                 modifier = Modifier
                     .fillMaxWidth(0.8f)
+                    .fillMaxHeight()
                     .verticalScroll(rememberScrollState())
             ) {
                 // Drawer header
@@ -264,8 +263,14 @@ fun MainShell(musicController: MusicController) {
                 SettingsAccordion(
                     title = "Library",
                     icon = Icons.Filled.Folder,
-                    expanded = librarySettingsExpanded,
-                    onToggle = { librarySettingsExpanded = !librarySettingsExpanded }
+                    expanded = expandedSettingsSection == "library",
+                    onToggle = {
+                        expandedSettingsSection = if (expandedSettingsSection == "library") {
+                            null
+                        } else {
+                            "library"
+                        }
+                    }
                 ) {
                     DrawerItem(
                         icon = Icons.Filled.Folder,
@@ -302,8 +307,14 @@ fun MainShell(musicController: MusicController) {
                 SettingsAccordion(
                     title = "Downloads",
                     icon = Icons.Filled.Download,
-                    expanded = downloadsSettingsExpanded,
-                    onToggle = { downloadsSettingsExpanded = !downloadsSettingsExpanded }
+                    expanded = expandedSettingsSection == "downloads",
+                    onToggle = {
+                        expandedSettingsSection = if (expandedSettingsSection == "downloads") {
+                            null
+                        } else {
+                            "downloads"
+                        }
+                    }
                 ) {
                     DrawerItem(
                         icon = Icons.Filled.Download,
@@ -328,8 +339,14 @@ fun MainShell(musicController: MusicController) {
                 SettingsAccordion(
                     title = "History & discovery",
                     icon = Icons.Filled.History,
-                    expanded = historySettingsExpanded,
-                    onToggle = { historySettingsExpanded = !historySettingsExpanded }
+                    expanded = expandedSettingsSection == "history",
+                    onToggle = {
+                        expandedSettingsSection = if (expandedSettingsSection == "history") {
+                            null
+                        } else {
+                            "history"
+                        }
+                    }
                 ) {
                     DrawerItem(
                         icon = Icons.Filled.Key,
@@ -362,8 +379,14 @@ fun MainShell(musicController: MusicController) {
                 SettingsAccordion(
                     title = "App",
                     icon = Icons.Filled.Info,
-                    expanded = appSettingsExpanded,
-                    onToggle = { appSettingsExpanded = !appSettingsExpanded }
+                    expanded = expandedSettingsSection == "app",
+                    onToggle = {
+                        expandedSettingsSection = if (expandedSettingsSection == "app") {
+                            null
+                        } else {
+                            "app"
+                        }
+                    }
                 ) {
                     DrawerItem(
                         icon = Icons.Filled.Info,
