@@ -36,6 +36,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,7 +51,10 @@ import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.components.ArtworkCollage
 import com.boombastic.mobile.ui.components.ArtworkImage
+import com.boombastic.mobile.ui.components.SortChip
 import com.boombastic.mobile.ui.components.TrackActionsSheet
+import com.boombastic.mobile.ui.components.TrackSortMode
+import com.boombastic.mobile.ui.components.sortedByMode
 import com.boombastic.mobile.ui.player.formatTime
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
@@ -77,6 +81,11 @@ fun PlaylistDetailScreen(
     // ModalBottomSheet inside a lazy item makes it scroll with the list.
     var actionsTrack by remember { mutableStateOf<Track?>(null) }
 
+    // Sort mode (A–Z / Z–A / Recent / Duration) — same chip as the Library
+    // tab; declared before the early return so the saveable state's hook
+    // order never changes.
+    var sortMode by rememberSaveable { mutableStateOf(TrackSortMode.AZ) }
+
     // Reads from the app-warmed LibraryData playlists flow: the detail
     // screen is only reachable via a playlist card, so the list is already
     // loaded and the header + tracks render in the same frame as the
@@ -98,6 +107,10 @@ fun PlaylistDetailScreen(
     }
     val playlist = playlistWithTracks.playlist
     val tracks = playlistWithTracks.tracks
+
+    // Sorted view of the playlist — the list rows AND the play context
+    // (next/prev walk the sorted order, like the Library tab).
+    val sortedTracks = remember(tracks, sortMode) { tracks.sortedByMode(sortMode) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -174,21 +187,26 @@ fun PlaylistDetailScreen(
                     trackCount = tracks.size,
                     totalDurationMs = tracks.sumOf { it.durationMs },
                     onPlayAll = {
-                        musicController.play(tracks.map { it.toMediaTrack() }, 0)
+                        musicController.play(sortedTracks.map { it.toMediaTrack() }, 0)
                     },
                     onShuffleAll = {
-                        musicController.play(tracks.map { it.toMediaTrack() }, 0)
+                        musicController.play(sortedTracks.map { it.toMediaTrack() }, 0)
                         musicController.setShuffle(true)
-                    }
+                    },
+                    sortMode = sortMode,
+                    onSortModeChange = { sortMode = it }
                 )
             }
 
-            items(tracks, key = { it.uri }) { track ->
+            items(sortedTracks, key = { it.uri }) { track ->
                 PlaylistTrackRow(
                     track = track,
                     onClick = {
-                        val index = tracks.indexOfFirst { it.uri == track.uri }
-                        musicController.play(tracks.map { it.toMediaTrack() }, index.coerceAtLeast(0))
+                        val index = sortedTracks.indexOfFirst { it.uri == track.uri }
+                        musicController.play(
+                            sortedTracks.map { it.toMediaTrack() },
+                            index.coerceAtLeast(0)
+                        )
                     },
                     onLongPress = { actionsTrack = track }
                 )
@@ -213,7 +231,9 @@ private fun PlaylistHeader(
     trackCount: Int,
     totalDurationMs: Long,
     onPlayAll: (() -> Unit)?,
-    onShuffleAll: (() -> Unit)? = null
+    onShuffleAll: (() -> Unit)? = null,
+    sortMode: TrackSortMode = TrackSortMode.AZ,
+    onSortModeChange: ((TrackSortMode) -> Unit)? = null
 ) {
     Column(modifier = Modifier.padding(horizontal = Dimens.paddingLarge)) {
         Spacer(modifier = Modifier.height(Dimens.paddingLarge))
@@ -282,6 +302,17 @@ private fun PlaylistHeader(
                             color = AccentGreen
                         )
                     }
+                }
+
+                // Sort chip — the Library tab's filter button setup: the
+                // same shared SortChip (A–Z / Z–A / Recent / Duration,
+                // longest first), sitting under the Play button.
+                if (onSortModeChange != null) {
+                    Spacer(modifier = Modifier.height(Dimens.paddingSmall))
+                    SortChip(
+                        mode = sortMode,
+                        onModeChange = onSortModeChange
+                    )
                 }
             }
         }

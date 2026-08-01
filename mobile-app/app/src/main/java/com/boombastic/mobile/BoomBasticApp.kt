@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.util.Log
 import androidx.work.Configuration
 import com.boombastic.mobile.data.db.AppDatabase
+import com.boombastic.mobile.data.repository.DiscoveryRepository
 import com.boombastic.mobile.data.repository.DownloadRepository
 import com.boombastic.mobile.data.repository.LibraryData
 import com.boombastic.mobile.data.repository.LibraryRepository
@@ -34,6 +35,8 @@ class BoomBasticApp : Application(), Configuration.Provider {
         private set
     lateinit var musicFolderRepository: MusicFolderRepository
         private set
+    lateinit var discoveryRepository: DiscoveryRepository
+        private set
     lateinit var musicFolderImportManager: MusicFolderImportManager
         private set
     lateinit var libraryData: LibraryData
@@ -54,6 +57,7 @@ class BoomBasticApp : Application(), Configuration.Provider {
         playlistRepository = PlaylistRepository(database.playlistDao(), database.trackDao())
         downloadRepository = DownloadRepository(database.downloadJobDao(), this)
         musicFolderRepository = MusicFolderRepository(this)
+        discoveryRepository = DiscoveryRepository(this)
         musicFolderImportManager = MusicFolderImportManager(
             appScope = appScope,
             libraryRepository = libraryRepository,

@@ -17,6 +17,7 @@ import com.boombastic.mobile.ui.home.HomeScreen
 import com.boombastic.mobile.ui.library.LibraryScreen
 import com.boombastic.mobile.ui.library.PlaylistDetailScreen
 import com.boombastic.mobile.ui.player.FullPlayerScreen
+import com.boombastic.mobile.ui.player.RecentsScreen
 import com.boombastic.mobile.ui.search.SearchScreen
 
 object Routes {
@@ -25,6 +26,7 @@ object Routes {
     const val LIBRARY = "library"
     const val DISCOVER = "discover"
     const val DOWNLOADS = "downloads"
+    const val RECENTS = "recents"
     const val FULL_PLAYER = "full_player"
 
     const val PLAYLIST_DETAIL = "playlist/{playlistId}"
@@ -79,10 +81,19 @@ fun BoomBasticNavHost(
             )
         }
         composable(Routes.DISCOVER) {
-            DiscoverScreen()
+            DiscoverScreen(musicController = musicController)
         }
         composable(Routes.DOWNLOADS) {
             DownloadsScreen()
+        }
+        composable(Routes.RECENTS) {
+            RecentsScreen(
+                musicController = musicController,
+                onBack = {
+                    onNavigate()
+                    navController.navigateUp()
+                }
+            )
         }
         composable(Routes.FULL_PLAYER) {
             FullPlayerScreen(

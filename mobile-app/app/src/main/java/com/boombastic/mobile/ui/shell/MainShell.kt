@@ -33,11 +33,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.CircularProgressIndicator
@@ -84,6 +86,7 @@ import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.playback.NotificationPermissionPolicy
 import com.boombastic.mobile.ui.components.MiniPlayer
 import com.boombastic.mobile.ui.create.CreatePlaylistSheet
+import com.boombastic.mobile.ui.discover.LastfmKeyDialog
 import com.boombastic.mobile.ui.navigation.BoomBasticNavHost
 import com.boombastic.mobile.ui.navigation.Routes
 import com.boombastic.mobile.ui.theme.AccentGreen
@@ -133,6 +136,7 @@ fun MainShell(musicController: MusicController) {
     var fetchingArtwork by remember { mutableStateOf(false) }
     var showClearHistoryConfirm by remember { mutableStateOf(false) }
     var showErrorLog by remember { mutableStateOf(false) }
+    var showLastfmKeyDialog by remember { mutableStateOf(false) }
     val hasActiveItem by musicController.hasActiveItem.collectAsState()
     val currentBackStack by navController.currentBackStackEntryAsState()
     val currentRoute = currentBackStack?.destination?.route
@@ -267,6 +271,14 @@ fun MainShell(musicController: MusicController) {
                     }
                 )
                 DrawerItem(
+                    icon = Icons.Filled.Key,
+                    label = "Last.fm API key",
+                    onClick = {
+                        scope.launch { drawerState.close() }
+                        showLastfmKeyDialog = true
+                    }
+                )
+                DrawerItem(
                     icon = Icons.Filled.UploadFile,
                     label = "Export / Import",
                     onClick = {
@@ -302,6 +314,17 @@ fun MainShell(musicController: MusicController) {
                 )
                 DrawerItem(
                     icon = Icons.Filled.History,
+                    label = "Recently played",
+                    onClick = {
+                        scope.launch { drawerState.close() }
+                        transitionMask = true
+                        navController.navigate(Routes.RECENTS) {
+                            launchSingleTop = true
+                        }
+                    }
+                )
+                DrawerItem(
+                    icon = Icons.Filled.DeleteSweep,
                     label = "Clear recent history",
                     onClick = {
                         scope.launch { drawerState.close() }
@@ -577,6 +600,24 @@ fun MainShell(musicController: MusicController) {
                             Text("Cancel", color = SecondaryText)
                         }
                     }
+                )
+            }
+
+            // Last.fm API key (Settings drawer + Discover) — stored
+            // encrypted via DiscoveryRepository; never logged or exported.
+            if (showLastfmKeyDialog) {
+                val currentKey by app.discoveryRepository.apiKey.collectAsState()
+                LastfmKeyDialog(
+                    currentKey = currentKey,
+                    onSave = { key ->
+                        app.discoveryRepository.setApiKey(key)
+                        showLastfmKeyDialog = false
+                    },
+                    onClear = {
+                        app.discoveryRepository.clearApiKey()
+                        showLastfmKeyDialog = false
+                    },
+                    onDismiss = { showLastfmKeyDialog = false }
                 )
             }
 

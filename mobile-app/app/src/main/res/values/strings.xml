@@ -16,6 +16,4 @@
     <string name="create_playlist_create">Create</string>
     <string name="create_playlist_empty_name">Name cannot be empty</string>
     <string name="search_hint">Search your library...</string>
-    <string name="discover_empty_title">Discover</string>
-    <string name="discover_empty_body">Recommendations from Last.fm will appear here.</string>
 </resources>

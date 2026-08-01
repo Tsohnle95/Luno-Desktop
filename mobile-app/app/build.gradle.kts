@@ -105,6 +105,9 @@ dependencies {
     // Dominant color extraction for dynamic artwork gradients
     implementation(libs.androidx.palette.ktx)
 
+    // Secure credential storage (Last.fm API key)
+    implementation(libs.security.crypto)
+
     // Core library desugaring (NewPipeExtractor v0.26.4 on minSdk 29)
     coreLibraryDesugaring(libs.desugar.jdk.libs.nio)
 
@@ -119,6 +122,7 @@ dependencies {
     testImplementation(libs.coroutines.test)
     testImplementation(libs.navigation.testing)
     testImplementation(libs.work.testing)
+    testImplementation(libs.mockwebserver)
 
     // Instrumented testing
     androidTestImplementation(libs.junit)

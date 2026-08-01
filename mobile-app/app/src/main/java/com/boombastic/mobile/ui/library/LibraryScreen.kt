@@ -25,7 +25,6 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
-import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -60,8 +59,11 @@ import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.components.PlaylistCard
 import com.boombastic.mobile.ui.components.PlaylistPickerSheet
+import com.boombastic.mobile.ui.components.SortChip
 import com.boombastic.mobile.ui.components.TrackActionsSheet
 import com.boombastic.mobile.ui.components.TrackRowCard
+import com.boombastic.mobile.ui.components.TrackSortMode
+import com.boombastic.mobile.ui.components.sortedByMode
 import com.boombastic.mobile.ui.home.SectionHeader
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
@@ -97,8 +99,7 @@ fun LibraryScreen(
     val libraryLoaded by libraryData.loaded.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
     var playlistView by rememberSaveable { mutableStateOf(false) }
-    var sortMode by rememberSaveable { mutableStateOf(SortMode.AZ) }
-    var showSortMenu by remember { mutableStateOf(false) }
+    var sortMode by rememberSaveable { mutableStateOf(TrackSortMode.AZ) }
 
     // All-or-nothing first render: hold the whole screen behind one static
     // placeholder until the library data has emitted its first values
@@ -156,22 +157,21 @@ fun LibraryScreen(
         }
     }
 
-    // Tracks and playlists share one sort mode (A–Z / Z–A / Recent),
-    // available in both views.  Derived lists are memoized so
-    // recompositions (selection toggles, dialog state, etc.) don't
-    // re-sort/re-map the whole library.
+    // Tracks and playlists share one sort mode (A–Z / Z–A / Recent /
+    // Duration — Duration sorts longest-first: tracks by their own length,
+    // playlists by total length), available in both views.  Derived lists
+    // are memoized so recompositions (selection toggles, dialog state,
+    // etc.) don't re-sort/re-map the whole library.
     val sortedTracks = remember(filteredTracks, sortMode) {
-        when (sortMode) {
-            SortMode.AZ -> filteredTracks.sortedBy { it.title.lowercase() }
-            SortMode.ZA -> filteredTracks.sortedByDescending { it.title.lowercase() }
-            SortMode.RECENT -> filteredTracks.sortedByDescending { it.addedAt }
-        }
+        filteredTracks.sortedByMode(sortMode)
     }
     val displayPlaylists = remember(filteredPlaylists, sortMode) {
         when (sortMode) {
-            SortMode.AZ -> filteredPlaylists.sortedBy { it.playlist.name.lowercase() }
-            SortMode.ZA -> filteredPlaylists.sortedByDescending { it.playlist.name.lowercase() }
-            SortMode.RECENT -> filteredPlaylists.sortedByDescending { it.playlist.createdAt }
+            TrackSortMode.AZ -> filteredPlaylists.sortedBy { it.playlist.name.lowercase() }
+            TrackSortMode.ZA -> filteredPlaylists.sortedByDescending { it.playlist.name.lowercase() }
+            TrackSortMode.RECENT -> filteredPlaylists.sortedByDescending { it.playlist.createdAt }
+            TrackSortMode.DURATION ->
+                filteredPlaylists.sortedByDescending { it.tracks.sumOf { track -> track.durationMs } }
         }
     }
 
@@ -274,7 +274,8 @@ fun LibraryScreen(
 
         // View filter + sort row — sits under the Play button.  The view
         // toggle is always accent green (like the Play/Shuffle controls);
-        // the sort chip (A–Z / Z–A / Recent) is available in both views.
+        // the shared sort chip (A–Z / Z–A / Recent / Duration) is
+        // available in both views.
         item {
             Row(
                 modifier = Modifier
@@ -309,52 +310,12 @@ fun LibraryScreen(
 
                 Spacer(modifier = Modifier.width(Dimens.paddingLarge))
 
-                // Sort chip — dropdown with A–Z / Z–A / Recent
-                Box {
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(Dimens.cornerMedium))
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                onClick = { showSortMenu = true }
-                            )
-                            .padding(Dimens.paddingSmall),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Sort,
-                            contentDescription = null,
-                            tint = AccentGreen,
-                            modifier = Modifier.size(Dimens.iconSize)
-                        )
-                        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                        Text(
-                            text = "Sort: ${sortMode.label}",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = AccentGreen
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = showSortMenu,
-                        onDismissRequest = { showSortMenu = false }
-                    ) {
-                        SortMode.entries.forEach { mode ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = mode.label,
-                                        color = if (mode == sortMode) AccentGreen else PrimaryText
-                                    )
-                                },
-                                onClick = {
-                                    showSortMenu = false
-                                    sortMode = mode
-                                }
-                            )
-                        }
-                    }
-                }
+                // Shared sort chip — dropdown with A–Z / Z–A / Recent /
+                // Duration (longest first)
+                SortChip(
+                    mode = sortMode,
+                    onModeChange = { sortMode = it }
+                )
             }
         }
 
@@ -688,16 +649,6 @@ fun LibraryScreen(
             onDismiss = { showBatchPlaylistPicker = false }
         )
     }
-}
-
-/**
- * Sort modes shared by the songs and playlist views (A–Z, Z–A, and
- * Recently added).  Label text is displayed on the sort chip.
- */
-private enum class SortMode(val label: String) {
-    AZ("A–Z"),
-    ZA("Z–A"),
-    RECENT("Recent")
 }
 
 /**
