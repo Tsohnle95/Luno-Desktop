@@ -13,6 +13,7 @@ import com.boombastic.mobile.data.repository.LibraryRepository
 import com.boombastic.mobile.data.repository.MusicFolderRepository
 import com.boombastic.mobile.data.repository.PlaylistRepository
 import com.boombastic.mobile.playback.NewPipeDownloader
+import com.boombastic.mobile.ui.shell.ArtworkFetchManager
 import com.boombastic.mobile.ui.shell.MusicFolderImportManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +40,8 @@ class BoomBasticApp : Application(), Configuration.Provider {
         private set
     lateinit var musicFolderImportManager: MusicFolderImportManager
         private set
+    lateinit var artworkFetchManager: ArtworkFetchManager
+        private set
     lateinit var libraryData: LibraryData
         private set
 
@@ -62,6 +65,11 @@ class BoomBasticApp : Application(), Configuration.Provider {
             appScope = appScope,
             libraryRepository = libraryRepository,
             musicFolderRepository = musicFolderRepository,
+            context = this
+        )
+        artworkFetchManager = ArtworkFetchManager(
+            appScope = appScope,
+            libraryRepository = libraryRepository,
             context = this
         )
         // Warm the library data eagerly at startup so every screen renders

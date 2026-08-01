@@ -132,8 +132,7 @@ fun MainShell(musicController: MusicController) {
     val context = LocalContext.current
     val navController = rememberNavController()
     var showCreateSheet by rememberSaveable { mutableStateOf(false) }
-    // Drawer settings state: artwork-fetch busy flag + clear-history confirm.
-    var fetchingArtwork by remember { mutableStateOf(false) }
+    // Drawer settings state: clear-history confirm + error log dialog.
     var showClearHistoryConfirm by remember { mutableStateOf(false) }
     var showErrorLog by remember { mutableStateOf(false) }
     var showLastfmKeyDialog by remember { mutableStateOf(false) }
@@ -196,6 +195,9 @@ fun MainShell(musicController: MusicController) {
     // counts.
     val importManager = remember { app.musicFolderImportManager }
     val importStatus by importManager.status.collectAsState()
+    // Missing-artwork sweep (Settings drawer) — live "Fetching missing
+    // artwork… N/M" strip under the header, owned by ArtworkFetchManager.
+    val artworkStatus by app.artworkFetchManager.status.collectAsState()
     val folderImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: android.net.Uri? ->
@@ -288,28 +290,14 @@ fun MainShell(musicController: MusicController) {
                 )
                 DrawerItem(
                     icon = Icons.Filled.Image,
-                    label = if (fetchingArtwork) "Fetching artwork…" else "Fetch missing artwork",
+                    label = if (artworkStatus is ArtworkFetchStatus.Progress) {
+                        "Fetching artwork…"
+                    } else {
+                        "Fetch missing artwork"
+                    },
                     onClick = {
-                        if (fetchingArtwork) return@DrawerItem
                         scope.launch { drawerState.close() }
-                        fetchingArtwork = true
-                        app.appScope.launch {
-                            val updated = app.libraryRepository.fetchMissingArtwork()
-                            // appScope runs on Dispatchers.Default — every UI
-                            // touch (Compose state + toast) must return to the
-                            // main thread first (toasting off the main thread
-                            // crashes: "Can't toast on a thread that has not
-                            // called Looper.prepare()").
-                            withContext(Dispatchers.Main) {
-                                fetchingArtwork = false
-                                val message = if (updated > 0) {
-                                    "Artwork fetched for $updated track(s)"
-                                } else {
-                                    "All tracks already have artwork"
-                                }
-                                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-                            }
-                        }
+                        app.artworkFetchManager.start()
                     }
                 )
                 DrawerItem(
@@ -548,6 +536,53 @@ fun MainShell(musicController: MusicController) {
                             }
                         }
                     }
+                    // Live "Fetch missing artwork" progress (Settings
+                    // drawer) — the sweep over a large library takes
+                    // minutes, so show that work is happening: smooth sweep
+                    // bar + "Fetching missing artwork… N/M (K found)", then
+                    // the final message ("Artwork fetched for N track(s)" /
+                    // "No missing artwork found" / failure) which the
+                    // manager auto-clears after a few seconds.
+                    when (val artwork = artworkStatus) {
+                        is ArtworkFetchStatus.Progress -> Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Dimens.paddingLarge)
+                        ) {
+                            SmoothProgressBar(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(Dimens.progressBarHeight)
+                            )
+                            Text(
+                                text = "Fetching missing artwork… ${artwork.scanned}/${artwork.total}" +
+                                    if (artwork.updated > 0) " (${artwork.updated} found)" else "",
+                                color = AccentGreen,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(vertical = Dimens.paddingSmall)
+                            )
+                        }
+                        is ArtworkFetchStatus.Finished -> Text(
+                            text = when {
+                                artwork.failed ->
+                                    "Artwork fetch failed — please try again" +
+                                        artwork.errorMessage?.let { " ($it)" }.orEmpty()
+                                artwork.updated > 0 -> "Artwork fetched for ${artwork.updated} track(s)"
+                                else -> "No missing artwork found"
+                            },
+                            color = if (artwork.failed) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                AccentGreen
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Dimens.paddingLarge, vertical = Dimens.paddingSmall)
+                        )
+                        null -> Unit
+                    }
+
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()

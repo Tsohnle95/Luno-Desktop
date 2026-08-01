@@ -929,20 +929,33 @@ class LibraryRepository(
      * network fallbacks are not reproduced; YouTube downloads already
      * store their video thumbnail at download time.
      *
+     * The extraction call is the same one used at import time
+     * ([importAudioUri] → [ArtworkStorage.saveEmbeddedArtwork]), so any
+     * source the library accepted at import can be re-extracted here.
+     *
+     * [onProgress] receives `(scanned, total, updated)` after every track,
+     * so the UI can render a live progress strip (a 4000-track library
+     * takes a while).  [extract] is an injectable seam for tests.
+     *
      * Returns the number of tracks whose artwork was (re)filled.
      */
-    suspend fun fetchMissingArtwork(): Int = withContext(Dispatchers.IO) {
+    suspend fun fetchMissingArtwork(
+        onProgress: (scanned: Int, total: Int, updated: Int) -> Unit = { _, _, _ -> },
+        extract: (Uri) -> String? = { uri -> ArtworkStorage.saveEmbeddedArtwork(context, uri) }
+    ): Int = withContext(Dispatchers.IO) {
+        val tracks = trackDao.getAllTracksOnce()
         var updated = 0
-        trackDao.getAllTracksOnce().forEach { track ->
+        tracks.forEachIndexed { index, track ->
             val cached = track.albumArtPath
             val missing = cached.isNullOrBlank() || !File(cached).exists()
             if (missing) {
-                val path = ArtworkStorage.saveEmbeddedArtwork(context, Uri.parse(track.uri))
+                val path = extract(Uri.parse(track.uri))
                 if (!path.isNullOrBlank()) {
                     trackDao.updateTrack(track.copy(albumArtPath = path))
                     updated++
                 }
             }
+            onProgress(index + 1, tracks.size, updated)
         }
         updated
     }
