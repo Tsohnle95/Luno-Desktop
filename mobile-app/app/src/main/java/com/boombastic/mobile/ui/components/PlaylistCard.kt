@@ -1,6 +1,5 @@
 package com.boombastic.mobile.ui.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -11,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.MoreVert
@@ -37,13 +35,11 @@ import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
-import com.boombastic.mobile.ui.theme.SurfaceDark
 
 /**
  * Spotify-style playlist card: a 2x2 four-artwork collage (first four
  * songs) as the thumbnail on the left, playlist name beside it, green
- * 3-dot options on the right, all on a dark gray surface that stands out
- * against the black screen background.
+ * 3-dot options on the right, flat on the screen background.
  *
  * [onSync] / [onUrlChanged] / [onDelete] control which items appear in the
  * 3-dot menu; passing only [onClick] yields a plain tappable card.
@@ -66,7 +62,6 @@ fun PlaylistCard(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(SurfaceDark, RoundedCornerShape(Dimens.cornerMedium))
             .padding(Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {

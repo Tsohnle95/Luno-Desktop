@@ -151,7 +151,7 @@ fun FullPlayerScreen(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Spacer(modifier = Modifier.height(Dimens.paddingSmall))
+            Spacer(modifier = Modifier.height(Dimens.paddingMedium))
             Text(
                 text = currentTrack?.artist ?: "Unknown Artist",
                 style = MaterialTheme.typography.bodyMedium,

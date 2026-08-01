@@ -1,6 +1,5 @@
 package com.boombastic.mobile.ui.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -32,13 +31,12 @@ import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
-import com.boombastic.mobile.ui.theme.SurfaceDark
 
 /**
  * Track row following the playlist-card UI layout: artwork thumbnail on
- * the left, title/artist beside it, green 3-dot options on the right, on
- * a dark gray rounded surface.  When [selected] is non-null the row is in
- * multi-select mode and shows a check indicator.
+ * the left, title/artist beside it, green 3-dot options on the right,
+ * flat on the screen background.  When [selected] is non-null the row is
+ * in multi-select mode and shows a check indicator.
  */
 @Composable
 fun TrackRowCard(
@@ -51,7 +49,6 @@ fun TrackRowCard(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(SurfaceDark, RoundedCornerShape(Dimens.cornerMedium))
             .padding(Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
