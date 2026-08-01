@@ -13,5 +13,11 @@ env/
 build/
 dist/
 
+# Android signing material
+*.jks
+*.keystore
+*.p12
+mobile-app/local.properties
+
 # OS metadata
 .DS_Store

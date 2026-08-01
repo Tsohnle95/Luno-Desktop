@@ -1,6 +1,8 @@
 package com.boombastic.mobile.ui.shell
 
 import android.Manifest
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import android.widget.Toast
@@ -45,6 +47,9 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
@@ -58,6 +63,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -83,7 +89,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.boombastic.mobile.BuildConfig
 import com.boombastic.mobile.R
+import com.boombastic.mobile.data.update.GitHubReleaseService
+import com.boombastic.mobile.data.update.ReleaseCheckResult
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.playback.NotificationPermissionPolicy
@@ -130,6 +139,11 @@ private val bottomNavItems = listOf(
     BottomNavItem("Discover", R.drawable.ic_discover, Routes.DISCOVER)
 )
 
+private sealed interface UpdateDialogState {
+    data object Checking : UpdateDialogState
+    data class Result(val value: ReleaseCheckResult) : UpdateDialogState
+}
+
 @Composable
 fun MainShell(musicController: MusicController) {
     val context = LocalContext.current
@@ -139,6 +153,9 @@ fun MainShell(musicController: MusicController) {
     var showClearHistoryConfirm by remember { mutableStateOf(false) }
     var showErrorLog by remember { mutableStateOf(false) }
     var showLastfmKeyDialog by remember { mutableStateOf(false) }
+    var updateDialogState by remember { mutableStateOf<UpdateDialogState?>(null) }
+    var showSideloadWarning by remember { mutableStateOf(false) }
+    var pendingReleaseUrl by remember { mutableStateOf<String?>(null) }
     var expandedSettingsSection by rememberSaveable { mutableStateOf<String?>(null) }
     val hasActiveItem by musicController.hasActiveItem.collectAsState()
     val currentBackStack by navController.currentBackStackEntryAsState()
@@ -146,6 +163,42 @@ fun MainShell(musicController: MusicController) {
     val snackbarHostState = remember { SnackbarHostState() }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val releaseService = remember { GitHubReleaseService() }
+    val updatePreferences = remember {
+        context.getSharedPreferences("github_releases", android.content.Context.MODE_PRIVATE)
+    }
+
+    fun openReleaseUrl(url: String) {
+        val uri = runCatching { Uri.parse(url) }.getOrNull()
+        if (uri?.scheme != "https" || uri.host.isNullOrBlank()) {
+            Toast.makeText(context, "Release link is not valid", Toast.LENGTH_SHORT).show()
+            return
+        }
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+        }.onFailure {
+            Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun openReleaseWithWarning(url: String) {
+        if (updatePreferences.getBoolean("sideload_warning_shown", false)) {
+            openReleaseUrl(url)
+        } else {
+            pendingReleaseUrl = url
+            showSideloadWarning = true
+        }
+    }
+
+    fun checkForUpdates() {
+        updateDialogState = UpdateDialogState.Checking
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                releaseService.checkForUpdate(BuildConfig.VERSION_NAME)
+            }
+            updateDialogState = UpdateDialogState.Result(result)
+        }
+    }
 
     // Green-loader transition mask.  It is set to `true` BEFORE every
     // navigation (see the call sites below) so the black layer with the
@@ -393,7 +446,7 @@ fun MainShell(musicController: MusicController) {
                         label = "About",
                         onClick = {
                             scope.launch { drawerState.close() }
-                            Toast.makeText(context, "Luno v0.1.0", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Luno v${BuildConfig.VERSION_NAME}", Toast.LENGTH_SHORT).show()
                         }
                     )
                     DrawerItem(
@@ -409,7 +462,7 @@ fun MainShell(musicController: MusicController) {
                         label = "Check for updates",
                         onClick = {
                             scope.launch { drawerState.close() }
-                            Toast.makeText(context, "Update check coming soon", Toast.LENGTH_SHORT).show()
+                            checkForUpdates()
                         }
                     )
                 }
@@ -758,6 +811,178 @@ fun MainShell(musicController: MusicController) {
                     }
                 )
             }
+
+            // GitHub Releases update check.  APK installation stays in the
+            // browser so Android's normal package-installer trust flow is used.
+            when (val state = updateDialogState) {
+                UpdateDialogState.Checking -> AlertDialog(
+                    onDismissRequest = { updateDialogState = null },
+                    containerColor = SurfaceDark,
+                    titleContentColor = PrimaryText,
+                    textContentColor = SecondaryText,
+                    title = { Text("Checking for updates") },
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(22.dp),
+                                color = AccentGreen,
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                text = "Checking GitHub Releases…",
+                                color = SecondaryText,
+                                modifier = Modifier.padding(start = Dimens.paddingMedium)
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { updateDialogState = null }) {
+                            Text("Cancel", color = SecondaryText)
+                        }
+                    }
+                )
+                is UpdateDialogState.Result -> UpdateResultDialog(
+                    result = state.value,
+                    onDismiss = { updateDialogState = null },
+                    onRetry = ::checkForUpdates,
+                    onOpenRelease = ::openReleaseUrl,
+                    onDownloadApk = ::openReleaseWithWarning
+                )
+                null -> Unit
+            }
+
+            if (showSideloadWarning) {
+                AlertDialog(
+                    onDismissRequest = {
+                        showSideloadWarning = false
+                        pendingReleaseUrl = null
+                    },
+                    containerColor = SurfaceDark,
+                    titleContentColor = PrimaryText,
+                    textContentColor = SecondaryText,
+                    title = { Text("Install outside Google Play?") },
+                    text = {
+                        Text(
+                            "This APK comes from GitHub, not Google Play. Android may ask you to allow " +
+                                "your browser to install unknown apps. Only continue if you trust this release.",
+                            color = SecondaryText
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                updatePreferences.edit()
+                                    .putBoolean("sideload_warning_shown", true)
+                                    .commit()
+                                val url = pendingReleaseUrl
+                                showSideloadWarning = false
+                                pendingReleaseUrl = null
+                                if (url != null) openReleaseUrl(url)
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = AccentGreen,
+                                contentColor = PrimaryBackground
+                            )
+                        ) {
+                            Text("Continue")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = {
+                            showSideloadWarning = false
+                            pendingReleaseUrl = null
+                        }) {
+                            Text("Cancel", color = SecondaryText)
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateResultDialog(
+    result: ReleaseCheckResult,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit,
+    onOpenRelease: (String) -> Unit,
+    onDownloadApk: (String) -> Unit
+) {
+    when (result) {
+        is ReleaseCheckResult.UpToDate -> AlertDialog(
+            onDismissRequest = onDismiss,
+            containerColor = SurfaceDark,
+            titleContentColor = PrimaryText,
+            textContentColor = SecondaryText,
+            title = { Text("You're up to date") },
+            text = { Text("Luno ${result.currentVersion} is the latest GitHub Release.") },
+            confirmButton = {
+                TextButton(onClick = onDismiss) { Text("Close", color = AccentGreen) }
+            }
+        )
+        is ReleaseCheckResult.Failure -> AlertDialog(
+            onDismissRequest = onDismiss,
+            containerColor = SurfaceDark,
+            titleContentColor = PrimaryText,
+            textContentColor = SecondaryText,
+            title = { Text("Could not check for updates") },
+            text = { Text(result.message) },
+            confirmButton = {
+                TextButton(onClick = onRetry) { Text("Retry", color = AccentGreen) }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismiss) { Text("Close", color = SecondaryText) }
+            }
+        )
+        is ReleaseCheckResult.UpdateAvailable -> {
+            val release = result.release
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                containerColor = SurfaceDark,
+                titleContentColor = PrimaryText,
+                textContentColor = SecondaryText,
+                title = { Text("Update available") },
+                text = {
+                    Column {
+                        Text(
+                            text = "${release.name} (${release.tagName})",
+                            color = PrimaryText,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(Dimens.paddingSmall))
+                        Text(
+                            text = release.notes.ifBlank { "No release notes were provided." },
+                            color = SecondaryText,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 280.dp)
+                                .verticalScroll(rememberScrollState())
+                        )
+                    }
+                },
+                confirmButton = {
+                    Row {
+                        TextButton(onClick = { onOpenRelease(release.releaseUrl) }) {
+                            Text("View release", color = SecondaryText)
+                        }
+                        release.apkUrl?.let { apkUrl ->
+                            Button(
+                                onClick = { onDownloadApk(apkUrl) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = AccentGreen,
+                                    contentColor = PrimaryBackground
+                                )
+                            ) {
+                                Text("Download APK")
+                            }
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = onDismiss) { Text("Close", color = SecondaryText) }
+                }
+            )
         }
     }
 }

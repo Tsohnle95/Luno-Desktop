@@ -9,6 +9,20 @@ android {
     namespace = "com.boombastic.mobile"
     compileSdk = 35
 
+    // Release signing is supplied by CI environment variables.  Keeping the
+    // credentials out of Gradle files preserves the local debug workflow and
+    // prevents an accidental keystore commit.
+    val releaseKeystorePath = providers.environmentVariable("ANDROID_RELEASE_KEYSTORE_PATH").orNull
+    val releaseStorePassword = providers.environmentVariable("ANDROID_RELEASE_STORE_PASSWORD").orNull
+    val releaseKeyAlias = providers.environmentVariable("ANDROID_RELEASE_KEY_ALIAS").orNull
+    val releaseKeyPassword = providers.environmentVariable("ANDROID_RELEASE_KEY_PASSWORD").orNull
+    val hasReleaseSigning = listOf(
+        releaseKeystorePath,
+        releaseStorePassword,
+        releaseKeyAlias,
+        releaseKeyPassword
+    ).all { !it.isNullOrBlank() }
+
     defaultConfig {
         applicationId = "com.boombastic.mobile"
         minSdk = 29
@@ -19,9 +33,23 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            if (hasReleaseSigning) {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -43,6 +71,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -56,6 +85,20 @@ tasks.withType<Test> {
         file("${project.buildDir.absolutePath}/test-home").mkdirs()
     }
     jvmArgs("-Duser.home=${project.buildDir.absolutePath}/test-home")
+}
+
+tasks.register("verifyReleaseVersion") {
+    doLast {
+        val tag = providers.environmentVariable("GITHUB_REF_NAME").orNull ?: return@doLast
+        check(tag.matches(Regex("v\\d+\\.\\d+\\.\\d+"))) {
+            "Release tags must use the vMAJOR.MINOR.PATCH format (received '$tag')"
+        }
+        val expectedVersion = tag.removePrefix("v")
+        val configuredVersion = android.defaultConfig.versionName
+        check(configuredVersion == expectedVersion) {
+            "GitHub tag $tag does not match app versionName $configuredVersion"
+        }
+    }
 }
 
 dependencies {
