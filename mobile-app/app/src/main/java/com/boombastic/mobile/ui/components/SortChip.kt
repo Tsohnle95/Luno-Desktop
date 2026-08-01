@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Sort
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -49,41 +49,52 @@ fun List<Track>.sortedByMode(mode: TrackSortMode): List<Track> = when (mode) {
 }
 
 /**
- * The accent-green sort chip (sort icon + "Sort: <mode>") with its mode
- * dropdown.  Owns only the menu-open state — the selected mode lives in
- * the caller (rememberSaveable in the screens) so the choice survives
- * navigation.
+ * The accent-green sort control with its mode dropdown. In [compact] mode it
+ * becomes a filter-icon-only control for dense headers; the selected mode
+ * still lives in the caller (rememberSaveable in the screens).
  */
 @Composable
 fun SortChip(
     mode: TrackSortMode,
-    onModeChange: (TrackSortMode) -> Unit
+    onModeChange: (TrackSortMode) -> Unit,
+    compact: Boolean = false
 ) {
     var showMenu by remember { mutableStateOf(false) }
     Box {
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(Dimens.cornerMedium))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = { showMenu = true }
+        if (compact) {
+            androidx.compose.material3.IconButton(onClick = { showMenu = true }) {
+                Icon(
+                    imageVector = Icons.Filled.FilterList,
+                    contentDescription = "Sort: ${mode.label}",
+                    tint = AccentGreen,
+                    modifier = Modifier.size(Dimens.iconSize)
                 )
-                .padding(Dimens.paddingSmall),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Sort,
-                contentDescription = null,
-                tint = AccentGreen,
-                modifier = Modifier.size(Dimens.iconSize)
-            )
-            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-            Text(
-                text = "Sort: ${mode.label}",
-                style = MaterialTheme.typography.labelLarge,
-                color = AccentGreen
-            )
+            }
+        } else {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(Dimens.cornerMedium))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { showMenu = true }
+                    )
+                    .padding(Dimens.paddingSmall),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.FilterList,
+                    contentDescription = null,
+                    tint = AccentGreen,
+                    modifier = Modifier.size(Dimens.iconSize)
+                )
+                Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                Text(
+                    text = "Sort: ${mode.label}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = AccentGreen
+                )
+            }
         }
         DropdownMenu(
             expanded = showMenu,

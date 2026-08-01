@@ -3,12 +3,16 @@ package com.boombastic.mobile.ui.navigation
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.boombastic.mobile.BoomBasticApp
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.discover.DiscoverScreen
@@ -28,6 +32,7 @@ object Routes {
     const val DOWNLOADS = "downloads"
     const val RECENTS = "recents"
     const val FULL_PLAYER = "full_player"
+    const val MADE_FOR_YOU = "made_for_you"
 
     const val PLAYLIST_DETAIL = "playlist/{playlistId}"
     fun playlistDetail(playlistId: Long) = "playlist/$playlistId"
@@ -42,6 +47,9 @@ fun BoomBasticNavHost(
     onPlay: (List<MediaTrack>, Int) -> Unit = { _, _ -> },
     onNavigate: () -> Unit = {}
 ) {
+    val app = LocalContext.current.applicationContext as BoomBasticApp
+    val madeForYouTracks by app.madeForYouTracks.collectAsState()
+
     NavHost(
         navController = navController,
         startDestination = Routes.HOME,
@@ -64,7 +72,24 @@ fun BoomBasticNavHost(
                     // content area before the new screen composes.
                     onNavigate()
                     navController.navigate(Routes.playlistDetail(playlistId))
+                },
+                onOpenMadeForYou = {
+                    onNavigate()
+                    navController.navigate(Routes.MADE_FOR_YOU)
                 }
+            )
+        }
+        composable(Routes.MADE_FOR_YOU) {
+            PlaylistDetailScreen(
+                playlistId = -1L,
+                musicController = musicController,
+                onBack = {
+                    onNavigate()
+                    navController.navigateUp()
+                },
+                virtualName = "Made for you playlist",
+                virtualDescription = "A fresh mix of 50 songs from your library.",
+                virtualTracks = madeForYouTracks
             )
         }
         composable(Routes.SEARCH) {

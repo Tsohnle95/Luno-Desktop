@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.util.Log
 import androidx.work.Configuration
 import com.boombastic.mobile.data.db.AppDatabase
+import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.data.repository.DiscoveryRepository
 import com.boombastic.mobile.data.repository.DownloadRepository
 import com.boombastic.mobile.data.repository.LibraryData
@@ -18,6 +19,8 @@ import com.boombastic.mobile.ui.shell.MusicFolderImportManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import org.schabi.newpipe.extractor.NewPipe
 import java.io.File
 import java.net.CookieManager
@@ -45,6 +48,10 @@ class BoomBasticApp : Application(), Configuration.Provider {
     lateinit var libraryData: LibraryData
         private set
 
+    /** The exact Home-session sample shown by the Made for You carousel. */
+    private val madeForYouTracksState = MutableStateFlow<List<Track>>(emptyList())
+    val madeForYouTracks: StateFlow<List<Track>> = madeForYouTracksState
+
     /**
      * Process-lifetime scope for long-running work (library imports) that
      * must survive navigation away from the launching screen — a
@@ -52,6 +59,10 @@ class BoomBasticApp : Application(), Configuration.Provider {
      * how folder imports used to stop partway.
      */
     val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    fun setMadeForYouTracks(tracks: List<Track>) {
+        madeForYouTracksState.value = tracks
+    }
 
     override fun onCreate() {
         super.onCreate()

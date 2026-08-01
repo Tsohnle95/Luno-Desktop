@@ -308,13 +308,14 @@ fun LibraryScreen(
                     )
                 }
 
-                Spacer(modifier = Modifier.width(Dimens.paddingLarge))
+                Spacer(modifier = Modifier.weight(1f))
 
-                // Shared sort chip — dropdown with A–Z / Z–A / Recent /
-                // Duration (longest first)
+                // Compact arrow-only sort control. Its dropdown still contains
+                // A–Z / Z–A / Recent / Duration (longest first).
                 SortChip(
                     mode = sortMode,
-                    onModeChange = { sortMode = it }
+                    onModeChange = { sortMode = it },
+                    compact = true
                 )
             }
         }

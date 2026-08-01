@@ -78,7 +78,10 @@ import com.boombastic.mobile.ui.theme.SurfaceElevated
 fun PlaylistDetailScreen(
     playlistId: Long,
     musicController: MusicController,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    virtualName: String? = null,
+    virtualDescription: String = "",
+    virtualTracks: List<Track>? = null
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
@@ -107,7 +110,7 @@ fun PlaylistDetailScreen(
     // All-or-nothing first render: hold the screen behind one static
     // placeholder instead of showing the top bar and then the header and
     // track list popping in afterwards.
-    if (playlistWithTracks == null) {
+    if (virtualTracks == null && playlistWithTracks == null) {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
@@ -116,8 +119,10 @@ fun PlaylistDetailScreen(
         }
         return
     }
-    val playlist = playlistWithTracks.playlist
-    val tracks = playlistWithTracks.tracks
+    val playlist = playlistWithTracks?.playlist
+    val tracks = virtualTracks ?: playlistWithTracks?.tracks.orEmpty()
+    val playlistName = virtualName ?: playlist?.name.orEmpty()
+    val playlistDescription = virtualDescription.ifBlank { playlist?.description.orEmpty() }
 
     // In-playlist search: filter the membership by title/artist/album
     // (case-insensitive), then sort the filtered set — the list rows AND
@@ -168,8 +173,8 @@ fun PlaylistDetailScreen(
             }
             item {
                 PlaylistHeader(
-                    name = playlist.name,
-                    description = playlist.description,
+                    name = playlistName,
+                    description = playlistDescription,
                     trackCount = 0,
                     totalDurationMs = 0L,
                     onPlayAll = null
@@ -196,8 +201,8 @@ fun PlaylistDetailScreen(
 
             item {
                 PlaylistHeader(
-                    name = playlist.name,
-                    description = playlist.description,
+                    name = playlistName,
+                    description = playlistDescription,
                     trackCount = tracks.size,
                     totalDurationMs = tracks.sumOf { it.durationMs },
                     onPlayAll = {
@@ -405,7 +410,8 @@ private fun PlaylistHeader(
                     Spacer(modifier = Modifier.height(Dimens.paddingSmall))
                     SortChip(
                         mode = sortMode,
-                        onModeChange = onSortModeChange
+                        onModeChange = onSortModeChange,
+                        compact = true
                     )
                 }
             }

@@ -2,6 +2,8 @@ package com.boombastic.mobile.ui.home
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -30,6 +33,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -43,6 +48,8 @@ import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
+import com.boombastic.mobile.ui.theme.SurfaceDark
+import com.boombastic.mobile.ui.theme.SurfaceElevated
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -57,7 +64,8 @@ import java.util.Locale
 fun HomeScreen(
     musicController: MusicController,
     onPlay: (List<MediaTrack>, Int) -> Unit = { _, _ -> },
-    onOpenPlaylist: (Long) -> Unit = {}
+    onOpenPlaylist: (Long) -> Unit = {},
+    onOpenMadeForYou: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
@@ -121,19 +129,18 @@ fun HomeScreen(
     ) {
         // Greeting header
         item(key = "greeting") {
-            Column(modifier = Modifier.padding(horizontal = Dimens.paddingLarge)) {
-                Text(
-                    text = "Good $greeting",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = SecondaryText
-                )
-                Spacer(modifier = Modifier.height(Dimens.paddingSmall))
-                Text(
-                    text = displayName,
-                    style = MaterialTheme.typography.headlineLarge,
-                    color = PrimaryText
-                )
-            }
+            HomeHero(
+                greeting = greeting,
+                displayName = displayName,
+                trackCount = allTracks.size,
+                mixCount = madeForYou.size,
+                onClick = if (allTracks.isEmpty()) null else {
+                    {
+                        app.setMadeForYouTracks(madeForYou)
+                        onOpenMadeForYou()
+                    }
+                }
+            )
         }
 
         // Recently played — swipeable horizontal carousel of the full
@@ -179,7 +186,16 @@ fun HomeScreen(
 
         // Made for you — a random mix from the entire catalogue.
         item(key = "made-header") {
-            SectionHeader(title = "Made for you")
+            SectionHeader(
+                title = "Made for you",
+                supportingText = "A fresh mix from your library",
+                onClick = if (allTracks.isEmpty()) null else {
+                    {
+                        app.setMadeForYouTracks(madeForYou)
+                        onOpenMadeForYou()
+                    }
+                }
+            )
         }
         if (allTracks.isEmpty()) {
             item(key = "made-empty") {
@@ -290,24 +306,157 @@ private fun HomePlaylistCard(
     }
 }
 
+@Composable
+private fun HomeHero(
+    greeting: String,
+    displayName: String,
+    trackCount: Int,
+    mixCount: Int,
+    onClick: (() -> Unit)?
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Dimens.paddingLarge)
+            .clip(RoundedCornerShape(24.dp))
+            .background(
+                Brush.linearGradient(
+                    listOf(
+                        SurfaceElevated,
+                        SurfaceDark,
+                        Color(0xFF102B1C)
+                    )
+                )
+            )
+            .border(
+                width = 1.dp,
+                color = AccentGreen.copy(alpha = 0.2f),
+                shape = RoundedCornerShape(24.dp)
+            )
+            .padding(Dimens.paddingLarge)
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onClick
+                    )
+                } else {
+                    Modifier
+                }
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .widthIn(max = 280.dp)
+        ) {
+            Text(
+                text = "Good $greeting,",
+                style = MaterialTheme.typography.bodyMedium,
+                color = AccentGreen
+            )
+            Text(
+                text = displayName,
+                style = MaterialTheme.typography.headlineMedium,
+                color = PrimaryText,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+            Text(
+                text = if (trackCount == 0) {
+                    "Your next favorite is waiting."
+                } else {
+                    "Your next favorite is waiting in the mix."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = SecondaryText,
+                modifier = Modifier.padding(top = Dimens.paddingSmall)
+            )
+        }
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(start = Dimens.paddingMedium)
+        ) {
+            Text(
+                text = mixCount.toString(),
+                style = MaterialTheme.typography.headlineLarge,
+                color = AccentGreen,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "TRACK MIX",
+                style = MaterialTheme.typography.labelSmall,
+                color = SecondaryText
+            )
+        }
+    }
+}
+
 /**
  * Section title with the standardized rhythm used across Home: 24dp above
  * (break between sections), 8dp below (header-to-content gap).
  */
 @Composable
-fun SectionHeader(title: String) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.titleMedium,
-        color = PrimaryText,
-        fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(
-            start = Dimens.paddingLarge,
-            end = Dimens.paddingLarge,
-            top = Dimens.paddingXLarge,
-            bottom = Dimens.paddingSmall
-        )
-    )
+fun SectionHeader(
+    title: String,
+    supportingText: String? = null,
+    onClick: (() -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                start = Dimens.paddingLarge,
+                end = Dimens.paddingLarge,
+                top = Dimens.paddingXLarge,
+                bottom = Dimens.paddingSmall
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .then(
+                    if (onClick != null) {
+                        Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = onClick
+                        )
+                    } else {
+                        Modifier
+                    }
+                )
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = PrimaryText,
+                fontWeight = FontWeight.Bold
+            )
+            supportingText?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SecondaryText,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+        }
+        if (onClick != null) {
+            Text(
+                text = "View all",
+                style = MaterialTheme.typography.labelLarge,
+                color = AccentGreen,
+                modifier = Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onClick
+                )
+            )
+        }
+    }
 }
 
 @Composable
