@@ -5,6 +5,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -22,13 +23,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -78,15 +80,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val DownloadSectionSpacing = 16.dp
-private val DownloadCardPadding = 20.dp
-private val DownloadControlSpacing = 16.dp
-private val DownloadFieldSpacing = 12.dp
+private val DownloadSectionSpacing = 14.dp
+private val DownloadCardPadding = 18.dp
+private val DownloadControlSpacing = 14.dp
+private val DownloadFieldSpacing = 10.dp
 
 /**
  * The download hub. This screen deliberately does not render local tracks,
  * playlists, playback controls, or library import actions. Its only job is
- * helping the user find audio and put it in the background download queue.
+ * helping the user find audio, add it to the background queue, and keep the
+ * first interaction focused on the music rather than the implementation.
  */
 @Composable
 fun SearchScreen(
@@ -188,34 +191,22 @@ fun SearchScreen(
         jobIdByVideoId[result.videoId]?.let { id -> downloads.firstOrNull { it.id == id } }
     }
 
+    val activeDownloads = downloads.count {
+        it.state == DownloadState.QUEUED || it.state == DownloadState.DOWNLOADING
+    }
+
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = Dimens.paddingLarge),
+        modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(DownloadSectionSpacing),
         contentPadding = PaddingValues(
+            start = Dimens.paddingLarge,
+            end = Dimens.paddingLarge,
             top = DownloadCardPadding,
             bottom = 32.dp
         )
     ) {
-        item(key = "header") {
-            DownloadHeader()
-        }
-
-        item(key = "intro") {
-            DownloadIntroCard()
-        }
-
-        item(key = "search-heading") {
-            SectionHeading(
-                title = "Find music to download",
-                subtitle = "Search YouTube for a song, artist, or album.",
-                modifier = Modifier.padding(top = Dimens.paddingSmall)
-            )
-        }
-
-        item(key = "youtube-search") {
-            YouTubeSearchPanel(
+        item(key = "hero") {
+            DownloadHero(
                 query = searchQuery,
                 onQueryChange = {
                     searchQuery = it
@@ -223,7 +214,9 @@ fun SearchScreen(
                     if (it.isBlank()) webResults = emptyList()
                 },
                 onSearch = ::search,
-                isSearching = isSearching
+                isSearching = isSearching,
+                activeDownloads = activeDownloads,
+                onOpenDownloads = onOpenDownloads
             )
         }
 
@@ -235,29 +228,11 @@ fun SearchScreen(
 
         if (isSearching) {
             item(key = "searching") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = Dimens.paddingMedium),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(Dimens.iconSizeSmall),
-                        color = AccentGreen,
-                        strokeWidth = 2.dp
-                    )
-                    Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                    Text("Searching for downloadable audio…", color = SecondaryText)
-                }
+                SearchLoadingState()
             }
         } else if (webResults.isNotEmpty()) {
             item(key = "results-heading") {
-                SectionHeading(
-                    title = "Choose a download",
-                    subtitle = "${webResults.size} YouTube results. Nothing is saved until you tap Download.",
-                    modifier = Modifier.padding(top = Dimens.paddingSmall)
-                )
+                ResultsHeader(query = searchQuery, count = webResults.size)
             }
             items(webResults, key = { it.videoId }) { result ->
                 val job = jobForResult(result)
@@ -322,30 +297,25 @@ fun SearchScreen(
         } else if (searchQuery.isNotBlank() && errorMessage.isBlank()) {
             item(key = "no-results") {
                 MessageBox(
-                    text = "No downloadable results found for \"${searchQuery.trim()}\". Try an artist and title, or use a direct audio link below."
+                    text = "No matches yet. Try adding the artist or a different title."
                 )
             }
-        } else if (searchQuery.isBlank()) {
-            item(key = "empty-search") {
-                EmptyDownloadState()
-            }
         }
 
-        item(key = "other-options-heading") {
-            SectionHeading(
-                title = "Other ways to download",
-                subtitle = "Use one of these when you already have a source or a list of tracks.",
-                modifier = Modifier.padding(top = Dimens.paddingSmall)
-            )
-        }
-
-        item(key = "direct-url-option") {
-            DownloadOptionCard(
-                icon = Icons.Filled.Link,
-                title = "Paste a direct audio link",
-                description = "Download an MP3, M4A, OGG, or other audio file from a URL.",
-                expanded = showUrlInput,
-                onClick = { showUrlInput = !showUrlInput }
+        item(key = "source-options") {
+            SourceOptions(
+                showUrlInput = showUrlInput,
+                showCsvImport = showCsvImport,
+                onUrlClick = {
+                    val next = !showUrlInput
+                    showUrlInput = next
+                    if (next) showCsvImport = false
+                },
+                onCsvClick = {
+                    val next = !showCsvImport
+                    showCsvImport = next
+                    if (next) showUrlInput = false
+                }
             )
         }
 
@@ -387,16 +357,6 @@ fun SearchScreen(
             }
         }
 
-        item(key = "csv-option") {
-            DownloadOptionCard(
-                icon = Icons.Filled.UploadFile,
-                title = "Batch download from CSV",
-                description = "Choose an Exportify CSV; each artist and title is searched and queued.",
-                expanded = showCsvImport,
-                onClick = { showCsvImport = !showCsvImport }
-            )
-        }
-
         if (showCsvImport) {
             item(key = "csv-form") {
                 CsvImportSection(
@@ -407,150 +367,71 @@ fun SearchScreen(
             }
         }
 
-        item(key = "queue") {
-            DownloadQueueCard(
-                downloads = downloads,
-                onOpenDownloads = onOpenDownloads
-            )
-        }
-
-        item(key = "how-it-works") {
-            HowItWorksCard()
-        }
-
-        item(key = "note") {
-            Text(
-                text = "Only download audio you have permission to save. Downloads run in the background when a network connection is available and appear in Your Library when complete.",
-                style = MaterialTheme.typography.bodySmall,
-                color = SecondaryText,
-                modifier = Modifier.padding(top = Dimens.paddingSmall)
-            )
+        item(key = "download-flow") {
+            DownloadFlow()
         }
     }
 }
 
 @Composable
-private fun DownloadHeader() {
-    Column {
+private fun DownloadHero(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    isSearching: Boolean,
+    activeDownloads: Int,
+    onOpenDownloads: () -> Unit
+) {
+    val heroShape = RoundedCornerShape(28.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(heroShape)
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF284A34),
+                        Color(0xFF1E2C24),
+                        SurfaceDark
+                    )
+                )
+            )
+            .border(1.dp, AccentGreen.copy(alpha = 0.22f), heroShape)
+            .padding(DownloadCardPadding)
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Download music",
+                    text = "Add music",
                     style = MaterialTheme.typography.headlineLarge,
                     fontWeight = FontWeight.Bold,
                     color = PrimaryText
                 )
-                Spacer(modifier = Modifier.height(Dimens.paddingMedium))
                 Text(
-                    text = "Find audio online and save it for offline listening.",
+                    text = "Find it. Keep it.",
                     style = MaterialTheme.typography.bodyLarge,
-                    color = SecondaryText
+                    color = Color(0xFFD2E6D7),
+                    modifier = Modifier.padding(top = 4.dp)
                 )
             }
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(RoundedCornerShape(Dimens.cornerLarge))
-                    .background(AccentGreen),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Download,
-                    contentDescription = null,
-                    tint = Color.Black,
-                    modifier = Modifier.size(Dimens.iconSizeLarge)
-                )
-            }
+            DownloadHeroArt()
         }
-        Text(
-            text = "This screen is for finding and downloading music, not browsing the songs already on your device.",
-            style = MaterialTheme.typography.bodySmall,
-            color = SecondaryText,
-            modifier = Modifier.padding(top = DownloadControlSpacing)
-        )
-    }
-}
 
-@Composable
-private fun DownloadIntroCard() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Dimens.cornerLarge))
-            .background(SurfaceDark)
-            .padding(DownloadCardPadding)
-    ) {
-        Row(verticalAlignment = Alignment.Top) {
-            Icon(
-                imageVector = Icons.Filled.Info,
-                contentDescription = null,
-                tint = AccentGreen,
-                modifier = Modifier.size(Dimens.iconSize)
-            )
-            Spacer(modifier = Modifier.width(DownloadControlSpacing))
-            Column {
-                Text(
-                    text = "How to use this page",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = PrimaryText
-                )
-                Spacer(modifier = Modifier.height(Dimens.paddingMedium))
-                Text(
-                    text = "Search for music, review the results, and tap Download on the exact recording you want. Every download is added to the queue before it is saved.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = SecondaryText
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SectionHeading(
-    title: String,
-    subtitle: String,
-    modifier: Modifier = Modifier
-) {
-    Column(modifier = modifier) {
+        Spacer(modifier = Modifier.height(DownloadCardPadding))
         Text(
-            text = title,
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = PrimaryText
+            text = "Find a song",
+            style = MaterialTheme.typography.labelLarge,
+            color = Color(0xFFD2E6D7)
         )
-        Text(
-            text = subtitle,
-            style = MaterialTheme.typography.bodySmall,
-            color = SecondaryText,
-            modifier = Modifier.padding(top = Dimens.paddingSmall)
-        )
-    }
-}
-
-@Composable
-private fun YouTubeSearchPanel(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    onSearch: () -> Unit,
-    isSearching: Boolean
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Dimens.cornerLarge))
-            .background(SurfaceDark)
-            .padding(DownloadCardPadding)
-    ) {
+        Spacer(modifier = Modifier.height(DownloadFieldSpacing))
         OutlinedTextField(
             value = query,
             onValueChange = onQueryChange,
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Song, artist, or album") },
-            placeholder = { Text("e.g. Daft Punk One More Time", color = SecondaryText) },
+            placeholder = { Text("Song, artist, or album", color = SecondaryText) },
             leadingIcon = {
                 Icon(
                     imageVector = Icons.Filled.Search,
@@ -574,16 +455,14 @@ private fun YouTubeSearchPanel(
             colors = OutlinedTextFieldDefaults.colors(
                 focusedTextColor = PrimaryText,
                 unfocusedTextColor = PrimaryText,
-                focusedLabelColor = AccentGreen,
-                unfocusedLabelColor = SecondaryText,
                 cursorColor = AccentGreen,
                 focusedBorderColor = AccentGreen,
-                unfocusedBorderColor = SurfaceElevated,
-                focusedContainerColor = SurfaceElevated,
-                unfocusedContainerColor = SurfaceElevated
+                unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
+                focusedContainerColor = Color.Black.copy(alpha = 0.22f),
+                unfocusedContainerColor = Color.Black.copy(alpha = 0.22f)
             )
         )
-        Spacer(modifier = Modifier.height(DownloadControlSpacing))
+        Spacer(modifier = Modifier.height(DownloadFieldSpacing))
         Button(
             onClick = onSearch,
             enabled = query.isNotBlank() && !isSearching,
@@ -593,8 +472,8 @@ private fun YouTubeSearchPanel(
             ),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp),
-            shape = RoundedCornerShape(Dimens.cornerMedium)
+                .height(52.dp),
+            shape = RoundedCornerShape(16.dp)
         ) {
             Icon(
                 imageVector = Icons.Filled.Search,
@@ -602,37 +481,182 @@ private fun YouTubeSearchPanel(
                 modifier = Modifier.size(Dimens.iconSizeSmall)
             )
             Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-            Text("Search YouTube", fontWeight = FontWeight.SemiBold)
+            Text("Find music", fontWeight = FontWeight.SemiBold)
         }
-        Text(
-            text = "YouTube is used to find a downloadable source. Searching does not start a download.",
-            style = MaterialTheme.typography.bodySmall,
-            color = SecondaryText,
-            modifier = Modifier.padding(top = DownloadFieldSpacing)
-        )
+
+        if (activeDownloads > 0) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = DownloadControlSpacing)
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onOpenDownloads
+                    )
+                    .background(Color.Black.copy(alpha = 0.18f))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    color = AccentGreen,
+                    strokeWidth = 2.dp
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = if (activeDownloads == 1) "1 download on the way" else "$activeDownloads downloads on the way",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = PrimaryText,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = "Open downloads",
+                    tint = AccentGreen,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun EmptyDownloadState() {
+private fun DownloadHeroArt() {
     Box(
+        modifier = Modifier
+            .size(72.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(AccentGreen),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Download,
+                contentDescription = null,
+                tint = Color.Black,
+                modifier = Modifier.size(28.dp)
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                listOf(7.dp, 12.dp, 17.dp, 10.dp).forEach { barHeight ->
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .height(barHeight)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Color.Black.copy(alpha = 0.72f))
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchLoadingState() {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(Dimens.cornerMedium))
             .background(SurfaceDark)
-            .padding(DownloadCardPadding)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Column {
+        CircularProgressIndicator(
+            modifier = Modifier.size(Dimens.iconSizeSmall),
+            color = AccentGreen,
+            strokeWidth = 2.dp
+        )
+        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+        Text("Looking for matches…", color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+private fun ResultsHeader(query: String, count: Int) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = Dimens.paddingSmall),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "Ready when you are",
-                style = MaterialTheme.typography.titleMedium,
+                text = "Choose a recording",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
                 color = PrimaryText
             )
             Text(
-                text = "Start with a search above, or open one of the other download options below.",
-                style = MaterialTheme.typography.bodyMedium,
+                text = "For \"${query.trim()}\"",
+                style = MaterialTheme.typography.bodySmall,
                 color = SecondaryText,
-                modifier = Modifier.padding(top = Dimens.paddingMedium)
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 3.dp)
+            )
+        }
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(AccentGreen.copy(alpha = 0.14f))
+                .padding(horizontal = 9.dp, vertical = 6.dp)
+        ) {
+            Text(
+                text = "$count found",
+                style = MaterialTheme.typography.labelMedium,
+                color = AccentGreen
+            )
+        }
+    }
+}
+
+@Composable
+private fun SourceOptions(
+    showUrlInput: Boolean,
+    showCsvImport: Boolean,
+    onUrlClick: () -> Unit,
+    onCsvClick: () -> Unit
+) {
+    Column(modifier = Modifier.padding(top = Dimens.paddingSmall)) {
+        Text(
+            text = "Have the music already?",
+            style = MaterialTheme.typography.titleMedium,
+            color = PrimaryText
+        )
+        Text(
+            text = "Two quick ways to bring it in",
+            style = MaterialTheme.typography.bodySmall,
+            color = SecondaryText,
+            modifier = Modifier.padding(top = 3.dp)
+        )
+        Spacer(modifier = Modifier.height(Dimens.paddingMedium))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            DownloadOptionCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.Link,
+                title = "Paste a link",
+                description = "Direct audio",
+                expanded = showUrlInput,
+                onClick = onUrlClick
+            )
+            DownloadOptionCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.UploadFile,
+                title = "Import a list",
+                description = "Playlist file",
+                expanded = showCsvImport,
+                onClick = onCsvClick
             )
         }
     }
@@ -666,59 +690,70 @@ private fun MessageBox(
 
 @Composable
 private fun DownloadOptionCard(
+    modifier: Modifier,
     icon: ImageVector,
     title: String,
     description: String,
     expanded: Boolean,
     onClick: () -> Unit
 ) {
-    Row(
+    Column(
         modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Dimens.cornerLarge))
-            .background(SurfaceDark)
+            .then(modifier)
+            .height(112.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (expanded) SurfaceElevated else SurfaceDark)
+            .border(
+                width = 1.dp,
+                color = if (expanded) AccentGreen.copy(alpha = 0.62f) else Color.White.copy(alpha = 0.06f),
+                shape = RoundedCornerShape(18.dp)
+            )
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = onClick
             )
-            .padding(Dimens.paddingLarge),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(14.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(Dimens.cornerMedium))
-                .background(AccentGreen.copy(alpha = 0.16f)),
-            contentAlignment = Alignment.Center
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(AccentGreen.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = AccentGreen,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(modifier = Modifier.weight(1f))
             Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = AccentGreen,
-                modifier = Modifier.size(Dimens.iconSize)
+                imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "Hide $title" else "Show $title",
+                tint = SecondaryText,
+                modifier = Modifier.size(20.dp)
             )
         }
-        Spacer(modifier = Modifier.width(Dimens.paddingMedium))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                color = PrimaryText
-            )
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodySmall,
-                color = SecondaryText,
-                modifier = Modifier.padding(top = 2.dp)
-            )
-        }
-        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-        Icon(
-            imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-            contentDescription = if (expanded) "Hide $title" else "Show $title",
-            tint = SecondaryText,
-            modifier = Modifier.size(Dimens.iconSize)
+        Spacer(modifier = Modifier.weight(1f))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = PrimaryText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = description,
+            style = MaterialTheme.typography.labelSmall,
+            color = SecondaryText,
+            modifier = Modifier.padding(top = 2.dp)
         )
     }
 }
@@ -734,49 +769,77 @@ private fun UrlDownloadSection(
     isQueuing: Boolean,
     onDownload: () -> Unit
 ) {
+    var showDetails by rememberSaveable { mutableStateOf(false) }
+    val panelShape = RoundedCornerShape(18.dp)
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(Dimens.cornerMedium))
-            .background(SurfaceElevated)
+            .clip(panelShape)
+            .background(SurfaceDark)
+            .border(1.dp, Color.White.copy(alpha = 0.06f), panelShape)
             .padding(DownloadCardPadding)
     ) {
-        Text(
-            text = "Use a direct audio-file URL. For YouTube pages, use the search above instead.",
-            style = MaterialTheme.typography.bodySmall,
-            color = SecondaryText
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Filled.Link,
+                contentDescription = null,
+                tint = AccentGreen,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+            Text(
+                text = "Paste a link",
+                style = MaterialTheme.typography.titleMedium,
+                color = PrimaryText
+            )
+        }
         Spacer(modifier = Modifier.height(DownloadFieldSpacing))
         OutlinedTextField(
             value = urlInput,
             onValueChange = onUrlChange,
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Audio URL") },
-            placeholder = { Text("https://example.com/track.mp3", color = SecondaryText) },
+            placeholder = { Text("Paste an audio link", color = SecondaryText) },
             singleLine = true,
             shape = RoundedCornerShape(12.dp),
             colors = downloadFieldColors()
         )
-        Spacer(modifier = Modifier.height(DownloadFieldSpacing))
-        OutlinedTextField(
-            value = trackTitle,
-            onValueChange = onTitleChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Title (optional)") },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            colors = downloadFieldColors()
-        )
-        Spacer(modifier = Modifier.height(DownloadFieldSpacing))
-        OutlinedTextField(
-            value = trackArtist,
-            onValueChange = onArtistChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Artist (optional)") },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            colors = downloadFieldColors()
-        )
+        TextButton(
+            onClick = { showDetails = !showDetails },
+            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp)
+        ) {
+            Text(
+                text = if (showDetails) "Hide details" else "Add details",
+                color = AccentGreen,
+                style = MaterialTheme.typography.labelLarge
+            )
+            Icon(
+                imageVector = if (showDetails) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = null,
+                tint = AccentGreen,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        if (showDetails) {
+            OutlinedTextField(
+                value = trackTitle,
+                onValueChange = onTitleChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Title") },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                colors = downloadFieldColors()
+            )
+            Spacer(modifier = Modifier.height(DownloadFieldSpacing))
+            OutlinedTextField(
+                value = trackArtist,
+                onValueChange = onArtistChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Artist") },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                colors = downloadFieldColors()
+            )
+        }
         Spacer(modifier = Modifier.height(DownloadControlSpacing))
         Button(
             onClick = onDownload,
@@ -803,7 +866,7 @@ private fun UrlDownloadSection(
             }
             Spacer(modifier = Modifier.width(Dimens.paddingSmall))
             Text(
-                text = if (isQueuing) "Adding to queue…" else "Add to download queue",
+                text = if (isQueuing) "Adding…" else "Add to downloads",
                 fontWeight = FontWeight.SemiBold
             )
         }
@@ -855,15 +918,33 @@ private fun CsvImportSection(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(Dimens.cornerMedium))
-            .background(SurfaceElevated)
+            .clip(RoundedCornerShape(18.dp))
+            .background(SurfaceDark)
+            .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(18.dp))
             .padding(DownloadCardPadding)
     ) {
-        Text(
-            text = "Select an Exportify CSV. Each row is searched on YouTube and added to the download queue; large files may take a while.",
-            style = MaterialTheme.typography.bodySmall,
-            color = SecondaryText
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Filled.UploadFile,
+                contentDescription = null,
+                tint = AccentGreen,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+            Column {
+                Text(
+                    text = "Import a playlist",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = PrimaryText
+                )
+                Text(
+                    text = "Bring in a playlist file",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SecondaryText,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+        }
         Spacer(modifier = Modifier.height(DownloadControlSpacing))
         Button(
             onClick = { launcher.launch(arrayOf("text/*", "*/*")) },
@@ -881,7 +962,7 @@ private fun CsvImportSection(
                 modifier = Modifier.size(Dimens.iconSizeSmall)
             )
             Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-            Text(if (isImporting) "Finding tracks…" else "Select CSV file")
+            Text(if (isImporting) "Finding songs…" else "Choose file")
         }
         if (isImporting || status.isNotBlank()) {
             Text(
@@ -895,147 +976,87 @@ private fun CsvImportSection(
 }
 
 @Composable
-private fun DownloadQueueCard(
-    downloads: List<DownloadJob>,
-    onOpenDownloads: () -> Unit
-) {
-    val active = downloads.count {
-        it.state == DownloadState.QUEUED || it.state == DownloadState.DOWNLOADING
-    }
-    val completed = downloads.count { it.state == DownloadState.COMPLETED }
-    val failed = downloads.count { it.state == DownloadState.FAILED }
-
-    Box(
+private fun DownloadFlow() {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(Dimens.cornerLarge))
+            .clip(RoundedCornerShape(18.dp))
             .background(SurfaceDark)
             .padding(DownloadCardPadding)
     ) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Filled.Download,
-                    contentDescription = null,
-                    tint = AccentGreen,
-                    modifier = Modifier.size(Dimens.iconSize)
-                )
-                Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                Text(
-                    text = "Download queue",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = PrimaryText,
-                    modifier = Modifier.weight(1f)
-                )
-                if (active > 0) {
-                    Text(
-                        text = "$active active",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = AccentGreen
-                    )
-                }
-            }
-            Text(
-                text = if (downloads.isEmpty()) {
-                    "Nothing is queued yet. Downloads you start above will appear here."
-                } else {
-                    "$completed saved  •  $active active  •  $failed need attention"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = SecondaryText,
-                modifier = Modifier.padding(top = DownloadFieldSpacing)
+        Text(
+            text = "Find it. Queue it. Play it.",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = PrimaryText
+        )
+        Spacer(modifier = Modifier.height(DownloadControlSpacing))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FlowStep(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.Search,
+                label = "Find"
             )
-            Spacer(modifier = Modifier.height(DownloadControlSpacing))
-            OutlinedButton(
-                onClick = onOpenDownloads,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(Dimens.cornerMedium),
-                colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
-                    contentColor = AccentGreen
-                )
-            ) {
-                Text("Manage download queue")
-            }
+            FlowConnector()
+            FlowStep(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.Download,
+                label = "Queue"
+            )
+            FlowConnector()
+            FlowStep(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.CheckCircle,
+                label = "Listen"
+            )
         }
     }
 }
 
 @Composable
-private fun HowItWorksCard() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Dimens.cornerLarge))
-            .background(SurfaceDark)
-            .padding(DownloadCardPadding)
-    ) {
-        Column {
-            Text(
-                text = "How downloading works",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = PrimaryText
-            )
-            Spacer(modifier = Modifier.height(DownloadControlSpacing))
-            Column(verticalArrangement = Arrangement.spacedBy(DownloadControlSpacing)) {
-                DownloadStep(
-                    number = "1",
-                    title = "Find a source",
-                    description = "Search YouTube or provide a direct audio link."
-                )
-                DownloadStep(
-                    number = "2",
-                    title = "Choose Download",
-                    description = "The audio is prepared and placed in the background queue."
-                )
-                DownloadStep(
-                    number = "3",
-                    title = "Listen offline",
-                    description = "When complete, the track is added to Your Library."
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DownloadStep(
-    number: String,
-    title: String,
-    description: String
+private fun FlowStep(
+    modifier: Modifier,
+    icon: ImageVector,
+    label: String
 ) {
-    Row(
-        verticalAlignment = Alignment.Top
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
             modifier = Modifier
-                .size(28.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(AccentGreen),
+                .size(38.dp)
+                .clip(RoundedCornerShape(13.dp))
+                .background(AccentGreen.copy(alpha = 0.15f)),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = number,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = Color.Black
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = AccentGreen,
+                modifier = Modifier.size(20.dp)
             )
         }
-        Spacer(modifier = Modifier.width(Dimens.paddingMedium))
-        Column {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                color = PrimaryText
-            )
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodySmall,
-                color = SecondaryText
-            )
-        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = SecondaryText,
+            modifier = Modifier.padding(top = 6.dp)
+        )
     }
+}
+
+@Composable
+private fun FlowConnector() {
+    Box(
+        modifier = Modifier
+            .width(24.dp)
+            .height(1.dp)
+            .background(Color.White.copy(alpha = 0.14f))
+    )
 }
 
 @Composable
@@ -1081,13 +1102,14 @@ private fun WebResultRow(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 2.dp)
             )
-            Text(
-                text = listOfNotNull(result.source, duration.takeIf { it.isNotBlank() })
-                    .joinToString("  •  "),
-                style = MaterialTheme.typography.labelSmall,
-                color = SecondaryText,
-                modifier = Modifier.padding(top = 2.dp)
-            )
+            if (duration.isNotBlank()) {
+                Text(
+                    text = duration,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = SecondaryText,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
         }
         Spacer(modifier = Modifier.width(Dimens.paddingSmall))
         ResultAction(
@@ -1110,28 +1132,28 @@ private fun ResultAction(
 ) {
     when {
         job?.state == DownloadState.COMPLETED -> {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(AccentGreen.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
                 Icon(
                     imageVector = Icons.Filled.CheckCircle,
                     contentDescription = "Downloaded",
                     tint = AccentGreen,
-                    modifier = Modifier.size(Dimens.iconSize)
-                )
-                Text(
-                    text = "Downloaded",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = AccentGreen
+                    modifier = Modifier.size(24.dp)
                 )
             }
         }
         job?.state == DownloadState.QUEUED || job?.state == DownloadState.DOWNLOADING -> {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
                 Text(
-                    text = if (job.state == DownloadState.DOWNLOADING) {
-                        "${job.progress}%"
-                    } else {
-                        "Queued"
-                    },
+                    text = if (job.state == DownloadState.DOWNLOADING) "${job.progress}%" else "Waiting",
                     style = MaterialTheme.typography.labelSmall,
                     color = AccentGreen
                 )
@@ -1139,7 +1161,7 @@ private fun ResultAction(
                     onClick = { onCancel(job.id) },
                     contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
                 ) {
-                    Text("Cancel", color = SecondaryText)
+                    Text("Stop", color = SecondaryText)
                 }
             }
         }
@@ -1167,29 +1189,31 @@ private fun ResultAction(
                     strokeWidth = 2.dp
                 )
                 Text(
-                    text = "Preparing",
+                    text = "Getting ready",
                     style = MaterialTheme.typography.labelSmall,
                     color = SecondaryText
                 )
             }
         }
         else -> {
-            Button(
-                onClick = onDownload,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = AccentGreen,
-                    contentColor = Color.Black
-                ),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                shape = RoundedCornerShape(Dimens.cornerMedium)
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(AccentGreen)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDownload
+                    ),
+                contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Filled.Download,
-                    contentDescription = null,
-                    modifier = Modifier.size(Dimens.iconSizeSmall)
+                    contentDescription = "Download ${job?.title ?: "song"}",
+                    tint = Color.Black,
+                    modifier = Modifier.size(22.dp)
                 )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Download", fontWeight = FontWeight.SemiBold)
             }
         }
     }
