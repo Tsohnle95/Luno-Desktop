@@ -95,8 +95,10 @@ import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
 import com.boombastic.mobile.ui.theme.SurfaceDark
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** How long the green-loader transition mask stays fully visible (the
  *  "black screen" moment with the spinner). */
@@ -281,13 +283,20 @@ fun MainShell(musicController: MusicController) {
                         fetchingArtwork = true
                         app.appScope.launch {
                             val updated = app.libraryRepository.fetchMissingArtwork()
-                            fetchingArtwork = false
-                            val message = if (updated > 0) {
-                                "Artwork fetched for $updated track(s)"
-                            } else {
-                                "All tracks already have artwork"
+                            // appScope runs on Dispatchers.Default — every UI
+                            // touch (Compose state + toast) must return to the
+                            // main thread first (toasting off the main thread
+                            // crashes: "Can't toast on a thread that has not
+                            // called Looper.prepare()").
+                            withContext(Dispatchers.Main) {
+                                fetchingArtwork = false
+                                val message = if (updated > 0) {
+                                    "Artwork fetched for $updated track(s)"
+                                } else {
+                                    "All tracks already have artwork"
+                                }
+                                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                             }
-                            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                         }
                     }
                 )

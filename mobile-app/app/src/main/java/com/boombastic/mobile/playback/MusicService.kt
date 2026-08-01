@@ -57,6 +57,13 @@ class MusicService : MediaSessionService() {
      * notification and lock-screen controls render artwork from
      * `artworkData`, so without this enrichment those surfaces would
      * show no artwork even though the in-app UI loads the same file.
+     *
+     * Only items flagged `METADATA_ENRICH_ARTWORK` by [MusicController]
+     * (the play-start item plus a small window around it, and manually
+     * queued items) are enriched.  Loading artworkData for **every** item
+     * of a large context queue (this library: ~170MB of cached artwork
+     * across 4k+ tracks) holds the whole library in memory at once and
+     * gets the process LMK/OOM-killed.
      */
     private inner class ArtworkEnrichingCallback : MediaSession.Callback {
         @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -71,7 +78,9 @@ class MusicService : MediaSessionService() {
                     val enriched = mediaItems.map { item ->
                         val metadata = item.mediaMetadata
                         val artworkUri = metadata.artworkUri
-                        if (artworkUri != null && metadata.artworkData == null) {
+                        val shouldEnrich = metadata.extras
+                            ?.getBoolean(MusicController.METADATA_ENRICH_ARTWORK) == true
+                        if (shouldEnrich && artworkUri != null && metadata.artworkData == null) {
                             val bytes = try {
                                 contentResolver.openInputStream(artworkUri)?.use { it.readBytes() }
                             } catch (_: Exception) {

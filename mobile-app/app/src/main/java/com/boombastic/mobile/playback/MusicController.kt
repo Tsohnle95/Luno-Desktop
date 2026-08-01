@@ -407,7 +407,9 @@ class MusicController @JvmOverloads constructor(
             } else {
                 (currentIndex + 1).coerceAtMost(ctrl.mediaItemCount)
             }
-            ctrl.addMediaItem(insertAt, buildMediaItem(track))
+            // Single inserted items are always enriched (the notification
+            // needs their artwork the moment they play).
+            ctrl.addMediaItem(insertAt, buildMediaItem(track, enrichArtwork = true))
             manualQueueUris.add(track.uri)
         }
     }
@@ -429,7 +431,7 @@ class MusicController @JvmOverloads constructor(
             } else {
                 (currentIndex + 1 + manualItemsAfterCurrent(ctrl)).coerceAtMost(ctrl.mediaItemCount)
             }
-            ctrl.addMediaItem(insertAt, buildMediaItem(track))
+            ctrl.addMediaItem(insertAt, buildMediaItem(track, enrichArtwork = true))
             manualQueueUris.add(track.uri)
         }
     }
@@ -499,7 +501,17 @@ class MusicController @JvmOverloads constructor(
 
     private fun playOnController(ctrl: MediaController, request: PlaybackRequest): Boolean {
         lastDispatchedRequest = request
-        val items = request.items.map(::buildMediaItem)
+        // Enrich (notification/lock-screen artworkData) only the items the
+        // listener actually needs: the play-start item plus a small window
+        // around it for linear skips.  Enriching a whole multi-thousand
+        // track queue reads every artwork file into memory at once (~170MB
+        // for this library) and gets the process LMK/OOM-killed.
+        val items = request.items.mapIndexed { index, track ->
+            buildMediaItem(
+                track,
+                enrichArtwork = kotlin.math.abs(index - request.startIndex) <= ENRICH_WINDOW
+            )
+        }
         // A new playback context resets the Up-Next accounting (desktop:
         // `play_with_context` resets `user_queue_count` to 0).
         manualQueueUris.clear()
@@ -630,9 +642,13 @@ class MusicController @JvmOverloads constructor(
     }
 
     /** Builds the exact metadata-bearing item dispatched to Media3. */
-    internal fun buildMediaItem(track: MediaTrack): MediaItem {
+    internal fun buildMediaItem(track: MediaTrack, enrichArtwork: Boolean = false): MediaItem {
         val extras = Bundle().apply {
             putLong(METADATA_DURATION_MS, track.durationMs)
+            // The session's ArtworkEnrichingCallback only loads artworkData
+            // for flagged items — keeps notification/lock-screen artwork
+            // without reading the whole library into memory per play.
+            if (enrichArtwork) putBoolean(METADATA_ENRICH_ARTWORK, true)
         }
         val metadataBuilder = MediaMetadata.Builder()
             .setTitle(track.title)
@@ -700,8 +716,13 @@ class MusicController @JvmOverloads constructor(
     companion object {
         private const val PROGRESS_UPDATE_INTERVAL_MS = 250L
         private const val MAX_RECENTLY_PLAYED = 100
+        /** How many items around the play-start get notification artwork
+         *  (see [playOnController]). */
+        private const val ENRICH_WINDOW = 3
         internal const val METADATA_DURATION_MS =
             "com.boombastic.mobile.playback.DURATION_MS"
+        internal const val METADATA_ENRICH_ARTWORK =
+            "com.boombastic.mobile.playback.ENRICH_ARTWORK"
         private const val TAG = "MusicController"
     }
 }

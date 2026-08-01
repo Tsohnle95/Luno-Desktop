@@ -99,16 +99,14 @@ class MusicFolderImportManager(
                 } else {
                     ""
                 }
-                // Guarded: a toast failure must never flip a completed
-                // import into the "failed" state.
-                runCatching {
-                    Toast.makeText(
-                        context,
-                        "Music folder set: ${result.imported} songs imported, " +
-                            "${result.duplicates} duplicates, ${result.errors} errors$persistWarning",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
+                // Main-thread + guarded: a toast failure must never crash
+                // the app or flip a completed import into the "failed"
+                // state (this coroutine runs on Dispatchers.Default).
+                showToast(
+                    "Music folder set: ${result.imported} songs imported, " +
+                        "${result.duplicates} duplicates, ${result.errors} errors$persistWarning",
+                    long = true
+                )
                 finish(
                     FolderImportStatus.Finished(
                         imported = result.imported,
@@ -139,13 +137,7 @@ class MusicFolderImportManager(
                         errorMessage = message
                     )
                 )
-                runCatching {
-                    Toast.makeText(
-                        context,
-                        "Import failed: $message",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
+                showToast("Import failed: $message", long = true)
             }
         }
         activeJob = importJob
@@ -175,11 +167,10 @@ class MusicFolderImportManager(
                             failed = false
                         )
                     )
-                    Toast.makeText(
-                        context,
+                    showToast(
                         "Import is taking longer than expected — you can keep using the app",
-                        Toast.LENGTH_LONG
-                    ).show()
+                        long = true
+                    )
                     return@launch
                 }
             }
@@ -192,6 +183,27 @@ class MusicFolderImportManager(
         appScope.launch {
             delay(COMPLETE_DISPLAY_MS)
             if (_status.value == status) _status.value = null
+        }
+    }
+
+    /**
+     * Main-thread, guarded toast.  This manager's coroutines run on
+     * [appScope] (Dispatchers.Default) — `Toast.makeText` there throws
+     * "Can't toast on a thread that has not called Looper.prepare()".
+     * The toast is posted to the main looper and wrapped in `runCatching`
+     * so a toast failure can never crash the app or flip import state.
+     */
+    private fun showToast(text: String, long: Boolean = false) {
+        runCatching {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                runCatching {
+                    Toast.makeText(
+                        context,
+                        text,
+                        if (long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
         }
     }
 
