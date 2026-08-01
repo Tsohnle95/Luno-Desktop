@@ -37,7 +37,6 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -115,17 +114,6 @@ fun SearchScreen(
     var query by rememberSaveable { mutableStateOf("") }
     val searchResults by app.libraryRepository.searchTracks(query).collectAsState(initial = emptyList())
 
-    val importLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris: List<Uri> ->
-        if (uris.isNotEmpty()) {
-            // appScope: the import must survive leaving this screen.
-            app.appScope.launch {
-                app.libraryRepository.importMultipleUris(uris)
-            }
-        }
-    }
-
     // Desktop-style folder import: subfolders become playlists (folder name
     // = playlist name), files at the root land in "Unsorted".  The chosen
     // folder is persisted as the app's music-folder destination.  The
@@ -189,12 +177,6 @@ fun SearchScreen(
                 displayTracks = if (query.isBlank()) emptyList() else searchResults,
                 onPlay = onPlay,
                 onOpenPlaylist = onOpenPlaylist,
-                // `*/*` (not `audio/*`): with `audio/*` the system picker
-                // hides folders from selection, so "Select all" only ever
-                // returned the loose songs at the root and the playlist
-                // folders were never imported.  `importMultipleUris` recurses
-                // into picked folders itself.
-                onImport = { importLauncher.launch(arrayOf("*/*")) },
                 onImportFolder = { folderImportLauncher.launch(null) },
                 importStatus = importStatus
             )
@@ -236,12 +218,12 @@ private fun LibrarySearchContent(
     displayTracks: List<Track>,
     onPlay: (List<MediaTrack>, Int) -> Unit,
     onOpenPlaylist: (Long) -> Unit,
-    onImport: () -> Unit,
     onImportFolder: () -> Unit,
     importStatus: FolderImportStatus?
 ) {
     val app = (LocalContext.current.applicationContext as BoomBasticApp)
     val playlists by app.libraryData.playlists.collectAsState()
+    val allTracks by app.libraryData.tracks.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
         SearchPill(
@@ -287,8 +269,8 @@ private fun LibrarySearchContent(
         if (query.isBlank()) {
             BrowseAllGrid(
                 playlists = playlists,
+                artworkTracks = allTracks,
                 onOpenPlaylist = onOpenPlaylist,
-                onImport = onImport,
                 onImportFolder = onImportFolder
             )
         } else if (displayTracks.isEmpty()) {
@@ -350,8 +332,8 @@ private fun LibrarySearchContent(
 @Composable
 private fun BrowseAllGrid(
     playlists: List<PlaylistWithTracks>,
+    artworkTracks: List<Track>,
     onOpenPlaylist: (Long) -> Unit,
-    onImport: () -> Unit,
     onImportFolder: () -> Unit
 ) {
     LazyVerticalGrid(
@@ -374,19 +356,9 @@ private fun BrowseAllGrid(
             )
         }
 
-        item(key = "import_songs") {
-            BrowseActionTile(
-                label = "Import songs",
-                icon = Icons.Filled.LibraryMusic,
-                gradient = listOf(Color(0xFF1ED760), Color(0xFF0E8F43)),
-                onClick = onImport
-            )
-        }
         item(key = "import_folder") {
-            BrowseActionTile(
-                label = "Import folder",
-                icon = Icons.Filled.FolderOpen,
-                gradient = listOf(Color(0xFF7358FF), Color(0xFF4527A0)),
+            ImportFolderTile(
+                tracks = artworkTracks,
                 onClick = onImportFolder
             )
         }
@@ -394,7 +366,7 @@ private fun BrowseAllGrid(
         if (playlists.isEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Text(
-                    text = "No playlists yet — import songs to get started.",
+                    text = "No playlists yet — import a folder to get started.",
                     color = SecondaryText,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = Dimens.paddingMedium)
@@ -457,42 +429,78 @@ private fun PlaylistBrowseTile(
     }
 }
 
-/** Action tile: Spotify genre-tile look (vivid gradient, label + icon). */
+/** Folder import tile: a small sample of library artwork makes it feel alive. */
 @Composable
-private fun BrowseActionTile(
-    label: String,
-    icon: ImageVector,
-    gradient: List<Color>,
+private fun ImportFolderTile(
+    tracks: List<Track>,
     onClick: () -> Unit
 ) {
+    val artworkTracks = remember(tracks) { tracks.shuffled().take(4) }
     Box(
         modifier = Modifier
             .aspectRatio(1f)
             .clip(RoundedCornerShape(Dimens.cornerLarge))
-            .background(Brush.verticalGradient(gradient))
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = onClick
             )
     ) {
+        if (artworkTracks.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color(0xFF7358FF), Color(0xFF4527A0))
+                        )
+                    )
+            )
+        } else {
+            ArtworkCollage(
+                tracks = artworkTracks,
+                modifier = Modifier.fillMaxSize(),
+                placeholderIconSize = 28.dp,
+                decodeSizePx = 256,
+                shape = RoundedCornerShape(0.dp)
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.Black.copy(alpha = 0.08f),
+                            Color.Black.copy(alpha = 0.78f)
+                        )
+                    )
+                )
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(Dimens.paddingMedium)
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.42f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.FolderOpen,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(Dimens.iconSize)
+            )
+        }
         Text(
-            text = label,
+            text = "Import folder",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
             color = Color.White,
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(Dimens.paddingMedium)
-        )
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = Color.White,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(Dimens.paddingMedium)
-                .size(Dimens.iconSizeLarge)
         )
     }
 }
