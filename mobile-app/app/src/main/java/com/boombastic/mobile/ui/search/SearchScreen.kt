@@ -367,10 +367,6 @@ fun SearchScreen(
                 )
             }
         }
-
-        item(key = "download-note") {
-            DownloadNote()
-        }
     }
 }
 
@@ -386,16 +382,16 @@ private fun DownloadHeader(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = 12.dp)
+            .padding(bottom = 8.dp)
     ) {
         Text(
-            text = "Bring your music together",
+            text = "Download music",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             color = PrimaryText
         )
         Text(
-            text = "This is your place to consolidate music on this device. Search for a recording, paste a direct audio link, or import a playlist export. Everything you add here joins the same local library.",
+            text = "Search YouTube, paste an audio link, or import an Exportify playlist. Downloads stay on this device, appear in Your Library when ready, and can finish in the background.",
             style = MaterialTheme.typography.bodyMedium,
             color = SecondaryText,
             modifier = Modifier.padding(top = 4.dp)
@@ -404,42 +400,7 @@ private fun DownloadHeader(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(30.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(AccentGreen.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.CheckCircle,
-                    contentDescription = null,
-                    tint = AccentGreen,
-                    modifier = Modifier.size(17.dp)
-                )
-            }
-            Spacer(modifier = Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Saved on this device",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = AccentGreen
-                )
-                Text(
-                    text = "Finished downloads appear in Your Library for offline listening.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = SecondaryText,
-                    modifier = Modifier.padding(top = 2.dp)
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
+                .padding(top = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             OutlinedTextField(
@@ -513,7 +474,7 @@ private fun DownloadHeader(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 12.dp)
+                    .padding(top = 8.dp)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -618,20 +579,26 @@ private fun SourceOptions(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 20.dp, bottom = 10.dp)
+            .padding(top = 24.dp, bottom = 8.dp)
     ) {
-        Text(
-            text = "Other ways to add",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = PrimaryText
-        )
-        Text(
-            text = "Bring in a link or a playlist export; both become part of the same local library.",
-            style = MaterialTheme.typography.bodySmall,
-            color = SecondaryText,
-            modifier = Modifier.padding(top = 3.dp, bottom = 8.dp)
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "More ways to add",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = PrimaryText,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "Optional",
+                style = MaterialTheme.typography.labelMedium,
+                color = SecondaryText
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -970,45 +937,6 @@ private fun CsvImportSection(
                 style = MaterialTheme.typography.bodySmall,
                 color = if (isImporting) AccentGreen else SecondaryText,
                 modifier = Modifier.padding(top = DownloadFieldSpacing)
-            )
-        }
-    }
-}
-
-@Composable
-private fun DownloadNote() {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 22.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.Top
-    ) {
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(AccentGreen.copy(alpha = 0.12f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Filled.CheckCircle,
-                contentDescription = null,
-                tint = AccentGreen,
-                modifier = Modifier.size(18.dp)
-            )
-        }
-        Spacer(modifier = Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "One library, no matter the source",
-                style = MaterialTheme.typography.titleSmall,
-                color = PrimaryText
-            )
-            Text(
-                text = "Downloads and music imported from your device meet in Your Library. Keep browsing while downloads finish.",
-                style = MaterialTheme.typography.bodySmall,
-                color = SecondaryText,
-                modifier = Modifier.padding(top = 3.dp)
             )
         }
     }
