@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,26 +23,33 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.TabRowDefaults
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -55,36 +63,49 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.BoomBasticApp
+import com.boombastic.mobile.data.db.dao.PlaylistWithTracks
 import com.boombastic.mobile.data.db.entity.DownloadJob
 import com.boombastic.mobile.data.db.entity.DownloadState
 import com.boombastic.mobile.data.db.entity.Track
+import com.boombastic.mobile.playback.ExtractionResult
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
-import com.boombastic.mobile.playback.ExtractionResult
 import com.boombastic.mobile.playback.WebSearchResult
 import com.boombastic.mobile.playback.WebSearchService
+import com.boombastic.mobile.ui.components.ArtworkCollage
+import com.boombastic.mobile.ui.components.ArtworkImage
 import com.boombastic.mobile.ui.components.TrackActionsSheet
 import com.boombastic.mobile.ui.shell.FolderImportStatus
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
-import com.boombastic.mobile.ui.theme.SurfaceDark
 import com.boombastic.mobile.ui.theme.SurfaceElevated
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Live counters shown while a folder (desktop-style) import is running. */
+/**
+ * Spotify-inspired search hub: a bold "Search" header, pill-shaped search
+ * bar, chip-style tab switcher (Library / Web Search), and — while idle —
+ * a "Browse all" grid of gradient tiles (playlists + import actions).
+ * Web results render with YouTube thumbnails.
+ */
 @Composable
 fun SearchScreen(
     musicController: MusicController,
-    onPlay: (List<MediaTrack>, Int) -> Unit = { _, _ -> }
+    onPlay: (List<MediaTrack>, Int) -> Unit = { _, _ -> },
+    onOpenPlaylist: (Long) -> Unit = {}
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
@@ -132,6 +153,7 @@ fun SearchScreen(
         Text(
             text = "Search",
             style = MaterialTheme.typography.headlineLarge,
+            fontWeight = FontWeight.Bold,
             color = PrimaryText,
             modifier = Modifier.padding(
                 top = Dimens.paddingLarge,
@@ -139,28 +161,22 @@ fun SearchScreen(
             )
         )
 
-        TabRow(
-            selectedTabIndex = tabIndex,
-            containerColor = SurfaceDark,
-            contentColor = AccentGreen,
-            indicator = { tabPositions ->
-                if (tabIndex < tabPositions.size) {
-                    TabRowDefaults.SecondaryIndicator(
-                        modifier = Modifier.tabIndicatorOffset(tabPositions[tabIndex]),
-                        color = AccentGreen
-                    )
-                }
-            }
+        // Chip-style switcher (selected chip = accent green, Spotify's
+        // filter-chip look) instead of the old underline TabRow.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center
         ) {
-            Tab(
+            SearchTabChip(
+                text = "Library",
                 selected = tabIndex == 0,
-                onClick = { tabIndex = 0 },
-                text = { Text("Library", color = if (tabIndex == 0) AccentGreen else SecondaryText) }
+                onClick = { tabIndex = 0 }
             )
-            Tab(
+            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+            SearchTabChip(
+                text = "Web Search",
                 selected = tabIndex == 1,
-                onClick = { tabIndex = 1 },
-                text = { Text("Web Search", color = if (tabIndex == 1) AccentGreen else SecondaryText) }
+                onClick = { tabIndex = 1 }
             )
         }
 
@@ -172,6 +188,7 @@ fun SearchScreen(
                 onQueryChange = { query = it },
                 displayTracks = if (query.isBlank()) emptyList() else searchResults,
                 onPlay = onPlay,
+                onOpenPlaylist = onOpenPlaylist,
                 // `*/*` (not `audio/*`): with `audio/*` the system picker
                 // hides folders from selection, so "Select all" only ever
                 // returned the loose songs at the root and the playlist
@@ -189,153 +206,379 @@ fun SearchScreen(
     }
 }
 
+/** Spotify filter-chip: accent-green pill when selected, dark pill otherwise. */
+@Composable
+private fun SearchTabChip(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Text(
+        text = text,
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(if (selected) AccentGreen else SurfaceElevated)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
+            .padding(horizontal = Dimens.paddingXLarge, vertical = Dimens.paddingSmall),
+        style = MaterialTheme.typography.labelLarge,
+        color = if (selected) Color.Black else PrimaryText
+    )
+}
+
 @Composable
 private fun LibrarySearchContent(
     query: String,
     onQueryChange: (String) -> Unit,
     displayTracks: List<Track>,
     onPlay: (List<MediaTrack>, Int) -> Unit,
+    onOpenPlaylist: (Long) -> Unit,
     onImport: () -> Unit,
     onImportFolder: () -> Unit,
     importStatus: FolderImportStatus?
 ) {
+    val app = (LocalContext.current.applicationContext as BoomBasticApp)
+    val playlists by app.libraryData.playlists.collectAsState()
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        SearchPill(
+            value = query,
+            onValueChange = onQueryChange,
+            placeholder = "What do you want to play?"
+        )
+
+        // Live import progress strip — flips to "Import complete!" (green)
+        // when the folder import finishes, then auto-clears after a couple
+        // of seconds (the manager owns that lifecycle).
+        importStatus?.let { status ->
+            when (status) {
+                is FolderImportStatus.Importing -> Text(
+                    text = "Importing music folder… ${status.imported} added, " +
+                        "${status.duplicates} duplicates, ${status.errors} errors",
+                    color = AccentGreen,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = Dimens.paddingSmall)
+                )
+                is FolderImportStatus.Finished -> Text(
+                    text = when {
+                        status.failed ->
+                            "Import failed — please try again" +
+                                status.errorMessage?.let { " ($it)" }.orEmpty()
+                        status.stalled -> "Import is taking longer than expected… still working"
+                        else ->
+                            "Import complete! ${status.imported} added, " +
+                                "${status.duplicates} duplicates, " +
+                                "${status.errors} errors${status.persistWarning.orEmpty()}"
+                    },
+                    color = if (status.failed || status.stalled) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        AccentGreen
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = Dimens.paddingSmall)
+                )
+            }
+        }
+
+        if (query.isBlank()) {
+            BrowseAllGrid(
+                playlists = playlists,
+                onOpenPlaylist = onOpenPlaylist,
+                onImport = onImport,
+                onImportFolder = onImportFolder
+            )
+        } else if (displayTracks.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "No results for \"$query\"",
+                    color = SecondaryText,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        } else {
+            // Track actions sheet — hoisted out of the LazyColumn: composing
+            // a ModalBottomSheet inside a lazy item makes it scroll with the
+            // list.
+            var actionsTrack by remember { mutableStateOf<Track?>(null) }
+            // The full result set as the playback context: next/previous on
+            // the full player walk the search results, matching the desktop.
+            val mediaTracks = remember(displayTracks) {
+                displayTracks.map {
+                    MediaTrack(
+                        uri = it.uri,
+                        title = it.title,
+                        artist = it.artist,
+                        album = it.album,
+                        durationMs = it.durationMs,
+                        artworkUri = it.albumArtUri()
+                    )
+                }
+            }
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+                contentPadding = PaddingValues(bottom = Dimens.paddingLarge)
+            ) {
+                items(displayTracks, key = { it.uri }) { track ->
+                    TrackRow(
+                        track = track,
+                        onClick = {
+                            val index = displayTracks.indexOfFirst { it.uri == track.uri }
+                            onPlay(mediaTracks, index.coerceAtLeast(0))
+                        },
+                        onLongPress = { actionsTrack = track }
+                    )
+                }
+            }
+            actionsTrack?.let { track ->
+                TrackActionsSheet(
+                    track = track,
+                    onDismiss = { actionsTrack = null }
+                )
+            }
+        }
+    }
+}
+
+/** Spotify "Browse all": a 2-column grid of colorful gradient tiles. */
+@Composable
+private fun BrowseAllGrid(
+    playlists: List<PlaylistWithTracks>,
+    onOpenPlaylist: (Long) -> Unit,
+    onImport: () -> Unit,
+    onImportFolder: () -> Unit
+) {
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
+        modifier = Modifier.fillMaxSize(),
+        horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+        verticalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+        contentPadding = PaddingValues(bottom = Dimens.paddingXLarge)
+    ) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            Text(
+                text = "Browse all",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = PrimaryText,
+                modifier = Modifier.padding(
+                    top = Dimens.paddingSmall,
+                    bottom = Dimens.paddingSmall
+                )
+            )
+        }
+
+        item(key = "import_songs") {
+            BrowseActionTile(
+                label = "Import songs",
+                icon = Icons.Filled.LibraryMusic,
+                gradient = listOf(Color(0xFF1ED760), Color(0xFF0E8F43)),
+                onClick = onImport
+            )
+        }
+        item(key = "import_folder") {
+            BrowseActionTile(
+                label = "Import folder",
+                icon = Icons.Filled.FolderOpen,
+                gradient = listOf(Color(0xFF7358FF), Color(0xFF4527A0)),
+                onClick = onImportFolder
+            )
+        }
+
+        if (playlists.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    text = "No playlists yet — import songs to get started.",
+                    color = SecondaryText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = Dimens.paddingMedium)
+                )
+            }
+        } else {
+            items(playlists, key = { it.playlist.id }) { playlistWithTracks ->
+                PlaylistBrowseTile(
+                    playlistWithTracks = playlistWithTracks,
+                    onClick = { onOpenPlaylist(playlistWithTracks.playlist.id) }
+                )
+            }
+        }
+    }
+}
+
+/** Playlist tile: 2x2 collage art with a dark scrim + bold name (Spotify style). */
+@Composable
+private fun PlaylistBrowseTile(
+    playlistWithTracks: PlaylistWithTracks,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(Dimens.cornerLarge))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
+    ) {
+        ArtworkCollage(
+            tracks = playlistWithTracks.tracks,
+            modifier = Modifier.fillMaxSize(),
+            placeholderIconSize = 28.dp,
+            decodeSizePx = 256,
+            shape = RoundedCornerShape(0.dp)
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.72f))
+                    )
+                )
+                .padding(horizontal = Dimens.paddingSmall, vertical = Dimens.paddingMedium)
+        ) {
+            Text(
+                text = playlistWithTracks.playlist.name,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/** Action tile: Spotify genre-tile look (vivid gradient, label + icon). */
+@Composable
+private fun BrowseActionTile(
+    label: String,
+    icon: ImageVector,
+    gradient: List<Color>,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(Dimens.cornerLarge))
+            .background(Brush.verticalGradient(gradient))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(Dimens.paddingMedium)
+        )
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(Dimens.paddingMedium)
+                .size(Dimens.iconSizeLarge)
+        )
+    }
+}
+
+/** The shared Spotify-style pill search bar. */
+@Composable
+private fun SearchPill(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String
+) {
     OutlinedTextField(
-        value = query,
-        onValueChange = onQueryChange,
+        value = value,
+        onValueChange = onValueChange,
         modifier = Modifier.fillMaxWidth(),
-        placeholder = {
-            Text(text = "Search your library...", color = SecondaryText)
-        },
+        placeholder = { Text(text = placeholder, color = SecondaryText) },
         leadingIcon = {
             Icon(
-                imageVector = Icons.Default.Search,
+                imageVector = Icons.Filled.Search,
                 contentDescription = "Search",
                 tint = SecondaryText
             )
         },
+        trailingIcon = {
+            if (value.isNotBlank()) {
+                IconButton(onClick = { onValueChange("") }) {
+                    Icon(
+                        imageVector = Icons.Filled.Clear,
+                        contentDescription = "Clear search",
+                        tint = SecondaryText
+                    )
+                }
+            }
+        },
         singleLine = true,
+        shape = RoundedCornerShape(24.dp),
         colors = OutlinedTextFieldDefaults.colors(
             focusedTextColor = PrimaryText,
             unfocusedTextColor = PrimaryText,
             cursorColor = AccentGreen,
             focusedBorderColor = AccentGreen,
             unfocusedBorderColor = SurfaceElevated,
-            focusedContainerColor = SurfaceDark,
-            unfocusedContainerColor = SurfaceDark
+            focusedContainerColor = SurfaceElevated,
+            unfocusedContainerColor = SurfaceElevated
         )
     )
+}
 
-    Button(
-        onClick = onImport,
-        modifier = Modifier.padding(vertical = Dimens.paddingMedium),
-        colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+/** Expandable row (URL input / CSV import toggles). */
+@Composable
+private fun ToggleRow(
+    icon: ImageVector,
+    text: String,
+    expanded: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
+            .padding(vertical = Dimens.paddingMedium),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = "Import songs or playlist folders", color = PrimaryText)
-    }
-
-    OutlinedButton(
-        onClick = onImportFolder,
-        modifier = Modifier.fillMaxWidth(),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentGreen)
-    ) {
-        Text("Import music folder (playlists by folder)")
-    }
-
-    // Live import progress strip — flips to "Import complete!" (green)
-    // when the folder import finishes, then auto-clears after a couple of
-    // seconds (the manager owns that lifecycle).
-    importStatus?.let { status ->
-        when (status) {
-            is FolderImportStatus.Importing -> Text(
-                text = "Importing music folder… ${status.imported} added, " +
-                    "${status.duplicates} duplicates, ${status.errors} errors",
-                color = AccentGreen,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = Dimens.paddingSmall)
-            )
-            is FolderImportStatus.Finished -> Text(
-                text = when {
-                    status.failed ->
-                        "Import failed — please try again" +
-                            status.errorMessage?.let { " ($it)" }.orEmpty()
-                    status.stalled -> "Import is taking longer than expected… still working"
-                    else ->
-                        "Import complete! ${status.imported} added, " +
-                            "${status.duplicates} duplicates, " +
-                            "${status.errors} errors${status.persistWarning.orEmpty()}"
-                },
-                color = if (status.failed || status.stalled) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    AccentGreen
-                },
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = Dimens.paddingSmall)
-            )
-        }
-    }
-
-    if (query.isBlank()) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "Songs appear here when you search.",
-                color = SecondaryText,
-                style = MaterialTheme.typography.bodyMedium
-            )
-        }
-    } else if (displayTracks.isEmpty()) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "No results for \"$query\"",
-                color = SecondaryText,
-                style = MaterialTheme.typography.bodyMedium
-            )
-        }
-    } else {
-        // Track actions sheet — hoisted out of the LazyColumn: composing a
-        // ModalBottomSheet inside a lazy item makes it scroll with the list.
-        var actionsTrack by remember { mutableStateOf<Track?>(null) }
-        // The full result set as the playback context: next/previous on the
-        // full player walk the search results, matching the desktop.
-        val mediaTracks = remember(displayTracks) {
-            displayTracks.map {
-                MediaTrack(
-                    uri = it.uri,
-                    title = it.title,
-                    artist = it.artist,
-                    album = it.album,
-                    durationMs = it.durationMs,
-                    artworkUri = it.albumArtUri()
-                )
-            }
-        }
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-            contentPadding = PaddingValues(bottom = Dimens.paddingLarge)
-        ) {
-            items(displayTracks, key = { it.uri }) { track ->
-                TrackRow(
-                    track = track,
-                    onClick = {
-                        val index = displayTracks.indexOfFirst { it.uri == track.uri }
-                        onPlay(mediaTracks, index.coerceAtLeast(0))
-                    },
-                    onLongPress = { actionsTrack = track }
-                )
-            }
-        }
-        actionsTrack?.let { track ->
-            TrackActionsSheet(
-                track = track,
-                onDismiss = { actionsTrack = null }
-            )
-        }
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = AccentGreen,
+            modifier = Modifier.size(Dimens.iconSize)
+        )
+        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge,
+            color = AccentGreen
+        )
+        Spacer(modifier = Modifier.weight(1f))
+        Icon(
+            imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+            contentDescription = null,
+            tint = SecondaryText,
+            modifier = Modifier.size(Dimens.iconSizeSmall)
+        )
     }
 }
 
@@ -393,17 +636,19 @@ private fun WebSearchContent(
                     Icon(Icons.Default.Search, contentDescription = null, tint = SecondaryText)
                 },
                 singleLine = true,
+                shape = RoundedCornerShape(24.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = PrimaryText,
                     unfocusedTextColor = PrimaryText,
                     cursorColor = AccentGreen,
                     focusedBorderColor = AccentGreen,
                     unfocusedBorderColor = SurfaceElevated,
-                    focusedContainerColor = SurfaceDark,
-                    unfocusedContainerColor = SurfaceDark
+                    focusedContainerColor = SurfaceElevated,
+                    unfocusedContainerColor = SurfaceElevated
                 )
             )
             Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+            // Circular green search button (Spotify's round action look).
             Button(
                 onClick = {
                     if (searchQuery.isBlank()) return@Button
@@ -428,9 +673,16 @@ private fun WebSearchContent(
                     }
                 },
                 enabled = searchQuery.isNotBlank() && !isSearching,
-                colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+                colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
+                modifier = Modifier.size(Dimens.touchTargetMin),
+                shape = CircleShape
             ) {
-                Text("Search", color = PrimaryText)
+                Icon(
+                    imageVector = Icons.Filled.Search,
+                    contentDescription = "Search YouTube",
+                    tint = Color.Black,
+                    modifier = Modifier.size(Dimens.iconSize)
+                )
             }
         }
 
@@ -442,23 +694,17 @@ private fun WebSearchContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = Dimens.paddingSmall, bottom = Dimens.paddingSmall)
-                    .background(androidx.compose.ui.graphics.Color(0x33FF0000))
+                    .background(Color(0x33FF0000))
                     .padding(horizontal = Dimens.paddingSmall, vertical = Dimens.paddingSmall)
             )
         }
 
         // Toggle to show URL input
-        Spacer(modifier = Modifier.height(Dimens.paddingSmall))
-        TextButton(
-            onClick = { showUrlInput = !showUrlInput },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(
-                text = if (showUrlInput) "Hide URL input" else "Or paste a direct audio URL",
-                color = AccentGreen,
-                style = MaterialTheme.typography.labelLarge
-            )
-        }
+        ToggleRow(
+            icon = Icons.Filled.Link,
+            text = if (showUrlInput) "Hide URL input" else "Or paste a direct audio URL",
+            expanded = showUrlInput
+        ) { showUrlInput = !showUrlInput }
 
         if (showUrlInput) {
             UrlDownloadSection(
@@ -468,36 +714,31 @@ private fun WebSearchContent(
                 onTitleChange = { urlTitle = it },
                 trackArtist = urlArtist,
                 onArtistChange = { urlArtist = it },
-                    onDownload = {
-                        if (urlInput.isNotBlank()) {
-                            scope.launch {
-                                downloadRepository.enqueueDownload(
-                                    sourceUrl = urlInput.trim(),
-                                    title = urlTitle.trim().ifBlank { "Download" },
-                                    artist = urlArtist.trim()
-                                )
-                                urlInput = ""
-                                urlTitle = ""
-                                urlArtist = ""
-                                Toast.makeText(ctx, "Download queued", Toast.LENGTH_SHORT).show()
-                            }
+                onDownload = {
+                    if (urlInput.isNotBlank()) {
+                        scope.launch {
+                            downloadRepository.enqueueDownload(
+                                sourceUrl = urlInput.trim(),
+                                title = urlTitle.trim().ifBlank { "Download" },
+                                artist = urlArtist.trim()
+                            )
+                            urlInput = ""
+                            urlTitle = ""
+                            urlArtist = ""
+                            Toast.makeText(ctx, "Download queued", Toast.LENGTH_SHORT).show()
                         }
                     }
+                }
             )
         }
 
         // CSV import
         var showCsvImport by rememberSaveable { mutableStateOf(false) }
-        TextButton(
-            onClick = { showCsvImport = !showCsvImport },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(
-                text = if (showCsvImport) "Hide CSV import" else "Import Spotify CSV (Exportify)",
-                color = AccentGreen,
-                style = MaterialTheme.typography.labelLarge
-            )
-        }
+        ToggleRow(
+            icon = Icons.Filled.UploadFile,
+            text = if (showCsvImport) "Hide CSV import" else "Import Spotify CSV (Exportify)",
+            expanded = showCsvImport
+        ) { showCsvImport = !showCsvImport }
 
         if (showCsvImport) {
             CsvImportSection(
@@ -539,13 +780,14 @@ private fun WebSearchContent(
                     .fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
-                Text("Searching...", color = SecondaryText)
+                CircularProgressIndicator(color = AccentGreen)
             }
         } else if (webResults.isNotEmpty()) {
             // Show results
             Text(
                 text = "YouTube results (${visibleResults.size})",
                 style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
                 color = PrimaryText,
                 modifier = Modifier.padding(bottom = Dimens.paddingSmall)
             )
@@ -649,14 +891,15 @@ private fun UrlDownloadSection(
             modifier = Modifier.fillMaxWidth(),
             placeholder = { Text("https://...", color = SecondaryText) },
             singleLine = true,
+            shape = RoundedCornerShape(16.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedTextColor = PrimaryText,
                 unfocusedTextColor = PrimaryText,
                 cursorColor = AccentGreen,
                 focusedBorderColor = AccentGreen,
                 unfocusedBorderColor = SurfaceElevated,
-                focusedContainerColor = SurfaceDark,
-                unfocusedContainerColor = SurfaceDark
+                focusedContainerColor = SurfaceElevated,
+                unfocusedContainerColor = SurfaceElevated
             )
         )
         Spacer(modifier = Modifier.height(Dimens.paddingSmall))
@@ -667,14 +910,15 @@ private fun UrlDownloadSection(
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Title", color = SecondaryText) },
                 singleLine = true,
+                shape = RoundedCornerShape(16.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = PrimaryText,
                     unfocusedTextColor = PrimaryText,
                     cursorColor = AccentGreen,
                     focusedBorderColor = AccentGreen,
                     unfocusedBorderColor = SurfaceElevated,
-                    focusedContainerColor = SurfaceDark,
-                    unfocusedContainerColor = SurfaceDark
+                    focusedContainerColor = SurfaceElevated,
+                    unfocusedContainerColor = SurfaceElevated
                 )
             )
             Spacer(modifier = Modifier.width(Dimens.paddingSmall))
@@ -684,14 +928,15 @@ private fun UrlDownloadSection(
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Artist", color = SecondaryText) },
                 singleLine = true,
+                shape = RoundedCornerShape(16.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = PrimaryText,
                     unfocusedTextColor = PrimaryText,
                     cursorColor = AccentGreen,
                     focusedBorderColor = AccentGreen,
                     unfocusedBorderColor = SurfaceElevated,
-                    focusedContainerColor = SurfaceDark,
-                    unfocusedContainerColor = SurfaceDark
+                    focusedContainerColor = SurfaceElevated,
+                    unfocusedContainerColor = SurfaceElevated
                 )
             )
         }
@@ -725,6 +970,16 @@ private fun WebResultRow(
             .padding(vertical = Dimens.paddingSmall, horizontal = Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // YouTube thumbnail (48dp, rounded) — same row size as library rows.
+        ArtworkImage(
+            artworkUri = result.thumbnailUrl,
+            modifier = Modifier
+                .size(Dimens.albumArtSmall)
+                .clip(RoundedCornerShape(Dimens.cornerSmall)),
+            placeholderIconSize = 20.dp,
+            decodeSizePx = 128
+        )
+        Spacer(modifier = Modifier.width(Dimens.paddingMedium))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = result.title,
@@ -764,7 +1019,7 @@ private fun WebResultRow(
             }
             state == DownloadState.QUEUED || state == DownloadState.DOWNLOADING -> {
                 // Green circular progress — tap to cancel this download
-                androidx.compose.material3.CircularProgressIndicator(
+                CircularProgressIndicator(
                     modifier = Modifier
                         .size(Dimens.iconSize)
                         .clickable { job?.let { onCancel(it.id) } },
@@ -783,7 +1038,7 @@ private fun WebResultRow(
                 }
             }
             extractingAudio -> {
-                androidx.compose.material3.CircularProgressIndicator(
+                CircularProgressIndicator(
                     modifier = Modifier.size(Dimens.iconSize),
                     color = AccentGreen,
                     strokeWidth = 2.dp
@@ -902,19 +1157,5 @@ private fun CsvImportSection(
         ) {
             Text("Select CSV File", color = PrimaryText)
         }
-    }
-}
-
-@Composable
-private fun TextButton(
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    content: @Composable () -> Unit
-) {
-    androidx.compose.material3.TextButton(
-        onClick = onClick,
-        modifier = modifier
-    ) {
-        content()
     }
 }

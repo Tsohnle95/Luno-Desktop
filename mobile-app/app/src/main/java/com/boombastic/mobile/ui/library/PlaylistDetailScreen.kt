@@ -21,7 +21,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -29,6 +31,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -60,6 +64,8 @@ import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
+import com.boombastic.mobile.ui.theme.SurfaceDark
+import com.boombastic.mobile.ui.theme.SurfaceElevated
 
 /**
  * Playlist detail view (Spotify-inspired): a 2x2 collage of up to four
@@ -86,6 +92,11 @@ fun PlaylistDetailScreen(
     // order never changes.
     var sortMode by rememberSaveable { mutableStateOf(TrackSortMode.AZ) }
 
+    // In-playlist search query — filters the track list (and therefore the
+    // play context) by title/artist/album, Spotify style.
+    var query by rememberSaveable { mutableStateOf("") }
+    var showSearch by rememberSaveable { mutableStateOf(false) }
+
     // Reads from the app-warmed LibraryData playlists flow: the detail
     // screen is only reachable via a playlist card, so the list is already
     // loaded and the header + tracks render in the same frame as the
@@ -108,9 +119,18 @@ fun PlaylistDetailScreen(
     val playlist = playlistWithTracks.playlist
     val tracks = playlistWithTracks.tracks
 
-    // Sorted view of the playlist — the list rows AND the play context
-    // (next/prev walk the sorted order, like the Library tab).
-    val sortedTracks = remember(tracks, sortMode) { tracks.sortedByMode(sortMode) }
+    // In-playlist search: filter the membership by title/artist/album
+    // (case-insensitive), then sort the filtered set — the list rows AND
+    // the play context walk the same filtered order.
+    val filteredTracks = remember(tracks, query) {
+        if (query.isBlank()) tracks
+        else tracks.filter {
+            it.title.contains(query, ignoreCase = true) ||
+                it.artist.contains(query, ignoreCase = true) ||
+                it.album.contains(query, ignoreCase = true)
+        }
+    }
+    val sortedTracks = remember(filteredTracks, sortMode) { filteredTracks.sortedByMode(sortMode) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -133,12 +153,6 @@ fun PlaylistDetailScreen(
                     )
                 }
                 Spacer(modifier = Modifier.weight(1f))
-                Text(
-                    text = "Playlist",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = SecondaryText,
-                    modifier = Modifier.padding(end = Dimens.paddingLarge)
-                )
             }
         }
 
@@ -193,23 +207,84 @@ fun PlaylistDetailScreen(
                         musicController.play(sortedTracks.map { it.toMediaTrack() }, 0)
                         musicController.setShuffle(true)
                     },
+                    onSearch = { showSearch = !showSearch },
+                    searchVisible = showSearch,
                     sortMode = sortMode,
                     onSortModeChange = { sortMode = it }
                 )
             }
 
-            items(sortedTracks, key = { it.uri }) { track ->
-                PlaylistTrackRow(
-                    track = track,
-                    onClick = {
-                        val index = sortedTracks.indexOfFirst { it.uri == track.uri }
-                        musicController.play(
-                            sortedTracks.map { it.toMediaTrack() },
-                            index.coerceAtLeast(0)
+            if (showSearch) {
+                item {
+                    Column {
+                        Spacer(modifier = Modifier.height(Dimens.paddingMedium))
+                        OutlinedTextField(
+                            value = query,
+                            onValueChange = { query = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Dimens.paddingLarge),
+                            placeholder = {
+                                Text(text = "Search in this playlist", color = SecondaryText)
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Filled.Search,
+                                    contentDescription = "Search",
+                                    tint = SecondaryText
+                                )
+                            },
+                            trailingIcon = {
+                                if (query.isNotBlank()) {
+                                    IconButton(onClick = { query = "" }) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Clear,
+                                            contentDescription = "Clear search",
+                                            tint = SecondaryText
+                                        )
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(24.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = PrimaryText,
+                                unfocusedTextColor = PrimaryText,
+                                cursorColor = AccentGreen,
+                                focusedBorderColor = AccentGreen,
+                                unfocusedBorderColor = SurfaceElevated,
+                                focusedContainerColor = SurfaceDark,
+                                unfocusedContainerColor = SurfaceDark
+                            )
                         )
-                    },
-                    onLongPress = { actionsTrack = track }
-                )
+                        Spacer(modifier = Modifier.height(Dimens.paddingMedium))
+                    }
+                }
+            }
+
+            if (filteredTracks.isEmpty()) {
+                item {
+                    Text(
+                        text = "No songs match \"$query\" in this playlist.",
+                        color = SecondaryText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(Dimens.paddingLarge)
+                    )
+                }
+            } else {
+                items(sortedTracks, key = { it.uri }) { track ->
+                    PlaylistTrackRow(
+                        track = track,
+                        onClick = {
+                            val index = sortedTracks.indexOfFirst { it.uri == track.uri }
+                            musicController.play(
+                                sortedTracks.map { it.toMediaTrack() },
+                                index.coerceAtLeast(0)
+                            )
+                        },
+                        onLongPress = { actionsTrack = track }
+                    )
+                }
             }
         }
     }
@@ -232,18 +307,37 @@ private fun PlaylistHeader(
     totalDurationMs: Long,
     onPlayAll: (() -> Unit)?,
     onShuffleAll: (() -> Unit)? = null,
+    onSearch: (() -> Unit)? = null,
+    searchVisible: Boolean = false,
     sortMode: TrackSortMode = TrackSortMode.AZ,
     onSortModeChange: ((TrackSortMode) -> Unit)? = null
 ) {
     Column(modifier = Modifier.padding(horizontal = Dimens.paddingLarge)) {
         Spacer(modifier = Modifier.height(Dimens.paddingLarge))
-        Text(
-            text = name,
-            style = MaterialTheme.typography.headlineMedium,
-            color = PrimaryText,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = name,
+                style = MaterialTheme.typography.headlineMedium,
+                color = PrimaryText,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (onSearch != null) {
+                IconButton(onClick = onSearch) {
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = if (searchVisible) {
+                            "Hide playlist search"
+                        } else {
+                            "Search playlist"
+                        },
+                        tint = PrimaryText,
+                        modifier = Modifier.size(Dimens.iconSize)
+                    )
+                }
+            }
+        }
         if (description.isNotBlank()) {
             Spacer(modifier = Modifier.height(Dimens.paddingSmall))
             Text(

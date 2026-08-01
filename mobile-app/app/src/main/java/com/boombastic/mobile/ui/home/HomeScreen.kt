@@ -49,7 +49,7 @@ import java.util.Locale
 
 /**
  * Spotify-inspired Home: greeting, edge-clipped "Recently played" and
- * "Made for you" carousels, and a quick-action playlist grid.  The
+ * randomized 50-song "Made for you" carousels, and a quick-action playlist grid.  The
  * Settings drawer is opened from the tappable "Luno" app header instead
  * of a profile icon.
  */
@@ -93,6 +93,23 @@ fun HomeScreen(
     val recentlyPlayedListState = rememberLazyListState()
     val madeForYouListState = rememberLazyListState()
     val playlistsListState = rememberLazyListState()
+
+    // Keep one random catalogue sample stable for the lifetime of the
+    // current library snapshot. This avoids reshuffling while the screen
+    // recomposes, while still refreshing when the catalogue changes.
+    val madeForYou = remember(allTracks) { allTracks.shuffled().take(50) }
+    val madeForYouMedia = remember(madeForYou) {
+        madeForYou.map {
+            MediaTrack(
+                uri = it.uri,
+                title = it.title,
+                artist = it.artist,
+                album = it.album,
+                durationMs = it.durationMs,
+                artworkUri = it.albumArtUri()
+            )
+        }
+    }
 
     // Edge-to-edge column; each section supplies its own horizontal padding
     // so carousels clip visibly at the screen edges.  Vertical rhythm is
@@ -160,7 +177,7 @@ fun HomeScreen(
             }
         }
 
-        // Made for you — library tracks until Last.fm recommendations land
+        // Made for you — a random mix from the entire catalogue.
         item(key = "made-header") {
             SectionHeader(title = "Made for you")
         }
@@ -174,7 +191,6 @@ fun HomeScreen(
             }
         } else {
             item(key = "made-carousel") {
-                val madeForYou = allTracks.take(10)
                 LazyRow(
                     state = madeForYouListState,
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
@@ -187,19 +203,7 @@ fun HomeScreen(
                             artworkUri = track.albumArtUri(),
                             onClick = {
                                 val index = madeForYou.indexOfFirst { it.uri == track.uri }
-                                onPlay(
-                                    madeForYou.map {
-                                        MediaTrack(
-                                            uri = it.uri,
-                                            title = it.title,
-                                            artist = it.artist,
-                                            album = it.album,
-                                            durationMs = it.durationMs,
-                                            artworkUri = it.albumArtUri()
-                                        )
-                                    },
-                                    index.coerceAtLeast(0)
-                                )
+                                onPlay(madeForYouMedia, index.coerceAtLeast(0))
                             }
                         )
                     }
