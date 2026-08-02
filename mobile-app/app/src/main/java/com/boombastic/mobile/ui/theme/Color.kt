@@ -10,7 +10,7 @@ val PrimaryText = Color(0xFFFFFFFF)
 val SecondaryText = Color(0xFFB3B3B3)
 val AccentGreen = Color(0xFF1ED760)
 
-// Background tint used by MainShell's angled, layered wash.
+// Background tint used by MainShell's blob-based wash.
 val AppBackgroundGreen = Color(0xFF102B1C)
 
 // Navigation bar

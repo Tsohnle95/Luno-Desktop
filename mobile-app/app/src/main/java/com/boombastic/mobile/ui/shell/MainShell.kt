@@ -1062,47 +1062,64 @@ private fun SmoothProgressBar(
 }
 
 /**
- * Layered background wash: a diagonal green sweep with two offset glows keeps
- * the shell atmospheric without turning the whole screen into a flat gradient.
+ * Blob-based background wash: the header keeps its green gradient while
+ * separate, soft-edged glows leave gaps for the black base to show through.
  */
 private fun Modifier.appBackgroundWash(): Modifier = drawWithCache {
-    val diagonalSweep = Brush.linearGradient(
+    val headerGradient = Brush.linearGradient(
         colorStops = arrayOf(
-            0.0f to Color.Transparent,
-            0.18f to AppBackgroundGreen.copy(alpha = 0.16f),
-            0.42f to AppBackgroundGreen.copy(alpha = 0.44f),
-            0.58f to AccentGreen.copy(alpha = 0.07f),
-            0.78f to AppBackgroundGreen.copy(alpha = 0.24f),
+            0.0f to AccentGreen.copy(alpha = 0.08f),
+            0.26f to AppBackgroundGreen.copy(alpha = 0.48f),
+            0.68f to AppBackgroundGreen.copy(alpha = 0.18f),
             1.0f to Color.Transparent
         ),
-        start = Offset(-size.width * 0.18f, size.height * 0.88f),
-        end = Offset(size.width * 1.1f, size.height * 0.12f)
+        start = Offset(size.width * 0.42f, 0f),
+        end = Offset(size.width * 0.42f, size.height * 0.27f)
     )
-    val upperGlow = Brush.radialGradient(
-        colorStops = arrayOf(
-            0.0f to AccentGreen.copy(alpha = 0.12f),
-            0.28f to AppBackgroundGreen.copy(alpha = 0.27f),
-            0.72f to AppBackgroundGreen.copy(alpha = 0.08f),
-            1.0f to Color.Transparent
+
+    fun blob(center: Offset, radius: Float, centerAlpha: Float, bodyAlpha: Float): Brush =
+        Brush.radialGradient(
+            colorStops = arrayOf(
+                0.0f to AccentGreen.copy(alpha = centerAlpha),
+                0.28f to AppBackgroundGreen.copy(alpha = bodyAlpha),
+                0.70f to AppBackgroundGreen.copy(alpha = bodyAlpha * 0.42f),
+                1.0f to Color.Transparent
+            ),
+            center = center,
+            radius = radius
+        )
+
+    val blobs = listOf(
+        blob(
+            center = Offset(size.width * -0.12f, size.height * 0.36f),
+            radius = size.minDimension * 0.44f,
+            centerAlpha = 0.08f,
+            bodyAlpha = 0.43f
         ),
-        center = Offset(size.width * 0.82f, size.height * 0.14f),
-        radius = size.maxDimension * 0.72f
-    )
-    val lowerGlow = Brush.radialGradient(
-        colorStops = arrayOf(
-            0.0f to AppBackgroundGreen.copy(alpha = 0.36f),
-            0.34f to AppBackgroundGreen.copy(alpha = 0.18f),
-            0.78f to AppBackgroundGreen.copy(alpha = 0.05f),
-            1.0f to Color.Transparent
+        blob(
+            center = Offset(size.width * 1.12f, size.height * 0.36f),
+            radius = size.minDimension * 0.41f,
+            centerAlpha = 0.11f,
+            bodyAlpha = 0.47f
         ),
-        center = Offset(size.width * 0.12f, size.height * 0.82f),
-        radius = size.maxDimension * 0.66f
+        blob(
+            center = Offset(size.width * -0.08f, size.height * 0.82f),
+            radius = size.minDimension * 0.46f,
+            centerAlpha = 0.09f,
+            bodyAlpha = 0.46f
+        ),
+        blob(
+            center = Offset(size.width * 1.08f, size.height * 0.82f),
+            radius = size.minDimension * 0.44f,
+            centerAlpha = 0.10f,
+            bodyAlpha = 0.45f
+        )
     )
 
     onDrawBehind {
-        drawRect(diagonalSweep)
-        drawRect(upperGlow)
-        drawRect(lowerGlow)
+        blobs.forEach { drawRect(it) }
+        // Keep the green fade behind the Luno title and status-bar area.
+        drawRect(headerGradient)
     }
 }
 
