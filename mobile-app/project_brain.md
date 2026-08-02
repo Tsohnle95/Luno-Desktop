@@ -121,7 +121,7 @@ boomtastic/
 │   │       │           │   ├── Type.kt               # Sans-serif typography scale
 │   │       │           │   └── Dimens.kt             # 24dp icons, 48dp touch targets, 64dp mini-player
 │   │       │           ├── components/
-│   │       │           │   ├── MiniPlayer.kt         # Compact artwork thumb + title + play/pause; horizontal swipe skips queue; tap → full player
+│   │       │           │   ├── MiniPlayer.kt         # Compact artwork thumb + title + play/pause + thin progress bar; artwork-color surface; horizontal swipe skips queue; tap → full player
 │   │       │           │   ├── ArtworkImage.kt       # Coil SubcomposeAsyncImage wrapper (gradient + music-note placeholder) + decodeSizePx decode cap (thumbs decode small, no full 512px art per scroll row) + animated dominant-color extraction
 │   │       │           │   ├── ArtworkCollage.kt     # 2x2 square collage: first 4 track artworks, one per quadrant (playlist thumbnails + detail header)
 │   │       │           │   ├── PlaylistCard.kt       # Shared card: 2x2 collage thumbnail + name + green 3-dot menu (sync/stop-sync/URL/clear/delete, opt-in) + long-press multi-select indicator
@@ -349,7 +349,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 - `onTaskRemoved` stops service if nothing is playing.
 - `MainShell` collects `connectionError` and `playbackError` via `SnackbarHostState` and shows one‑shot Snackbars.
 - `MediaTrack` extended with `album: String` and `durationMs: Long`. LibraryScreen/Home/playlist-detail screens construct `MediaTrack` from Room `Track` with exact title, artist, album, durationMs; `MiniPlayer` displays `Artist · Album` when available.
-- **Swipeable mini-player (2026-08-01):** `ui/components/MiniPlayer.kt` is a compact artwork/title/play-pause row with no progress/focus bar. It recognizes a 64dp horizontal swipe across the player above the bottom navigation: swiping left calls `MusicController.skipToNext()` and swiping right calls `skipToPrevious()`, preserving the current Media3 queue, shuffle order, and repeat behavior; taps on the track info still open the full player.
+- **Swipeable mini-player (2026-08-02):** `ui/components/MiniPlayer.kt` is a compact artwork/title/play-pause row with a 2dp playback-progress bar at the top and a translucent animated surface derived from `rememberArtworkColors()`; the track-info press indication remains disabled so swipes do not leave a gray highlight. It recognizes a 64dp horizontal swipe across the player above the bottom navigation: swiping left calls `MusicController.skipToNext()` and swiping right calls `skipToPrevious()`, preserving the current Media3 queue, shuffle order, and repeat behavior; taps on the track info still open the full player.
 - **Full player screen implemented (2026-07-30):** `ui/player/FullPlayerScreen.kt` (280dp artwork, m:ss scrub bar, shuffle/prev/play-pause/next/repeat transport row, queue + action-sheet triggers, back arrow), `ui/player/QueueSheet.kt` ("Playing Next" modal sheet from `MusicController.getQueue()`), `ui/player/ActionSheet.kt` (Add to playlist sub-sheet via `PlaylistRepository`, Play next, Add to queue, Go to artist toast placeholder, Android Sharesheet). Repeat cycles OFF→ALL→ONE (ExoPlayer `REPEAT_MODE_*`), shuffle enables Media3 shuffle, immediately chooses a different random current item, and `getQueue()` traverses the resulting playback order; both modes are exposed as `StateFlow`s on `MusicController`. Queue changes increment `queueRevision` so Playing Next refreshes after shuffle/reorder. MiniPlayer track-info tap navigates to `Routes.FULL_PLAYER`; bottom bar hidden on the full-player route.
 - **Real artwork + dynamic gradients implemented (2026-07-30):** Embedded album art is extracted at import/download time (`ArtworkStorage.saveEmbeddedArtwork*` via `MediaMetadataRetriever.getEmbeddedPicture`), downsampled to ≤512px JPEG and cached in `filesDir/artwork/`; the path is stored on `Track.albumArtPath` (Room **v4** migration `3_4`). `MediaTrack` carries `artworkUri` (file://) through `MusicController.buildMediaItem` (MediaMetadata `artworkUri`), and `MusicService`'s `ArtworkEnrichingCallback` (`MediaSession.Callback.onAddMediaItems`) loads `artworkData` bytes so the **notification and lock-screen show artwork**. UI renders via Coil (`ui/components/ArtworkImage.kt`): full player (280dp), MiniPlayer (48dp thumb), Home recently-played card, and QueueSheet rows. `rememberArtworkColors()` extracts the dominant color (androidx Palette vibrant→muted→dominant) and animates a vertical gradient backdrop behind the full player (600ms `animateColorAsState`), satisfying "gradients animate subtly on transition".
 - **Queue reordering implemented (2026-07-30):** `MusicController.moveQueueItem(from, to)` → `Player.moveMediaItem`; `QueueSheet` rows show artwork + drag handle and support **long-press drag-to-reorder** (`detectDragGesturesAfterLongPress`, row translation + scale feedback, drop-target index computed from drag delta; snapshot refreshed after each move).
@@ -487,7 +487,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 
 **Mini-player:**
 - **Persistent mini-player** at the bottom (similar to Spotify)
-- Shows artwork thumbnail, title, artist, and play/pause; horizontal swipes skip through the current queue
+- Shows artwork thumbnail, title, artist, play/pause, a thin position bar, and a translucent surface tinted from the current artwork; horizontal swipes skip through the current queue
 - Tapping expands to full player
 - Present on all main tabs when audio is active
 
@@ -818,7 +818,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `ui/theme/Theme.kt` | BoomBasticTheme (Material3 darkColorScheme) | ✅ |
 | `ui/theme/Type.kt` | Sans-serif typography scale | ✅ |
 | `ui/theme/Dimens.kt` | Touch targets, icon sizes, padding constants | ✅ |
-| `ui/components/MiniPlayer.kt` | Compact mini-player with artwork thumb, title, artist, play/pause, and horizontal queue swipes | ✅ |
+| `ui/components/MiniPlayer.kt` | Compact mini-player with artwork thumb, title, artist, play/pause, artwork-color surface, thin progress bar, and horizontal queue swipes | ✅ |
 | `ui/components/ArtworkImage.kt` | Coil SubcomposeAsyncImage wrapper (file:// artwork, gradient + music-note placeholder, `decodeSizePx` decode cap for list rows) + rememberArtworkColors (Palette dominant color → animated gradient stops) | ✅ |
 | `ui/components/PlaylistCard.kt` | Shared playlist card: 2x2 collage thumbnail + name + green 3-dot menu (sync / stop-sync / URL / clear / delete, opt-in callbacks) | ✅ |
 | `ui/components/TrackRowCard.kt` | Track row in playlist-card UI layout: artwork thumb + title/artist + green 3-dot, optional multi-select check indicator, optional long-press callback | ✅ |

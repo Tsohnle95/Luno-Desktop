@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -27,12 +28,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.playback.MusicController
+import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
+import com.boombastic.mobile.ui.theme.MiniPlayerBorder
 import com.boombastic.mobile.ui.theme.MiniPlayerSurface
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
@@ -44,14 +49,31 @@ fun MiniPlayer(
 ) {
     val isPlaying by musicController.isPlaying.collectAsState()
     val currentTrack by musicController.currentTrack.collectAsState()
+    val progress by musicController.progress.collectAsState()
+    val duration by musicController.duration.collectAsState()
     val swipeThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
+    val (gradientTop, gradientBottom) = rememberArtworkColors(currentTrack?.artworkUri)
 
     if (currentTrack == null) return
+
+    val progressFraction = if (duration > 0L) {
+        (progress.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(MiniPlayerSurface)
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        gradientTop.copy(alpha = 0.42f),
+                        gradientBottom.copy(alpha = 0.28f)
+                    )
+                )
+            )
             .pointerInput(musicController, swipeThresholdPx) {
                 var horizontalDrag = 0f
                 detectHorizontalDragGestures(
@@ -70,6 +92,16 @@ fun MiniPlayer(
                 )
             }
     ) {
+        LinearProgressIndicator(
+            progress = { progressFraction },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(2.dp),
+            color = AccentGreen,
+            trackColor = MiniPlayerBorder.copy(alpha = 0.7f),
+            strokeCap = StrokeCap.Round
+        )
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
