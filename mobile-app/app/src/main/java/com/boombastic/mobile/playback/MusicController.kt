@@ -336,7 +336,22 @@ class MusicController @JvmOverloads constructor(
 
     fun seekTo(positionMs: Long) {
         if (released) return
-        safePlayerCommand("seek") { controller?.seekTo(positionMs) }
+        safePlayerCommand("seek") {
+            controller?.let { ctrl ->
+                val target = positionMs.coerceAtLeast(0L).let { requested ->
+                    val playerDuration = ctrl.duration
+                    if (playerDuration > 0L) {
+                        requested.coerceAtMost(playerDuration)
+                    } else {
+                        requested
+                    }
+                }
+                ctrl.seekTo(target)
+                // Reflect a completed seek immediately. The normal position
+                // poll will reconcile this value with Media3 on its next tick.
+                _progress.value = target
+            }
+        }
     }
 
     fun skipToNext() {

@@ -3,6 +3,7 @@ package com.boombastic.mobile.ui.components
 import android.net.Uri
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,7 +28,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import coil.compose.SubcomposeAsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.rememberAsyncImagePainter
 import com.boombastic.mobile.data.artwork.ArtworkStorage
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryBackground
@@ -67,24 +69,27 @@ fun ArtworkImage(
             .size(width = decodeSizePx, height = decodeSizePx)
             .build()
     }
-    SubcomposeAsyncImage(
-        model = request,
-        contentDescription = null,
-        modifier = modifier.clip(shape),
-        contentScale = ContentScale.Crop,
-        loading = {
-            ArtworkPlaceholder(
+    // SubcomposeAsyncImage adds a second composition pass for every state
+    // change. That cost is noticeable when a lazy list creates several rows
+    // during a fling. Render the placeholder only until a regular painter has
+    // a decoded image, so loaded artwork does not redraw the fallback.
+    val painter = rememberAsyncImagePainter(model = request)
+    val painterState = painter.state
+    Box(modifier = modifier.clip(shape)) {
+        if (painterState is AsyncImagePainter.State.Success) {
+            Image(
+                painter = painter,
+                contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
-                iconSize = placeholderIconSize
+                contentScale = ContentScale.Crop
             )
-        },
-        error = {
+        } else {
             ArtworkPlaceholder(
                 modifier = Modifier.fillMaxSize(),
                 iconSize = placeholderIconSize
             )
         }
-    )
+    }
 }
 
 /**

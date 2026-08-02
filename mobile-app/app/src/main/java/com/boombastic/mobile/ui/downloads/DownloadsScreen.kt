@@ -103,7 +103,11 @@ fun DownloadsScreen() {
                 }
             }
 
-            items(playlistsWithUrls, key = { it.id }) { playlist ->
+            items(
+                playlistsWithUrls,
+                key = { it.id },
+                contentType = { "sync-playlist" }
+            ) { playlist ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -214,7 +218,11 @@ fun DownloadsScreen() {
                 )
             }
         } else {
-            items(downloads, key = { it.id }) { job ->
+            items(
+                downloads,
+                key = { it.id },
+                contentType = { "download-job" }
+            ) { job ->
                 DownloadJobRow(
                     job = job,
                     onCancel = { scope.launch { app.downloadRepository.cancelDownload(job.id) } },

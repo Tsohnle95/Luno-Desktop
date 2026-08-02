@@ -287,7 +287,11 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
                     contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
                 ) {
-                    items(history, key = { it.uri }) { track ->
+                    items(
+                        history,
+                        key = { it.uri },
+                        contentType = { "track-card" }
+                    ) { track ->
                         TrackCard(
                             title = track.title,
                             artist = track.artist,
@@ -336,7 +340,11 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
                     contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
                 ) {
-                    items(madeForYou, key = { it.uri }) { track ->
+                    items(
+                        madeForYou,
+                        key = { it.uri },
+                        contentType = { "track-card" }
+                    ) { track ->
                         TrackCard(
                             title = track.title,
                             artist = track.artist,
@@ -382,7 +390,11 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
                     contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
                 ) {
-                    items(popularTracks, key = { it.uri }) { track ->
+                    items(
+                        popularTracks,
+                        key = { it.uri },
+                        contentType = { "track-card" }
+                    ) { track ->
                         TrackCard(
                             title = track.title,
                             artist = track.artist,
@@ -410,7 +422,11 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
                     contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
                 ) {
-                    items(popularPlaylists, key = { it.playlist.id }) { playlistWithTracks ->
+                    items(
+                        popularPlaylists,
+                        key = { it.playlist.id },
+                        contentType = { "playlist-card" }
+                    ) { playlistWithTracks ->
                         HomePlaylistCard(
                             name = playlistWithTracks.playlist.name,
                             tracks = playlistWithTracks.tracks,

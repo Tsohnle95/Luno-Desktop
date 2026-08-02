@@ -326,7 +326,11 @@ fun DiscoverScreen(musicController: MusicController) {
                                 )
                             }
                         } else {
-                            items(tracks, key = { recKey(it) }) { rec ->
+                            items(
+                                tracks,
+                                key = { recKey(it) },
+                                contentType = { "recommendation" }
+                            ) { rec ->
                                 RecommendationRow(
                                     rec = rec,
                                     downloading = recKey(rec) in downloadingKeys,

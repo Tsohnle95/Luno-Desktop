@@ -143,7 +143,11 @@ fun PlayingNextTab(
         )
     } else {
         LazyColumn(modifier = modifier) {
-            itemsIndexed(queueItems, key = { index, track -> "${index}:${track.uri}" }) { index, track ->
+            itemsIndexed(
+                queueItems,
+                key = { index, track -> "${index}:${track.uri}" },
+                contentType = { _, _ -> "queue-row" }
+            ) { index, track ->
                 QueueRow(
                     track = track,
                     isDragging = draggingIndex == index,
@@ -268,7 +272,11 @@ fun RecentlyPlayedTab(
     } else {
         LazyColumn(modifier = modifier) {
             // Move-to-front semantics guarantee unique URIs.
-            itemsIndexed(history, key = { _, track -> track.uri }) { index, track ->
+            itemsIndexed(
+                history,
+                key = { _, track -> track.uri },
+                contentType = { _, _ -> "recent-row" }
+            ) { index, track ->
                 RecentRow(
                     track = track,
                     selected = if (selectionMode) track.uri in selectedUris else null,
@@ -321,7 +329,8 @@ private fun RecentRow(
             modifier = Modifier
                 .size(Dimens.albumArtSmall)
                 .padding(end = Dimens.paddingMedium),
-            placeholderIconSize = 20.dp
+            placeholderIconSize = 20.dp,
+            decodeSizePx = 192
         )
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -382,7 +391,8 @@ private fun QueueRow(
             modifier = Modifier
                 .size(Dimens.albumArtSmall)
                 .padding(end = Dimens.paddingMedium),
-            placeholderIconSize = 20.dp
+            placeholderIconSize = 20.dp,
+            decodeSizePx = 192
         )
         Column(
             modifier = Modifier.weight(1f)

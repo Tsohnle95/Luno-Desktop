@@ -349,7 +349,11 @@ fun PlaylistDetailScreen(
                     )
                 }
             } else {
-                items(sortedTracks, key = { it.uri }) { track ->
+                items(
+                    sortedTracks,
+                    key = { it.uri },
+                    contentType = { "playlist-track" }
+                ) { track ->
                     PlaylistTrackRow(
                         track = track,
                         selected = if (selectionMode) track.uri in selectedUris else null,

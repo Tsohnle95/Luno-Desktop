@@ -150,7 +150,11 @@ fun DuplicateScreen(onBack: () -> Unit) {
             }
             groups.forEach { group ->
                 item(key = "header-${group.key}") { DuplicateGroupHeader(group) }
-                items(group.tracks, key = { it.uri }) { track ->
+                items(
+                    group.tracks,
+                    key = { it.uri },
+                    contentType = { "duplicate-track" }
+                ) { track ->
                     TrackRowCard(
                         track = track,
                         selected = track.uri in visibleSelectedUris,

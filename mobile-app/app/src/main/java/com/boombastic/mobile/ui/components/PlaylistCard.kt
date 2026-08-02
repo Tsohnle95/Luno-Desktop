@@ -103,7 +103,7 @@ fun PlaylistCard(
             tracks = tracks,
             modifier = Modifier.size(Dimens.albumArtSmall),
             placeholderIconSize = 14.dp,
-            decodeSizePx = 256
+            decodeSizePx = 192
         )
 
         Spacer(modifier = Modifier.width(Dimens.paddingSmall))

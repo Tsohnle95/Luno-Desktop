@@ -296,7 +296,11 @@ fun SearchScreen(
             item(key = "results-heading") {
                 ResultsHeader(query = searchQuery, count = webResults.size)
             }
-            items(webResults, key = { it.videoId }) { result ->
+            items(
+                webResults,
+                key = { it.videoId },
+                contentType = { "web-result" }
+            ) { result ->
                 val job = jobForResult(result)
                 WebResultRow(
                     result = result,
@@ -476,7 +480,11 @@ fun SearchScreen(
                     )
                 }
             } else {
-                items(downloadedTracks, key = { "downloaded-${it.uri}" }) { track ->
+                items(
+                    downloadedTracks,
+                    key = { "downloaded-${it.uri}" },
+                    contentType = { "downloaded-track" }
+                ) { track ->
                     TrackRowCard(
                         track = track,
                         onClick = {

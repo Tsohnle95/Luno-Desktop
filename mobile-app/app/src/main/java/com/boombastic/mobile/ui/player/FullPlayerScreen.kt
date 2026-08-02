@@ -1,5 +1,8 @@
 package com.boombastic.mobile.ui.player
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -35,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -164,14 +168,29 @@ fun FullPlayerScreen(
             Spacer(modifier = Modifier.weight(1f))
 
             // Scrub bar with m:ss time labels
-            val maxDuration = (duration.coerceAtLeast(0L)).toFloat()
-            var sliderPosition by rememberSaveable { mutableStateOf(0f) }
-            var isScrubbing by rememberSaveable { mutableStateOf(false) }
-            val scrubValue = if (isScrubbing) {
-                sliderPosition
-            } else {
-                progress.toFloat().coerceIn(0f, maxDuration)
+            val maxDuration = duration.coerceAtLeast(0L).toFloat()
+            var sliderPosition by rememberSaveable(currentTrack?.uri) {
+                mutableStateOf(0f)
             }
+            var isScrubbing by rememberSaveable(currentTrack?.uri) {
+                mutableStateOf(false)
+            }
+            val progressTarget = progress.toFloat().coerceIn(0f, maxDuration)
+            // The controller samples Media3 every 250 ms. Interpolate those
+            // samples locally so the thumb and elapsed time move every frame
+            // instead of visibly stepping between controller updates.
+            val animatedProgress = key(currentTrack?.uri) {
+                val value by animateFloatAsState(
+                    targetValue = progressTarget,
+                    animationSpec = tween(
+                        durationMillis = PROGRESS_SAMPLE_INTERVAL_MS,
+                        easing = LinearEasing
+                    ),
+                    label = "playbackProgress"
+                )
+                value
+            }
+            val scrubValue = if (isScrubbing) sliderPosition else animatedProgress
             Slider(
                 value = scrubValue,
                 onValueChange = {
@@ -322,6 +341,8 @@ fun FullPlayerScreen(
         )
     }
 }
+
+private const val PROGRESS_SAMPLE_INTERVAL_MS = 250
 
 /**
  * Formats milliseconds as `m:ss`, matching the desktop `utils.py format_time`

@@ -447,7 +447,11 @@ fun LibraryScreen(
                     )
                 }
             } else {
-                items(displayPlaylists, key = { it.playlist.id }) { playlistWithTracks ->
+                items(
+                    displayPlaylists,
+                    key = { it.playlist.id },
+                    contentType = { "playlist" }
+                ) { playlistWithTracks ->
                     val playlistKey = "p${playlistWithTracks.playlist.id}"
                     PlaylistCard(
                         playlist = playlistWithTracks.playlist,
@@ -526,7 +530,11 @@ fun LibraryScreen(
                     )
                 }
             } else {
-                items(sortedTracks, key = { it.uri }) { track ->
+                items(
+                    sortedTracks,
+                    key = { it.uri },
+                    contentType = { "track" }
+                ) { track ->
                     TrackRowCard(
                         track = track,
                         selected = if (selectionMode) track.uri in selectedKeys else null,
