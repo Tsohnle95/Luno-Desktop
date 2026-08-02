@@ -7,7 +7,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.WorkManager
 import androidx.work.testing.WorkManagerTestInitHelper
 import com.boombastic.mobile.data.db.AppDatabase
+import com.boombastic.mobile.data.db.entity.DownloadJob
 import com.boombastic.mobile.data.db.entity.DownloadState
+import com.boombastic.mobile.data.db.entity.Track
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -30,7 +32,11 @@ class DownloadRepositoryTest {
         context = ApplicationProvider.getApplicationContext()
         WorkManagerTestInitHelper.initializeTestWorkManager(context)
         database = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java).build()
-        repository = DownloadRepository(database.downloadJobDao(), context)
+        repository = DownloadRepository(
+            downloadJobDao = database.downloadJobDao(),
+            context = context,
+            playlistDao = database.playlistDao()
+        )
     }
 
     @After
@@ -53,6 +59,9 @@ class DownloadRepositoryTest {
         assertThat(job.title).isEqualTo("Test Song")
         assertThat(job.artist).isEqualTo("Test Artist")
         assertThat(job.thumbnailUrl).isEmpty()
+        assertThat(job.playlistId).isNotNull()
+        assertThat(database.playlistDao().getPlaylist(job.playlistId!!)?.name)
+            .isEqualTo(DownloadRepository.UNSORTED_PLAYLIST_NAME)
     }
 
     @Test
@@ -67,6 +76,51 @@ class DownloadRepositoryTest {
         assertThat(job).isNotNull()
         assertThat(job!!.thumbnailUrl)
             .isEqualTo("https://i.ytimg.com/vi/abc123/mqdefault.jpg")
+    }
+
+    @Test
+    fun enqueueDownload_persistsPlaylistAssignment() = runBlocking {
+        val id = repository.enqueueDownload(
+            sourceUrl = "https://example.com/assigned.mp3",
+            title = "Assigned Track",
+            playlistId = 42L
+        )
+
+        assertThat(database.downloadJobDao().getDownload(id)!!.playlistId).isEqualTo(42L)
+    }
+
+    @Test
+    fun enqueueDownload_reusesUnsortedPlaylist() = runBlocking {
+        repository.enqueueDownload("https://example.com/one.mp3", "One")
+        repository.enqueueDownload("https://example.com/two.mp3", "Two")
+
+        assertThat(database.playlistDao().getPlaylistByName(DownloadRepository.UNSORTED_PLAYLIST_NAME))
+            .isNotNull()
+        assertThat(database.playlistDao().getAllPlaylistsWithTracks().first())
+            .hasSize(1)
+    }
+
+    @Test
+    fun repairUnsortedMemberships_assignsLegacyCompletedDownload() = runBlocking {
+        val localUri = "file:///data/data/app/files/downloads/legacy.mp3"
+        database.downloadJobDao().insertDownload(
+            DownloadJob(
+                sourceUrl = "https://example.com/legacy.mp3",
+                title = "Legacy",
+                state = DownloadState.COMPLETED,
+                localUri = localUri
+            )
+        )
+        database.trackDao().insertTrack(Track(uri = localUri, title = "Legacy"))
+
+        repository.repairUnsortedMemberships(database.trackDao())
+
+        val unsorted = database.playlistDao()
+            .getPlaylistByName(DownloadRepository.UNSORTED_PLAYLIST_NAME)
+        assertThat(unsorted).isNotNull()
+        assertThat(database.playlistDao().getPlaylistWithTracks(unsorted!!.id)!!.tracks.map { it.uri })
+            .containsExactly(localUri)
+        Unit
     }
 
     @Test

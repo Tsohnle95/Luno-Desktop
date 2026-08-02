@@ -55,7 +55,7 @@ import kotlin.math.roundToInt
 /**
  * The two Queue/Recents tabs (desktop "Playing Next" + "Recently Played"
  * contract): [PLAYING_NEXT] is the live playback queue with drag-to-reorder,
- * [RECENTLY_PLAYED] the in-session history.  Shared by the full player's
+ * [RECENTLY_PLAYED] the persisted history.  Shared by the full player's
  * [QueueSheet] and the Recents screen opened from the Settings drawer.
  */
 enum class QueueRecentsTab(val label: String) {
@@ -109,6 +109,7 @@ fun PlayingNextTab(
     modifier: Modifier = Modifier
 ) {
     val currentTrack by musicController.currentTrack.collectAsState()
+    val queueRevision by musicController.queueRevision.collectAsState()
     var queueItems by remember { mutableStateOf(musicController.getQueue()) }
 
     // Refresh the snapshot when the tab appears (queue may have changed
@@ -117,7 +118,7 @@ fun PlayingNextTab(
     LaunchedEffect(Unit) {
         queueItems = musicController.getQueue()
     }
-    LaunchedEffect(currentTrack?.uri) {
+    LaunchedEffect(currentTrack?.uri, queueRevision) {
         queueItems = musicController.getQueue()
     }
 
@@ -134,7 +135,7 @@ fun PlayingNextTab(
         )
     } else {
         LazyColumn(modifier = modifier) {
-            itemsIndexed(queueItems, key = { index, _ -> index }) { index, track ->
+            itemsIndexed(queueItems, key = { index, track -> "${index}:${track.uri}" }) { index, track ->
                 QueueRow(
                     track = track,
                     isDragging = draggingIndex == index,
@@ -164,7 +165,7 @@ fun PlayingNextTab(
 }
 
 /**
- * "Recently played" tab — the in-session history (most recent first, max
+ * "Recently played" tab — the persisted history (most recent first, max
  * 100, desktop move-to-front replay semantics).  Tapping a row plays it
  * within the history context (next/prev walk recent plays); "Clear all"
  * empties the history.

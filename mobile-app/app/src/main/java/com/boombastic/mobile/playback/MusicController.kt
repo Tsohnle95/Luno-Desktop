@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.random.Random
 
 /**
  * Lifecycle-safe controller that connects to the Media3 service.
@@ -54,7 +55,9 @@ import kotlinx.coroutines.launch
 class MusicController @JvmOverloads constructor(
     private val context: Context,
     internal val connector: AsyncConnector = AsyncConnector.Default,
-    private val onTrackPlayed: (String) -> Unit = {}
+    private val onTrackPlayed: (String) -> Unit = {},
+    private val recentlyPlayedStore: RecentlyPlayedStore =
+        SharedPreferencesRecentlyPlayedStore(context)
 ) {
 
     // ── Exceptions / errors ──────────────────────────────────────────────
@@ -88,12 +91,11 @@ class MusicController @JvmOverloads constructor(
     private val _shuffleEnabled = MutableStateFlow(false)
     val shuffleEnabled: StateFlow<Boolean> = _shuffleEnabled.asStateFlow()
 
-    /**
-     * In-session playback history, most recent first (max 100, following the
-     * desktop convention).  Populated from media-item transitions; not yet
-     * persisted across app restarts.
-     */
-    private val _recentlyPlayed = MutableStateFlow<List<MediaTrack>>(emptyList())
+    private val _queueRevision = MutableStateFlow(0L)
+    val queueRevision: StateFlow<Long> = _queueRevision.asStateFlow()
+
+    /** Most recent first (max 100), restored from app-private storage at startup. */
+    private val _recentlyPlayed = MutableStateFlow(recentlyPlayedStore.load())
     val recentlyPlayed: StateFlow<List<MediaTrack>> = _recentlyPlayed.asStateFlow()
 
     private val _isConnected = MutableStateFlow(false)
@@ -277,8 +279,25 @@ class MusicController @JvmOverloads constructor(
         if (tracks.isEmpty()) return true
         val request = PlaybackRequest(
             items = tracks.toList(),
-            startIndex = startIndex.coerceIn(0, tracks.lastIndex)
+            startIndex = startIndex.coerceIn(0, tracks.lastIndex),
+            shuffle = null
         )
+        return dispatchPlayback(request)
+    }
+
+    /** Plays a context in shuffle mode from a random item. */
+    fun playShuffled(tracks: List<MediaTrack>): Boolean {
+        if (released) return true
+        if (tracks.isEmpty()) return true
+        val request = PlaybackRequest(
+            items = tracks.toList(),
+            startIndex = if (tracks.size == 1) 0 else Random.nextInt(tracks.size),
+            shuffle = true
+        )
+        return dispatchPlayback(request)
+    }
+
+    private fun dispatchPlayback(request: PlaybackRequest): Boolean {
         val ctrl = controller
         if (ctrl != null) {
             return playOnController(ctrl, request)
@@ -347,15 +366,15 @@ class MusicController @JvmOverloads constructor(
         }
     }
 
-    /**
-     * Toggles ExoPlayer shuffle mode on the connected player.  No-op before
-     * connection.
-     */
+    /** Toggles shuffle and immediately starts a different random queue item. */
     fun toggleShuffle() {
         if (released) return
         safePlayerCommand("shuffle") {
             controller?.let { ctrl ->
-                ctrl.shuffleModeEnabled = !ctrl.shuffleModeEnabled
+                val enabled = !ctrl.shuffleModeEnabled
+                ctrl.shuffleModeEnabled = enabled
+                if (enabled) randomizeCurrentItem(ctrl)
+                _shuffleEnabled.value = enabled
             }
         }
     }
@@ -366,7 +385,14 @@ class MusicController @JvmOverloads constructor(
      */
     fun setShuffle(enabled: Boolean) {
         if (released) return
-        safePlayerCommand("shuffle") { controller?.shuffleModeEnabled = enabled }
+        safePlayerCommand("shuffle") {
+            controller?.let { ctrl ->
+                val wasEnabled = ctrl.shuffleModeEnabled
+                ctrl.shuffleModeEnabled = enabled
+                if (enabled && !wasEnabled) randomizeCurrentItem(ctrl)
+                _shuffleEnabled.value = enabled
+            }
+        }
     }
 
     /**
@@ -378,17 +404,8 @@ class MusicController @JvmOverloads constructor(
     fun getQueue(): List<MediaTrack> {
         val ctrl = controller ?: return emptyList()
         return runCatching {
-            (0 until ctrl.mediaItemCount).map { index ->
-                val item = ctrl.getMediaItemAt(index)
-                val meta = item.mediaMetadata
-                MediaTrack(
-                    uri = item.mediaId,
-                    title = meta.title?.toString() ?: "Unknown",
-                    artist = meta.artist?.toString() ?: "Unknown",
-                    album = meta.albumTitle?.toString() ?: "",
-                    durationMs = metadataDuration(meta, -1L),
-                    artworkUri = meta.artworkUri?.toString(),
-                )
+            playbackOrderIndices(ctrl).map { index ->
+                mediaTrackFromItem(ctrl.getMediaItemAt(index))
             }
         }.getOrElse {
             Log.e(TAG, "getQueue failed: ${it.message}")
@@ -415,6 +432,7 @@ class MusicController @JvmOverloads constructor(
             // needs their artwork the moment they play).
             ctrl.addMediaItem(insertAt, buildMediaItem(track, enrichArtwork = true))
             manualQueueUris.add(track.uri)
+            bumpQueueRevision()
         }
     }
 
@@ -437,6 +455,7 @@ class MusicController @JvmOverloads constructor(
             }
             ctrl.addMediaItem(insertAt, buildMediaItem(track, enrichArtwork = true))
             manualQueueUris.add(track.uri)
+            bumpQueueRevision()
         }
     }
 
@@ -457,17 +476,22 @@ class MusicController @JvmOverloads constructor(
             val from = fromIndex.coerceIn(0, ctrl.mediaItemCount - 1)
             val to = toIndex.coerceIn(0, ctrl.mediaItemCount - 1)
             if (from == to) return@safePlayerCommand
-            ctrl.moveMediaItem(from, to)
+            val playbackIndices = playbackOrderIndices(ctrl)
+            val rawFrom = playbackIndices.getOrNull(from) ?: return@safePlayerCommand
+            val rawTo = playbackIndices.getOrNull(to) ?: return@safePlayerCommand
+            ctrl.moveMediaItem(rawFrom, rawTo)
             manualQueueUris.clear()
+            bumpQueueRevision()
         }
     }
 
     /**
-     * Clears the in-session recently-played history (desktop
+     * Clears the persisted recently-played history (desktop
      * "Clear History" action in `views/recent.py`).
      */
     fun clearRecentlyPlayed() {
         _recentlyPlayed.value = emptyList()
+        recentlyPlayedStore.clear()
     }
 
     fun stop() {
@@ -520,6 +544,7 @@ class MusicController @JvmOverloads constructor(
         // `play_with_context` resets `user_queue_count` to 0).
         manualQueueUris.clear()
         safePlayerCommand("play") {
+            request.shuffle?.let { ctrl.shuffleModeEnabled = it }
             // Atomic queue replacement: a single `setMediaItems` call (with
             // position reset) replaces the old stop+clear+add sequence.  A
             // burst of separate timeline commands leaves MediaController's
@@ -530,6 +555,8 @@ class MusicController @JvmOverloads constructor(
             ctrl.prepare()
             ctrl.seekToDefaultPosition(request.startIndex.coerceIn(0, items.lastIndex))
             ctrl.play()
+            _shuffleEnabled.value = ctrl.shuffleModeEnabled
+            bumpQueueRevision()
         }
         startProgressUpdates()
         return true
@@ -565,6 +592,7 @@ class MusicController @JvmOverloads constructor(
         _hasActiveItem.value = ctrl.mediaItemCount > 0
         _repeatMode.value = ctrl.repeatMode
         _shuffleEnabled.value = ctrl.shuffleModeEnabled
+        bumpQueueRevision()
 
         val currentMediaItem = ctrl.currentMediaItem
         if (currentMediaItem != null) {
@@ -692,6 +720,52 @@ class MusicController @JvmOverloads constructor(
         progressUpdater = null
     }
 
+    private fun randomizeCurrentItem(ctrl: MediaController) {
+        if (ctrl.mediaItemCount <= 1) {
+            if (ctrl.mediaItemCount == 1) ctrl.play()
+            return
+        }
+        val current = ctrl.currentMediaItemIndex
+        var randomIndex = Random.nextInt(ctrl.mediaItemCount)
+        if (randomIndex == current) {
+            randomIndex = (randomIndex + 1) % ctrl.mediaItemCount
+        }
+        ctrl.seekToDefaultPosition(randomIndex)
+        ctrl.play()
+    }
+
+    private fun playbackOrderIndices(ctrl: MediaController): List<Int> {
+        val timeline = ctrl.currentTimeline
+        if (timeline.isEmpty) return emptyList()
+        val indices = ArrayList<Int>(timeline.windowCount)
+        var index = timeline.getFirstWindowIndex(ctrl.shuffleModeEnabled)
+        while (index != C.INDEX_UNSET && indices.size < timeline.windowCount) {
+            indices += index
+            index = timeline.getNextWindowIndex(
+                index,
+                Player.REPEAT_MODE_OFF,
+                ctrl.shuffleModeEnabled
+            )
+        }
+        return indices
+    }
+
+    private fun mediaTrackFromItem(item: MediaItem): MediaTrack {
+        val metadata = item.mediaMetadata
+        return MediaTrack(
+            uri = item.mediaId,
+            title = metadata.title?.toString() ?: "Unknown",
+            artist = metadata.artist?.toString() ?: "Unknown",
+            album = metadata.albumTitle?.toString() ?: "",
+            durationMs = metadataDuration(metadata, -1L),
+            artworkUri = metadata.artworkUri?.toString()
+        )
+    }
+
+    private fun bumpQueueRevision() {
+        _queueRevision.value++
+    }
+
     /**
      * Records a track in the recently-played history, most recent first,
      * capped at 100 entries.  Matches the desktop convention
@@ -701,7 +775,9 @@ class MusicController @JvmOverloads constructor(
     private fun recordRecentlyPlayed(track: MediaTrack) {
         val current = _recentlyPlayed.value
         val withoutTrack = current.filterNot { it.uri == track.uri }
-        _recentlyPlayed.value = (listOf(track) + withoutTrack).take(MAX_RECENTLY_PLAYED)
+        val updated = (listOf(track) + withoutTrack).take(MAX_RECENTLY_PLAYED)
+        _recentlyPlayed.value = updated
+        recentlyPlayedStore.save(updated)
     }
 
     // ── Async connector (injectable seam for testing) ────────────────────
@@ -740,7 +816,8 @@ class MusicController @JvmOverloads constructor(
  */
 data class PlaybackRequest(
     val items: List<MediaTrack>,
-    val startIndex: Int = 0
+    val startIndex: Int = 0,
+    val shuffle: Boolean? = null
 )
 
 /**

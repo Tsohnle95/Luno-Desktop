@@ -25,7 +25,7 @@ import com.boombastic.mobile.ui.theme.SurfaceDark
 /**
  * Queue bottom sheet — now tabbed (desktop Queue/Recents contract):
  * "Playing Next" (live queue with drag-to-reorder) and "Recently played"
- * (in-session history).  The same tab content is available as a full
+ * (persisted history).  The same tab content is available as a full
  * screen from the Settings drawer ([RecentsScreen]).
  */
 @OptIn(ExperimentalMaterial3Api::class)

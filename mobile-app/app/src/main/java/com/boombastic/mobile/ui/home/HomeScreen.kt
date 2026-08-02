@@ -64,7 +64,7 @@ import java.util.Locale
 @Composable
 fun HomeScreen(
     musicController: MusicController,
-    onPlay: (List<MediaTrack>, Int) -> Unit = { _, _ -> },
+    onPlay: (List<MediaTrack>, Int, Boolean) -> Unit = { _, _, _ -> },
     onOpenPlaylist: (Long) -> Unit = {},
     onOpenMadeForYou: () -> Unit = {}
 ) {
@@ -177,7 +177,7 @@ fun HomeScreen(
         }
 
         // Recently played — swipeable horizontal carousel of the full
-        // in-session history, edge-clipped like "Made for you"
+        // persisted history, edge-clipped like "Made for you"
         item(key = "recently-header") {
             SectionHeader(title = "Recently played")
         }
@@ -209,7 +209,7 @@ fun HomeScreen(
                             // "Recently Played" context).
                             onClick = {
                                 val index = history.indexOfFirst { it.uri == track.uri }
-                                onPlay(history, index.coerceAtLeast(0))
+                                onPlay(history, index.coerceAtLeast(0), false)
                             }
                         )
                     }
@@ -252,7 +252,7 @@ fun HomeScreen(
                             artworkUri = track.albumArtUri(),
                             onClick = {
                                 val index = madeForYou.indexOfFirst { it.uri == track.uri }
-                                onPlay(madeForYouMedia, index.coerceAtLeast(0))
+                                onPlay(madeForYouMedia, index.coerceAtLeast(0), false)
                             }
                         )
                     }
@@ -294,7 +294,7 @@ fun HomeScreen(
                             artworkUri = track.albumArtUri(),
                             onClick = {
                                 val index = popularTracks.indexOfFirst { it.uri == track.uri }
-                                onPlay(popularTracksMedia, index.coerceAtLeast(0))
+                                onPlay(popularTracksMedia, index.coerceAtLeast(0), false)
                             }
                         )
                     }

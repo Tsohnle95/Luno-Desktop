@@ -46,7 +46,7 @@ fun BoomBasticNavHost(
     musicController: MusicController,
     modifier: Modifier = Modifier,
     onCreatePlaylist: () -> Unit,
-    onPlay: (List<MediaTrack>, Int) -> Unit = { _, _ -> },
+    onPlay: (List<MediaTrack>, Int, Boolean) -> Unit = { _, _, _ -> },
     onNavigate: () -> Unit = {}
 ) {
     val app = LocalContext.current.applicationContext as BoomBasticApp

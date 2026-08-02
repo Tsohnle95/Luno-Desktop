@@ -10,19 +10,28 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.boombastic.mobile.data.db.dao.DownloadJobDao
+import com.boombastic.mobile.data.db.dao.PlaylistDao
+import com.boombastic.mobile.data.db.dao.TrackDao
 import com.boombastic.mobile.data.db.entity.DownloadJob
 import com.boombastic.mobile.data.db.entity.DownloadState
+import com.boombastic.mobile.data.db.entity.Playlist
 import com.boombastic.mobile.playback.DownloadWorker
 import com.boombastic.mobile.playback.PlaylistSyncWorker
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.TimeUnit
 
 class DownloadRepository(
     private val downloadJobDao: DownloadJobDao,
-    private val context: Context
+    private val context: Context,
+    private val playlistDao: PlaylistDao? = null
 ) {
+    private val unsortedMutex = Mutex()
+
     companion object {
         const val TAG = "DownloadRepository"
+        const val UNSORTED_PLAYLIST_NAME = "Unsorted"
     }
     fun getAllDownloads(): Flow<List<DownloadJob>> = downloadJobDao.getAllDownloads()
 
@@ -41,13 +50,15 @@ class DownloadRepository(
         Log.d(TAG, "enqueueDownload: $title by $artist")
         Log.d(TAG, "Source URL (truncated): ${sourceUrl.take(120)}")
 
+        val resolvedPlaylistId = playlistId ?: ensureUnsortedPlaylistId()
+
         val job = DownloadJob(
             sourceUrl = sourceUrl,
             title = title,
             artist = artist,
             state = DownloadState.QUEUED,
             addedAt = System.currentTimeMillis(),
-            playlistId = playlistId,
+            playlistId = resolvedPlaylistId,
             thumbnailUrl = thumbnailUrl
         )
         val jobId = downloadJobDao.insertDownload(job)
@@ -88,6 +99,38 @@ class DownloadRepository(
 
         Log.d(TAG, "Enqueued WorkManager work for download job $jobId (workId=$workManagerId)")
         return jobId
+    }
+
+    private suspend fun ensureUnsortedPlaylistId(): Long? {
+        val dao = playlistDao ?: return null
+        return unsortedMutex.withLock {
+            dao.getPlaylistByName(UNSORTED_PLAYLIST_NAME)?.id
+                ?: dao.insertPlaylist(Playlist(name = UNSORTED_PLAYLIST_NAME))
+        }
+    }
+
+    /** Repairs completed downloads created before playlist-less routing existed. */
+    suspend fun repairUnsortedMemberships(trackDao: TrackDao) {
+        val dao = playlistDao ?: return
+        val unassignedTracks = buildList {
+            for (job in downloadJobDao.getCompletedDownloadsOnce()) {
+                val track = trackDao.getTrack(job.localUri) ?: continue
+                if (!dao.isTrackInAnyPlaylist(track.uri)) add(track)
+            }
+        }
+        if (unassignedTracks.isEmpty()) return
+
+        val unsortedId = ensureUnsortedPlaylistId() ?: return
+        var nextOrder = dao.maxSortOrder(unsortedId) + 1
+        unassignedTracks.forEach { track ->
+            dao.addTrackToPlaylist(
+                com.boombastic.mobile.data.db.entity.PlaylistTrack(
+                    playlistId = unsortedId,
+                    trackUri = track.uri,
+                    sortOrder = nextOrder++
+                )
+            )
+        }
     }
 
     suspend fun retryDownload(id: Long) {

@@ -1,6 +1,7 @@
 package com.boombastic.mobile.ui.components
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,12 +40,14 @@ import com.boombastic.mobile.ui.theme.SecondaryText
  * in multi-select mode and shows a check indicator.
  */
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 fun TrackRowCard(
     track: Track,
     onClick: () -> Unit,
     onMenuClick: () -> Unit,
     modifier: Modifier = Modifier,
-    selected: Boolean? = null
+    selected: Boolean? = null,
+    onLongClick: (() -> Unit)? = null
 ) {
     Row(
         modifier = modifier
@@ -80,10 +83,11 @@ fun TrackRowCard(
         Column(
             modifier = Modifier
                 .weight(1f)
-                .clickable(
+                .combinedClickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                    onClick = onClick
+                    onClick = onClick,
+                    onLongClick = onLongClick
                 )
         ) {
             Text(

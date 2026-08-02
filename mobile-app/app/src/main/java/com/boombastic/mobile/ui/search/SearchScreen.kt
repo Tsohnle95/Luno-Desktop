@@ -69,10 +69,14 @@ import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.BoomBasticApp
 import com.boombastic.mobile.data.db.entity.DownloadJob
 import com.boombastic.mobile.data.db.entity.DownloadState
+import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.playback.ExtractionResult
 import com.boombastic.mobile.playback.WebSearchResult
 import com.boombastic.mobile.playback.WebSearchService
 import com.boombastic.mobile.ui.components.ArtworkImage
+import com.boombastic.mobile.ui.components.PlaylistPickerSheet
+import com.boombastic.mobile.ui.components.TrackActionsSheet
+import com.boombastic.mobile.ui.components.TrackRowCard
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
@@ -81,16 +85,16 @@ import com.boombastic.mobile.ui.theme.SurfaceDark
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 private val DownloadPanelPadding = 16.dp
 private val DownloadControlSpacing = 12.dp
 private val DownloadFieldSpacing = 8.dp
 
 /**
- * The download hub. This screen deliberately does not render local tracks,
- * playlists, playback controls, or library import actions. Its only job is
- * helping the user bring audio into the local library: find it, add it to the
- * background queue, and leave the finished music ready on the device.
+ * The download hub. It helps the user bring audio into the local library,
+ * inspect completed downloads, assign them to playlists, and manage the
+ * background queue without turning the screen into a second full library.
  */
 @Composable
 fun SearchScreen(
@@ -101,6 +105,15 @@ fun SearchScreen(
     val scope = rememberCoroutineScope()
     val downloadRepository = app.downloadRepository
     val downloads by downloadRepository.getAllDownloads().collectAsState(initial = emptyList())
+    val allTracks by app.libraryData.tracks.collectAsState()
+    val downloadsRootUri = remember(context) {
+        File(context.filesDir, "downloads").toURI().toString()
+    }
+    val downloadedTracks = remember(allTracks, downloadsRootUri) {
+        allTracks
+            .filter { it.uri.startsWith(downloadsRootUri) }
+            .sortedByDescending { it.addedAt }
+    }
 
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var webResults by remember { mutableStateOf<List<WebSearchResult>>(emptyList()) }
@@ -116,6 +129,12 @@ fun SearchScreen(
     var csvStatus by rememberSaveable { mutableStateOf("") }
     var downloadingVideoIds by remember { mutableStateOf(setOf<String>()) }
     var jobIdByVideoId by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    var downloadedExpanded by rememberSaveable { mutableStateOf(false) }
+    var downloadedSelectionMode by rememberSaveable { mutableStateOf(false) }
+    var selectedDownloadedUris by remember { mutableStateOf(setOf<String>()) }
+    var actionsTrack by remember { mutableStateOf<Track?>(null) }
+    var playlistTracksToAdd by remember { mutableStateOf<List<Track>?>(null) }
+    var playlistResultToQueue by remember { mutableStateOf<WebSearchResult?>(null) }
 
     fun search() {
         val query = searchQuery.trim()
@@ -136,6 +155,47 @@ fun SearchScreen(
                 errorMessage = "Search failed: ${e.message ?: "Try again."}"
             } finally {
                 isSearching = false
+            }
+        }
+    }
+
+    fun queueSearchResult(result: WebSearchResult, playlistId: Long? = null) {
+        val videoId = result.videoId
+        if (videoId in downloadingVideoIds) return
+        downloadingVideoIds = downloadingVideoIds + videoId
+        scope.launch {
+            try {
+                val audioResult = withContext(Dispatchers.IO) {
+                    WebSearchService.getAudioStreamUrl(videoId)
+                }
+                when (audioResult) {
+                    is ExtractionResult.Success -> {
+                        val titleParts = result.title.split(" - ", limit = 2)
+                        val artist = if (titleParts.size > 1) titleParts[0].trim() else result.artist
+                        val title = if (titleParts.size > 1) titleParts[1].trim() else result.title
+                        val jobId = downloadRepository.enqueueDownload(
+                            sourceUrl = audioResult.data.url,
+                            title = title,
+                            artist = artist,
+                            playlistId = playlistId,
+                            thumbnailUrl = result.thumbnailUrl
+                        )
+                        jobIdByVideoId = jobIdByVideoId + (videoId to jobId)
+                        Toast.makeText(
+                            context,
+                            if (playlistId == null) "Download queued: $title"
+                            else "Download queued for playlist: $title",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    is ExtractionResult.Error -> {
+                        errorMessage = "Could not prepare this download: ${audioResult.message}"
+                    }
+                }
+            } catch (e: Exception) {
+                errorMessage = "Download failed to start: ${e.message ?: "Try again."}"
+            } finally {
+                downloadingVideoIds = downloadingVideoIds - videoId
             }
         }
     }
@@ -221,6 +281,79 @@ fun SearchScreen(
             )
         }
 
+        item(key = "downloaded-header") {
+            DownloadOptionRow(
+                icon = Icons.Filled.Download,
+                title = "Downloaded songs",
+                description = if (downloadedTracks.isEmpty()) {
+                    "No downloaded songs yet"
+                } else {
+                    "${downloadedTracks.size} songs in this app's private Downloads folder"
+                },
+                expanded = downloadedExpanded,
+                onClick = { downloadedExpanded = !downloadedExpanded }
+            )
+        }
+
+        if (downloadedExpanded) {
+            item(key = "downloaded-actions") {
+                DownloadedSongsActions(
+                    trackCount = downloadedTracks.size,
+                    selectedCount = selectedDownloadedUris.size,
+                    selectionMode = downloadedSelectionMode,
+                    onToggleSelectionMode = {
+                        downloadedSelectionMode = !downloadedSelectionMode
+                        if (downloadedSelectionMode) {
+                            selectedDownloadedUris = emptySet()
+                        } else {
+                            selectedDownloadedUris = emptySet()
+                        }
+                    },
+                    onSelectAll = {
+                        selectedDownloadedUris = downloadedTracks.map { it.uri }.toSet()
+                    },
+                    onAddToPlaylist = {
+                        playlistTracksToAdd = downloadedTracks.filter {
+                            it.uri in selectedDownloadedUris
+                        }
+                    }
+                )
+            }
+            if (downloadedTracks.isEmpty()) {
+                item(key = "downloaded-empty") {
+                    Text(
+                        text = "Completed downloads will appear here.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SecondaryText,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                }
+            } else {
+                items(downloadedTracks, key = { "downloaded-${it.uri}" }) { track ->
+                    TrackRowCard(
+                        track = track,
+                        onClick = {
+                            if (downloadedSelectionMode) {
+                                selectedDownloadedUris = if (track.uri in selectedDownloadedUris) {
+                                    selectedDownloadedUris - track.uri
+                                } else {
+                                    selectedDownloadedUris + track.uri
+                                }
+                            }
+                        },
+                        onMenuClick = { actionsTrack = track },
+                        onLongClick = { actionsTrack = track },
+                        selected = if (downloadedSelectionMode) {
+                            track.uri in selectedDownloadedUris
+                        } else {
+                            null
+                        }
+                    )
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+                }
+            }
+        }
+
         if (errorMessage.isNotBlank()) {
             item(key = "error") {
                 MessageBox(text = errorMessage, isError = true)
@@ -241,50 +374,20 @@ fun SearchScreen(
                     result = result,
                     job = job,
                     extractingAudio = result.videoId in downloadingVideoIds,
-                    onDownload = {
-                        val videoId = result.videoId
-                        if (videoId in downloadingVideoIds) return@WebResultRow
-                        downloadingVideoIds = downloadingVideoIds + videoId
-                        scope.launch {
-                            try {
-                                val audioResult = withContext(Dispatchers.IO) {
-                                    WebSearchService.getAudioStreamUrl(videoId)
-                                }
-                                when (audioResult) {
-                                    is ExtractionResult.Success -> {
-                                        val titleParts = result.title.split(" - ", limit = 2)
-                                        val artist = if (titleParts.size > 1) {
-                                            titleParts[0].trim()
-                                        } else {
-                                            result.artist
-                                        }
-                                        val title = if (titleParts.size > 1) {
-                                            titleParts[1].trim()
-                                        } else {
-                                            result.title
-                                        }
-                                        val jobId = downloadRepository.enqueueDownload(
-                                            sourceUrl = audioResult.data.url,
-                                            title = title,
-                                            artist = artist,
-                                            thumbnailUrl = result.thumbnailUrl
-                                        )
-                                        jobIdByVideoId = jobIdByVideoId + (videoId to jobId)
-                                        Toast.makeText(
-                                            context,
-                                            "Download queued: $title",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                    is ExtractionResult.Error -> {
-                                        errorMessage = "Could not prepare this download: ${audioResult.message}"
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                errorMessage = "Download failed to start: ${e.message ?: "Try again."}"
-                            } finally {
-                                downloadingVideoIds = downloadingVideoIds - videoId
+                    onDownload = { queueSearchResult(result) },
+                    onSaveToPlaylist = {
+                        val job = jobForResult(result)
+                        if (job?.state == DownloadState.COMPLETED) {
+                            val track = allTracks.firstOrNull { it.uri == job.localUri }
+                            if (track == null) {
+                                Toast.makeText(context, "Downloaded track is still loading", Toast.LENGTH_SHORT).show()
+                            } else {
+                                playlistTracksToAdd = listOf(track)
                             }
+                        } else if (job == null) {
+                            playlistResultToQueue = result
+                        } else {
+                            Toast.makeText(context, "Wait for this download to finish first", Toast.LENGTH_SHORT).show()
                         }
                     },
                     onCancel = { jobId ->
@@ -368,6 +471,46 @@ fun SearchScreen(
             }
         }
     }
+
+    playlistTracksToAdd?.let { tracks ->
+        PlaylistPickerSheet(
+            onPick = { playlist ->
+                playlistTracksToAdd = null
+                scope.launch {
+                    tracks.forEach { track ->
+                        app.playlistRepository.addTrackToPlaylist(playlist.id, track.uri)
+                    }
+                    Toast.makeText(
+                        context,
+                        if (tracks.size == 1) {
+                            "Added to ${playlist.name}"
+                        } else {
+                            "Added ${tracks.size} songs to ${playlist.name}"
+                        },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            },
+            onDismiss = { playlistTracksToAdd = null }
+        )
+    }
+
+    playlistResultToQueue?.let { result ->
+        PlaylistPickerSheet(
+            onPick = { playlist ->
+                playlistResultToQueue = null
+                queueSearchResult(result, playlist.id)
+            },
+            onDismiss = { playlistResultToQueue = null }
+        )
+    }
+
+    actionsTrack?.let { track ->
+        TrackActionsSheet(
+            track = track,
+            onDismiss = { actionsTrack = null }
+        )
+    }
 }
 
 @Composable
@@ -391,7 +534,7 @@ private fun DownloadHeader(
             color = PrimaryText
         )
         Text(
-            text = "Search YouTube, paste an audio link, or import an Exportify playlist. Downloads stay on this device, appear in Your Library when ready, and can finish in the background.",
+            text = "Search YouTube, paste an audio link, or import an Exportify playlist. Downloaded files stay in this app's private Downloads folder, appear in Your Library, and can finish in the background.",
             style = MaterialTheme.typography.bodyMedium,
             color = SecondaryText,
             modifier = Modifier.padding(top = 4.dp)
@@ -713,6 +856,52 @@ private fun DownloadOptionRow(
 }
 
 @Composable
+private fun DownloadedSongsActions(
+    trackCount: Int,
+    selectedCount: Int,
+    selectionMode: Boolean,
+    onToggleSelectionMode: () -> Unit,
+    onSelectAll: () -> Unit,
+    onAddToPlaylist: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = if (selectionMode) "$selectedCount selected" else "$trackCount songs",
+            style = MaterialTheme.typography.labelMedium,
+            color = SecondaryText,
+            modifier = Modifier.weight(1f)
+        )
+        if (selectionMode) {
+            TextButton(
+                onClick = onSelectAll,
+                enabled = trackCount > 0 && selectedCount < trackCount,
+                contentPadding = PaddingValues(horizontal = 6.dp)
+            ) {
+                Text("Select all", color = AccentGreen)
+            }
+            TextButton(
+                onClick = onAddToPlaylist,
+                enabled = selectedCount > 0,
+                contentPadding = PaddingValues(horizontal = 6.dp)
+            ) {
+                Text("Add to playlist", color = AccentGreen)
+            }
+        }
+        TextButton(
+            onClick = onToggleSelectionMode,
+            contentPadding = PaddingValues(horizontal = 6.dp)
+        ) {
+            Text(if (selectionMode) "Done" else "Select", color = AccentGreen)
+        }
+    }
+}
+
+@Composable
 private fun UrlDownloadSection(
     urlInput: String,
     onUrlChange: (String) -> Unit,
@@ -947,6 +1136,7 @@ private fun WebResultRow(
     result: WebSearchResult,
     job: DownloadJob?,
     onDownload: () -> Unit,
+    onSaveToPlaylist: () -> Unit,
     onCancel: (Long) -> Unit,
     onRetry: (Long) -> Unit,
     extractingAudio: Boolean
@@ -1010,6 +1200,7 @@ private fun WebResultRow(
                 job = job,
                 extractingAudio = extractingAudio,
                 onDownload = onDownload,
+                onSaveToPlaylist = onSaveToPlaylist,
                 onCancel = onCancel,
                 onRetry = onRetry
             )
@@ -1023,6 +1214,7 @@ private fun ResultAction(
     job: DownloadJob?,
     extractingAudio: Boolean,
     onDownload: () -> Unit,
+    onSaveToPlaylist: () -> Unit,
     onCancel: (Long) -> Unit,
     onRetry: (Long) -> Unit
 ) {
@@ -1043,6 +1235,12 @@ private fun ResultAction(
                     style = MaterialTheme.typography.labelSmall,
                     color = AccentGreen
                 )
+                TextButton(
+                    onClick = onSaveToPlaylist,
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                ) {
+                    Text("Save to playlist", color = AccentGreen, maxLines = 1)
+                }
             }
         }
         job?.state == DownloadState.QUEUED || job?.state == DownloadState.DOWNLOADING -> {
@@ -1095,20 +1293,28 @@ private fun ResultAction(
         }
         else -> {
             val actionShape = RoundedCornerShape(12.dp)
-            IconButton(
-                onClick = onDownload,
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(actionShape)
-                    .background(AccentGreen.copy(alpha = 0.14f))
-                    .border(1.dp, AccentGreen.copy(alpha = 0.38f), actionShape)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Download,
-                    contentDescription = "Download ${job?.title ?: "song"}",
-                    tint = AccentGreen,
-                    modifier = Modifier.size(20.dp)
-                )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                IconButton(
+                    onClick = onDownload,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(actionShape)
+                        .background(AccentGreen.copy(alpha = 0.14f))
+                        .border(1.dp, AccentGreen.copy(alpha = 0.38f), actionShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Download,
+                        contentDescription = "Download ${job?.title ?: "song"}",
+                        tint = AccentGreen,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                TextButton(
+                    onClick = onSaveToPlaylist,
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                ) {
+                    Text("Save to playlist", color = AccentGreen, maxLines = 1)
+                }
             }
         }
     }

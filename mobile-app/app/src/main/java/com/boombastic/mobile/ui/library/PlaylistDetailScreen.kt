@@ -92,7 +92,7 @@ fun PlaylistDetailScreen(
     // ModalBottomSheet inside a lazy item makes it scroll with the list.
     var actionsTrack by remember { mutableStateOf<Track?>(null) }
 
-    // Sort mode (A–Z / Z–A / Recent / Duration) — same chip as the Library
+    // Sort mode (A–Z / Z–A / Recently added / Duration) — same chip as the Library
     // tab; declared before the early return so the saveable state's hook
     // order never changes.
     var sortMode by rememberSaveable { mutableStateOf(TrackSortMode.AZ) }
@@ -212,8 +212,7 @@ fun PlaylistDetailScreen(
                         musicController.play(sortedTracks.map { it.toMediaTrack() }, 0)
                     },
                     onShuffleAll = {
-                        musicController.play(sortedTracks.map { it.toMediaTrack() }, 0)
-                        musicController.setShuffle(true)
+                        musicController.playShuffled(sortedTracks.map { it.toMediaTrack() })
                     },
                     onSearch = { showSearch = !showSearch },
                     searchVisible = showSearch,

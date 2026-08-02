@@ -24,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import com.boombastic.mobile.data.db.dao.PlaylistWithTracks
 import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
@@ -31,12 +32,13 @@ import com.boombastic.mobile.ui.theme.PrimaryText
 
 /**
  * Sort modes shared by the Library and Playlist-detail screens.
- * [DURATION] is longest-first (descending duration).
+ * [RECENT] is newest-first by added/created timestamp and [DURATION] is
+ * longest-first (descending duration).
  */
 enum class TrackSortMode(val label: String) {
     AZ("A–Z"),
     ZA("Z–A"),
-    RECENT("Recent"),
+    RECENT("Recently added"),
     DURATION("Duration")
 }
 
@@ -46,6 +48,18 @@ fun List<Track>.sortedByMode(mode: TrackSortMode): List<Track> = when (mode) {
     TrackSortMode.ZA -> sortedByDescending { it.title.lowercase() }
     TrackSortMode.RECENT -> sortedByDescending { it.addedAt }
     TrackSortMode.DURATION -> sortedByDescending { it.durationMs }
+}
+
+/** Sorts library playlists using the same dropdown modes as the song list. */
+fun List<PlaylistWithTracks>.sortedPlaylistsByMode(
+    mode: TrackSortMode
+): List<PlaylistWithTracks> = when (mode) {
+    TrackSortMode.AZ -> sortedBy { it.playlist.name.lowercase() }
+    TrackSortMode.ZA -> sortedByDescending { it.playlist.name.lowercase() }
+    TrackSortMode.RECENT -> sortedByDescending { it.playlist.createdAt }
+    TrackSortMode.DURATION -> sortedByDescending { playlist ->
+        playlist.tracks.sumOf { track -> track.durationMs }
+    }
 }
 
 /**

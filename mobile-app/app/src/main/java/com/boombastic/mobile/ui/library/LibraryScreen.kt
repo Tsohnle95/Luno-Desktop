@@ -66,6 +66,7 @@ import com.boombastic.mobile.ui.components.TrackActionsSheet
 import com.boombastic.mobile.ui.components.TrackRowCard
 import com.boombastic.mobile.ui.components.TrackSortMode
 import com.boombastic.mobile.ui.components.sortedByMode
+import com.boombastic.mobile.ui.components.sortedPlaylistsByMode
 import com.boombastic.mobile.ui.home.SectionHeader
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
@@ -85,7 +86,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun LibraryScreen(
     musicController: MusicController,
-    onPlay: (List<MediaTrack>, Int) -> Unit = { _, _ -> },
+    onPlay: (List<MediaTrack>, Int, Boolean) -> Unit = { _, _, _ -> },
     onOpenPlaylist: (Long) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -160,7 +161,7 @@ fun LibraryScreen(
         }
     }
 
-    // Tracks and playlists share one sort mode (A–Z / Z–A / Recent /
+    // Tracks and playlists share one sort mode (A–Z / Z–A / Recently added /
     // Duration — Duration sorts longest-first: tracks by their own length,
     // playlists by total length), available in both views.  Derived lists
     // are memoized so recompositions (selection toggles, dialog state,
@@ -169,13 +170,7 @@ fun LibraryScreen(
         filteredTracks.sortedByMode(sortMode)
     }
     val displayPlaylists = remember(filteredPlaylists, sortMode) {
-        when (sortMode) {
-            TrackSortMode.AZ -> filteredPlaylists.sortedBy { it.playlist.name.lowercase() }
-            TrackSortMode.ZA -> filteredPlaylists.sortedByDescending { it.playlist.name.lowercase() }
-            TrackSortMode.RECENT -> filteredPlaylists.sortedByDescending { it.playlist.createdAt }
-            TrackSortMode.DURATION ->
-                filteredPlaylists.sortedByDescending { it.tracks.sumOf { track -> track.durationMs } }
-        }
+        filteredPlaylists.sortedPlaylistsByMode(sortMode)
     }
 
     val mediaTracks = remember(sortedTracks) { sortedTracks.map { it.toMediaTrack() } }
@@ -231,7 +226,7 @@ fun LibraryScreen(
                     Button(
                         // Full sorted context — next/prev walk the whole
                         // (filtered/sorted) list, not a single track.
-                        onClick = { onPlay(mediaTracks, 0) },
+                        onClick = { onPlay(mediaTracks, 0, false) },
                         colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
                     ) {
                         Icon(
@@ -251,8 +246,7 @@ fun LibraryScreen(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
                                 onClick = {
-                                    onPlay(mediaTracks, 0)
-                                    musicController.setShuffle(true)
+                                    onPlay(mediaTracks, 0, true)
                                 }
                             )
                             .padding(vertical = Dimens.paddingSmall),
@@ -324,7 +318,7 @@ fun LibraryScreen(
                 Spacer(modifier = Modifier.weight(1f))
 
                 // Compact arrow-only sort control. Its dropdown still contains
-                // A–Z / Z–A / Recent / Duration (longest first).
+                // A–Z / Z–A / Recently added / Duration (longest first).
                 SortChip(
                     mode = sortMode,
                     onModeChange = { sortMode = it },
@@ -498,7 +492,8 @@ fun LibraryScreen(
                                 val index = sortedTracks.indexOfFirst { it.uri == track.uri }
                                 onPlay(
                                     mediaTracks,
-                                    index.coerceAtLeast(0)
+                                    index.coerceAtLeast(0),
+                                    false
                                 )
                             }
                         },

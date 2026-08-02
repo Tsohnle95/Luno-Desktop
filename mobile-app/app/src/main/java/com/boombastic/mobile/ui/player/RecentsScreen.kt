@@ -29,7 +29,7 @@ import com.boombastic.mobile.ui.theme.SecondaryText
  * Queue & Recents screen (opened from the Settings drawer) — the same
  * tabbed layout as the full player's [QueueSheet], as a full page:
  * "Playing Next" (live queue, drag-to-reorder) and "Recently played"
- * (in-session history, clear-all).
+ * (persisted history, clear-all).
  */
 @Composable
 fun RecentsScreen(

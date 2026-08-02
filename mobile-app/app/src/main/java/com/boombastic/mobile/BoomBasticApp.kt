@@ -19,6 +19,7 @@ import com.boombastic.mobile.ui.shell.MusicFolderImportManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.schabi.newpipe.extractor.NewPipe
@@ -69,7 +70,11 @@ class BoomBasticApp : Application(), Configuration.Provider {
         database = AppDatabase.getInstance(this)
         libraryRepository = LibraryRepository(this, database.trackDao(), database.playlistDao())
         playlistRepository = PlaylistRepository(database.playlistDao(), database.trackDao())
-        downloadRepository = DownloadRepository(database.downloadJobDao(), this)
+        downloadRepository = DownloadRepository(
+            downloadJobDao = database.downloadJobDao(),
+            context = this,
+            playlistDao = database.playlistDao()
+        )
         musicFolderRepository = MusicFolderRepository(this)
         discoveryRepository = DiscoveryRepository(this)
         musicFolderImportManager = MusicFolderImportManager(
@@ -92,6 +97,9 @@ class BoomBasticApp : Application(), Configuration.Provider {
             playlistDao = database.playlistDao(),
             downloadJobDao = database.downloadJobDao()
         )
+        appScope.launch {
+            downloadRepository.repairUnsortedMemberships(database.trackDao())
+        }
 
         createDownloadNotificationChannel()
         CookieHandler.setDefault(CookieManager(null, CookiePolicy.ACCEPT_ALL))

@@ -61,6 +61,20 @@ class MusicControllerTest {
     }
 
     @Test
+    fun `playShuffled queues a shuffle request with a valid random start`() {
+        val tracks = listOf(track("a"), track("b"), track("c"))
+
+        assertThat(controller.playShuffled(tracks)).isTrue()
+
+        val request = controller.pendingRequest
+        assertThat(request).isNotNull()
+        assertThat(request!!.items).containsExactlyElementsIn(tracks).inOrder()
+        assertThat(request.startIndex).isAtLeast(0)
+        assertThat(request.startIndex).isLessThan(tracks.size)
+        assertThat(request.shuffle).isTrue()
+    }
+
+    @Test
     fun `play with empty list returns true before connection`() {
         assertThat(controller.play(emptyList<String>())).isTrue()
     }
@@ -311,6 +325,70 @@ class MusicControllerTest {
     }
 
     @Test
+    fun `restores recently played history from the persistence store`() {
+        val history = listOf(
+            MediaTrack(
+                uri = "uri-2",
+                title = "Second",
+                artist = "Artist",
+                album = "Album",
+                durationMs = 2000L,
+                artworkUri = "file:///artwork/second.jpg"
+            ),
+            track("uri-1")
+        )
+        val store = FakeRecentlyPlayedStore(history)
+
+        val restored = MusicController(
+            context,
+            connector = FakeConnector(),
+            recentlyPlayedStore = store
+        )
+
+        assertThat(restored.recentlyPlayed.value).containsExactlyElementsIn(history).inOrder()
+    }
+
+    @Test
+    fun `clearing recently played history clears the persistence store`() {
+        val store = FakeRecentlyPlayedStore(listOf(track("persisted")))
+        val persistedController = MusicController(
+            context,
+            connector = FakeConnector(),
+            recentlyPlayedStore = store
+        )
+
+        persistedController.clearRecentlyPlayed()
+
+        assertThat(store.load()).isEmpty()
+    }
+
+    @Test
+    fun `shared preferences store restores history in a new store instance`() {
+        val history = listOf(
+            MediaTrack(
+                uri = "content://track/2",
+                title = "Second",
+                artist = "Artist",
+                album = "Album",
+                durationMs = 2000L,
+                artworkUri = "file:///artwork/second.jpg"
+            ),
+            track("content://track/1")
+        )
+        val firstStore = SharedPreferencesRecentlyPlayedStore(context)
+        firstStore.clear()
+
+        try {
+            firstStore.save(history)
+            val reopenedStore = SharedPreferencesRecentlyPlayedStore(context)
+
+            assertThat(reopenedStore.load()).containsExactlyElementsIn(history).inOrder()
+        } finally {
+            firstStore.clear()
+        }
+    }
+
+    @Test
     fun `artworkUri is preserved on the built MediaItem`() {
         val original = MediaTrack(
             uri = "content://track/art",
@@ -447,5 +525,21 @@ class FakeConnector : MusicController.AsyncConnector {
     override fun connect(context: Context): ListenableFuture<MediaController> {
         lastConnectAttempt = true
         return connectFuture
+    }
+}
+
+private class FakeRecentlyPlayedStore(
+    initial: List<MediaTrack>
+) : RecentlyPlayedStore {
+    private var tracks = initial
+
+    override fun load(): List<MediaTrack> = tracks
+
+    override fun save(tracks: List<MediaTrack>) {
+        this.tracks = tracks
+    }
+
+    override fun clear() {
+        tracks = emptyList()
     }
 }

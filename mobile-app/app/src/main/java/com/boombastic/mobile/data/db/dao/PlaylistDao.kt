@@ -76,6 +76,9 @@ interface PlaylistDao {
     @Query("SELECT COALESCE(MAX(sortOrder), 0) FROM playlist_tracks WHERE playlistId = :playlistId")
     suspend fun maxSortOrder(playlistId: Long): Int
 
+    @Query("SELECT EXISTS(SELECT 1 FROM playlist_tracks WHERE trackUri = :trackUri)")
+    suspend fun isTrackInAnyPlaylist(trackUri: String): Boolean
+
     @Query("SELECT * FROM playlists WHERE playlistUrl != '' AND playlistUrl IS NOT NULL")
     fun getPlaylistsWithUrls(): Flow<List<Playlist>>
 

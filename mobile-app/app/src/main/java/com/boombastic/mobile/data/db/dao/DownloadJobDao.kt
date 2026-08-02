@@ -47,6 +47,9 @@ interface DownloadJobDao {
     @Query("SELECT * FROM download_jobs WHERE state IN ('QUEUED', 'DOWNLOADING')")
     suspend fun getActiveDownloadsOnce(): List<DownloadJob>
 
+    @Query("SELECT * FROM download_jobs WHERE state = 'COMPLETED' AND localUri != ''")
+    suspend fun getCompletedDownloadsOnce(): List<DownloadJob>
+
     @Query("SELECT * FROM download_jobs WHERE state IN ('QUEUED', 'DOWNLOADING') AND playlistId = :playlistId")
     suspend fun getActiveDownloadsForPlaylistOnce(playlistId: Long): List<DownloadJob>
 

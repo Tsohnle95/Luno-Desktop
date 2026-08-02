@@ -9,7 +9,9 @@ import com.boombastic.mobile.R
 import com.boombastic.mobile.data.artwork.ArtworkStorage
 import com.boombastic.mobile.data.db.AppDatabase
 import com.boombastic.mobile.data.db.entity.DownloadState
+import com.boombastic.mobile.data.db.entity.Playlist
 import com.boombastic.mobile.data.db.entity.Track
+import com.boombastic.mobile.data.repository.DownloadRepository
 import okhttp3.ConnectionSpec
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -185,9 +187,10 @@ class DownloadWorker(
             )
             trackDao.insertTrack(track)
 
-            // Playlist-sync downloads must land inside their playlist too —
-            // otherwise "Sync" would download songs without adding them.
-            job.playlistId?.let { playlistId ->
+            // Every download belongs to a playlist. Legacy jobs created before
+            // Unsorted routing get repaired here before completion.
+            val targetPlaylistId = job.playlistId ?: ensureUnsortedPlaylistId(playlistDao)
+            targetPlaylistId.let { playlistId ->
                 val sortOrder = playlistDao.maxSortOrder(playlistId) + 1
                 playlistDao.addTrackToPlaylist(
                     com.boombastic.mobile.data.db.entity.PlaylistTrack(
@@ -206,6 +209,13 @@ class DownloadWorker(
             jobDao.markFailed(jobId, DownloadState.FAILED, "${e::class.simpleName}: ${e.message}")
             return if (runAttemptCount < 3) Result.retry() else Result.failure()
         }
+    }
+
+    private suspend fun ensureUnsortedPlaylistId(
+        playlistDao: com.boombastic.mobile.data.db.dao.PlaylistDao
+    ): Long {
+        return playlistDao.getPlaylistByName(DownloadRepository.UNSORTED_PLAYLIST_NAME)?.id
+            ?: playlistDao.insertPlaylist(Playlist(name = DownloadRepository.UNSORTED_PLAYLIST_NAME))
     }
 
     /**

@@ -268,12 +268,12 @@ fun MainShell(musicController: MusicController) {
         contract = ActivityResultContracts.RequestPermission()
     ) { /* grant result intentionally ignored — playback already dispatched */ }
 
-    // Stable onPlay callback used by LibraryScreen and HomeScreen.
+    // Stable playback callback used by LibraryScreen and HomeScreen.
     // Accepts the FULL playback context (ordered track list +
     // start index) so next/previous/shuffle work relative to where the
     // track was picked from (all songs, carousel, playlist, ...).
-    val onPlay: (List<MediaTrack>, Int) -> Unit = remember(policy, notificationPermissionLauncher, musicController) {
-        { tracks: List<MediaTrack>, startIndex: Int ->
+    val onPlay: (List<MediaTrack>, Int, Boolean) -> Unit = remember(policy, notificationPermissionLauncher, musicController) {
+        { tracks: List<MediaTrack>, startIndex: Int, shuffle: Boolean ->
             if (tracks.isNotEmpty()) {
                 if (policy.shouldPrompt(
                         sdkInt = Build.VERSION.SDK_INT,
@@ -285,7 +285,11 @@ fun MainShell(musicController: MusicController) {
                 }
                 // Playback proceeds regardless of permission state — per Android docs
                 // media-session notifications are exempt from POST_NOTIFICATIONS.
-                musicController.play(tracks, startIndex)
+                if (shuffle) {
+                    musicController.playShuffled(tracks)
+                } else {
+                    musicController.play(tracks, startIndex)
+                }
             }
         }
     }
@@ -735,7 +739,7 @@ fun MainShell(musicController: MusicController) {
             }
 
             // Clear recent-history confirm (Settings drawer) — desktop
-            // "Clear History" action; in-session history only.
+            // "Clear History" action; clears persisted history.
             if (showClearHistoryConfirm) {
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showClearHistoryConfirm = false },

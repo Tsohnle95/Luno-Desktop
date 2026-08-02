@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -27,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -52,6 +54,7 @@ import com.boombastic.mobile.playback.ExtractionResult
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.playback.WebSearchService
 import com.boombastic.mobile.ui.components.ArtworkImage
+import com.boombastic.mobile.ui.components.PlaylistPickerSheet
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
@@ -63,6 +66,11 @@ import kotlinx.coroutines.withContext
 
 /** The track recommendations are seeded from (desktop: current play, else last track). */
 private data class SeedTrack(val title: String, val artist: String)
+
+private data class PlaylistDownloadRequest(
+    val tracks: List<LastfmTrack>,
+    val batch: Boolean
+)
 
 private sealed interface DiscoverUiState {
     data object Idle : DiscoverUiState
@@ -110,6 +118,7 @@ fun DiscoverScreen(musicController: MusicController) {
     var batchQueued by remember { mutableIntStateOf(0) }
     var batchTotal by remember { mutableIntStateOf(0) }
     var batchFailures by remember { mutableIntStateOf(0) }
+    var playlistDownloadRequest by remember { mutableStateOf<PlaylistDownloadRequest?>(null) }
 
     LaunchedEffect(apiKey, seed, refreshTrigger) {
         if (apiKey.isNullOrBlank() || seed == null) {
@@ -130,7 +139,12 @@ fun DiscoverScreen(musicController: MusicController) {
 
     // Shared download plumbing: YouTube search → audio extraction →
     // download queue (the same acquisition pipeline SearchScreen uses).
-    suspend fun resolveAndEnqueue(artist: String, title: String, fallbackImage: String?): Boolean {
+    suspend fun resolveAndEnqueue(
+        artist: String,
+        title: String,
+        fallbackImage: String?,
+        playlistId: Long? = null
+    ): Boolean {
         val query = "$artist $title"
         val search = withContext(Dispatchers.IO) {
             WebSearchService.searchYouTube(query, limit = 1)
@@ -147,6 +161,7 @@ fun DiscoverScreen(musicController: MusicController) {
                     sourceUrl = audio.data.url,
                     title = title,
                     artist = artist,
+                    playlistId = playlistId,
                     thumbnailUrl = firstResult.thumbnailUrl.ifBlank { fallbackImage.orEmpty() }
                 )
                 true
@@ -154,12 +169,12 @@ fun DiscoverScreen(musicController: MusicController) {
         }
     }
 
-    fun downloadOne(rec: LastfmTrack) {
+    fun downloadOne(rec: LastfmTrack, playlistId: Long? = null) {
         val key = recKey(rec)
         if (key in downloadingKeys) return
         downloadingKeys = downloadingKeys + key
         scope.launch {
-            val queued = resolveAndEnqueue(rec.artist, rec.title, rec.imageUrl)
+            val queued = resolveAndEnqueue(rec.artist, rec.title, rec.imageUrl, playlistId)
             val message = if (queued) {
                 "Download queued: ${rec.title}"
             } else {
@@ -170,7 +185,7 @@ fun DiscoverScreen(musicController: MusicController) {
         }
     }
 
-    fun downloadAll(tracks: List<LastfmTrack>) {
+    fun downloadAll(tracks: List<LastfmTrack>, playlistId: Long? = null) {
         if (tracks.isEmpty() || batchRunning) return
         batchRunning = true
         batchQueued = 0
@@ -178,7 +193,7 @@ fun DiscoverScreen(musicController: MusicController) {
         batchTotal = tracks.size
         scope.launch {
             for (rec in tracks) {
-                if (resolveAndEnqueue(rec.artist, rec.title, rec.imageUrl)) {
+                if (resolveAndEnqueue(rec.artist, rec.title, rec.imageUrl, playlistId)) {
                     batchQueued++
                 } else {
                     batchFailures++
@@ -239,7 +254,13 @@ fun DiscoverScreen(musicController: MusicController) {
                         batchTotal = batchTotal,
                         onRefresh = { refreshTrigger++ },
                         onKeySettings = { showKeyDialog = true },
-                        onDownloadAll = { downloadAll(ready?.tracks ?: emptyList()) }
+                        onDownloadAll = { downloadAll(ready?.tracks ?: emptyList()) },
+                        onChoosePlaylistForAll = {
+                            playlistDownloadRequest = PlaylistDownloadRequest(
+                                tracks = ready?.tracks ?: emptyList(),
+                                batch = true
+                            )
+                        }
                     )
                 }
 
@@ -309,7 +330,13 @@ fun DiscoverScreen(musicController: MusicController) {
                                 RecommendationRow(
                                     rec = rec,
                                     downloading = recKey(rec) in downloadingKeys,
-                                    onDownload = { downloadOne(rec) }
+                                    onDownload = { downloadOne(rec) },
+                                    onChoosePlaylist = {
+                                        playlistDownloadRequest = PlaylistDownloadRequest(
+                                            tracks = listOf(rec),
+                                            batch = false
+                                        )
+                                    }
                                 )
                             }
                         }
@@ -333,6 +360,20 @@ fun DiscoverScreen(musicController: MusicController) {
                 showKeyDialog = false
             },
             onDismiss = { showKeyDialog = false }
+        )
+    }
+
+    playlistDownloadRequest?.let { request ->
+        PlaylistPickerSheet(
+            onPick = { playlist ->
+                playlistDownloadRequest = null
+                if (request.batch) {
+                    downloadAll(request.tracks, playlist.id)
+                } else {
+                    request.tracks.firstOrNull()?.let { downloadOne(it, playlist.id) }
+                }
+            },
+            onDismiss = { playlistDownloadRequest = null }
         )
     }
 }
@@ -405,7 +446,8 @@ private fun SeedHeader(
     batchTotal: Int,
     onRefresh: () -> Unit,
     onKeySettings: () -> Unit,
-    onDownloadAll: () -> Unit
+    onDownloadAll: () -> Unit,
+    onChoosePlaylistForAll: () -> Unit
 ) {
     Column(modifier = Modifier.padding(top = Dimens.paddingXLarge)) {
         Row(
@@ -479,6 +521,13 @@ private fun SeedHeader(
                 ) {
                     Text("Download all")
                 }
+                IconButton(onClick = onChoosePlaylistForAll) {
+                    Icon(
+                        imageVector = Icons.Filled.PlaylistAdd,
+                        contentDescription = "Download all to a playlist",
+                        tint = AccentGreen
+                    )
+                }
             }
         }
     }
@@ -488,7 +537,8 @@ private fun SeedHeader(
 private fun RecommendationRow(
     rec: LastfmTrack,
     downloading: Boolean,
-    onDownload: () -> Unit
+    onDownload: () -> Unit,
+    onChoosePlaylist: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -532,6 +582,13 @@ private fun RecommendationRow(
                 Icon(
                     imageVector = Icons.Filled.Download,
                     contentDescription = "Download ${rec.title}",
+                    tint = AccentGreen
+                )
+            }
+            IconButton(onClick = onChoosePlaylist) {
+                Icon(
+                    imageVector = Icons.Filled.PlaylistAdd,
+                    contentDescription = "Download ${rec.title} to a playlist",
                     tint = AccentGreen
                 )
             }
