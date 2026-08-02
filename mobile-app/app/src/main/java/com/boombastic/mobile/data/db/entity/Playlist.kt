@@ -9,5 +9,6 @@ data class Playlist(
     val name: String,
     val description: String = "",
     val playlistUrl: String = "",
+    val playCount: Int = 0,
     val createdAt: Long = System.currentTimeMillis()
 )

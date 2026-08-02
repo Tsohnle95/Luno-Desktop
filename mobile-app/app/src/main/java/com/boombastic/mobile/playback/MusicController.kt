@@ -55,7 +55,7 @@ import kotlin.random.Random
 class MusicController @JvmOverloads constructor(
     private val context: Context,
     internal val connector: AsyncConnector = AsyncConnector.Default,
-    private val onTrackPlayed: (String) -> Unit = {},
+    private val onTrackPlayed: (String, Long?) -> Unit = { _, _ -> },
     private val recentlyPlayedStore: RecentlyPlayedStore =
         SharedPreferencesRecentlyPlayedStore(context)
 ) {
@@ -180,7 +180,10 @@ class MusicController @JvmOverloads constructor(
                 _progress.value = 0L
                 _currentTrack.value?.let { track ->
                     recordRecentlyPlayed(track)
-                    runCatching { onTrackPlayed(track.uri) }
+                    val playlistId = mediaItem?.mediaMetadata?.extras
+                        ?.takeIf { it.containsKey(METADATA_PLAYLIST_ID) }
+                        ?.getLong(METADATA_PLAYLIST_ID)
+                    runCatching { onTrackPlayed(track.uri, playlistId) }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "listener onMediaItemTransition failed: ${e.message}")
@@ -263,8 +266,8 @@ class MusicController @JvmOverloads constructor(
      * @return `true` — dispatched immediately or queued.  After [release]
      *   returns `true` without queuing (harmless no‑op).
      */
-    fun play(track: MediaTrack): Boolean {
-        return play(listOf(track), 0)
+    fun play(track: MediaTrack, playlistId: Long? = null): Boolean {
+        return play(listOf(track), 0, playlistId)
     }
 
     /**
@@ -274,25 +277,31 @@ class MusicController @JvmOverloads constructor(
      *
      * @return `true` — see [play].
      */
-    fun play(tracks: List<MediaTrack>, startIndex: Int = 0): Boolean {
+    fun play(
+        tracks: List<MediaTrack>,
+        startIndex: Int = 0,
+        playlistId: Long? = null
+    ): Boolean {
         if (released) return true
         if (tracks.isEmpty()) return true
         val request = PlaybackRequest(
             items = tracks.toList(),
             startIndex = startIndex.coerceIn(0, tracks.lastIndex),
-            shuffle = null
+            shuffle = null,
+            playlistId = playlistId
         )
         return dispatchPlayback(request)
     }
 
     /** Plays a context in shuffle mode from a random item. */
-    fun playShuffled(tracks: List<MediaTrack>): Boolean {
+    fun playShuffled(tracks: List<MediaTrack>, playlistId: Long? = null): Boolean {
         if (released) return true
         if (tracks.isEmpty()) return true
         val request = PlaybackRequest(
             items = tracks.toList(),
             startIndex = if (tracks.size == 1) 0 else Random.nextInt(tracks.size),
-            shuffle = true
+            shuffle = true,
+            playlistId = playlistId
         )
         return dispatchPlayback(request)
     }
@@ -552,7 +561,8 @@ class MusicController @JvmOverloads constructor(
         val items = request.items.mapIndexed { index, track ->
             buildMediaItem(
                 track,
-                enrichArtwork = kotlin.math.abs(index - request.startIndex) <= ENRICH_WINDOW
+                enrichArtwork = kotlin.math.abs(index - request.startIndex) <= ENRICH_WINDOW,
+                playlistId = request.playlistId
             )
         }
         // A new playback context resets the Up-Next accounting (desktop:
@@ -689,9 +699,14 @@ class MusicController @JvmOverloads constructor(
     }
 
     /** Builds the exact metadata-bearing item dispatched to Media3. */
-    internal fun buildMediaItem(track: MediaTrack, enrichArtwork: Boolean = false): MediaItem {
+    internal fun buildMediaItem(
+        track: MediaTrack,
+        enrichArtwork: Boolean = false,
+        playlistId: Long? = null
+    ): MediaItem {
         val extras = Bundle().apply {
             putLong(METADATA_DURATION_MS, track.durationMs)
+            playlistId?.let { putLong(METADATA_PLAYLIST_ID, it) }
             // The session's ArtworkEnrichingCallback only loads artworkData
             // for flagged items — keeps notification/lock-screen artwork
             // without reading the whole library into memory per play.
@@ -818,6 +833,8 @@ class MusicController @JvmOverloads constructor(
             "com.boombastic.mobile.playback.DURATION_MS"
         internal const val METADATA_ENRICH_ARTWORK =
             "com.boombastic.mobile.playback.ENRICH_ARTWORK"
+        internal const val METADATA_PLAYLIST_ID =
+            "com.boombastic.mobile.playback.PLAYLIST_ID"
         private const val TAG = "MusicController"
     }
 }
@@ -832,7 +849,8 @@ class MusicController @JvmOverloads constructor(
 data class PlaybackRequest(
     val items: List<MediaTrack>,
     val startIndex: Int = 0,
-    val shuffle: Boolean? = null
+    val shuffle: Boolean? = null,
+    val playlistId: Long? = null
 )
 
 /**

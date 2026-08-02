@@ -254,6 +254,15 @@ class MusicControllerTest {
         ).isEqualTo(original.durationMs)
     }
 
+    @Test
+    fun `playlist playback context is carried in MediaItem metadata`() {
+        val item = controller.buildMediaItem(track("rap-song"), playlistId = 42L)
+
+        assertThat(
+            item.mediaMetadata.extras?.getLong(MusicController.METADATA_PLAYLIST_ID)
+        ).isEqualTo(42L)
+    }
+
     // ── State flows ──────────────────────────────────────────────────────
 
     @Test

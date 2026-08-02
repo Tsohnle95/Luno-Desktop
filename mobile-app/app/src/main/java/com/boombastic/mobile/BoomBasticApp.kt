@@ -13,6 +13,7 @@ import com.boombastic.mobile.data.repository.LibraryData
 import com.boombastic.mobile.data.repository.LibraryRepository
 import com.boombastic.mobile.data.repository.MusicFolderRepository
 import com.boombastic.mobile.data.repository.PlaylistRepository
+import com.boombastic.mobile.data.discovery.RecommendationArtworkService
 import com.boombastic.mobile.playback.NewPipeDownloader
 import com.boombastic.mobile.ui.shell.ArtworkFetchManager
 import com.boombastic.mobile.ui.shell.MusicFolderImportManager
@@ -41,6 +42,8 @@ class BoomBasticApp : Application(), Configuration.Provider {
     lateinit var musicFolderRepository: MusicFolderRepository
         private set
     lateinit var discoveryRepository: DiscoveryRepository
+        private set
+    lateinit var recommendationArtworkService: RecommendationArtworkService
         private set
     lateinit var musicFolderImportManager: MusicFolderImportManager
         private set
@@ -77,6 +80,7 @@ class BoomBasticApp : Application(), Configuration.Provider {
         )
         musicFolderRepository = MusicFolderRepository(this)
         discoveryRepository = DiscoveryRepository(this)
+        recommendationArtworkService = RecommendationArtworkService()
         musicFolderImportManager = MusicFolderImportManager(
             appScope = appScope,
             libraryRepository = libraryRepository,

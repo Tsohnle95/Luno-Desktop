@@ -7,9 +7,11 @@ import com.boombastic.mobile.data.discovery.LastfmResult
 import com.boombastic.mobile.data.discovery.LastfmService
 import java.text.Normalizer
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 
 /**
  * Single entry point for Last.fm discovery: owns the encrypted API key
@@ -63,12 +65,14 @@ class DiscoveryRepository(
         val result = lastfm.getSimilar(artist, title, limit)
         if (result !is LastfmResult.Success || libraryTracks.isEmpty()) return result
 
-        val libraryKeys = libraryTracks.mapNotNull { track ->
-            discoveryKey(track.artist, track.title)
-        }.toSet()
+        val filtered = withContext(Dispatchers.Default) {
+            val libraryKeys = libraryTracks.mapNotNull { track ->
+                discoveryKey(track.artist, track.title)
+            }.toSet()
 
-        val filtered = result.tracks.filter { recommendation ->
-            discoveryKey(recommendation.artist, recommendation.title) !in libraryKeys
+            result.tracks.filter { recommendation ->
+                discoveryKey(recommendation.artist, recommendation.title) !in libraryKeys
+            }
         }
         return LastfmResult.Success(filtered)
     }

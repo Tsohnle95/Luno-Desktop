@@ -919,8 +919,11 @@ class LibraryRepository(
 
     suspend fun deleteTrack(uri: String) = trackDao.deleteTrack(uri)
 
-    /** Records one local playback for the Home popularity ranking. */
-    suspend fun recordPlayback(uri: String) = trackDao.incrementPlayCount(uri)
+    /** Records global song popularity and, when applicable, playlist popularity. */
+    suspend fun recordPlayback(uri: String, playlistId: Long? = null) {
+        trackDao.incrementPlayCount(uri)
+        playlistId?.let { playlistDao?.incrementPlayCount(it) }
+    }
 
     /**
      * Desktop "Fetch missing album art for entire library"

@@ -22,6 +22,16 @@ class PlaylistDaoTest : AppDatabaseTest() {
     }
 
     @Test
+    fun incrementPlayCount_onlyChangesThePlaylistCount() = runBlocking {
+        val playlistId = playlistDao.insertPlaylist(Playlist(name = "Rap"))
+
+        playlistDao.incrementPlayCount(playlistId)
+        playlistDao.incrementPlayCount(playlistId)
+
+        assertThat(playlistDao.getPlaylist(playlistId)?.playCount).isEqualTo(2)
+    }
+
+    @Test
     fun getPlaylistsFlow_returnsAll() = runBlocking {
         playlistDao.insertPlaylist(Playlist(name = "Playlist A"))
         playlistDao.insertPlaylist(Playlist(name = "Playlist B"))

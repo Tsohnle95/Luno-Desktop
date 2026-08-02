@@ -154,12 +154,8 @@ fun HomeScreen(
     }
     val popularPlaylists = remember(playlistsWithTracks) {
         playlistsWithTracks
-            .map { playlistWithTracks ->
-                playlistWithTracks to playlistWithTracks.tracks.sumOf { it.playCount }
-            }
-            .filter { (_, playCount) -> playCount > 0 }
-            .sortedByDescending { it.second }
-            .map { it.first }
+            .filter { it.playlist.playCount > 0 }
+            .sortedByDescending { it.playlist.playCount }
             .take(10)
     }
 
@@ -430,7 +426,7 @@ fun HomeScreen(
                         HomePlaylistCard(
                             name = playlistWithTracks.playlist.name,
                             tracks = playlistWithTracks.tracks,
-                            subtitle = "${playlistWithTracks.tracks.sumOf { it.playCount }} plays",
+                            subtitle = "${playlistWithTracks.playlist.playCount} plays",
                             selected = if (selectionMode) {
                                 "p${playlistWithTracks.playlist.id}" in selectedKeys
                             } else {

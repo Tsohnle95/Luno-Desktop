@@ -128,6 +128,10 @@ fun PlaylistDetailScreen(
     }
     val playlist = playlistWithTracks?.playlist
     val tracks = virtualTracks ?: playlistWithTracks?.tracks.orEmpty()
+    // Virtual playlists (for example Made for you) do not own persisted
+    // playlist-view counts. Only a real playlist detail view supplies a
+    // playlist playback context.
+    val playbackPlaylistId = playlist?.id?.takeIf { virtualTracks == null }
     val playlistName = when {
         virtualName != null -> virtualName
         playlist?.name?.equals("Unsorted", ignoreCase = true) == true -> {
@@ -278,10 +282,17 @@ fun PlaylistDetailScreen(
                     trackCount = tracks.size,
                     totalDurationMs = tracks.sumOf { it.durationMs },
                     onPlayAll = {
-                        musicController.play(sortedTracks.map { it.toMediaTrack() }, 0)
+                        musicController.play(
+                            sortedTracks.map { it.toMediaTrack() },
+                            0,
+                            playbackPlaylistId
+                        )
                     },
                     onShuffleAll = {
-                        musicController.playShuffled(sortedTracks.map { it.toMediaTrack() })
+                        musicController.playShuffled(
+                            sortedTracks.map { it.toMediaTrack() },
+                            playbackPlaylistId
+                        )
                     },
                     onSearch = { showSearch = !showSearch },
                     searchVisible = showSearch,
@@ -364,7 +375,8 @@ fun PlaylistDetailScreen(
                                 val index = sortedTracks.indexOfFirst { it.uri == track.uri }
                                 musicController.play(
                                     sortedTracks.map { it.toMediaTrack() },
-                                    index.coerceAtLeast(0)
+                                    index.coerceAtLeast(0),
+                                    playbackPlaylistId
                                 )
                             }
                         },

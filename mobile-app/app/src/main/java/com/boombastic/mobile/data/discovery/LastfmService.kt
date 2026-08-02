@@ -130,9 +130,9 @@ open class LastfmService(
         )
         return when (outcome) {
             is ApiOutcome.Fail -> outcome.result
-            is ApiOutcome.Ok -> LastfmResult.Success(
+            is ApiOutcome.Ok -> LastfmResult.Success(withContext(Dispatchers.Default) {
                 parseTracks(outcome.json.optJSONObject("similartracks")?.optJSONArray("track"))
-            )
+            })
         }
     }
 
@@ -148,35 +148,35 @@ open class LastfmService(
         )
         return when (outcome) {
             is ApiOutcome.Fail -> outcome.result
-            is ApiOutcome.Ok -> LastfmResult.Success(
+            is ApiOutcome.Ok -> LastfmResult.Success(withContext(Dispatchers.Default) {
                 parseTracks(outcome.json.optJSONObject("toptracks")?.optJSONArray("track"))
-            )
+            })
         }
     }
 
     private suspend fun callApi(params: Map<String, String>): ApiOutcome {
-        return try {
-            val url = baseUrl.toHttpUrl().newBuilder().apply {
-                params.forEach { (key, value) -> addQueryParameter(key, value) }
-            }.build()
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", "Luno/0.1.0 (Android)")
-                .build()
-            val body = withContext(Dispatchers.IO) {
-                client.newCall(request).execute().use { response ->
+        return withContext(Dispatchers.IO) {
+            try {
+                val url = baseUrl.toHttpUrl().newBuilder().apply {
+                    params.forEach { (key, value) -> addQueryParameter(key, value) }
+                }.build()
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "Luno/0.1.0 (Android)")
+                    .build()
+                val body = client.newCall(request).execute().use { response ->
                     response.body?.string().orEmpty()
                 }
+                val json = JSONObject(body)
+                if (json.has("error")) {
+                    val message = json.optString("message").ifBlank { "Last.fm API error" }
+                    ApiOutcome.Fail(LastfmResult.Failure(message))
+                } else {
+                    ApiOutcome.Ok(json)
+                }
+            } catch (e: Exception) {
+                ApiOutcome.Fail(LastfmResult.Failure("Could not reach Last.fm — check your connection"))
             }
-            val json = JSONObject(body)
-            if (json.has("error")) {
-                val message = json.optString("message").ifBlank { "Last.fm API error" }
-                ApiOutcome.Fail(LastfmResult.Failure(message))
-            } else {
-                ApiOutcome.Ok(json)
-            }
-        } catch (e: Exception) {
-            ApiOutcome.Fail(LastfmResult.Failure("Could not reach Last.fm — check your connection"))
         }
     }
 
@@ -208,14 +208,28 @@ open class LastfmService(
     private fun pickLargestImage(images: JSONArray?): String? {
         if (images == null) return null
         val bySize = mutableMapOf<String, String>()
+        var firstImage: String? = null
         for (i in 0 until images.length()) {
             val image = images.optJSONObject(i) ?: continue
-            bySize[image.optString("size")] = image.optString("#text")
+            val rawUrl = image.optString("#text").ifBlank { image.optString("url") }
+            val url = normalizeImageUrl(rawUrl) ?: continue
+            firstImage = firstImage ?: url
+            bySize[image.optString("size")] = url
         }
         for (size in listOf("mega", "extralarge", "large", "medium", "small")) {
             bySize[size]?.takeIf { it.isNotBlank() }?.let { return it }
         }
-        return null
+        return firstImage
+    }
+
+    /** Android blocks cleartext image requests; older Last.fm responses use http URLs. */
+    private fun normalizeImageUrl(rawUrl: String): String? {
+        val url = rawUrl.trim()
+        return when {
+            url.startsWith("https://", ignoreCase = true) -> url
+            url.startsWith("http://", ignoreCase = true) -> "https://${url.substring(7)}"
+            else -> null
+        }
     }
 
     private fun storeCache(key: Pair<String, String>, tracks: List<LastfmTrack>) {

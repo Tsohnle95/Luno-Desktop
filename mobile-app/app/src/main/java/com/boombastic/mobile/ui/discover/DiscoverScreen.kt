@@ -1,7 +1,13 @@
 package com.boombastic.mobile.ui.discover
 
 import android.widget.Toast
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -28,7 +34,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -39,10 +44,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -119,6 +127,28 @@ fun DiscoverScreen(musicController: MusicController) {
     var batchTotal by remember { mutableIntStateOf(0) }
     var batchFailures by remember { mutableIntStateOf(0) }
     var playlistDownloadRequest by remember { mutableStateOf<PlaylistDownloadRequest?>(null) }
+    var fallbackArtwork by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var fallbackArtworkRequested by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val ready = state as? DiscoverUiState.Ready
+
+    fun requestFallbackArtwork(rec: LastfmTrack) {
+        val key = recKey(rec)
+        if (key in fallbackArtworkRequested) return
+        fallbackArtworkRequested = fallbackArtworkRequested + key
+        scope.launch {
+            app.recommendationArtworkService.findArtwork(rec.artist, rec.title)?.let { url ->
+                fallbackArtwork = fallbackArtwork + (key to url)
+            }
+        }
+    }
+
+    LaunchedEffect(ready?.tracks) {
+        fallbackArtwork = emptyMap()
+        fallbackArtworkRequested = emptySet()
+        ready?.tracks.orEmpty()
+            .filter { it.imageUrl.isNullOrBlank() }
+            .forEach(::requestFallbackArtwork)
+    }
 
     LaunchedEffect(apiKey, seed, refreshTrigger) {
         if (apiKey.isNullOrBlank() || seed == null) {
@@ -126,6 +156,9 @@ fun DiscoverScreen(musicController: MusicController) {
             return@LaunchedEffect
         }
         state = DiscoverUiState.Loading
+        // Let Compose present the loading frame before even a cached result or
+        // a fast response can transition straight to Ready.
+        withFrameNanos { }
         when (val result = repository.getSimilar(
             artist = seed.artist,
             title = seed.title,
@@ -206,8 +239,6 @@ fun DiscoverScreen(musicController: MusicController) {
         }
     }
 
-    val ready = state as? DiscoverUiState.Ready
-
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(top = Dimens.paddingLarge, bottom = Dimens.paddingXLarge)
@@ -274,7 +305,7 @@ fun DiscoverScreen(musicController: MusicController) {
                                 contentAlignment = Alignment.Center
                             ) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    CircularProgressIndicator(color = AccentGreen)
+                                    DiscoverLoadingSpinner()
                                     Spacer(modifier = Modifier.height(Dimens.paddingMedium))
                                     Text(
                                         text = "Fetching recommendations from Last.fm…",
@@ -333,7 +364,11 @@ fun DiscoverScreen(musicController: MusicController) {
                             ) { rec ->
                                 RecommendationRow(
                                     rec = rec,
+                                    artworkUri = fallbackArtwork[recKey(rec)] ?: rec.imageUrl,
                                     downloading = recKey(rec) in downloadingKeys,
+                                    onArtworkError = {
+                                        requestFallbackArtwork(rec)
+                                    },
                                     onDownload = { downloadOne(rec) },
                                     onChoosePlaylist = {
                                         playlistDownloadRequest = PlaylistDownloadRequest(
@@ -540,7 +575,9 @@ private fun SeedHeader(
 @Composable
 private fun RecommendationRow(
     rec: LastfmTrack,
+    artworkUri: String?,
     downloading: Boolean,
+    onArtworkError: () -> Unit,
     onDownload: () -> Unit,
     onChoosePlaylist: () -> Unit
 ) {
@@ -551,12 +588,13 @@ private fun RecommendationRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         ArtworkImage(
-            artworkUri = rec.imageUrl,
+            artworkUri = artworkUri,
             modifier = Modifier
                 .size(Dimens.albumArtSmall)
                 .clip(RoundedCornerShape(Dimens.cornerMedium)),
             placeholderIconSize = 24.dp,
-            decodeSizePx = 128
+            decodeSizePx = 128,
+            onError = if (artworkUri == rec.imageUrl) onArtworkError else null
         )
         Spacer(modifier = Modifier.width(Dimens.paddingMedium))
         Column(modifier = Modifier.weight(1f)) {
@@ -597,5 +635,28 @@ private fun RecommendationRow(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun DiscoverLoadingSpinner() {
+    val transition = rememberInfiniteTransition(label = "discoverLoadingSpinner")
+    val rotation by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "discoverLoadingSpinnerRotation"
+    )
+    Canvas(modifier = Modifier.size(40.dp)) {
+        drawArc(
+            color = AccentGreen,
+            startAngle = rotation - 90f,
+            sweepAngle = 270f,
+            useCenter = false,
+            style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
+        )
     }
 }

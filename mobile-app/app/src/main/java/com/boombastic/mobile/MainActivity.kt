@@ -26,9 +26,9 @@ class MainActivity : ComponentActivity() {
         val app = application as BoomBasticApp
         musicController = MusicController(
             this,
-            onTrackPlayed = { uri ->
+            onTrackPlayed = { uri, playlistId ->
                 app.appScope.launch {
-                    app.libraryRepository.recordPlayback(uri)
+                    app.libraryRepository.recordPlayback(uri, playlistId)
                 }
             }
         )

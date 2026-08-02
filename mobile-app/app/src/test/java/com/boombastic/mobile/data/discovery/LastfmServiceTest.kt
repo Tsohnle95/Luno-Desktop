@@ -102,6 +102,21 @@ class LastfmServiceTest {
     }
 
     @Test
+    fun legacyHttpArtworkUrl_isUpgradedToHttps() = runBlocking {
+        server.enqueue(
+            similarResponse(
+                """[{"name":"Song A","match":0.5,"artist":"Artist A",
+                    "image":[{"#text":"http://cdn.last.fm/cover.jpg","size":"large"}]}]"""
+            )
+        )
+
+        val result = service.getSimilar("Artist", "Title") as LastfmResult.Success
+
+        assertThat(result.tracks.single().imageUrl)
+            .isEqualTo("https://cdn.last.fm/cover.jpg")
+    }
+
+    @Test
     fun emptySimilar_fallsBackToArtistTopTracks_withMatch080() = runBlocking {
         server.enqueue(similarResponse("[]"))
         server.enqueue(

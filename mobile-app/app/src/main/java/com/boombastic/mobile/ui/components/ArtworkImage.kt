@@ -56,7 +56,8 @@ fun ArtworkImage(
     modifier: Modifier = Modifier,
     shape: Shape = androidx.compose.foundation.shape.RoundedCornerShape(Dimens.cornerMedium),
     placeholderIconSize: Dp = 40.dp,
-    decodeSizePx: Int = 512
+    decodeSizePx: Int = 512,
+    onError: (() -> Unit)? = null
 ) {
     if (artworkUri.isNullOrBlank()) {
         ArtworkPlaceholder(modifier = modifier.clip(shape), iconSize = placeholderIconSize)
@@ -75,6 +76,9 @@ fun ArtworkImage(
     // a decoded image, so loaded artwork does not redraw the fallback.
     val painter = rememberAsyncImagePainter(model = request)
     val painterState = painter.state
+    LaunchedEffect(artworkUri, painterState) {
+        if (painterState is AsyncImagePainter.State.Error) onError?.invoke()
+    }
     Box(modifier = modifier.clip(shape)) {
         if (painterState is AsyncImagePainter.State.Success) {
             Image(
