@@ -159,7 +159,8 @@ fun MainShell(musicController: MusicController) {
     var pendingReleaseUrl by remember { mutableStateOf<String?>(null) }
     var expandedSettingsSection by rememberSaveable { mutableStateOf<String?>(null) }
     val hasActiveItem by musicController.hasActiveItem.collectAsState()
-    val currentBackStack by navController.currentBackStackEntryAsState()
+    val currentBackStackState = navController.currentBackStackEntryAsState()
+    val currentBackStack by currentBackStackState
     val currentRoute = currentBackStack?.destination?.route
     val snackbarHostState = remember { SnackbarHostState() }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -201,23 +202,28 @@ fun MainShell(musicController: MusicController) {
         }
     }
 
-    // Green-loader transition mask.  It is set to `true` BEFORE every
+    // Green-loader transition mask. It is set to `true` BEFORE every
     // navigation (see the call sites below) so the black layer with the
     // spinner is already opaque when the new screen composes — the screen
-    // can never flash in early.  The release waits for a deliberate
-    // "black screen" moment AND for the library data to be loaded, so the
-    // reveal always lands on a fully rendered screen (no loading gate
-    // popping in after the spinner).
+    // can never flash in early. Discover also reports its Last.fm request
+    // through this state so its page is not revealed with a second loader.
     var transitionMask by remember { mutableStateOf(false) }
     val app = context.applicationContext as com.boombastic.mobile.BoomBasticApp
-    val libraryLoaded by app.libraryData.loaded.collectAsState()
+    val libraryLoadedState = app.libraryData.loaded.collectAsState()
+    val discoverLoadingState = remember { mutableStateOf(false) }
     LaunchedEffect(transitionMask) {
         if (!transitionMask) return@LaunchedEffect
         val startedAt = SystemClock.elapsedRealtime()
-        while (
-            SystemClock.elapsedRealtime() - startedAt < TRANSITION_MASK_HOLD_MS ||
-            (!libraryLoaded && SystemClock.elapsedRealtime() - startedAt < TRANSITION_MASK_MAX_MS)
-        ) {
+        while (SystemClock.elapsedRealtime() - startedAt < TRANSITION_MASK_HOLD_MS) {
+            delay(16)
+        }
+        while (true) {
+            val elapsed = SystemClock.elapsedRealtime() - startedAt
+            val route = currentBackStackState.value?.destination?.route
+            val libraryReady = libraryLoadedState.value
+            val discoverReady = route != Routes.DISCOVER || !discoverLoadingState.value
+            val pastNonDiscoverCap = route != Routes.DISCOVER && elapsed >= TRANSITION_MASK_MAX_MS
+            if ((libraryReady && discoverReady) || pastNonDiscoverCap) break
             delay(16)
         }
         transitionMask = false
@@ -518,6 +524,12 @@ fun MainShell(musicController: MusicController) {
                                         selected = selected,
                                         onClick = {
                                             if (item.route == currentRoute) return@NavigationBarItem
+                                            if (item.route == Routes.DISCOVER) {
+                                                // The request starts as soon as Discover composes. Set
+                                                // this before navigation so a fast recomposition cannot
+                                                // release the mask before the request reports loading.
+                                                discoverLoadingState.value = true
+                                            }
                                             // Mask FIRST: the black layer
                                             // is opaque before the new
                                             // screen composes, so it never
@@ -730,7 +742,14 @@ fun MainShell(musicController: MusicController) {
                             modifier = Modifier.fillMaxSize(),
                             onCreatePlaylist = { showCreateSheet = true },
                             onPlay = onPlay,
-                            onNavigate = { transitionMask = true }
+                            onNavigate = { transitionMask = true },
+                            onDiscoverLoadingChanged = { loading ->
+                                discoverLoadingState.value = loading
+                                if (loading && navController.currentDestination?.route == Routes.DISCOVER) {
+                                    // Refreshes use the same single shell spinner as tab changes.
+                                    transitionMask = true
+                                }
+                            }
                         )
                         // Green-loader transition mask (see above): covers
                         // the content area while the new screen fades in

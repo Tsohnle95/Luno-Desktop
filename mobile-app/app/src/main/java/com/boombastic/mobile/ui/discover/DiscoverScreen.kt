@@ -1,14 +1,6 @@
 package com.boombastic.mobile.ui.discover
 
 import android.widget.Toast
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -49,8 +41,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,6 +58,7 @@ import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -98,7 +89,10 @@ private sealed interface DiscoverUiState {
  * [com.boombastic.mobile.data.repository.DownloadRepository]).
  */
 @Composable
-fun DiscoverScreen(musicController: MusicController) {
+fun DiscoverScreen(
+    musicController: MusicController,
+    onLoadingChanged: (Boolean) -> Unit
+) {
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
     val repository = app.discoveryRepository
@@ -153,21 +147,31 @@ fun DiscoverScreen(musicController: MusicController) {
     LaunchedEffect(apiKey, seed, refreshTrigger) {
         if (apiKey.isNullOrBlank() || seed == null) {
             state = DiscoverUiState.Idle
+            onLoadingChanged(false)
             return@LaunchedEffect
         }
         state = DiscoverUiState.Loading
+        onLoadingChanged(true)
         // Let Compose present the loading frame before even a cached result or
         // a fast response can transition straight to Ready.
         withFrameNanos { }
-        when (val result = repository.getSimilar(
-            artist = seed.artist,
-            title = seed.title,
-            limit = 20,
-            libraryTracks = allTracks
-        )) {
+        val result = try {
+            repository.getSimilar(
+                artist = seed.artist,
+                title = seed.title,
+                limit = 20,
+                libraryTracks = allTracks
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            LastfmResult.Failure(error.message ?: "Could not load recommendations")
+        }
+        when (result) {
             is LastfmResult.Success -> state = DiscoverUiState.Ready(seed, result.tracks)
             is LastfmResult.Failure -> state = DiscoverUiState.Error(result.message)
         }
+        onLoadingChanged(false)
     }
 
     // Shared download plumbing: YouTube search → audio extraction →
@@ -296,26 +300,7 @@ fun DiscoverScreen(musicController: MusicController) {
                 }
 
                 when (state) {
-                    is DiscoverUiState.Loading -> {
-                        item(key = "loading") {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = Dimens.paddingXLarge),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    DiscoverLoadingSpinner()
-                                    Spacer(modifier = Modifier.height(Dimens.paddingMedium))
-                                    Text(
-                                        text = "Fetching recommendations from Last.fm…",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = SecondaryText
-                                    )
-                                }
-                            }
-                        }
-                    }
+                    is DiscoverUiState.Loading -> Unit
 
                     is DiscoverUiState.Error -> {
                         item(key = "error") {
@@ -635,28 +620,5 @@ private fun RecommendationRow(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun DiscoverLoadingSpinner() {
-    val transition = rememberInfiniteTransition(label = "discoverLoadingSpinner")
-    val rotation by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 900, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "discoverLoadingSpinnerRotation"
-    )
-    Canvas(modifier = Modifier.size(40.dp)) {
-        drawArc(
-            color = AccentGreen,
-            startAngle = rotation - 90f,
-            sweepAngle = 270f,
-            useCenter = false,
-            style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
-        )
     }
 }

@@ -47,7 +47,8 @@ fun BoomBasticNavHost(
     modifier: Modifier = Modifier,
     onCreatePlaylist: () -> Unit,
     onPlay: (List<MediaTrack>, Int, Boolean) -> Unit = { _, _, _ -> },
-    onNavigate: () -> Unit = {}
+    onNavigate: () -> Unit = {},
+    onDiscoverLoadingChanged: (Boolean) -> Unit = {}
 ) {
     val app = LocalContext.current.applicationContext as BoomBasticApp
     val madeForYouTracks by app.madeForYouTracks.collectAsState()
@@ -115,7 +116,10 @@ fun BoomBasticNavHost(
             )
         }
         composable(Routes.DISCOVER) {
-            DiscoverScreen(musicController = musicController)
+            DiscoverScreen(
+                musicController = musicController,
+                onLoadingChanged = onDiscoverLoadingChanged
+            )
         }
         composable(Routes.DOWNLOADS) {
             DownloadsScreen()
