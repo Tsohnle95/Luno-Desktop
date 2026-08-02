@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.BoomBasticApp
+import com.boombastic.mobile.data.db.entity.Playlist
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryBackground
@@ -37,7 +38,8 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreatePlaylistSheet(
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onCreated: (Playlist) -> Unit = {}
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
@@ -103,7 +105,9 @@ fun CreatePlaylistSheet(
                     isCreating = true
                     scope.launch {
                         val result = app.playlistRepository.createPlaylist(playlistName.trim())
-                        if (result.isSuccess) {
+                        val playlist = result.getOrNull()
+                        if (playlist != null) {
+                            onCreated(playlist)
                             onDismiss()
                         } else {
                             errorMessage = result.exceptionOrNull()?.message ?: "Failed to create"

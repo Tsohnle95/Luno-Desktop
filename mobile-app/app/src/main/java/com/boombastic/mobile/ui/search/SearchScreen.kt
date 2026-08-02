@@ -27,6 +27,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Download
@@ -69,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.BoomBasticApp
 import com.boombastic.mobile.data.db.entity.DownloadJob
 import com.boombastic.mobile.data.db.entity.DownloadState
+import com.boombastic.mobile.data.db.entity.Playlist
 import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.playback.ExtractionResult
 import com.boombastic.mobile.playback.WebSearchResult
@@ -78,6 +81,7 @@ import com.boombastic.mobile.ui.components.BulkSelectionToolbar
 import com.boombastic.mobile.ui.components.PlaylistPickerSheet
 import com.boombastic.mobile.ui.components.TrackActionsSheet
 import com.boombastic.mobile.ui.components.TrackRowCard
+import com.boombastic.mobile.ui.create.CreatePlaylistSheet
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
@@ -136,6 +140,12 @@ fun SearchScreen(
     var actionsTrack by remember { mutableStateOf<Track?>(null) }
     var playlistTracksToAdd by remember { mutableStateOf<List<Track>?>(null) }
     var playlistResultToQueue by remember { mutableStateOf<WebSearchResult?>(null) }
+    var youtubePlaylistUrl by rememberSaveable { mutableStateOf("") }
+    var playlistImportStatus by rememberSaveable { mutableStateOf("") }
+    var playlistImporting by remember { mutableStateOf(false) }
+    var importDestination by remember { mutableStateOf<Playlist?>(null) }
+    var showImportDestinationPicker by remember { mutableStateOf(false) }
+    var showCreateImportPlaylist by remember { mutableStateOf(false) }
 
     fun search() {
         val query = searchQuery.trim()
@@ -197,6 +207,40 @@ fun SearchScreen(
                 errorMessage = "Download failed to start: ${e.message ?: "Try again."}"
             } finally {
                 downloadingVideoIds = downloadingVideoIds - videoId
+            }
+        }
+    }
+
+    fun queuePlaylistImport(destination: Playlist) {
+        val sourceUrl = youtubePlaylistUrl.trim()
+        if (sourceUrl.isBlank() || playlistImporting) return
+        if (WebSearchService.extractPlaylistId(sourceUrl) == null) {
+            playlistImportStatus = "Paste a YouTube playlist URL containing a list= parameter."
+            return
+        }
+
+        playlistImporting = true
+        playlistImportStatus = "Preparing ${destination.name}…"
+        scope.launch {
+            try {
+                // Keep the source attached to the destination so it can be
+                // synced again later from the Downloads manager.
+                app.playlistRepository.updatePlaylistUrl(destination.id, sourceUrl)
+                app.downloadRepository.syncPlaylist(
+                    playlistId = destination.id,
+                    playlistName = destination.name,
+                    playlistUrl = sourceUrl
+                )
+                playlistImportStatus = "Playlist import queued for ${destination.name}."
+                Toast.makeText(
+                    context,
+                    "Playlist import queued for ${destination.name}",
+                    Toast.LENGTH_SHORT
+                ).show()
+            } catch (e: Exception) {
+                playlistImportStatus = "Could not start playlist import: ${e.message ?: "Try again."}"
+            } finally {
+                playlistImporting = false
             }
         }
     }
@@ -279,6 +323,21 @@ fun SearchScreen(
                 isSearching = isSearching,
                 activeDownloads = activeDownloads,
                 onOpenDownloads = onOpenDownloads
+            )
+        }
+
+        item(key = "youtube-playlist-import") {
+            PlaylistImportSection(
+                urlInput = youtubePlaylistUrl,
+                destinationName = importDestination?.name,
+                isImporting = playlistImporting,
+                status = playlistImportStatus,
+                onUrlChange = {
+                    youtubePlaylistUrl = it
+                    playlistImportStatus = ""
+                },
+                onChooseDestination = { showImportDestinationPicker = true },
+                onImport = { importDestination?.let(::queuePlaylistImport) }
             )
         }
 
@@ -546,6 +605,32 @@ fun SearchScreen(
         )
     }
 
+    if (showImportDestinationPicker) {
+        PlaylistPickerSheet(
+            title = "Choose import destination",
+            onPick = { playlist ->
+                importDestination = playlist
+                showImportDestinationPicker = false
+                playlistImportStatus = "Ready to import into ${playlist.name}."
+            },
+            onCreateNew = {
+                showImportDestinationPicker = false
+                showCreateImportPlaylist = true
+            },
+            onDismiss = { showImportDestinationPicker = false }
+        )
+    }
+
+    if (showCreateImportPlaylist) {
+        CreatePlaylistSheet(
+            onDismiss = { showCreateImportPlaylist = false },
+            onCreated = { playlist ->
+                importDestination = playlist
+                playlistImportStatus = "Ready to import into ${playlist.name}."
+            }
+        )
+    }
+
     actionsTrack?.let { track ->
         TrackActionsSheet(
             track = track,
@@ -570,19 +655,19 @@ private fun DownloadHeader(
             .padding(bottom = 12.dp)
     ) {
         Text(
-            text = "ADD MUSIC",
+            text = "DOWNLOAD CENTER",
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,
             color = AccentGreen
         )
         Text(
-            text = "Bring music into your library",
+            text = "Build your offline library",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             color = PrimaryText
         )
         Text(
-            text = "Search for a song, choose a result, then tap Download. Finished songs appear in Your Library and keep downloading in the background.",
+            text = "Search for one song, paste a YouTube playlist, or use another source. Everything you start here is sent to your download queue.",
             style = MaterialTheme.typography.bodyMedium,
             color = SecondaryText,
             modifier = Modifier.padding(top = 6.dp)
@@ -700,6 +785,167 @@ private fun DownloadHeader(
 }
 
 @Composable
+private fun PlaylistImportSection(
+    urlInput: String,
+    destinationName: String?,
+    isImporting: Boolean,
+    status: String,
+    onUrlChange: (String) -> Unit,
+    onChooseDestination: () -> Unit,
+    onImport: () -> Unit
+) {
+    val panelShape = RoundedCornerShape(20.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(panelShape)
+            .background(SurfaceDark)
+            .border(1.dp, AccentGreen.copy(alpha = 0.24f), panelShape)
+            .padding(DownloadPanelPadding)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(AccentGreen.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                    contentDescription = null,
+                    tint = AccentGreen,
+                    modifier = Modifier.size(23.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(Dimens.paddingMedium))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Import a YouTube playlist",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = PrimaryText,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Paste a playlist link and queue its songs as audio.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SecondaryText,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+        }
+
+        OutlinedTextField(
+            value = urlInput,
+            onValueChange = onUrlChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = DownloadControlSpacing),
+            placeholder = {
+                Text("https://youtube.com/playlist?list=…", color = SecondaryText)
+            },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Filled.Link,
+                    contentDescription = null,
+                    tint = SecondaryText
+                )
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            colors = downloadFieldColors()
+        )
+
+        Text(
+            text = "Import into",
+            style = MaterialTheme.typography.labelMedium,
+            color = SecondaryText,
+            modifier = Modifier.padding(top = DownloadControlSpacing)
+        )
+        OutlinedButton(
+            onClick = onChooseDestination,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = DownloadFieldSpacing),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = PrimaryText),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                if (destinationName == null) AccentGreen.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.14f)
+            ),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                contentDescription = null,
+                tint = if (destinationName == null) AccentGreen else SecondaryText,
+                modifier = Modifier.size(Dimens.iconSizeSmall)
+            )
+            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+            Text(
+                text = destinationName ?: "Choose a destination playlist",
+                color = if (destinationName == null) AccentGreen else PrimaryText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Button(
+            onClick = onImport,
+            enabled = urlInput.isNotBlank() && destinationName != null && !isImporting,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = DownloadControlSpacing),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = AccentGreen,
+                contentColor = Color.Black,
+                disabledContainerColor = Color.White.copy(alpha = 0.08f),
+                disabledContentColor = SecondaryText
+            ),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            if (isImporting) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(Dimens.iconSizeSmall),
+                    color = Color.Black,
+                    strokeWidth = 2.dp
+                )
+                Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.Download,
+                    contentDescription = null,
+                    modifier = Modifier.size(Dimens.iconSizeSmall)
+                )
+                Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+            }
+            Text(
+                text = if (isImporting) "Adding to queue…" else "Queue playlist import",
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+
+        Text(
+            text = "The link is saved on this playlist so you can sync it again later from Downloads.",
+            style = MaterialTheme.typography.labelSmall,
+            color = SecondaryText,
+            modifier = Modifier.padding(top = DownloadFieldSpacing)
+        )
+        if (status.isNotBlank()) {
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (status.startsWith("Could not") || status.startsWith("Paste")) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    AccentGreen
+                },
+                modifier = Modifier.padding(top = DownloadFieldSpacing)
+            )
+        }
+    }
+}
+
+@Composable
 private fun SearchLoadingState() {
     Row(
         modifier = Modifier
@@ -760,13 +1006,13 @@ private fun DownloadStartHint() {
             .padding(top = 12.dp, bottom = 4.dp)
     ) {
         Text(
-            text = "Start here",
+            text = "Choose your path",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             color = PrimaryText
         )
         Text(
-            text = "Search above to find music. Each result has its own Download button, so you can pick the exact version you want.",
+            text = "Search above for one track, or use the playlist importer to bring in a full YouTube collection.",
             style = MaterialTheme.typography.bodySmall,
             color = SecondaryText,
             modifier = Modifier.padding(top = 4.dp)
@@ -791,7 +1037,7 @@ private fun SourceOptions(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Already have a source?",
+                text = "More ways to add music",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = PrimaryText,
@@ -799,7 +1045,7 @@ private fun SourceOptions(
             )
         }
         Text(
-            text = "Use a direct audio link or bring in an Exportify playlist instead.",
+            text = "Have a direct audio link or an Exportify CSV? Use either option below.",
             style = MaterialTheme.typography.bodySmall,
             color = SecondaryText,
             modifier = Modifier.padding(top = 4.dp)

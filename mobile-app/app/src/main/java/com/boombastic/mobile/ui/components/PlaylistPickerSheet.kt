@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.BoomBasticApp
 import com.boombastic.mobile.data.db.entity.Playlist
+import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
@@ -36,8 +37,10 @@ import com.boombastic.mobile.ui.theme.SurfaceDark
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlaylistPickerSheet(
+    title: String = "Add to playlist",
     onPick: (Playlist) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onCreateNew: (() -> Unit)? = null
 ) {
     val app = LocalContext.current.applicationContext as BoomBasticApp
     val playlists by app.playlistRepository.getAllPlaylists().collectAsState(initial = emptyList())
@@ -52,15 +55,43 @@ fun PlaylistPickerSheet(
                 .padding(horizontal = Dimens.paddingLarge)
         ) {
             Text(
-                text = "Add to playlist",
+                text = title,
                 style = MaterialTheme.typography.headlineMedium,
                 color = PrimaryText
             )
             Spacer(modifier = Modifier.height(Dimens.paddingMedium))
 
+            if (onCreateNew != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Dimens.cornerMedium))
+                        .clickable { onCreateNew() }
+                        .padding(vertical = Dimens.paddingMedium, horizontal = Dimens.paddingSmall),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                        contentDescription = null,
+                        tint = AccentGreen,
+                        modifier = Modifier.size(Dimens.iconSize)
+                    )
+                    Spacer(modifier = Modifier.width(Dimens.paddingLarge))
+                    Text(
+                        text = "Create new playlist",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = AccentGreen
+                    )
+                }
+            }
+
             if (playlists.isEmpty()) {
                 Text(
-                    text = "No playlists yet. Create one in Your Library.",
+                    text = if (onCreateNew != null) {
+                        "No playlists yet. Create a destination above."
+                    } else {
+                        "No playlists yet. Create one in Your Library."
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = SecondaryText,
                     modifier = Modifier.padding(vertical = Dimens.paddingMedium)
@@ -76,7 +107,7 @@ fun PlaylistPickerSheet(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.PlaylistAdd,
+                            imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
                             contentDescription = null,
                             tint = PrimaryText,
                             modifier = Modifier.size(Dimens.iconSize)

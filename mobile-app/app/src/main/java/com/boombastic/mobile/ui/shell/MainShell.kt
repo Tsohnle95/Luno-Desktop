@@ -78,9 +78,11 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -102,7 +104,7 @@ import com.boombastic.mobile.ui.discover.LastfmKeyDialog
 import com.boombastic.mobile.ui.navigation.BoomBasticNavHost
 import com.boombastic.mobile.ui.navigation.Routes
 import com.boombastic.mobile.ui.theme.AccentGreen
-import com.boombastic.mobile.ui.theme.AppBackgroundBrush
+import com.boombastic.mobile.ui.theme.AppBackgroundGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.NavBarSurface
 import com.boombastic.mobile.ui.theme.NavBarUnselected
@@ -484,7 +486,7 @@ fun MainShell(musicController: MusicController) {
             modifier = Modifier
                 .fillMaxSize()
                 .background(PrimaryBackground)
-                .background(AppBackgroundBrush)
+                .appBackgroundWash()
         ) {
             Scaffold(
                 // Let the shell wash show through the screen content while
@@ -1060,6 +1062,51 @@ private fun SmoothProgressBar(
 }
 
 /**
+ * Layered background wash: a diagonal green sweep with two offset glows keeps
+ * the shell atmospheric without turning the whole screen into a flat gradient.
+ */
+private fun Modifier.appBackgroundWash(): Modifier = drawWithCache {
+    val diagonalSweep = Brush.linearGradient(
+        colorStops = arrayOf(
+            0.0f to Color.Transparent,
+            0.18f to AppBackgroundGreen.copy(alpha = 0.16f),
+            0.42f to AppBackgroundGreen.copy(alpha = 0.44f),
+            0.58f to AccentGreen.copy(alpha = 0.07f),
+            0.78f to AppBackgroundGreen.copy(alpha = 0.24f),
+            1.0f to Color.Transparent
+        ),
+        start = Offset(-size.width * 0.18f, size.height * 0.88f),
+        end = Offset(size.width * 1.1f, size.height * 0.12f)
+    )
+    val upperGlow = Brush.radialGradient(
+        colorStops = arrayOf(
+            0.0f to AccentGreen.copy(alpha = 0.12f),
+            0.28f to AppBackgroundGreen.copy(alpha = 0.27f),
+            0.72f to AppBackgroundGreen.copy(alpha = 0.08f),
+            1.0f to Color.Transparent
+        ),
+        center = Offset(size.width * 0.82f, size.height * 0.14f),
+        radius = size.maxDimension * 0.72f
+    )
+    val lowerGlow = Brush.radialGradient(
+        colorStops = arrayOf(
+            0.0f to AppBackgroundGreen.copy(alpha = 0.36f),
+            0.34f to AppBackgroundGreen.copy(alpha = 0.18f),
+            0.78f to AppBackgroundGreen.copy(alpha = 0.05f),
+            1.0f to Color.Transparent
+        ),
+        center = Offset(size.width * 0.12f, size.height * 0.82f),
+        radius = size.maxDimension * 0.66f
+    )
+
+    onDrawBehind {
+        drawRect(diagonalSweep)
+        drawRect(upperGlow)
+        drawRect(lowerGlow)
+    }
+}
+
+/**
  * Green-loader transition mask: a solid full-area layer with the centered
  * spinner.  It appears instantly on a route change, holds for a deliberate
  * "black screen" moment while the new screen (swapped in instantly by the
@@ -1086,7 +1133,8 @@ private fun TransitionMask(visible: Boolean) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(PrimaryBackground),
+                .background(PrimaryBackground)
+                .appBackgroundWash(),
             contentAlignment = Alignment.Center
         ) {
             CircularProgressIndicator(color = AccentGreen)
