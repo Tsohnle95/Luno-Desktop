@@ -60,7 +60,7 @@ import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.components.PlaylistCard
-import com.boombastic.mobile.ui.components.PlaylistPickerSheet
+import com.boombastic.mobile.ui.components.BulkSelectionToolbar
 import com.boombastic.mobile.ui.components.SortChip
 import com.boombastic.mobile.ui.components.TrackActionsSheet
 import com.boombastic.mobile.ui.components.TrackRowCard
@@ -124,8 +124,6 @@ fun LibraryScreen(
     var selectionMode by remember { mutableStateOf(false) }
     var selectedKeys by remember { mutableStateOf(setOf<String>()) }
     var showBatchMenu by remember { mutableStateOf(false) }
-    var showBatchPlaylistPicker by remember { mutableStateOf(false) }
-    var showBatchRemoveConfirm by remember { mutableStateOf(false) }
 
     // Track actions sheet — hoisted out of the LazyColumn: composing a
     // ModalBottomSheet inside a lazy item makes it scroll with the list.
@@ -185,9 +183,18 @@ fun LibraryScreen(
     val selectedSongs = selectedKeys.filter { !it.startsWith("p") }
     val selectedPlaylistIds = selectedKeys.filter { it.startsWith("p") }
         .mapNotNull { it.removePrefix("p").toLongOrNull() }
+    val selectedTracks = allTracks.filter { it.uri in selectedSongs }
+    val selectedPlaylists = playlistsWithTracks.filter { it.playlist.id in selectedPlaylistIds }
 
     fun toggleSelection(key: String) {
-        selectedKeys = if (key in selectedKeys) selectedKeys - key else selectedKeys + key
+        val next = if (key in selectedKeys) selectedKeys - key else selectedKeys + key
+        selectedKeys = next
+        selectionMode = next.isNotEmpty()
+    }
+
+    fun beginSelection(key: String) {
+        selectionMode = true
+        selectedKeys = selectedKeys + key
     }
 
     fun exitSelection() {
@@ -195,9 +202,39 @@ fun LibraryScreen(
         selectedKeys = emptySet()
     }
 
+    val allSelected = allKeys.isNotEmpty() && allKeys.all { it in selectedKeys }
+
+    fun setAllVisibleSelected(selectAll: Boolean) {
+        if (!selectAll) {
+            selectedKeys = selectedKeys - allKeys
+            selectionMode = selectedKeys.isNotEmpty()
+        } else {
+            selectedKeys = selectedKeys + allKeys
+            selectionMode = true
+        }
+    }
+
+    fun addSelectionToPlaylist(target: com.boombastic.mobile.data.db.entity.Playlist, trackUris: List<String>) {
+        scope.launch {
+            app.playlistRepository.addTracksToPlaylist(target.id, trackUris)
+            Toast.makeText(context, "Added to ${target.name}", Toast.LENGTH_SHORT).show()
+        }
+        exitSelection()
+    }
+
+    fun createPlaylistFromSelection(name: String, description: String, trackUris: List<String>) {
+        scope.launch {
+            app.playlistRepository.createPlaylist(name, description).onSuccess { playlist ->
+                app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
+                Toast.makeText(context, "Created ${playlist.name}", Toast.LENGTH_SHORT).show()
+            }
+        }
+        exitSelection()
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+        verticalArrangement = Arrangement.spacedBy(Dimens.paddingSmall),
         contentPadding = PaddingValues(vertical = Dimens.paddingLarge)
     ) {
         item {
@@ -208,9 +245,32 @@ fun LibraryScreen(
                 modifier = Modifier.padding(
                     start = Dimens.paddingLarge,
                     end = Dimens.paddingLarge,
-                    bottom = Dimens.paddingMedium
+                    bottom = Dimens.paddingSmall
                 )
             )
+        }
+
+        if (selectionMode) {
+            item {
+                BulkSelectionToolbar(
+                    selectedTracks = selectedTracks,
+                    selectedPlaylists = selectedPlaylists,
+                    allSelected = allSelected,
+                    onSelectAll = ::setAllVisibleSelected,
+                    onDismiss = ::exitSelection,
+                    onAddToPlaylist = ::addSelectionToPlaylist,
+                    onCreatePlaylist = ::createPlaylistFromSelection,
+                    onRemoveTracks = { uris ->
+                        scope.launch { uris.forEach { app.libraryRepository.deleteTrack(it) } }
+                        exitSelection()
+                    },
+                    onDeletePlaylists = { ids ->
+                        scope.launch { ids.forEach { app.playlistRepository.deletePlaylist(it) } }
+                        exitSelection()
+                    },
+                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                )
+            }
         }
 
         // (4-quadrant collage header disabled — see change record)
@@ -276,20 +336,8 @@ fun LibraryScreen(
                         )
                     }
                 }
-            }
-        }
 
-        // View filter + sort row — sits under the Play button.  The view
-        // toggle is always accent green (like the Play/Shuffle controls);
-        // the shared sort chip (A–Z / Z–A / Recent / Duration) is
-        // available in both views.
-        item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Dimens.paddingLarge),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+                Spacer(modifier = Modifier.weight(1f))
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(Dimens.cornerMedium))
@@ -314,11 +362,6 @@ fun LibraryScreen(
                         color = AccentGreen
                     )
                 }
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                // Compact arrow-only sort control. Its dropdown still contains
-                // A–Z / Z–A / Recently added / Duration (longest first).
                 SortChip(
                     mode = sortMode,
                     onModeChange = { sortMode = it },
@@ -375,21 +418,26 @@ fun LibraryScreen(
         if (playlistView) {
             // Playlist view — all playlists, full-width cards
             item {
-                BatchSectionHeader(
-                    title = "Playlists (${displayPlaylists.size})",
-                    showMenu = showBatchMenu,
-                    onMenuToggle = { showBatchMenu = !showBatchMenu },
-                    onMenuDismiss = { showBatchMenu = false },
-                    selectionMode = selectionMode,
-                    selectedCount = selectedKeys.size,
-                    onSelectAll = {
-                        selectionMode = true
-                        selectedKeys = allKeys
-                    },
-                    onAddToPlaylist = { showBatchPlaylistPicker = true },
-                    onRemove = { showBatchRemoveConfirm = true },
-                    onCancelSelection = ::exitSelection
-                )
+                if (selectionMode) {
+                    Text(
+                        text = "Playlists (${displayPlaylists.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = PrimaryText,
+                        modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                    )
+                } else {
+                    BatchSectionHeader(
+                        title = "Playlists (${displayPlaylists.size})",
+                        showMenu = showBatchMenu,
+                        onMenuToggle = { showBatchMenu = !showBatchMenu },
+                        onMenuDismiss = { showBatchMenu = false },
+                        selectionMode = false,
+                        selectedCount = 0,
+                        onSelectAll = { setAllVisibleSelected(true) },
+                        onOptions = {},
+                        onCancelSelection = ::exitSelection
+                    )
+                }
             }
             if (displayPlaylists.isEmpty()) {
                 item {
@@ -418,6 +466,7 @@ fun LibraryScreen(
                                 onOpenPlaylist(playlistWithTracks.playlist.id)
                             }
                         },
+                        onLongClick = { beginSelection(playlistKey) },
                         onSync = {
                             if (playlistWithTracks.playlist.playlistUrl.isNotBlank()) {
                                 scope.launch {
@@ -448,21 +497,26 @@ fun LibraryScreen(
         } else {
             // All-songs view — every track in the track card layout
             item {
-                BatchSectionHeader(
-                    title = "Tracks (${sortedTracks.size})",
-                    showMenu = showBatchMenu,
-                    onMenuToggle = { showBatchMenu = !showBatchMenu },
-                    onMenuDismiss = { showBatchMenu = false },
-                    selectionMode = selectionMode,
-                    selectedCount = selectedKeys.size,
-                    onSelectAll = {
-                        selectionMode = true
-                        selectedKeys = allKeys
-                    },
-                    onAddToPlaylist = { showBatchPlaylistPicker = true },
-                    onRemove = { showBatchRemoveConfirm = true },
-                    onCancelSelection = ::exitSelection
-                )
+                if (selectionMode) {
+                    Text(
+                        text = "Tracks (${sortedTracks.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = PrimaryText,
+                        modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                    )
+                } else {
+                    BatchSectionHeader(
+                        title = "Tracks (${sortedTracks.size})",
+                        showMenu = showBatchMenu,
+                        onMenuToggle = { showBatchMenu = !showBatchMenu },
+                        onMenuDismiss = { showBatchMenu = false },
+                        selectionMode = false,
+                        selectedCount = 0,
+                        onSelectAll = { setAllVisibleSelected(true) },
+                        onOptions = {},
+                        onCancelSelection = ::exitSelection
+                    )
+                }
             }
             if (sortedTracks.isEmpty()) {
                 item {
@@ -498,6 +552,7 @@ fun LibraryScreen(
                             }
                         },
                         onMenuClick = { actionsTrack = track },
+                        onLongClick = { beginSelection(track.uri) },
                         modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                     )
                 }
@@ -583,87 +638,12 @@ fun LibraryScreen(
         )
     }
 
-    // Batch remove (multi-select) — metadata-only, files stay on the phone.
-    if (showBatchRemoveConfirm) {
-        AlertDialog(
-            onDismissRequest = { showBatchRemoveConfirm = false },
-            containerColor = SurfaceDark,
-            titleContentColor = PrimaryText,
-            textContentColor = SecondaryText,
-            title = {
-                Text(
-                    if (playlistView) "Remove playlists from app?" else "Remove songs from app?"
-                )
-            },
-            text = {
-                Text(
-                    if (playlistView) {
-                        "${selectedPlaylistIds.size} playlist(s) will be removed from the app. " +
-                            "Songs stay in your library and the audio files stay on your phone."
-                    } else {
-                        "${selectedSongs.size} song(s) will be removed from your library and all " +
-                            "playlists. The audio files stay on your phone."
-                    }
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    scope.launch {
-                        if (playlistView) {
-                            selectedPlaylistIds.forEach { app.playlistRepository.deletePlaylist(it) }
-                        } else {
-                            selectedSongs.forEach { app.libraryRepository.deleteTrack(it) }
-                        }
-                    }
-                    showBatchRemoveConfirm = false
-                    exitSelection()
-                }) {
-                    Text("Remove", color = AccentGreen)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showBatchRemoveConfirm = false }) {
-                    Text("Cancel", color = SecondaryText)
-                }
-            }
-        )
-    }
-
-    // Batch add to playlist (multi-select)
-    if (showBatchPlaylistPicker) {
-        PlaylistPickerSheet(
-            onPick = { target ->
-                scope.launch {
-                    if (playlistView) {
-                        selectedPlaylistIds.forEach { id ->
-                            app.playlistRepository.getPlaylistWithTracks(id)
-                                ?.tracks?.forEach { track ->
-                                    app.playlistRepository.addTrackToPlaylist(target.id, track.uri)
-                                }
-                        }
-                    } else {
-                        selectedSongs.forEach { uri ->
-                            app.playlistRepository.addTrackToPlaylist(target.id, uri)
-                        }
-                    }
-                    Toast.makeText(
-                        context,
-                        "Added to ${target.name}",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-                showBatchPlaylistPicker = false
-                exitSelection()
-            },
-            onDismiss = { showBatchPlaylistPicker = false }
-        )
-    }
 }
 
 /**
- * Section header row with the batch-actions 3-dot menu on the far right
- * (gray dots).  Menu: Select all / Add to playlist / Remove from app /
- * Cancel selection.
+ * Section header row with the 3-dot menu used to enter selection by selecting
+ * all visible items. Once selection is active, BulkSelectionToolbar owns the
+ * visible select-all checkbox and complete actions menu.
  */
 @Composable
 private fun BatchSectionHeader(
@@ -674,8 +654,7 @@ private fun BatchSectionHeader(
     selectionMode: Boolean,
     selectedCount: Int,
     onSelectAll: () -> Unit,
-    onAddToPlaylist: () -> Unit,
-    onRemove: () -> Unit,
+    onOptions: () -> Unit,
     onCancelSelection: () -> Unit
 ) {
     Row(
@@ -714,17 +693,10 @@ private fun BatchSectionHeader(
                 )
                 if (selectionMode && selectedCount > 0) {
                     DropdownMenuItem(
-                        text = { Text("Add to playlist", color = PrimaryText) },
+                        text = { Text("Options", color = PrimaryText) },
                         onClick = {
                             onMenuDismiss()
-                            onAddToPlaylist()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Remove from app", color = PrimaryText) },
-                        onClick = {
-                            onMenuDismiss()
-                            onRemove()
+                            onOptions()
                         }
                     )
                 }

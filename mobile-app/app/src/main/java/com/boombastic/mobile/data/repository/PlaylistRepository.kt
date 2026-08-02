@@ -50,6 +50,22 @@ class PlaylistRepository(
         )
     }
 
+    /** Adds a batch in one Room transaction and ignores duplicate membership. */
+    suspend fun addTracksToPlaylist(playlistId: Long, trackUris: Collection<String>) {
+        val distinctUris = trackUris.distinct()
+        if (distinctUris.isEmpty()) return
+        val firstOrder = (playlistDao.maxSortOrder(playlistId) ?: -1) + 1
+        playlistDao.addTracksToPlaylist(
+            distinctUris.mapIndexed { index, uri ->
+                PlaylistTrack(
+                    playlistId = playlistId,
+                    trackUri = uri,
+                    sortOrder = firstOrder + index
+                )
+            }
+        )
+    }
+
     suspend fun removeTrackFromPlaylist(playlistId: Long, trackUri: String) {
         playlistDao.removeTrackFromPlaylist(playlistId, trackUri)
     }

@@ -2,6 +2,7 @@ package com.boombastic.mobile.ui.components
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,10 +50,26 @@ fun TrackRowCard(
     selected: Boolean? = null,
     onLongClick: (() -> Unit)? = null
 ) {
-    Row(
-        modifier = modifier
+    val rowModifier = modifier
             .fillMaxWidth()
-            .padding(Dimens.paddingSmall),
+            .padding(Dimens.paddingSmall)
+    Row(
+        modifier = rowModifier.then(
+            if (onLongClick != null) {
+                Modifier.combinedClickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onClick,
+                    onLongClick = onLongClick
+                )
+            } else {
+                Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onClick
+                )
+            }
+        ),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (selected != null) {
@@ -80,16 +97,7 @@ fun TrackRowCard(
 
         Spacer(modifier = Modifier.width(Dimens.paddingSmall))
 
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .combinedClickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onClick,
-                    onLongClick = onLongClick
-                )
-        ) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = track.title,
                 style = MaterialTheme.typography.titleSmall,

@@ -1,7 +1,9 @@
 package com.boombastic.mobile.ui.player
 
+import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Column
@@ -16,6 +18,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Tab
@@ -38,12 +42,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.components.ArtworkImage
+import com.boombastic.mobile.BoomBasticApp
+import com.boombastic.mobile.ui.components.BulkSelectionToolbar
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
@@ -51,6 +58,7 @@ import com.boombastic.mobile.ui.theme.SecondaryText
 import com.boombastic.mobile.ui.theme.SurfaceDark
 import com.boombastic.mobile.ui.theme.SurfaceElevated
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 /**
  * The two Queue/Recents tabs (desktop "Playing Next" + "Recently Played"
@@ -176,22 +184,77 @@ fun RecentlyPlayedTab(
     modifier: Modifier = Modifier
 ) {
     val history by musicController.recentlyPlayed.collectAsState()
+    val context = LocalContext.current
+    val app = context.applicationContext as BoomBasticApp
+    val allTracks by app.libraryData.tracks.collectAsState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedUris by remember { mutableStateOf(setOf<String>()) }
+    val selectedTracks = allTracks.filter { it.uri in selectedUris }
+
+    fun toggleSelection(uri: String) {
+        val next = if (uri in selectedUris) selectedUris - uri else selectedUris + uri
+        selectedUris = next
+        selectionMode = next.isNotEmpty()
+    }
+
+    fun exitSelection() {
+        selectionMode = false
+        selectedUris = emptySet()
+    }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = "${history.size} played",
-            style = MaterialTheme.typography.bodySmall,
-            color = SecondaryText,
-            modifier = Modifier.weight(1f)
-        )
-        TextButton(
-            onClick = { musicController.clearRecentlyPlayed() },
-            enabled = history.isNotEmpty()
-        ) {
-            Text("Clear all", color = AccentGreen)
+        if (selectionMode) {
+            BulkSelectionToolbar(
+                selectedTracks = selectedTracks,
+                selectedPlaylists = emptyList(),
+                allSelected = history.isNotEmpty() && history.all { it.uri in selectedUris },
+                onSelectAll = { selectAll ->
+                    if (selectAll) {
+                        selectionMode = true
+                        selectedUris = history.map { it.uri }.toSet()
+                    } else {
+                        exitSelection()
+                    }
+                },
+                onDismiss = ::exitSelection,
+                onAddToPlaylist = { playlist, trackUris ->
+                    scope.launch {
+                        app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
+                        Toast.makeText(context, "Added to ${playlist.name}", Toast.LENGTH_SHORT).show()
+                    }
+                    exitSelection()
+                },
+                onCreatePlaylist = { name, description, trackUris ->
+                    scope.launch {
+                        app.playlistRepository.createPlaylist(name, description).onSuccess { playlist ->
+                            app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
+                            Toast.makeText(context, "Created ${playlist.name}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    exitSelection()
+                },
+                onRemoveTracks = { uris ->
+                    scope.launch { uris.forEach { app.libraryRepository.deleteTrack(it) } }
+                    exitSelection()
+                }
+            )
+        } else {
+            Text(
+                text = "${history.size} played",
+                style = MaterialTheme.typography.bodySmall,
+                color = SecondaryText,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(
+                onClick = { musicController.clearRecentlyPlayed() },
+                enabled = history.isNotEmpty()
+            ) {
+                Text("Clear all", color = AccentGreen)
+            }
         }
     }
 
@@ -208,29 +271,51 @@ fun RecentlyPlayedTab(
             itemsIndexed(history, key = { _, track -> track.uri }) { index, track ->
                 RecentRow(
                     track = track,
-                    onClick = { musicController.play(history, index) }
+                    selected = if (selectionMode) track.uri in selectedUris else null,
+                    onClick = {
+                        if (selectionMode) toggleSelection(track.uri)
+                        else musicController.play(history, index)
+                    },
+                    onLongPress = {
+                        selectionMode = true
+                        selectedUris = selectedUris + track.uri
+                    }
                 )
             }
         }
     }
+
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun RecentRow(
     track: MediaTrack,
-    onClick: () -> Unit
+    selected: Boolean?,
+    onClick: () -> Unit,
+    onLongPress: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(
+            .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = onClick
+                onClick = onClick,
+                onLongClick = onLongPress
             )
             .padding(vertical = Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (selected != null) {
+            Icon(
+                imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                contentDescription = if (selected) "Selected" else "Not selected",
+                tint = if (selected) AccentGreen else SecondaryText,
+                modifier = Modifier.size(Dimens.iconSize)
+            )
+            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+        }
         ArtworkImage(
             artworkUri = track.artworkUri,
             modifier = Modifier

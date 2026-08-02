@@ -1,5 +1,6 @@
 package com.boombastic.mobile.ui.library
 
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -22,7 +23,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Button
@@ -40,6 +43,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -57,8 +61,8 @@ import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.components.ArtworkCollage
 import com.boombastic.mobile.ui.components.ArtworkImage
+import com.boombastic.mobile.ui.components.BulkSelectionToolbar
 import com.boombastic.mobile.ui.components.SortChip
-import com.boombastic.mobile.ui.components.TrackActionsSheet
 import com.boombastic.mobile.ui.components.TrackSortMode
 import com.boombastic.mobile.ui.components.sortedByMode
 import com.boombastic.mobile.ui.player.formatTime
@@ -68,6 +72,7 @@ import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
 import com.boombastic.mobile.ui.theme.SurfaceDark
 import com.boombastic.mobile.ui.theme.SurfaceElevated
+import kotlinx.coroutines.launch
 
 /**
  * Playlist detail view (Spotify-inspired): a 2x2 collage of up to four
@@ -87,10 +92,7 @@ fun PlaylistDetailScreen(
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
-
-    // Track actions sheet — hoisted out of the LazyColumn: composing a
-    // ModalBottomSheet inside a lazy item makes it scroll with the list.
-    var actionsTrack by remember { mutableStateOf<Track?>(null) }
+    val scope = rememberCoroutineScope()
 
     // Sort mode (A–Z / Z–A / Recently added / Duration) — same chip as the Library
     // tab; declared before the early return so the saveable state's hook
@@ -101,6 +103,8 @@ fun PlaylistDetailScreen(
     // play context) by title/artist/album, Spotify style.
     var query by rememberSaveable { mutableStateOf("") }
     var showSearch by rememberSaveable { mutableStateOf(false) }
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedUris by remember { mutableStateOf(setOf<String>()) }
 
     // Reads from the app-warmed LibraryData playlists flow: the detail
     // screen is only reachable via a playlist card, so the list is already
@@ -139,6 +143,23 @@ fun PlaylistDetailScreen(
         }
     }
     val sortedTracks = remember(filteredTracks, sortMode) { filteredTracks.sortedByMode(sortMode) }
+    val selectedTracks = tracks.filter { it.uri in selectedUris }
+
+    fun toggleSelection(uri: String) {
+        val next = if (uri in selectedUris) selectedUris - uri else selectedUris + uri
+        selectedUris = next
+        selectionMode = next.isNotEmpty()
+    }
+
+    fun beginSelection(uri: String) {
+        selectionMode = true
+        selectedUris = selectedUris + uri
+    }
+
+    fun exitSelection() {
+        selectionMode = false
+        selectedUris = emptySet()
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -161,6 +182,48 @@ fun PlaylistDetailScreen(
                     )
                 }
                 Spacer(modifier = Modifier.weight(1f))
+            }
+        }
+
+        if (selectionMode) {
+            item {
+                BulkSelectionToolbar(
+                    selectedTracks = selectedTracks,
+                    selectedPlaylists = emptyList(),
+                    allSelected = tracks.isNotEmpty() && selectedUris.size == tracks.size,
+                    onSelectAll = { selectAll ->
+                        if (selectAll) {
+                            selectionMode = true
+                            selectedUris = tracks.map { it.uri }.toSet()
+                        } else {
+                            exitSelection()
+                        }
+                    },
+                    onDismiss = ::exitSelection,
+                    onAddToPlaylist = { target, trackUris ->
+                        scope.launch {
+                            app.playlistRepository.addTracksToPlaylist(target.id, trackUris)
+                            Toast.makeText(context, "Added to ${target.name}", Toast.LENGTH_SHORT).show()
+                        }
+                        exitSelection()
+                    },
+                    onCreatePlaylist = { name, description, trackUris ->
+                        scope.launch {
+                            app.playlistRepository.createPlaylist(name, description).onSuccess { playlist ->
+                                app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
+                                Toast.makeText(context, "Created ${playlist.name}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        exitSelection()
+                    },
+                    onRemoveTracks = { uris ->
+                        scope.launch {
+                            uris.forEach { app.playlistRepository.removeTrackFromPlaylist(playlistId, it) }
+                        }
+                        exitSelection()
+                    },
+                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                )
             }
         }
 
@@ -283,28 +346,25 @@ fun PlaylistDetailScreen(
                 items(sortedTracks, key = { it.uri }) { track ->
                     PlaylistTrackRow(
                         track = track,
+                        selected = if (selectionMode) track.uri in selectedUris else null,
                         onClick = {
-                            val index = sortedTracks.indexOfFirst { it.uri == track.uri }
-                            musicController.play(
-                                sortedTracks.map { it.toMediaTrack() },
-                                index.coerceAtLeast(0)
-                            )
+                            if (selectionMode) {
+                                toggleSelection(track.uri)
+                            } else {
+                                val index = sortedTracks.indexOfFirst { it.uri == track.uri }
+                                musicController.play(
+                                    sortedTracks.map { it.toMediaTrack() },
+                                    index.coerceAtLeast(0)
+                                )
+                            }
                         },
-                        onLongPress = { actionsTrack = track }
+                        onLongPress = { beginSelection(track.uri) }
                     )
                 }
             }
         }
     }
 
-    // Track actions sheet — outside the LazyColumn so it overlays the
-    // list instead of scrolling with it.
-    actionsTrack?.let { track ->
-        TrackActionsSheet(
-            track = track,
-            onDismiss = { actionsTrack = null }
-        )
-    }
 }
 
 @Composable
@@ -439,6 +499,7 @@ private fun PlaylistHeader(
 @Composable
 private fun PlaylistTrackRow(
     track: Track,
+    selected: Boolean?,
     onClick: () -> Unit,
     onLongPress: () -> Unit
 ) {
@@ -454,6 +515,19 @@ private fun PlaylistTrackRow(
             .padding(horizontal = Dimens.paddingLarge, vertical = Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (selected != null) {
+            Icon(
+                imageVector = if (selected) {
+                    Icons.Filled.CheckCircle
+                } else {
+                    Icons.Filled.RadioButtonUnchecked
+                },
+                contentDescription = if (selected) "Selected" else "Not selected",
+                tint = if (selected) AccentGreen else SecondaryText,
+                modifier = Modifier.size(Dimens.iconSize)
+            )
+            Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+        }
         ArtworkImage(
             artworkUri = track.albumArtUri(),
             modifier = Modifier

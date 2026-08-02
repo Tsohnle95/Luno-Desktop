@@ -94,4 +94,26 @@ class PlaylistRepositoryTest {
         assertThat(repository.getAllPlaylists().first()).hasSize(1)
         assertThat(database.trackDao().getAllTracksOnce()).hasSize(1)
     }
+
+    @Test
+    fun addTracksToPlaylist_batchesAndDeduplicatesMembership() = runBlocking {
+        val tracks = (1..3).map { index ->
+            com.boombastic.mobile.data.db.entity.Track(
+                uri = "content://test/$index",
+                title = "Song $index"
+            )
+        }
+        database.trackDao().insertTracks(tracks)
+        val playlist = repository.createPlaylist("Batch").getOrThrow()
+
+        repository.addTracksToPlaylist(
+            playlist.id,
+            listOf("content://test/1", "content://test/2", "content://test/1")
+        )
+        repository.addTracksToPlaylist(playlist.id, listOf("content://test/2", "content://test/3"))
+
+        assertThat(repository.getPlaylistWithTracks(playlist.id)!!.tracks.map { it.uri })
+            .containsExactly("content://test/1", "content://test/2", "content://test/3")
+            .inOrder()
+    }
 }

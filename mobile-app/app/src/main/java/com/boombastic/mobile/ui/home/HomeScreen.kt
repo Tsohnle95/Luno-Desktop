@@ -1,6 +1,9 @@
 package com.boombastic.mobile.ui.home
 
+import android.widget.Toast
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -23,6 +26,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -30,6 +36,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,6 +53,7 @@ import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.components.ArtworkImage
+import com.boombastic.mobile.ui.components.BulkSelectionToolbar
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
@@ -53,6 +63,7 @@ import com.boombastic.mobile.ui.theme.SurfaceElevated
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 /**
  * Spotify-inspired Home: greeting, edge-clipped "Recently played" and
@@ -152,6 +163,38 @@ fun HomeScreen(
             .take(10)
     }
 
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedKeys by remember { mutableStateOf(setOf<String>()) }
+    val selectedTracks = allTracks.filter { it.uri in selectedKeys }
+    val selectedPlaylists = playlistsWithTracks.filter {
+        "p${it.playlist.id}" in selectedKeys
+    }
+    val selectableKeys = remember(recentlyPlayed, madeForYou, popularTracks, popularPlaylists) {
+        buildSet {
+            addAll(recentlyPlayed.map { it.uri })
+            addAll(madeForYou.map { it.uri })
+            addAll(popularTracks.map { it.uri })
+            addAll(popularPlaylists.map { "p${it.playlist.id}" })
+        }
+    }
+    val scope = rememberCoroutineScope()
+
+    fun toggleSelection(key: String) {
+        val next = if (key in selectedKeys) selectedKeys - key else selectedKeys + key
+        selectedKeys = next
+        selectionMode = next.isNotEmpty()
+    }
+
+    fun beginSelection(key: String) {
+        selectionMode = true
+        selectedKeys = selectedKeys + key
+    }
+
+    fun exitSelection() {
+        selectionMode = false
+        selectedKeys = emptySet()
+    }
+
     // Edge-to-edge column; each section supplies its own horizontal padding
     // so carousels clip visibly at the screen edges.  Vertical rhythm is
     // standardized: 16dp above the greeting, then every section is broken
@@ -174,6 +217,50 @@ fun HomeScreen(
                     }
                 }
             )
+        }
+
+        if (selectionMode) {
+            item(key = "selection-toolbar") {
+                BulkSelectionToolbar(
+                    selectedTracks = selectedTracks,
+                    selectedPlaylists = selectedPlaylists,
+                    allSelected = selectableKeys.isNotEmpty() && selectableKeys.all { it in selectedKeys },
+                    onSelectAll = { selectAll ->
+                        if (selectAll) {
+                            selectionMode = true
+                            selectedKeys = selectableKeys
+                        } else {
+                            exitSelection()
+                        }
+                    },
+                    onDismiss = ::exitSelection,
+                    onAddToPlaylist = { playlist, trackUris ->
+                        scope.launch {
+                            app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
+                            Toast.makeText(context, "Added to ${playlist.name}", Toast.LENGTH_SHORT).show()
+                        }
+                        exitSelection()
+                    },
+                    onCreatePlaylist = { name, description, trackUris ->
+                        scope.launch {
+                            app.playlistRepository.createPlaylist(name, description).onSuccess { playlist ->
+                                app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
+                                Toast.makeText(context, "Created ${playlist.name}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        exitSelection()
+                    },
+                    onRemoveTracks = { uris ->
+                        scope.launch { uris.forEach { app.libraryRepository.deleteTrack(it) } }
+                        exitSelection()
+                    },
+                    onDeletePlaylists = { ids ->
+                        scope.launch { ids.forEach { app.playlistRepository.deletePlaylist(it) } }
+                        exitSelection()
+                    },
+                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                )
+            }
         }
 
         // Recently played — swipeable horizontal carousel of the full
@@ -207,10 +294,14 @@ fun HomeScreen(
                             artworkUri = track.artworkUri,
                             // Next/prev walk the recent history (desktop
                             // "Recently Played" context).
+                            selected = if (selectionMode) track.uri in selectedKeys else null,
                             onClick = {
-                                val index = history.indexOfFirst { it.uri == track.uri }
-                                onPlay(history, index.coerceAtLeast(0), false)
-                            }
+                                if (selectionMode) toggleSelection(track.uri) else {
+                                    val index = history.indexOfFirst { it.uri == track.uri }
+                                    onPlay(history, index.coerceAtLeast(0), false)
+                                }
+                            },
+                            onLongClick = { beginSelection(track.uri) }
                         )
                     }
                 }
@@ -250,10 +341,14 @@ fun HomeScreen(
                             title = track.title,
                             artist = track.artist,
                             artworkUri = track.albumArtUri(),
+                            selected = if (selectionMode) track.uri in selectedKeys else null,
                             onClick = {
-                                val index = madeForYou.indexOfFirst { it.uri == track.uri }
-                                onPlay(madeForYouMedia, index.coerceAtLeast(0), false)
-                            }
+                                if (selectionMode) toggleSelection(track.uri) else {
+                                    val index = madeForYou.indexOfFirst { it.uri == track.uri }
+                                    onPlay(madeForYouMedia, index.coerceAtLeast(0), false)
+                                }
+                            },
+                            onLongClick = { beginSelection(track.uri) }
                         )
                     }
                 }
@@ -292,10 +387,14 @@ fun HomeScreen(
                             title = track.title,
                             artist = track.artist,
                             artworkUri = track.albumArtUri(),
+                            selected = if (selectionMode) track.uri in selectedKeys else null,
                             onClick = {
-                                val index = popularTracks.indexOfFirst { it.uri == track.uri }
-                                onPlay(popularTracksMedia, index.coerceAtLeast(0), false)
-                            }
+                                if (selectionMode) toggleSelection(track.uri) else {
+                                    val index = popularTracks.indexOfFirst { it.uri == track.uri }
+                                    onPlay(popularTracksMedia, index.coerceAtLeast(0), false)
+                                }
+                            },
+                            onLongClick = { beginSelection(track.uri) }
                         )
                     }
                 }
@@ -316,13 +415,26 @@ fun HomeScreen(
                             name = playlistWithTracks.playlist.name,
                             tracks = playlistWithTracks.tracks,
                             subtitle = "${playlistWithTracks.tracks.sumOf { it.playCount }} plays",
-                            onClick = { onOpenPlaylist(playlistWithTracks.playlist.id) }
+                            selected = if (selectionMode) {
+                                "p${playlistWithTracks.playlist.id}" in selectedKeys
+                            } else {
+                                null
+                            },
+                            onClick = {
+                                val key = "p${playlistWithTracks.playlist.id}"
+                                if (selectionMode) toggleSelection(key)
+                                else onOpenPlaylist(playlistWithTracks.playlist.id)
+                            },
+                            onLongClick = {
+                                beginSelection("p${playlistWithTracks.playlist.id}")
+                            }
                         )
                     }
                 }
             }
         }
     }
+
 }
 
 /**
@@ -331,29 +443,49 @@ fun HomeScreen(
  * below, the popularity count as the subtitle.
  */
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun HomePlaylistCard(
     name: String,
     tracks: List<Track>,
     subtitle: String,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    selected: Boolean?
 ) {
     Column(
         modifier = Modifier
             .width(140.dp)
-            .clickable(
+            .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = onClick
+                onClick = onClick,
+                onLongClick = onLongClick
             )
     ) {
-        ArtworkImage(
-            artworkUri = tracks.firstOrNull()?.albumArtUri(),
-            modifier = Modifier
-                .size(Dimens.albumArtMedium)
-                .clip(RoundedCornerShape(Dimens.cornerLarge)),
-            placeholderIconSize = 40.dp,
-            decodeSizePx = 384
-        )
+        Box {
+            ArtworkImage(
+                artworkUri = tracks.firstOrNull()?.albumArtUri(),
+                modifier = Modifier
+                    .size(Dimens.albumArtMedium)
+                    .clip(RoundedCornerShape(Dimens.cornerLarge)),
+                placeholderIconSize = 40.dp,
+                decodeSizePx = 384
+            )
+            if (selected != null) {
+                Icon(
+                    imageVector = if (selected) {
+                        Icons.Filled.CheckCircle
+                    } else {
+                        Icons.Filled.RadioButtonUnchecked
+                    },
+                    contentDescription = if (selected) "Selected" else "Not selected",
+                    tint = if (selected) AccentGreen else SecondaryText,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(Dimens.paddingSmall)
+                )
+            }
+        }
         Spacer(modifier = Modifier.height(Dimens.paddingSmall))
         Text(
             text = name,
@@ -526,30 +658,59 @@ fun SectionHeader(
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 fun TrackCard(
     title: String,
     artist: String,
     artworkUri: String? = null,
-    onClick: () -> Unit = {}
+    onClick: () -> Unit = {},
+    onLongClick: (() -> Unit)? = null,
+    selected: Boolean? = null
 ) {
     Column(
         modifier = Modifier
             .width(140.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClick
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onClick,
+                        onLongClick = onLongClick
+                    )
+                } else {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onClick
+                    )
+                }
             )
     ) {
-        // Album art (120dp rounded square), real artwork when available
-        ArtworkImage(
-            artworkUri = artworkUri,
-            modifier = Modifier
-                .size(Dimens.albumArtMedium)
-                .clip(RoundedCornerShape(Dimens.cornerLarge)),
-            placeholderIconSize = 40.dp,
-            decodeSizePx = 384
-        )
+        Box {
+            ArtworkImage(
+                artworkUri = artworkUri,
+                modifier = Modifier
+                    .size(Dimens.albumArtMedium)
+                    .clip(RoundedCornerShape(Dimens.cornerLarge)),
+                placeholderIconSize = 40.dp,
+                decodeSizePx = 384
+            )
+            if (selected != null) {
+                Icon(
+                    imageVector = if (selected) {
+                        Icons.Filled.CheckCircle
+                    } else {
+                        Icons.Filled.RadioButtonUnchecked
+                    },
+                    contentDescription = if (selected) "Selected" else "Not selected",
+                    tint = if (selected) AccentGreen else SecondaryText,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(Dimens.paddingSmall)
+                )
+            }
+        }
         Spacer(modifier = Modifier.height(Dimens.paddingSmall))
         Text(
             text = title,

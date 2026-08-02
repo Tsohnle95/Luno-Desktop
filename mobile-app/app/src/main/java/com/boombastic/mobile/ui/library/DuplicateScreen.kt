@@ -14,10 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -41,6 +38,7 @@ import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.data.repository.DuplicateGroup
 import com.boombastic.mobile.data.repository.findDuplicateGroups
 import com.boombastic.mobile.ui.components.TrackRowCard
+import com.boombastic.mobile.ui.components.BulkSelectionToolbar
 import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.PrimaryText
@@ -107,32 +105,46 @@ fun DuplicateScreen(onBack: () -> Unit) {
         }
         if (groups.isNotEmpty()) {
             item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Dimens.paddingLarge),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(onClick = {
-                        selectedUris = if (visibleSelectedUris.size == duplicateTracks.size) {
-                            emptySet()
-                        } else {
-                            duplicateTracks.map { it.uri }.toSet()
-                        }
-                    }) {
-                        Text(
-                            if (visibleSelectedUris.size == duplicateTracks.size) "Clear selection" else "Select all",
-                            color = AccentGreen
-                        )
-                    }
-                    if (visibleSelectedUris.isNotEmpty()) {
-                        Button(
-                            onClick = { showRemoveConfirm = true },
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
-                        ) {
-                            Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Text("Remove ${visibleSelectedUris.size}", modifier = Modifier.padding(start = 6.dp))
-                        }
+                if (visibleSelectedUris.isNotEmpty()) {
+                    BulkSelectionToolbar(
+                        selectedTracks = duplicateTracks.filter { it.uri in visibleSelectedUris },
+                        selectedPlaylists = emptyList(),
+                        allSelected = visibleSelectedUris.size == duplicateTracks.size,
+                        onSelectAll = { selectAll ->
+                            selectedUris = if (selectAll) {
+                                duplicateTracks.map { it.uri }.toSet()
+                            } else {
+                                emptySet()
+                            }
+                        },
+                        onDismiss = { selectedUris = emptySet() },
+                        onAddToPlaylist = { playlist, trackUris ->
+                            scope.launch {
+                                app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
+                                Toast.makeText(context, "Added to ${playlist.name}", Toast.LENGTH_SHORT).show()
+                            }
+                            selectedUris = emptySet()
+                        },
+                        onCreatePlaylist = { name, description, trackUris ->
+                            scope.launch {
+                                app.playlistRepository.createPlaylist(name, description).onSuccess { playlist ->
+                                    app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
+                                    Toast.makeText(context, "Created ${playlist.name}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                            selectedUris = emptySet()
+                        },
+                        onRemoveTracks = { uris ->
+                            scope.launch { uris.forEach { app.libraryRepository.deleteTrack(it) } }
+                            selectedUris = emptySet()
+                        },
+                        modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                    )
+                } else {
+                    TextButton(
+                        onClick = { selectedUris = duplicateTracks.map { it.uri }.toSet() }
+                    ) {
+                        Text("Select all", color = AccentGreen)
                     }
                 }
             }
@@ -150,6 +162,9 @@ fun DuplicateScreen(onBack: () -> Unit) {
                             }
                         },
                         onMenuClick = { /* Removal is handled by the selection toolbar. */ },
+                        onLongClick = {
+                            selectedUris = selectedUris + track.uri
+                        },
                         modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                     )
                 }
@@ -190,6 +205,7 @@ fun DuplicateScreen(onBack: () -> Unit) {
             }
         )
     }
+
 }
 
 @Composable

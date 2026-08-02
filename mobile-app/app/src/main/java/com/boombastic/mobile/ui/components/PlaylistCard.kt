@@ -1,6 +1,8 @@
 package com.boombastic.mobile.ui.components
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,6 +47,7 @@ import com.boombastic.mobile.ui.theme.SecondaryText
  * 3-dot menu; passing only [onClick] yields a plain tappable card.
  */
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 fun PlaylistCard(
     playlist: Playlist,
     tracks: List<Track>,
@@ -55,14 +58,31 @@ fun PlaylistCard(
     onClearPlaylist: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
-    selected: Boolean? = null
+    selected: Boolean? = null,
+    onLongClick: (() -> Unit)? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(Dimens.paddingSmall),
+            .padding(Dimens.paddingSmall)
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onClick,
+                        onLongClick = onLongClick
+                    )
+                } else {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onClick
+                    )
+                }
+            ),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (selected != null) {
@@ -91,11 +111,6 @@ fun PlaylistCard(
         Column(
             modifier = Modifier
                 .weight(1f)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onClick
-                )
         ) {
             Text(
                 text = playlist.name,

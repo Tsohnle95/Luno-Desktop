@@ -74,6 +74,7 @@ import com.boombastic.mobile.playback.ExtractionResult
 import com.boombastic.mobile.playback.WebSearchResult
 import com.boombastic.mobile.playback.WebSearchService
 import com.boombastic.mobile.ui.components.ArtworkImage
+import com.boombastic.mobile.ui.components.BulkSelectionToolbar
 import com.boombastic.mobile.ui.components.PlaylistPickerSheet
 import com.boombastic.mobile.ui.components.TrackActionsSheet
 import com.boombastic.mobile.ui.components.TrackRowCard
@@ -300,6 +301,7 @@ fun SearchScreen(
                 DownloadedSongsActions(
                     trackCount = downloadedTracks.size,
                     selectedCount = selectedDownloadedUris.size,
+                    selectedTracks = downloadedTracks.filter { it.uri in selectedDownloadedUris },
                     selectionMode = downloadedSelectionMode,
                     onToggleSelectionMode = {
                         downloadedSelectionMode = !downloadedSelectionMode
@@ -309,13 +311,39 @@ fun SearchScreen(
                             selectedDownloadedUris = emptySet()
                         }
                     },
-                    onSelectAll = {
-                        selectedDownloadedUris = downloadedTracks.map { it.uri }.toSet()
-                    },
-                    onAddToPlaylist = {
-                        playlistTracksToAdd = downloadedTracks.filter {
-                            it.uri in selectedDownloadedUris
+                    onSelectAll = { selectAll ->
+                        if (selectAll) {
+                            selectedDownloadedUris = downloadedTracks.map { it.uri }.toSet()
+                        } else {
+                            selectedDownloadedUris = emptySet()
                         }
+                    },
+                    onDismissSelection = {
+                        downloadedSelectionMode = false
+                        selectedDownloadedUris = emptySet()
+                    },
+                    onAddToPlaylist = { playlist, trackUris ->
+                        scope.launch {
+                            app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
+                            Toast.makeText(context, "Added to ${playlist.name}", Toast.LENGTH_SHORT).show()
+                        }
+                        downloadedSelectionMode = false
+                        selectedDownloadedUris = emptySet()
+                    },
+                    onCreatePlaylist = { name, description, trackUris ->
+                        scope.launch {
+                            app.playlistRepository.createPlaylist(name, description).onSuccess { playlist ->
+                                app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
+                                Toast.makeText(context, "Created ${playlist.name}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        downloadedSelectionMode = false
+                        selectedDownloadedUris = emptySet()
+                    },
+                    onRemoveTracks = { uris ->
+                        scope.launch { uris.forEach { app.libraryRepository.deleteTrack(it) } }
+                        downloadedSelectionMode = false
+                        selectedDownloadedUris = emptySet()
                     }
                 )
             }
@@ -342,7 +370,10 @@ fun SearchScreen(
                             }
                         },
                         onMenuClick = { actionsTrack = track },
-                        onLongClick = { actionsTrack = track },
+                        onLongClick = {
+                            downloadedSelectionMode = true
+                            selectedDownloadedUris = selectedDownloadedUris + track.uri
+                        },
                         selected = if (downloadedSelectionMode) {
                             track.uri in selectedDownloadedUris
                         } else {
@@ -511,6 +542,7 @@ fun SearchScreen(
             onDismiss = { actionsTrack = null }
         )
     }
+
 }
 
 @Composable
@@ -859,11 +891,28 @@ private fun DownloadOptionRow(
 private fun DownloadedSongsActions(
     trackCount: Int,
     selectedCount: Int,
+    selectedTracks: List<Track>,
     selectionMode: Boolean,
     onToggleSelectionMode: () -> Unit,
-    onSelectAll: () -> Unit,
-    onAddToPlaylist: () -> Unit
+    onSelectAll: (Boolean) -> Unit,
+    onDismissSelection: () -> Unit,
+    onAddToPlaylist: (com.boombastic.mobile.data.db.entity.Playlist, List<String>) -> Unit,
+    onCreatePlaylist: (String, String, List<String>) -> Unit,
+    onRemoveTracks: (List<String>) -> Unit
 ) {
+    if (selectionMode) {
+        BulkSelectionToolbar(
+            selectedTracks = selectedTracks,
+            selectedPlaylists = emptyList(),
+            allSelected = trackCount > 0 && selectedCount == trackCount,
+            onSelectAll = onSelectAll,
+            onDismiss = onDismissSelection,
+            onAddToPlaylist = onAddToPlaylist,
+            onCreatePlaylist = onCreatePlaylist,
+            onRemoveTracks = onRemoveTracks
+        )
+        return
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -876,22 +925,6 @@ private fun DownloadedSongsActions(
             color = SecondaryText,
             modifier = Modifier.weight(1f)
         )
-        if (selectionMode) {
-            TextButton(
-                onClick = onSelectAll,
-                enabled = trackCount > 0 && selectedCount < trackCount,
-                contentPadding = PaddingValues(horizontal = 6.dp)
-            ) {
-                Text("Select all", color = AccentGreen)
-            }
-            TextButton(
-                onClick = onAddToPlaylist,
-                enabled = selectedCount > 0,
-                contentPadding = PaddingValues(horizontal = 6.dp)
-            ) {
-                Text("Add to playlist", color = AccentGreen)
-            }
-        }
         TextButton(
             onClick = onToggleSelectionMode,
             contentPadding = PaddingValues(horizontal = 6.dp)
