@@ -282,109 +282,6 @@ fun SearchScreen(
             )
         }
 
-        item(key = "downloaded-header") {
-            DownloadOptionRow(
-                icon = Icons.Filled.Download,
-                title = "Downloaded songs",
-                description = if (downloadedTracks.isEmpty()) {
-                    "No downloaded songs yet"
-                } else {
-                    "${downloadedTracks.size} songs in this app's private Downloads folder"
-                },
-                expanded = downloadedExpanded,
-                onClick = { downloadedExpanded = !downloadedExpanded }
-            )
-        }
-
-        if (downloadedExpanded) {
-            item(key = "downloaded-actions") {
-                DownloadedSongsActions(
-                    trackCount = downloadedTracks.size,
-                    selectedCount = selectedDownloadedUris.size,
-                    selectedTracks = downloadedTracks.filter { it.uri in selectedDownloadedUris },
-                    selectionMode = downloadedSelectionMode,
-                    onToggleSelectionMode = {
-                        downloadedSelectionMode = !downloadedSelectionMode
-                        if (downloadedSelectionMode) {
-                            selectedDownloadedUris = emptySet()
-                        } else {
-                            selectedDownloadedUris = emptySet()
-                        }
-                    },
-                    onSelectAll = { selectAll ->
-                        if (selectAll) {
-                            selectedDownloadedUris = downloadedTracks.map { it.uri }.toSet()
-                        } else {
-                            selectedDownloadedUris = emptySet()
-                        }
-                    },
-                    onDismissSelection = {
-                        downloadedSelectionMode = false
-                        selectedDownloadedUris = emptySet()
-                    },
-                    onAddToPlaylist = { playlist, trackUris ->
-                        scope.launch {
-                            app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
-                            Toast.makeText(context, "Added to ${playlist.name}", Toast.LENGTH_SHORT).show()
-                        }
-                        downloadedSelectionMode = false
-                        selectedDownloadedUris = emptySet()
-                    },
-                    onCreatePlaylist = { name, description, trackUris ->
-                        scope.launch {
-                            app.playlistRepository.createPlaylist(name, description).onSuccess { playlist ->
-                                app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
-                                Toast.makeText(context, "Created ${playlist.name}", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                        downloadedSelectionMode = false
-                        selectedDownloadedUris = emptySet()
-                    },
-                    onRemoveTracks = { uris ->
-                        scope.launch { uris.forEach { app.libraryRepository.deleteTrack(it) } }
-                        downloadedSelectionMode = false
-                        selectedDownloadedUris = emptySet()
-                    }
-                )
-            }
-            if (downloadedTracks.isEmpty()) {
-                item(key = "downloaded-empty") {
-                    Text(
-                        text = "Completed downloads will appear here.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = SecondaryText,
-                        modifier = Modifier.padding(vertical = 8.dp)
-                    )
-                }
-            } else {
-                items(downloadedTracks, key = { "downloaded-${it.uri}" }) { track ->
-                    TrackRowCard(
-                        track = track,
-                        onClick = {
-                            if (downloadedSelectionMode) {
-                                selectedDownloadedUris = if (track.uri in selectedDownloadedUris) {
-                                    selectedDownloadedUris - track.uri
-                                } else {
-                                    selectedDownloadedUris + track.uri
-                                }
-                            }
-                        },
-                        onMenuClick = { actionsTrack = track },
-                        onLongClick = {
-                            downloadedSelectionMode = true
-                            selectedDownloadedUris = selectedDownloadedUris + track.uri
-                        },
-                        selected = if (downloadedSelectionMode) {
-                            track.uri in selectedDownloadedUris
-                        } else {
-                            null
-                        }
-                    )
-                    HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
-                }
-            }
-        }
-
         if (errorMessage.isNotBlank()) {
             item(key = "error") {
                 MessageBox(text = errorMessage, isError = true)
@@ -434,6 +331,12 @@ fun SearchScreen(
                 MessageBox(
                     text = "No matches yet. Try adding the artist or a different title."
                 )
+            }
+        }
+
+        if (!isSearching && searchQuery.isBlank() && webResults.isEmpty() && errorMessage.isBlank()) {
+            item(key = "start-here") {
+                DownloadStartHint()
             }
         }
 
@@ -501,6 +404,105 @@ fun SearchScreen(
                 )
             }
         }
+
+        item(key = "downloaded-header") {
+            DownloadOptionRow(
+                icon = Icons.Filled.Download,
+                title = "Downloaded songs",
+                description = if (downloadedTracks.isEmpty()) {
+                    "Completed downloads will appear here"
+                } else {
+                    "${downloadedTracks.size} songs saved on this device"
+                },
+                expanded = downloadedExpanded,
+                onClick = { downloadedExpanded = !downloadedExpanded }
+            )
+        }
+
+        if (downloadedExpanded) {
+            item(key = "downloaded-actions") {
+                DownloadedSongsActions(
+                    trackCount = downloadedTracks.size,
+                    selectedCount = selectedDownloadedUris.size,
+                    selectedTracks = downloadedTracks.filter { it.uri in selectedDownloadedUris },
+                    selectionMode = downloadedSelectionMode,
+                    onToggleSelectionMode = {
+                        downloadedSelectionMode = !downloadedSelectionMode
+                        selectedDownloadedUris = emptySet()
+                    },
+                    onSelectAll = { selectAll ->
+                        selectedDownloadedUris = if (selectAll) {
+                            downloadedTracks.map { it.uri }.toSet()
+                        } else {
+                            emptySet()
+                        }
+                    },
+                    onDismissSelection = {
+                        downloadedSelectionMode = false
+                        selectedDownloadedUris = emptySet()
+                    },
+                    onAddToPlaylist = { playlist, trackUris ->
+                        scope.launch {
+                            app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
+                            Toast.makeText(context, "Added to ${playlist.name}", Toast.LENGTH_SHORT).show()
+                        }
+                        downloadedSelectionMode = false
+                        selectedDownloadedUris = emptySet()
+                    },
+                    onCreatePlaylist = { name, description, trackUris ->
+                        scope.launch {
+                            app.playlistRepository.createPlaylist(name, description).onSuccess { playlist ->
+                                app.playlistRepository.addTracksToPlaylist(playlist.id, trackUris)
+                                Toast.makeText(context, "Created ${playlist.name}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        downloadedSelectionMode = false
+                        selectedDownloadedUris = emptySet()
+                    },
+                    onRemoveTracks = { uris ->
+                        scope.launch { uris.forEach { app.libraryRepository.deleteTrack(it) } }
+                        downloadedSelectionMode = false
+                        selectedDownloadedUris = emptySet()
+                    }
+                )
+            }
+            if (downloadedTracks.isEmpty()) {
+                item(key = "downloaded-empty") {
+                    Text(
+                        text = "Start a search above and your finished songs will collect here.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SecondaryText,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                }
+            } else {
+                items(downloadedTracks, key = { "downloaded-${it.uri}" }) { track ->
+                    TrackRowCard(
+                        track = track,
+                        onClick = {
+                            if (downloadedSelectionMode) {
+                                selectedDownloadedUris = if (track.uri in selectedDownloadedUris) {
+                                    selectedDownloadedUris - track.uri
+                                } else {
+                                    selectedDownloadedUris + track.uri
+                                }
+                            }
+                        },
+                        onMenuClick = { actionsTrack = track },
+                        onLongClick = {
+                            downloadedSelectionMode = true
+                            selectedDownloadedUris = selectedDownloadedUris + track.uri
+                        },
+                        selected = if (downloadedSelectionMode) {
+                            track.uri in selectedDownloadedUris
+                        } else {
+                            null
+                        }
+                    )
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+                }
+            }
+        }
     }
 
     playlistTracksToAdd?.let { tracks ->
@@ -557,91 +559,89 @@ private fun DownloadHeader(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = 8.dp)
+            .padding(bottom = 12.dp)
     ) {
         Text(
-            text = "Download music",
+            text = "ADD MUSIC",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = AccentGreen
+        )
+        Text(
+            text = "Bring music into your library",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             color = PrimaryText
         )
         Text(
-            text = "Search YouTube, paste an audio link, or import an Exportify playlist. Downloaded files stay in this app's private Downloads folder, appear in Your Library, and can finish in the background.",
+            text = "Search for a song, choose a result, then tap Download. Finished songs appear in Your Library and keep downloading in the background.",
             style = MaterialTheme.typography.bodyMedium,
             color = SecondaryText,
-            modifier = Modifier.padding(top = 4.dp)
+            modifier = Modifier.padding(top = 6.dp)
         )
 
-        Row(
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = onQueryChange,
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Search for music to add", color = SecondaryText) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Filled.Search,
-                        contentDescription = null,
-                        tint = SecondaryText
-                    )
-                },
-                trailingIcon = {
-                    if (query.isNotBlank()) {
-                        IconButton(onClick = { onQueryChange("") }) {
-                            Icon(
-                                imageVector = Icons.Filled.Clear,
-                                contentDescription = "Clear search",
-                                tint = SecondaryText
-                            )
-                        }
+            placeholder = { Text("Artist, song, or album", color = SecondaryText) },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Filled.Search,
+                    contentDescription = null,
+                    tint = SecondaryText
+                )
+            },
+            trailingIcon = {
+                if (query.isNotBlank()) {
+                    IconButton(onClick = { onQueryChange("") }) {
+                        Icon(
+                            imageVector = Icons.Filled.Clear,
+                            contentDescription = "Clear search",
+                            tint = SecondaryText
+                        )
                     }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { onSearch() }),
-                colors = downloadFieldColors()
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            val searchShape = RoundedCornerShape(14.dp)
-            IconButton(
-                onClick = onSearch,
-                enabled = query.isNotBlank() && !isSearching,
-                modifier = Modifier
-                    .size(52.dp)
-                    .clip(searchShape)
-                    .background(
-                        if (query.isNotBlank() && !isSearching) AccentGreen else SurfaceDark
-                    )
-                    .border(
-                        1.dp,
-                        if (query.isNotBlank() && !isSearching) {
-                            AccentGreen
-                        } else {
-                            Color.White.copy(alpha = 0.08f)
-                        },
-                        searchShape
-                    )
-            ) {
-                if (isSearching) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(Dimens.iconSizeSmall),
-                        color = AccentGreen,
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Filled.Search,
-                        contentDescription = "Search for music",
-                        tint = if (query.isNotBlank()) Color.Black else SecondaryText,
-                        modifier = Modifier.size(Dimens.iconSizeSmall)
-                    )
                 }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+            colors = downloadFieldColors()
+        )
+
+        Button(
+            onClick = onSearch,
+            enabled = query.isNotBlank() && !isSearching,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = AccentGreen,
+                contentColor = Color.Black,
+                disabledContainerColor = SurfaceDark,
+                disabledContentColor = SecondaryText
+            ),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            if (isSearching) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(Dimens.iconSizeSmall),
+                    color = AccentGreen,
+                    strokeWidth = 2.dp
+                )
+                Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                Text("Searching…", fontWeight = FontWeight.SemiBold)
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.Search,
+                    contentDescription = null,
+                    modifier = Modifier.size(Dimens.iconSizeSmall)
+                )
+                Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                Text("Search YouTube", fontWeight = FontWeight.SemiBold)
             }
         }
 
@@ -721,7 +721,7 @@ private fun ResultsHeader(query: String, count: Int) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Music to add",
+                text = "Choose a result",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = PrimaryText,
@@ -745,6 +745,28 @@ private fun ResultsHeader(query: String, count: Int) {
 }
 
 @Composable
+private fun DownloadStartHint() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp, bottom = 4.dp)
+    ) {
+        Text(
+            text = "Start here",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = PrimaryText
+        )
+        Text(
+            text = "Search above to find music. Each result has its own Download button, so you can pick the exact version you want.",
+            style = MaterialTheme.typography.bodySmall,
+            color = SecondaryText,
+            modifier = Modifier.padding(top = 4.dp)
+        )
+    }
+}
+
+@Composable
 private fun SourceOptions(
     showUrlInput: Boolean,
     showCsvImport: Boolean,
@@ -761,18 +783,19 @@ private fun SourceOptions(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "More ways to add",
+                text = "Already have a source?",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = PrimaryText,
                 modifier = Modifier.weight(1f)
             )
-            Text(
-                text = "Optional",
-                style = MaterialTheme.typography.labelMedium,
-                color = SecondaryText
-            )
         }
+        Text(
+            text = "Use a direct audio link or bring in an Exportify playlist instead.",
+            style = MaterialTheme.typography.bodySmall,
+            color = SecondaryText,
+            modifier = Modifier.padding(top = 4.dp)
+        )
         Spacer(modifier = Modifier.height(8.dp))
         Column(
             modifier = Modifier
@@ -965,12 +988,12 @@ private fun UrlDownloadSection(
             Spacer(modifier = Modifier.width(Dimens.paddingSmall))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Direct audio link",
+                    text = "Add a direct audio link",
                     style = MaterialTheme.typography.titleMedium,
                     color = PrimaryText
                 )
                 Text(
-                    text = "Save one audio file on this device and add it to Your Library.",
+                    text = "Paste a link to an audio file and start the download queue.",
                     style = MaterialTheme.typography.bodySmall,
                     color = SecondaryText,
                     modifier = Modifier.padding(top = 2.dp)
@@ -1050,7 +1073,7 @@ private fun UrlDownloadSection(
             }
             Spacer(modifier = Modifier.width(Dimens.paddingSmall))
             Text(
-                text = if (isQueuing) "Adding…" else "Queue link",
+                text = if (isQueuing) "Starting…" else "Start download",
                 fontWeight = FontWeight.SemiBold
             )
         }
@@ -1117,12 +1140,12 @@ private fun CsvImportSection(
             Spacer(modifier = Modifier.width(Dimens.paddingSmall))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Exportify playlist",
+                    text = "Import an Exportify playlist",
                     style = MaterialTheme.typography.titleMedium,
                     color = PrimaryText
                 )
                 Text(
-                    text = "Match a Spotify CSV export and queue its tracks into this local library.",
+                    text = "Choose a Spotify CSV export and queue its tracks one by one.",
                     style = MaterialTheme.typography.bodySmall,
                     color = SecondaryText,
                     modifier = Modifier.padding(top = 2.dp)
@@ -1151,7 +1174,7 @@ private fun CsvImportSection(
                 )
                 Spacer(modifier = Modifier.width(Dimens.paddingSmall))
             }
-            Text(if (isImporting) "Finding tracks…" else "Choose CSV file")
+            Text(if (isImporting) "Finding tracks…" else "Choose CSV and start")
         }
         if (isImporting || status.isNotBlank()) {
             Text(
@@ -1327,20 +1350,23 @@ private fun ResultAction(
         else -> {
             val actionShape = RoundedCornerShape(12.dp)
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(
+                Button(
                     onClick = onDownload,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(actionShape)
-                        .background(AccentGreen.copy(alpha = 0.14f))
-                        .border(1.dp, AccentGreen.copy(alpha = 0.38f), actionShape)
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = AccentGreen,
+                        contentColor = Color.Black
+                    ),
+                    shape = actionShape,
+                    modifier = Modifier.height(40.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Download,
-                        contentDescription = "Download ${job?.title ?: "song"}",
-                        tint = AccentGreen,
+                        contentDescription = null,
                         modifier = Modifier.size(20.dp)
                     )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Download", fontWeight = FontWeight.SemiBold)
                 }
                 TextButton(
                     onClick = onSaveToPlaylist,

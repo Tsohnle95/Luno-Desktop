@@ -2,6 +2,7 @@ package com.boombastic.mobile.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,6 +27,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.playback.MusicController
@@ -45,6 +48,7 @@ fun MiniPlayer(
     val currentTrack by musicController.currentTrack.collectAsState()
     val progress by musicController.progress.collectAsState()
     val duration by musicController.duration.collectAsState()
+    val swipeThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
 
     if (currentTrack == null) return
 
@@ -52,6 +56,23 @@ fun MiniPlayer(
         modifier = Modifier
             .fillMaxWidth()
             .background(MiniPlayerSurface)
+            .pointerInput(musicController, swipeThresholdPx) {
+                var horizontalDrag = 0f
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        horizontalDrag += dragAmount
+                    },
+                    onDragEnd = {
+                        when {
+                            horizontalDrag <= -swipeThresholdPx -> musicController.skipToNext()
+                            horizontalDrag >= swipeThresholdPx -> musicController.skipToPrevious()
+                        }
+                        horizontalDrag = 0f
+                    },
+                    onDragCancel = { horizontalDrag = 0f }
+                )
+            }
     ) {
         // Progress bar
         val progressFraction = if (duration > 0) progress.toFloat() / duration.toFloat() else 0f
