@@ -128,7 +128,13 @@ fun PlaylistDetailScreen(
     }
     val playlist = playlistWithTracks?.playlist
     val tracks = virtualTracks ?: playlistWithTracks?.tracks.orEmpty()
-    val playlistName = virtualName ?: playlist?.name.orEmpty()
+    val playlistName = when {
+        virtualName != null -> virtualName
+        playlist?.name?.equals("Unsorted", ignoreCase = true) == true -> {
+            "Unsorted - songs yet to find a home"
+        }
+        else -> playlist?.name.orEmpty()
+    }
     val playlistDescription = virtualDescription.ifBlank { playlist?.description.orEmpty() }
 
     // In-playlist search: filter the membership by title/artist/album

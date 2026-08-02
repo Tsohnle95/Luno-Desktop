@@ -3,6 +3,7 @@ package com.boombastic.mobile.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,24 +18,21 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.playback.MusicController
-import com.boombastic.mobile.ui.theme.AccentGreen
 import com.boombastic.mobile.ui.theme.Dimens
-import com.boombastic.mobile.ui.theme.MiniPlayerBorder
 import com.boombastic.mobile.ui.theme.MiniPlayerSurface
 import com.boombastic.mobile.ui.theme.PrimaryText
 import com.boombastic.mobile.ui.theme.SecondaryText
@@ -46,8 +44,6 @@ fun MiniPlayer(
 ) {
     val isPlaying by musicController.isPlaying.collectAsState()
     val currentTrack by musicController.currentTrack.collectAsState()
-    val progress by musicController.progress.collectAsState()
-    val duration by musicController.duration.collectAsState()
     val swipeThresholdPx = with(LocalDensity.current) { 64.dp.toPx() }
 
     if (currentTrack == null) return
@@ -74,18 +70,6 @@ fun MiniPlayer(
                 )
             }
     ) {
-        // Progress bar
-        val progressFraction = if (duration > 0) progress.toFloat() / duration.toFloat() else 0f
-        LinearProgressIndicator(
-            progress = { progressFraction },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(Dimens.progressBarHeight),
-            color = AccentGreen,
-            trackColor = MiniPlayerBorder,
-            strokeCap = StrokeCap.Round,
-        )
-
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -109,7 +93,11 @@ fun MiniPlayer(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .clickable(onClick = onMiniPlayerTap)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onMiniPlayerTap
+                    )
             ) {
                 Text(
                     text = currentTrack?.title ?: "Unknown Track",

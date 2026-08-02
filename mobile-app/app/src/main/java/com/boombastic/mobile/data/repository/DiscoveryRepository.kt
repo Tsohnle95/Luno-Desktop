@@ -5,6 +5,8 @@ import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.data.discovery.LastfmKeyStore
 import com.boombastic.mobile.data.discovery.LastfmResult
 import com.boombastic.mobile.data.discovery.LastfmService
+import java.text.Normalizer
+import java.util.Locale
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -62,18 +64,28 @@ class DiscoveryRepository(
         if (result !is LastfmResult.Success || libraryTracks.isEmpty()) return result
 
         val libraryKeys = libraryTracks.mapNotNull { track ->
-            val trackArtist = track.artist.trim()
-            val trackTitle = track.title.trim()
-            if (trackArtist.isEmpty() || trackTitle.isEmpty()) {
-                null
-            } else {
-                "${trackArtist.lowercase()} - ${trackTitle.lowercase()}"
-            }
+            discoveryKey(track.artist, track.title)
         }.toSet()
 
         val filtered = result.tracks.filter { recommendation ->
-            "${recommendation.artist.lowercase().trim()} - ${recommendation.title.lowercase().trim()}" !in libraryKeys
+            discoveryKey(recommendation.artist, recommendation.title) !in libraryKeys
         }
         return LastfmResult.Success(filtered)
     }
+
+    /** Matches equivalent metadata despite punctuation, accents, or spacing. */
+    private fun discoveryKey(artist: String, title: String): String? {
+        val normalizedArtist = normalizePart(artist)
+        val normalizedTitle = normalizePart(title)
+        if (normalizedArtist.isEmpty() || normalizedTitle.isEmpty()) return null
+        return "$normalizedArtist|$normalizedTitle"
+    }
+
+    private fun normalizePart(value: String): String = Normalizer
+        .normalize(value, Normalizer.Form.NFKD)
+        .replace("\\p{M}+".toRegex(), "")
+        .lowercase(Locale.ROOT)
+        .replace("[^\\p{L}\\p{N}]+".toRegex(), " ")
+        .trim()
+        .replace("\\s+".toRegex(), " ")
 }

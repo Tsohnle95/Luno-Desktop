@@ -100,6 +100,25 @@ class DiscoveryRepositoryTest {
     }
 
     @Test
+    fun getSimilar_filtersPunctuationAndAccentVariantsAlreadyInLibrary() {
+        runBlocking {
+            fakeService.result = LastfmResult.Success(
+                listOf(
+                    LastfmTrack(artist = "Beyonce", title = "Halo Live", match = 0.9),
+                    LastfmTrack(artist = "Another Artist", title = "Another Song", match = 0.8)
+                )
+            )
+
+            val library = listOf(track(title = "Halo (Live)", artist = "Beyoncé"))
+
+            val result = repository.getSimilar("Artist", "Title", libraryTracks = library)
+
+            assertThat((result as LastfmResult.Success).tracks.map { it.title })
+                .containsExactly("Another Song")
+        }
+    }
+
+    @Test
     fun getSimilar_noLibrary_returnsEverything() = runBlocking {
         fakeService.result = LastfmResult.Success(
             listOf(LastfmTrack(artist = "Artist A", title = "Song A", match = 0.9))
