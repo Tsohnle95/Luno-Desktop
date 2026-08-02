@@ -117,7 +117,7 @@ boomtastic/
 │   │           │   ├── navigation/
 │   │           │   │   └── NavGraph.kt           # NavHost: Home / Download / Library / Discover / Downloads / Duplicates (drawer) / full_player / made_for_you / playlist detail; seamless transitions — outgoing screen exits instantly, incoming fades in (150ms FastOutSlowIn), no cross-fade overlap; Home/Library playlist tiles navigate to detail
 │   │       │           ├── theme/
-│   │       │           │   ├── Color.kt              # Dark palette (visual spec colors)
+│   │       │           │   ├── Color.kt              # Dark palette + restrained black/green/black app background brush
 │   │       │           │   ├── Theme.kt              # BoomBasticTheme (Material3 dark color scheme)
 │   │       │           │   ├── Type.kt               # Sans-serif typography scale
 │   │       │           │   └── Dimens.kt             # 24dp icons, 48dp touch targets, 64dp mini-player
@@ -469,7 +469,8 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 **Color palette:**
 | Role | Hex | Usage |
 |------|-----|-------|
-| Primary background | `#101010` | Main app background |
+| App shell background | `#101010` + translucent `#102B1C` wash | Broad, subtle green tint that fades into the existing background at both ends |
+| Primary background | `#101010` | Solid fallback, transition mask, and system/theme background |
 | Surface | `#202020`–`#292929` | Cards, sheets, elevated surfaces |
 | Primary text | `#FFFFFF` | Headlines, body text |
 | Secondary text | `#B3B3B3` | Subtext, metadata |
@@ -487,6 +488,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 **Artwork:**
 - Playlist/album art uses **dynamic artwork gradients** generated from dominant colors (matching desktop's `extract_dominant_color` in `utils.py` line 37)
 - Gradients animate subtly on transition
+- MainShell screen content sits over two broad, translucent vertical green washes derived from the Home hero; transparent endpoints let the existing background show through naturally, while navigation, drawers, dialogs, and the full player retain their opaque or artwork-driven surfaces
 
 **Mini-player:**
 - **Persistent mini-player** at the bottom (similar to Spotify)
@@ -816,9 +818,9 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `playback/NewPipeDownloader.kt` | `HttpURLConnection`-based implementation of NewPipe's `Downloader` interface. Handles GET/POST requests with proper User-Agent and redirects. | ✅ |
 | `playback/ExtractionResult.kt` | Sealed class for typed extraction results: `Success<T>` or `Error(message, details)`. Eliminates nullable/pair returns. | ✅ |
 | `data/repository/DownloadRepository.kt` | Enqueue, retry, cancel, delete, stop-all, cancel-playlist-sync; bridges Room + WorkManager; threads thumbnailUrl through job + inputData; resolves playlist-less jobs to the shared **Unsorted** playlist | ✅ |
-| `ui/shell/MainShell.kt` | ModalNavigationDrawer ("Settings" header with expandable Library / Downloads / History & discovery / App accordions, including **Duplicate checker**) + Scaffold + BottomNav (Home/Download/Library/Discover/Create) + AnimatedVisibility MiniPlayer + AppHeader ("Luno" title is a button — opens the Settings drawer) + music-folder import strip (renders MusicFolderImportManager status) + green-loader TransitionMask (instant appear, ~300ms hold, ~400ms FastOutSlowIn reveal) over the NavHost on every route change; **shared context-aware onPlay(List<MediaTrack>, Int, Boolean shuffle)**; Last.fm API-key dialog (shared `LastfmKeyDialog`, saves via `app.discoveryRepository`); GitHub release check dialog with release notes/APK browser link and one-time sideload warning | ✅ |
+| `ui/shell/MainShell.kt` | ModalNavigationDrawer ("Settings" header with expandable Library / Downloads / History & discovery / App accordions, including **Duplicate checker**) + transparent Scaffold over the app-wide black/green/black background + BottomNav (Home/Download/Library/Discover/Create) + AnimatedVisibility MiniPlayer + AppHeader ("Luno" title is a button — opens the Settings drawer) + music-folder import strip (renders MusicFolderImportManager status) + green-loader TransitionMask (instant appear, ~300ms hold, ~400ms FastOutSlowIn reveal) over the NavHost on every route change; **shared context-aware onPlay(List<MediaTrack>, Int, Boolean shuffle)**; Last.fm API-key dialog (shared `LastfmKeyDialog`, saves via `app.discoveryRepository`); GitHub release check dialog with release notes/APK browser link and one-time sideload warning | ✅ |
 | `ui/navigation/NavGraph.kt` | NavHost: Routes (HOME, SEARCH, LIBRARY, DISCOVER, DOWNLOADS, **RECENTS**, **DUPLICATES**, FULL_PLAYER, **MADE_FOR_YOU**, playlist detail); instant 0ms transitions — screens swap fully-formed under the shell's green-loader transition mask; `onNavigate` callback invoked before every navigate (mask-first); **context-aware `onPlay(List<MediaTrack>, Int, Boolean shuffle)` pass-through**; Home/Library playlist tiles navigate to detail | ✅ |
-| `ui/theme/Color.kt` | Dark palette constants | ✅ |
+| `ui/theme/Color.kt` | Dark palette constants + restrained black/green/black app-shell background brush | ✅ |
 | `ui/theme/Theme.kt` | BoomBasticTheme (Material3 darkColorScheme) | ✅ |
 | `ui/theme/Type.kt` | Sans-serif typography scale | ✅ |
 | `ui/theme/Dimens.kt` | Touch targets, icon sizes, padding constants | ✅ |
@@ -1043,6 +1045,7 @@ Instrumented smoke tests created for API 34 emulator (`./gradlew :app:connectedD
 
 | Date | Change |
 |------|--------|
+| 2026-08-02 | **Subtle app-wide background wash.** `MainShell` now lets two broad, translucent vertical green washes derived from the Home hero show through the transparent screen content scaffold, fading into the existing background at both ends. Navigation, drawers, dialogs, the transition mask, and the artwork-driven full player retain their existing opaque or specialized surfaces. |
 | 2026-08-01 | **Android GitHub Releases configured.** Added release-only environment-backed signing in `app/build.gradle.kts` (the existing `./gradlew installDebug` path is unchanged), `verifyReleaseVersion` tag/version validation, `.github/workflows/android-release.yml` for signed APK builds and automatic GitHub Release publication, and `ANDROID_RELEASES.md` for keystore/secrets setup. The workflow runs on `vMAJOR.MINOR.PATCH` tags and verifies the APK with `apksigner`; the permanent signing key is never stored in the repository. |
 | 2026-08-01 | **Most popular Home section.** Replaced the Home "Your playlists" section with a local **Most popular** section containing separate song and playlist carousels. Playback now increments a persisted `Track.playCount` (Room v6 migration); songs rank by their own counts and playlists rank by the summed counts of their member songs. The feature performs no network work and renders lazily from the warmed library flows. Added `TrackDaoTest` coverage for play-count increments. |
 | 2026-08-02 | **Playlist-specific popularity counts.** Home playlist popularity no longer sums global song plays. Room v7 adds `Playlist.playCount`; playback requests from persisted `PlaylistDetailScreen` carry the playlist ID in Media3 metadata, and only those transitions increment that playlist's count. All Songs, shuffle, Popular Songs, Recently Played, and virtual Made for You playback leave playlist counts unchanged. |

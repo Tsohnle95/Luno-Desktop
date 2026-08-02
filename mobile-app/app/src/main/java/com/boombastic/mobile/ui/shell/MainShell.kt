@@ -102,6 +102,7 @@ import com.boombastic.mobile.ui.discover.LastfmKeyDialog
 import com.boombastic.mobile.ui.navigation.BoomBasticNavHost
 import com.boombastic.mobile.ui.navigation.Routes
 import com.boombastic.mobile.ui.theme.AccentGreen
+import com.boombastic.mobile.ui.theme.AppBackgroundBrush
 import com.boombastic.mobile.ui.theme.Dimens
 import com.boombastic.mobile.ui.theme.NavBarSurface
 import com.boombastic.mobile.ui.theme.NavBarUnselected
@@ -473,9 +474,17 @@ fun MainShell(musicController: MusicController) {
             }
         }
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(PrimaryBackground)
+                .background(AppBackgroundBrush)
+        ) {
             Scaffold(
-                containerColor = PrimaryBackground,
+                // Let the shell wash show through the screen content while
+                // navigation, drawers, and modal surfaces keep their own
+                // opaque contrast-safe colors.
+                containerColor = Color.Transparent,
                 snackbarHost = { SnackbarHost(snackbarHostState) },
                 bottomBar = {
                     // Full player is truly full-screen — hide mini player + nav bar.
