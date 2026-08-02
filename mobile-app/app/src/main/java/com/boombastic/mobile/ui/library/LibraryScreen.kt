@@ -1,6 +1,7 @@
 package com.boombastic.mobile.ui.library
 
 import android.widget.Toast
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -20,7 +21,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
@@ -49,6 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -79,7 +80,8 @@ import kotlinx.coroutines.launch
 /**
  * Library tab modeled on the desktop "All Music" page: a centered 2x2
  * collage of the first four album covers (~60% width), a Play + Shuffle
- * row with a "Playlist view" filter tab on the right, a search bar, then
+ * row with Play and Shuffle actions (16dp apart) plus a Playlist/Song view
+ * pill beneath Play, a search bar, then
  * either all songs (track card rows) or all playlists (full-width
  * playlist cards).
  */
@@ -168,7 +170,12 @@ fun LibraryScreen(
         filteredTracks.sortedByMode(sortMode)
     }
     val displayPlaylists = remember(filteredPlaylists, sortMode) {
-        filteredPlaylists.sortedPlaylistsByMode(sortMode)
+        // Keep the reserved root-level playlist visible at the top before
+        // applying the user's selected ordering to the remaining playlists.
+        filteredPlaylists
+            .sortedPlaylistsByMode(sortMode)
+            .partition { it.playlist.name.equals("Unsorted", ignoreCase = true) }
+            .let { (unsorted, playlists) -> unsorted + playlists }
     }
 
     val mediaTracks = remember(sortedTracks) { sortedTracks.map { it.toMediaTrack() } }
@@ -274,94 +281,81 @@ fun LibraryScreen(
         }
 
         // (4-quadrant collage header disabled — see change record)
-        // Play — Shuffle sits ~1rem (16dp) to the right, desktop style
+        // Keep Play and Shuffle together so the wider view pill does not
+        // change their horizontal spacing.
         item {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = Dimens.paddingLarge),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Top
             ) {
-                if (allTracks.isNotEmpty()) {
-                    Button(
-                        // Full sorted context — next/prev walk the whole
-                        // (filtered/sorted) list, not a single track.
-                        onClick = { onPlay(mediaTracks, 0, false) },
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(Dimens.iconSize)
-                        )
-                        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                        Text("Play")
-                    }
-                    Spacer(modifier = Modifier.width(Dimens.paddingLarge))
-                    // Shuffle — icon + text only, no box; text in accent green
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(Dimens.cornerMedium))
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                onClick = {
-                                    onPlay(mediaTracks, 0, true)
-                                }
-                            )
-                            .padding(vertical = Dimens.paddingSmall),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Shuffle,
-                            contentDescription = null,
-                            tint = AccentGreen,
-                            modifier = Modifier.size(Dimens.iconSize)
-                        )
-                        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                        Text(
-                            text = "Shuffle",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = AccentGreen,
-                            fontWeight = if (shuffleEnabled) {
-                                FontWeight.Bold
-                            } else {
-                                FontWeight.Medium
-                            },
-                            textDecoration = if (shuffleEnabled) {
-                                TextDecoration.Underline
-                            } else {
-                                TextDecoration.None
+                Column(horizontalAlignment = Alignment.Start) {
+                    if (allTracks.isNotEmpty()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Button(
+                                // Full sorted context — next/prev walk the whole
+                                // (filtered/sorted) list, not a single track.
+                                onClick = { onPlay(mediaTracks, 0, false) },
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.PlayArrow,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(Dimens.iconSize)
+                                )
+                                Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                                Text("Play")
                             }
-                        )
+                            Spacer(modifier = Modifier.width(Dimens.paddingLarge))
+                            // Shuffle — icon + text only, no box; text in accent green
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(Dimens.cornerMedium))
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        onClick = {
+                                            onPlay(mediaTracks, 0, true)
+                                        }
+                                    )
+                                    .padding(vertical = Dimens.paddingSmall),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Shuffle,
+                                    contentDescription = null,
+                                    tint = AccentGreen,
+                                    modifier = Modifier.size(Dimens.iconSize)
+                                )
+                                Spacer(modifier = Modifier.width(Dimens.paddingSmall))
+                                Text(
+                                    text = "Shuffle",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = AccentGreen,
+                                    fontWeight = if (shuffleEnabled) {
+                                        FontWeight.Bold
+                                    } else {
+                                        FontWeight.Medium
+                                    },
+                                    textDecoration = if (shuffleEnabled) {
+                                        TextDecoration.Underline
+                                    } else {
+                                        TextDecoration.None
+                                    }
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(Dimens.paddingLarge))
                     }
+                    LibraryViewPill(
+                        playlistView = playlistView,
+                        onViewChange = { playlistView = it }
+                    )
+                    Spacer(modifier = Modifier.height(Dimens.paddingSmall))
                 }
 
                 Spacer(modifier = Modifier.weight(1f))
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(Dimens.cornerMedium))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = { playlistView = !playlistView }
-                        )
-                        .padding(Dimens.paddingSmall),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.FilterList,
-                        contentDescription = null,
-                        tint = AccentGreen,
-                        modifier = Modifier.size(Dimens.iconSize)
-                    )
-                    Spacer(modifier = Modifier.width(Dimens.paddingSmall))
-                    Text(
-                        text = if (playlistView) "All songs view" else "Playlist view",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = AccentGreen
-                    )
-                }
                 SortChip(
                     mode = sortMode,
                     onModeChange = { sortMode = it },
@@ -638,6 +632,51 @@ fun LibraryScreen(
         )
     }
 
+}
+
+@Composable
+private fun LibraryViewPill(
+    playlistView: Boolean,
+    onViewChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(24.dp))
+            .background(SurfaceElevated)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = { onViewChange(!playlistView) }
+            )
+            .padding(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        LibraryViewPillOption(
+            label = "Playlists",
+            selected = playlistView
+        )
+        LibraryViewPillOption(
+            label = "Songs",
+            selected = !playlistView
+        )
+    }
+}
+
+@Composable
+private fun LibraryViewPillOption(
+    label: String,
+    selected: Boolean
+) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelLarge,
+        color = if (selected) Color.Black else PrimaryText,
+        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(if (selected) AccentGreen else Color.Transparent)
+            .padding(horizontal = 18.dp, vertical = 10.dp)
+    )
 }
 
 /**
