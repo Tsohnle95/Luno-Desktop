@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -33,12 +34,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.boombastic.mobile.BoomBasticApp
+import com.boombastic.mobile.data.db.dao.PlaylistWithTracks
 import com.boombastic.mobile.data.db.entity.Track
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
@@ -63,7 +69,18 @@ import com.boombastic.mobile.ui.theme.SurfaceElevated
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+
+private data class HomeContentSnapshot(
+    val tracks: List<Track>,
+    val playlists: List<PlaylistWithTracks>,
+    val recentlyPlayed: List<MediaTrack>,
+    val hasCurrentTrack: Boolean
+)
+
+/** Catalogue identity must not change when mutable playback metadata changes. */
+internal fun homeCatalogueKey(tracks: List<Track>): List<String> = tracks.map { it.uri }
 
 /**
  * Spotify-inspired Home: greeting, edge-clipped "Recently played" and
@@ -106,6 +123,12 @@ fun HomeScreen(
     val greeting = getGreeting()
     val displayName = "Listener" // Editable in future
 
+    // Hoisted scroll states: keeping the parent state at screen level avoids
+    // losing the vertical anchor when Home recomposes after a Room emission.
+    val homeListState = rememberSaveable(saver = LazyListState.Saver) {
+        LazyListState()
+    }
+
     // Hoisted carousel scroll states: remembered at screen level so each
     // carousel keeps its exact scroll position even when its section
     // swaps content (e.g. EmptyStateCard <-> carousel while the library
@@ -115,10 +138,60 @@ fun HomeScreen(
     val popularTracksListState = rememberLazyListState()
     val popularPlaylistsListState = rememberLazyListState()
 
-    // Keep one random catalogue sample stable for the lifetime of the
-    // current library snapshot. This avoids reshuffling while the screen
-    // recomposes, while still refreshing when the catalogue changes.
-    val madeForYou = remember(allTracks) { allTracks.shuffled().take(50) }
+    // Room emits a new list when a play count changes. Applying that update
+    // during a fling can change section membership and move the content under
+    // the user's finger. Keep one render snapshot until every Home list is
+    // idle, then apply the newest library/history data in one update.
+    val latestContent by rememberUpdatedState(
+        HomeContentSnapshot(
+            tracks = allTracks,
+            playlists = playlistsWithTracks,
+            recentlyPlayed = recentlyPlayed,
+            hasCurrentTrack = currentTrack != null
+        )
+    )
+    var renderedContent by remember { mutableStateOf(latestContent) }
+    fun isHomeScrolling(): Boolean =
+        homeListState.isScrollInProgress ||
+            recentlyPlayedListState.isScrollInProgress ||
+            madeForYouListState.isScrollInProgress ||
+            popularTracksListState.isScrollInProgress ||
+            popularPlaylistsListState.isScrollInProgress
+
+    LaunchedEffect(allTracks, playlistsWithTracks, recentlyPlayed, currentTrack != null) {
+        if (!isHomeScrolling()) {
+            renderedContent = latestContent
+        }
+    }
+    LaunchedEffect(
+        homeListState,
+        recentlyPlayedListState,
+        madeForYouListState,
+        popularTracksListState,
+        popularPlaylistsListState
+    ) {
+        snapshotFlow { isHomeScrolling() }
+            .distinctUntilChanged()
+            .collect { isScrolling ->
+                if (!isScrolling) renderedContent = latestContent
+            }
+    }
+
+    val homeTracks = renderedContent.tracks
+    val homePlaylists = renderedContent.playlists
+    val homeRecentlyPlayed = renderedContent.recentlyPlayed
+    val homeHasCurrentTrack = renderedContent.hasCurrentTrack
+
+    // Key the random sample only to catalogue membership. A play-count or
+    // artwork update refreshes the card data without changing its order.
+    val catalogueUris = remember(homeTracks) { homeCatalogueKey(homeTracks) }
+    val madeForYouUris = remember(catalogueUris) {
+        catalogueUris.shuffled().take(50)
+    }
+    val tracksByUri = remember(homeTracks) { homeTracks.associateBy { it.uri } }
+    val madeForYou = remember(madeForYouUris, homeTracks) {
+        madeForYouUris.mapNotNull { tracksByUri[it] }
+    }
     val madeForYouMedia = remember(madeForYou) {
         madeForYou.map {
             MediaTrack(
@@ -131,8 +204,8 @@ fun HomeScreen(
             )
         }
     }
-    val popularTracks = remember(allTracks) {
-        allTracks
+    val popularTracks = remember(homeTracks) {
+        homeTracks
             .filter { it.playCount > 0 }
             .sortedWith(
                 compareByDescending<Track> { it.playCount }
@@ -152,8 +225,8 @@ fun HomeScreen(
             )
         }
     }
-    val popularPlaylists = remember(playlistsWithTracks) {
-        playlistsWithTracks
+    val popularPlaylists = remember(homePlaylists) {
+        homePlaylists
             .filter { it.playlist.playCount > 0 }
             .sortedByDescending { it.playlist.playCount }
             .take(10)
@@ -161,13 +234,13 @@ fun HomeScreen(
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedKeys by remember { mutableStateOf(setOf<String>()) }
-    val selectedTracks = allTracks.filter { it.uri in selectedKeys }
-    val selectedPlaylists = playlistsWithTracks.filter {
+    val selectedTracks = homeTracks.filter { it.uri in selectedKeys }
+    val selectedPlaylists = homePlaylists.filter {
         "p${it.playlist.id}" in selectedKeys
     }
-    val selectableKeys = remember(recentlyPlayed, madeForYou, popularTracks, popularPlaylists) {
+    val selectableKeys = remember(homeRecentlyPlayed, madeForYou, popularTracks, popularPlaylists) {
         buildSet {
-            addAll(recentlyPlayed.map { it.uri })
+            addAll(homeRecentlyPlayed.map { it.uri })
             addAll(madeForYou.map { it.uri })
             addAll(popularTracks.map { it.uri })
             addAll(popularPlaylists.map { "p${it.playlist.id}" })
@@ -196,6 +269,7 @@ fun HomeScreen(
     // standardized: 16dp above the greeting, then every section is broken
     // by a 24dp header gap with an 8dp header-to-content gap.
     LazyColumn(
+        state = homeListState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(top = Dimens.paddingLarge, bottom = Dimens.paddingXLarge)
     ) {
@@ -204,9 +278,9 @@ fun HomeScreen(
             HomeHero(
                 greeting = greeting,
                 displayName = displayName,
-                trackCount = allTracks.size,
+                trackCount = homeTracks.size,
                 mixCount = madeForYou.size,
-                onClick = if (allTracks.isEmpty()) null else {
+                onClick = if (homeTracks.isEmpty()) null else {
                     {
                         app.setMadeForYouTracks(madeForYou)
                         onOpenMadeForYou()
@@ -264,7 +338,7 @@ fun HomeScreen(
         item(key = "recently-header") {
             SectionHeader(title = "Recently played")
         }
-        if (recentlyPlayed.isEmpty() && currentTrack == null) {
+        if (homeRecentlyPlayed.isEmpty() && !homeHasCurrentTrack) {
             item(key = "recently-empty") {
                 EmptyStateCard(
                     title = "No tracks yet",
@@ -277,7 +351,7 @@ fun HomeScreen(
                 // distinctBy: a track may legitimately appear twice in
                 // history (non-consecutive plays); duplicate keys would
                 // make the LazyRow jump or throw.
-                val history = recentlyPlayed.distinctBy { it.uri }.take(20)
+                val history = homeRecentlyPlayed.distinctBy { it.uri }.take(20)
                 LazyRow(
                     state = recentlyPlayedListState,
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
@@ -313,7 +387,7 @@ fun HomeScreen(
             SectionHeader(
                 title = "Made for you",
                 supportingText = "A fresh mix from your library",
-                onClick = if (allTracks.isEmpty()) null else {
+                onClick = if (homeTracks.isEmpty()) null else {
                     {
                         app.setMadeForYouTracks(madeForYou)
                         onOpenMadeForYou()
@@ -321,7 +395,7 @@ fun HomeScreen(
                 }
             )
         }
-        if (allTracks.isEmpty()) {
+        if (homeTracks.isEmpty()) {
             item(key = "made-empty") {
                 EmptyStateCard(
                     title = "Nothing here yet",
