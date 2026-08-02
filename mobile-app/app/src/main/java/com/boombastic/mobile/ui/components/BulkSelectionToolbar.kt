@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
@@ -55,6 +56,8 @@ fun BulkSelectionToolbar(
     onDismiss: () -> Unit,
     onAddToPlaylist: (Playlist, List<String>) -> Unit,
     onCreatePlaylist: (String, String, List<String>) -> Unit,
+    onExportTracks: ((List<String>) -> Unit)? = null,
+    onExportPlaylists: ((List<Long>) -> Unit)? = null,
     onRemoveTracks: ((List<String>) -> Unit)? = null,
     onDeletePlaylists: ((List<Long>) -> Unit)? = null,
     modifier: Modifier = Modifier
@@ -124,6 +127,26 @@ fun BulkSelectionToolbar(
                         showCreateDialog = true
                     }
                 )
+                if (onExportTracks != null && selectedTracks.isNotEmpty()) {
+                    DropdownMenuItem(
+                        text = { Text("Export selected songs", color = PrimaryText) },
+                        leadingIcon = { Icon(Icons.Filled.UploadFile, contentDescription = null) },
+                        onClick = {
+                            showMenu = false
+                            onExportTracks(selectedTracks.map { it.uri })
+                        }
+                    )
+                }
+                if (onExportPlaylists != null && selectedPlaylists.isNotEmpty()) {
+                    DropdownMenuItem(
+                        text = { Text("Export selected playlists", color = PrimaryText) },
+                        leadingIcon = { Icon(Icons.Filled.UploadFile, contentDescription = null) },
+                        onClick = {
+                            showMenu = false
+                            onExportPlaylists(selectedPlaylists.map { it.playlist.id })
+                        }
+                    )
+                }
                 if (onRemoveTracks != null && selectedTracks.isNotEmpty()) {
                     DropdownMenuItem(
                         text = { Text("Remove selected songs", color = PrimaryText) },

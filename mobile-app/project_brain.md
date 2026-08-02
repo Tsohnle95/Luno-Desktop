@@ -63,7 +63,7 @@ boomtastic/
 │   │   ├── build.gradle.kts             # App module: compileSdk 35, minSdk 29, targetSdk 35
 │   │   ├── proguard-rules.pro           # Keep Room entity annotations
 │   │   ├── schemas/
-│   │   │   └── com.boombastic.mobile.data.db.AppDatabase/1.json ... 7.json
+│   │   │   └── com.boombastic.mobile.data.db.AppDatabase/1.json ... 8.json
 │   │   └── src/
 │   │       ├── main/
 │   │       │   ├── AndroidManifest.xml  # FOREGROUND_SERVICE, POST_NOTIFICATIONS, MusicService
@@ -89,7 +89,7 @@ boomtastic/
 │   │       │       │   └── NotificationPermissionPolicy.kt # One-shot POST_NOTIFICATIONS prompt policy
 │   │       │       ├── data/
 │   │       │       │   ├── db/
-│   │       │       │   │   ├── AppDatabase.kt       # Room DB (tracks, playlists, playlist_tracks; v7 with local track + playlist play counts)
+│   │       │       │   │   ├── AppDatabase.kt       # Room DB (tracks, playlists, playlist_tracks, downloads; v8 adds multi-playlist import destinations)
 │   │       │       │   │   ├── dao/
 │   │       │       │   │   │   ├── TrackDao.kt       # CRUD + search Flow + local play-count increment
 │   │       │       │   │   │   ├── PlaylistDao.kt    # CRUD + relations + sort order + playlist play-count increment
@@ -108,7 +108,11 @@ boomtastic/
 │   │       │       │       ├── DuplicateFinder.kt    # Desktop-compatible normalized artist/title duplicate groups
 │   │       │       │       ├── LibraryData.kt         # App-warmed StateFlows for the library Room flows (tracks/playlists/downloads/playlistsWithUrls + loaded flag) — screens render from these for instant transitions
 │   │       │       │       ├── PlaylistRepository.kt # CRUD, validation, sort order mgmt
-│   │       │       │       └── DiscoveryRepository.kt # Last.fm entry point: apiKey StateFlow (encrypted store), getSimilar() filtering out owned tracks (desktop "artist - title" normalized keys)
+│   │       │       │       ├── DiscoveryRepository.kt # Last.fm entry point: apiKey StateFlow (encrypted store), getSimilar() filtering out owned tracks (desktop "artist - title" normalized keys)
+│   │       │       │       └── LibraryTransferRepository.kt # Shared manifest snapshots, strict import preview/merge, and missing-track download queueing
+│   │       │       ├── export/
+│   │       │       │   ├── LibraryManifest.kt       # Versioned cross-platform manifest models and import result types
+│   │       │       │   └── LibraryManifestCodec.kt  # Strict untrusted JSON encoder/validator
 │   │       │       └── ui/
 │   │           │   ├── shell/
 │   │           │   │   ├── MainShell.kt          # ModalNavigationDrawer ("Settings" header with scrollable Library / Downloads / History & discovery / App accordions, including Duplicate checker) + AppHeader ("Luno" + green bar; the title is a button — tap opens the Settings drawer) + Scaffold + BottomNav (Home/Download/Library/Discover/Create) + MiniPlayer (hidden on full player); black base with four larger edge-oriented green blobs and a persistent header gradient; live music-folder import strip rendered from MusicFolderImportManager; green-loader transition mask (TransitionMask) over the NavHost on every route change and through Discover's Last.fm load (no-ripple applied per element, not via a LocalIndication override)
@@ -141,6 +145,8 @@ boomtastic/
 │   │       │           │   └── HomeScreen.kt         # Spotify-style Home hero, edge-clipped Recently-played / Made-for-you / Most-popular song + playlist carousels; Made-for-you title opens the session's virtual playlist detail (Settings drawer opens via tappable "Luno" header)
 │   │           │   ├── search/
 │   │           │   │   └── SearchScreen.kt       # Desktop-patterned download workspace: flat Search / YT-CSV / Direct-URL source tabs, compact input/action rows, YouTube playlist import with existing/new destination selection, Exportify intake, flat artwork-backed results, durable Downloaded songs accordion, long-press actions, multi-select playlist assignment, and search-result Save to playlist
+│   │           │   ├── export/
+│   │           │   │   └── ExportImportScreen.kt # SAF JSON export/import screen with bounded reads, preview, ambiguity confirmation, and additive merge
 │   │       │           ├── library/
 │   │       │           │   ├── LibraryScreen.kt      # Desktop "All Music": Play + Shuffle (16dp apart) with the Playlist/Song view pill beneath Play, A–Z/Recent sort, search w/ clear-X, alphabetical tracks, "Unsorted" pinned first in playlist view, long-press multi-select for songs/playlists, shared bulk options, collage-thumbnail playlist cards
 │   │       │           │   ├── DuplicateScreen.kt     # Scrollable normalized duplicate groups with multi-select and metadata-only removal
@@ -155,6 +161,8 @@ boomtastic/
 │   │       ├── data/artwork/
 │   │       │   └── ArtworkStorage.kt                 # Embedded-artwork extraction (MediaMetadataRetriever), 512px JPEG cache in filesDir/artwork, Palette dominant color
 │   │       └── test/java/com/boombastic/mobile/
+│   │           ├── data/export/
+│   │           │   └── LibraryManifestCodecTest.kt  # Strict manifest round-trip, unknown-field, path, version, and ambiguity validation
 │   │           ├── data/db/
 │   │           │   ├── AppDatabaseTest.kt            # Abstract Robolectric base class
 │   │           │   ├── TrackDaoTest.kt               # CRUD, search, dedupe, count, local play-count increment
@@ -162,7 +170,8 @@ boomtastic/
 │   │           ├── data/repository/
 │   │           │   ├── LibraryRepositoryTest.kt    # 10 tests: SAF tree + multi-picker folder recursion incl. AOSP + Samsung-style + tree-URI + non-audio guard + cross-flow doc-id dedupe (fake DocumentsProvider)
 │   │           │   ├── LibraryRepositoryArtworkFetchTest.kt # 8 tests: missing-artwork sweep — null/blank/deleted-cache detection, refill + DAO persistence, valid-artwork skip, failed-extraction skip, file:// URI passthrough, per-track progress sequence, empty library (injectable extractor seam)
-│   │           │   └── PlaylistRepositoryTest.kt   # 5 tests: validation, CRUD, trim
+│   │           │   ├── PlaylistRepositoryTest.kt   # 5 tests: validation, CRUD, trim
+│   │           │   └── LibraryTransferRepositoryTest.kt # Manifest export ordering, unassigned tracks, and local-URI exclusion
 │   │           └── playback/
 │   │               ├── NotificationPermissionPolicyTest.kt # 11 tests: permission policy matrix
 │   │               └── MusicControllerTest.kt        # Added contract tests; final reviewer did not verify compilation
@@ -232,7 +241,7 @@ boomtastic/
 - Local display name/profile (editable, never sent to a server)
 - ReplayGain/loudness normalization (planned — see below)
 - Equalizer (planned)
-- Export/import playlists and selected songs as versioned JSON (via email/share/files)
+- Export/import playlists, selected songs, and full library as versioned JSON (via SAF files/share workflows) — implemented in the native Android app and desktop app
 - GitHub Releases with signed APK, update check
 
 **EXCLUDED (must not implement):**
@@ -245,7 +254,7 @@ boomtastic/
 
 ### Interoperability (Export/Import)
 
-**Export:** Selected song(s), playlist(s), or full library as a **versioned JSON manifest**.
+**Export:** Selected song(s), playlist(s), or full library as a **versioned JSON manifest**. The desktop and Android implementations share the `boombastic.library.export` format with root `manifest_version: 1`.
 
 **Manifest format principles:**
 - Versioned schema; include `"manifest_version": 1` at root
@@ -258,6 +267,8 @@ boomtastic/
 - Creates or merges playlists (by name); user confirms merge strategy
 - **No automatic deletion** — import never removes existing content
 - Duplicate resolution uses the same normalized-key approach as desktop (see `engine.py` `_normalize_for_dupe`)
+
+**Implemented transfer behavior:** Android exposes a SAF-backed Export / Import screen from the Settings drawer, previews matched/missing/ambiguous tracks, merges playlists by case-insensitive name, queues missing YouTube references through WorkManager, and carries all destination playlist ids on one download job. Desktop exposes full-library/settings, current-playlist, and selected-track actions; it matches local files, copies matched audio into playlist folders, and asks before queuing missing downloads.
 
 ### Storage
 
@@ -327,7 +338,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 | Language | Kotlin 2.0.0 | ✅ **Implemented** — source in `playback/`, `data/`, `ui/` |
 | UI | Jetpack Compose (BOM 2024.06.00) | ✅ **Implemented** — 5 screens + full player + sheets + shell + theme + mini-player |
 | Playback | Media3 (ExoPlayer 1.3.1) | ✅ **Implemented** — `MusicService` (MediaSessionService) + `MusicController` (StateFlow wrapper) |
-| Local DB | Room 2.6.1 | ✅ **Implemented** — 4 entities, 3 DAOs (v5 schema — playlistUrl on Playlist, albumArtPath on Track, thumbnailUrl on DownloadJob) |
+| Local DB | Room 2.6.1 | ✅ **Implemented** — 4 entities, 3 DAOs (v8 schema — playlistUrl, artwork, play counts, and multi-playlist import destinations) |
 | Background downloads | WorkManager + Foreground Service | ✅ **Implemented** — `DownloadWorker` + `DownloadRepository` + `DownloadJob` Room entity (v2 schema) |
 | Media scanning | MediaStore / SAF | ✅ **Implemented** — SAF `OpenMultipleDocuments` import via `LibraryRepository` |
 | Dependency injection | Manual singleton (BoomBasticApp) | ✅ **Implemented** — Hilt deferred; manual DI in Application class |
@@ -356,7 +367,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 - **Real artwork + dynamic gradients implemented (2026-07-30):** Embedded album art is extracted at import/download time (`ArtworkStorage.saveEmbeddedArtwork*` via `MediaMetadataRetriever.getEmbeddedPicture`), downsampled to ≤512px JPEG and cached in `filesDir/artwork/`; the path is stored on `Track.albumArtPath` (Room **v4** migration `3_4`). `MediaTrack` carries `artworkUri` (file://) through `MusicController.buildMediaItem` (MediaMetadata `artworkUri`), and `MusicService`'s `ArtworkEnrichingCallback` (`MediaSession.Callback.onAddMediaItems`) loads `artworkData` bytes so the **notification and lock-screen show artwork**. UI renders via Coil (`ui/components/ArtworkImage.kt`): full player (280dp), MiniPlayer (48dp thumb), Home recently-played card, and QueueSheet rows. `rememberArtworkColors()` extracts the dominant color (androidx Palette vibrant→muted→dominant) and animates a vertical gradient backdrop behind the full player (600ms `animateColorAsState`), satisfying "gradients animate subtly on transition".
 - **Queue reordering implemented (2026-07-30):** `MusicController.moveQueueItem(from, to)` → `Player.moveMediaItem`; `QueueSheet` rows show artwork + drag handle and support **long-press drag-to-reorder** (`detectDragGesturesAfterLongPress`, row translation + scale feedback, drop-target index computed from drag delta; snapshot refreshed after each move).
 - **Download thumbnails implemented (2026-07-30):** YouTube audio streams carry no embedded album art, so downloaded songs previously had no artwork anywhere (full player, mini player, queue, home). Now the video thumbnail is captured at enqueue time: `WebSearchResult.thumbnailUrl` (search + CSV import) and `PlaylistVideo.thumbnailUrl` (playlist sync) flow through `DownloadJob.thumbnailUrl` (Room **v5** migration `4_5`) and WorkManager inputData (`DownloadWorker.KEY_THUMBNAIL_URL`). After the audio file is saved, `DownloadWorker` falls back to fetching the thumbnail via OkHttp (`ArtworkStorage.saveImageBytes`, ≤512px JPEG in `filesDir/artwork/`) when `MediaMetadataRetriever` found no embedded picture; the path lands on `Track.albumArtPath` so every artwork surface picks it up. Manual retries re-read the URL from the job entity.
-- **Navigation restructure (2026-07-30, download label refreshed 2026-07-31):** Bottom nav is exactly **5 items** — Home, Download, Your Library, Discover, Create (the full Downloads queue remains in the drawer). Download and Create render at 28dp (their material glyphs are optically smaller than the other tabs; the other four render at the standard 24dp). A `ModalNavigationDrawer` whose header reads **"Settings"** (the standalone Settings item was removed) contains Downloads (navigates to `Routes.DOWNLOADS`), Export-Import, About, Check for updates (honest "coming soon" toasts); it opens from the **tappable "Luno" app header** (the green-circle Home profile icon was removed 2026-07-31). The drawer never contains cloud account/login/logout items.
+- **Navigation restructure (2026-07-30, download label refreshed 2026-07-31):** Bottom nav is exactly **5 items** — Home, Download, Your Library, Discover, Create (the full Downloads queue remains in the drawer). Download and Create render at 28dp (their material glyphs are optically smaller than the other tabs; the other four render at the standard 24dp). A `ModalNavigationDrawer` whose header reads **"Settings"** (the standalone Settings item was removed) contains Downloads (navigates to `Routes.DOWNLOADS`), Export-Import (navigates to `Routes.EXPORT_IMPORT`), About, Check for updates (honest "coming soon" toasts); it opens from the **tappable "Luno" app header** (the green-circle Home profile icon was removed 2026-07-31). The drawer never contains cloud account/login/logout items.
 - **Playlist card UI (2026-07-30):** Shared `ui/components/PlaylistCard.kt` — thumbnail on the left, playlist name beside it, **green 3-dot options icon** on the right (menu: Sync playlist, Set/Edit YouTube URL via dialog, Delete with confirm dialog), flat against the black screen (no card background). Used **2-per-row on Home** (quick-action grid) and **full-width in the Library tab** (desktop-home style, one after another); tapping it opens the playlist detail screen.
 - **Spotify-style Home (2026-07-30, refreshed 2026-07-31):** `HomeScreen` has a dark green-accent hero, greeting, **edge-clipped horizontal carousels** ("Recently played" — current history; **"Made for you" — a stable random mix of up to 50 unique tracks sampled from the entire catalogue**), and the existing Your Playlists carousel layout. The Made for You title text and View all action are clickable; they store the exact current sample in the process-lifetime `BoomBasticApp.madeForYouTracks` state and open the `made_for_you` virtual playlist detail without creating a user playlist. "Your top genres" remains unimplemented (no genre metadata). The tappable "Luno" app header opens the Settings drawer from every screen. Spacing standardized: 16dp above the greeting, 24dp section breaks, 8dp header-to-content gaps. Carousels use hoisted `rememberLazyListState` and stable keys; all long scroll surfaces remain Compose-lazy and artwork uses capped Coil decode sizes.
 - **Playlist detail screen (2026-07-30, extended 2026-07-31):** `ui/library/PlaylistDetailScreen.kt` at route `playlist/{playlistId}` (opened by tapping any persisted playlist card on Home or Library) and route `made_for_you` (opened by the Home Made for You title). Both use the Spotify-inspired **2x2 collage of up to four track artworks**, name, description, "N songs · total duration", green Play button, shuffle, sort, in-playlist search, and track list. The Made for You route reads the exact up-to-50-track session sample from `BoomBasticApp` and does not persist or alter library playlists. Tapping a track plays the current filtered/sorted context; persisted playlist starts carry that playlist ID into the Media3 queue, so only transitions from that playlist context increment its own view count; virtual playlists do not count. Long-press enters global multi-select bulk actions. Not yet implemented (desktop parity): drag-to-reorder, download-all toggle.
@@ -613,10 +624,10 @@ These facts are confirmed by reading the actual source files. Link to them rathe
 - Activity: `MainActivity` (LAUNCHER, `adjustResize` soft input)
 - Service: `MusicService` (`mediaPlayback` foreground type, `MediaSessionService` intent filter)
 
-**JSON Export Manifests** (planned user-generated data files):
+**JSON Export Manifests** (user-generated data files):
 - Versioned, untrusted, never contain secrets or audio data
 - Used for export/import of playlist data
-- Not yet implemented
+- Implemented with `manifest_version: 1`, strict unknown-field/path validation, bounded SAF reads, and additive/no-delete imports
 
 ### Compatibility & Recovery
 
@@ -673,11 +684,12 @@ These facts are confirmed by reading the actual source files. Link to them rathe
 │  │  - PlaylistRepository (Room)         │ ✅        │
 │  │  - DownloadRepository                │ ✅ (implemented)   │
 │  │  - DiscoveryRepository (Last.fm)     │ ✅ (implemented — 2026-07-31) │
+│  │  - LibraryTransferRepository         │ ✅ (implemented — v1 JSON) │
 │  │  - SettingsRepository (DataStore)    │ Planned   │
 │  └──────────────────┬───────────────────┘            │
 │                     │                                │
 │  ┌──────────────────┴───────────────────┐            │
-│  │  Room Database (AppDatabase v4)       │            │
+│  │  Room Database (AppDatabase v8)       │            │
 │  │  - Track, Playlist, PlaylistTrack      │            │
 │  │  - DownloadJob                         │ ✅ (implemented — v2 migration) │
 │  │  - QueueEntry, HistoryEntry,           │ Planned   │
@@ -698,6 +710,14 @@ These facts are confirmed by reading the actual source files. Link to them rathe
    - Extracts metadata via `MediaMetadataRetriever` (title, artist, duration) with filename-based fallback ("Artist - Title" split)
    - Inserts `Track` entity into Room via `TrackDao.insertTrack()`
 5. Returns `ImportResult(imported, duplicates, errors)` — UI observes updated `Flow<List<Track>>` from Room
+
+### Data Flow: JSON Export / Import (implemented)
+
+1. Library and playlist selection actions ask `LibraryTransferRepository` for a consistent Room snapshot; full-library export includes ordered playlist memberships and explicit unassigned tracks.
+2. `LibraryManifestCodec` emits/accepts `boombastic.library.export` with `manifest_version: 1`; strict allowlists reject unknown fields, local paths, unsafe playlist names, unsupported provider IDs, oversized input, and invalid counts/metadata.
+3. Android writes manifests through SAF `CreateDocument` and reads them through bounded `OpenDocument` streams. The Settings drawer opens `ExportImportScreen`, which shows matched, missing, new-playlist, and ambiguity counts before import.
+4. Import merges playlists by case-insensitive name and adds matched memberships without deleting audio or metadata. Stable YouTube IDs are preferred; metadata-only matches require explicit confirmation.
+5. Missing YouTube tracks are resolved with `WebSearchService`, then queued through `DownloadRepository`. A v8 `playlistIdsCsv` field lets one downloaded file attach to every imported destination playlist after `DownloadWorker` completes; unsupported/unresolved tracks are reported.
 
 ### Data Flow: Download (Implemented)
 1. User navigates to the Download tab → searches YouTube → taps Download on a result
@@ -793,7 +813,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `playback/RecentlyPlayedStore.kt` | App-private JSON persistence for the ordered, bounded `MediaTrack` history; malformed data safely resets to empty | ✅ |
 | `playback/NotificationPermissionPolicy.kt` | One-shot `POST_NOTIFICATIONS` prompt policy using SharedPreferences | ✅ |
 | `data/artwork/ArtworkStorage.kt` | Embedded-artwork extraction + ≤512px JPEG cache (filesDir/artwork), sampled decode, Palette dominant color | ✅ |
-| `data/db/AppDatabase.kt` | Room database (4 entities, version 7, singleton, migrations 1→2→3→4→5→6→7; v6 adds local track play counts and v7 adds playlist-view play counts) | ✅ |
+| `data/db/AppDatabase.kt` | Room database (4 entities, version 8, singleton, migrations 1→2→3→4→5→6→7→8; v6 adds local track play counts, v7 adds playlist-view play counts, v8 carries multiple import destination playlist ids) | ✅ |
 | `data/db/entity/Track.kt` | Track entity (uri PK, title, artist, album, durationMs, albumArtPath, playCount, addedAt) + albumArtUri() helper | ✅ |
 | `data/db/entity/Playlist.kt` | Playlist entity (autoId, name, description, playlist playCount, createdAt) | ✅ |
 | `data/db/entity/PlaylistTrack.kt` | Junction entity (composite PK, FK cascade, sortOrder) | ✅ |
@@ -808,19 +828,23 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `data/discovery/LastfmKeyStore.kt` | EncryptedSharedPreferences (AES256-GCM/SIV, security-crypto 1.1.0-alpha06) API-key storage; plain-prefs fallback when the Keystore is unavailable | ✅ |
 | `data/update/GitHubReleaseService.kt` | HTTPS GitHub `/releases/latest` client for `Tsohnle95/musicPlayer`; validates and compares release tags, parses notes/page/first APK asset, and returns typed update/up-to-date/failure results | ✅ |
 | `data/repository/DiscoveryRepository.kt` | Last.fm entry point: `apiKey` StateFlow (encrypted), set/clear (cache cleared on change), `getSimilar()` filtering out library-owned tracks (desktop normalized "artist - title" keys); injectable LastfmService for tests | ✅ |
+| `data/repository/LibraryTransferRepository.kt` | Shared v1 manifest snapshots for full/selected/playlist scopes; strict preview and additive import; stable YouTube-ID matching from completed download artwork metadata; missing-track resolution through the existing NewPipe/WorkManager downloader | ✅ |
+| `data/export/LibraryManifest.kt` | Cross-platform manifest models, scopes, preview, and import result types | ✅ |
+| `data/export/LibraryManifestCodec.kt` | Strict `org.json` encoder/decoder: version, allowlist, count/size/string/path/provider validation | ✅ |
 | `data/repository/LibraryData.kt` | App-lifetime warm store for the four library Room flows (tracks, playlists-with-tracks, downloads, playlists-with-URLs) as `StateFlow`s (`SharingStarted.Eagerly` at startup) + `loaded` flag; screens render from it so tab switches show full content instantly | ✅ |
 | `ui/shell/MusicFolderImportManager.kt` | Process-lifetime owner of the folder import from the Settings drawer: launches import on appScope, `StateFlow<FolderImportStatus?>` (Importing/Finished with counts + stalled/failed flags + persist warning + errorMessage), stall watchdog (AtomicLong lastTickAt — thread-visible) that warns but NEVER cancels (imports finish on their own merits), failures logged + surfaced in strip/toast, retries replace previous attempts, "Import complete!" auto-clears after 2s; **all toasts via main-looper showToast helper (appScope is Dispatchers.Default — direct Toast.makeText crashes)** | ✅ |
 | `data/repository/PlaylistRepository.kt` | Playlist CRUD, name validation, sort order mgmt, clear-playlist (metadata-only) | ✅ |
-| `data/db/entity/DownloadJob.kt` | DownloadJob entity + DownloadState enum (QUEUED, DOWNLOADING, COMPLETED, FAILED, CANCELLED); thumbnailUrl captures the YouTube video thumbnail | ✅ |
+| `data/db/entity/DownloadJob.kt` | DownloadJob entity + DownloadState enum (QUEUED, DOWNLOADING, COMPLETED, FAILED, CANCELLED); thumbnailUrl captures the YouTube video thumbnail and playlistIdsCsv preserves multi-playlist import destinations | ✅ |
 | `data/db/dao/DownloadJobDao.kt` | DownloadJob CRUD + progress/state queries with Flow | ✅ |
 | `playback/DownloadWorker.kt` | WorkManager CoroutineWorker: HTTP download, progress tracking, Track insertion (MediaMetadataRetriever duration + embedded-artwork extraction, thumbnail fetch fallback for YouTube), **adds completed download to its explicit or fallback Unsorted playlist**, foreground notification with app icon and stable notification ID | ✅ |
 | `playback/PlaylistSyncWorker.kt` | WorkManager worker: fetches YouTube playlist videos via NewPipe Extractor, creates individual DownloadJob per track, **adds pre-existing matching tracks to the playlist**, deduplicates, reports extraction errors as failed jobs | ✅ |
 | `playback/WebSearchService.kt` | YouTube client: search, playlist extraction, and audio stream URL extraction via NewPipe Extractor (v0.26.4, vendored Git submodule at `vendor/NewPipeExtractor` via composite build). Replaces the previous 4-fallback InnerTube/Piped/Invidious chain with bundled native extraction. Returns typed `ExtractionResult` for error propagation. | ✅ |
 | `playback/NewPipeDownloader.kt` | `HttpURLConnection`-based implementation of NewPipe's `Downloader` interface. Handles GET/POST requests with proper User-Agent and redirects. | ✅ |
 | `playback/ExtractionResult.kt` | Sealed class for typed extraction results: `Success<T>` or `Error(message, details)`. Eliminates nullable/pair returns. | ✅ |
-| `data/repository/DownloadRepository.kt` | Enqueue, retry, cancel, delete, stop-all, cancel-playlist-sync; bridges Room + WorkManager; threads thumbnailUrl through job + inputData; resolves playlist-less jobs to the shared **Unsorted** playlist | ✅ |
-| `ui/shell/MainShell.kt` | ModalNavigationDrawer ("Settings" header with expandable Library / Downloads / History & discovery / App accordions, including **Duplicate checker**) + transparent Scaffold over the black base with four larger edge-oriented green blobs and persistent header gradient + BottomNav (Home/Download/Library/Discover/Create) + AnimatedVisibility MiniPlayer + AppHeader ("Luno" title is a button — opens the Settings drawer) + music-folder import strip (renders MusicFolderImportManager status) + green-loader TransitionMask (instant appear, ~300ms hold, ~400ms FastOutSlowIn reveal) over the NavHost on every route change; **shared context-aware onPlay(List<MediaTrack>, Int, Boolean shuffle)**; Last.fm API-key dialog (shared `LastfmKeyDialog`, saves via `app.discoveryRepository`); GitHub release check dialog with release notes/APK browser link and one-time sideload warning | ✅ |
-| `ui/navigation/NavGraph.kt` | NavHost: Routes (HOME, SEARCH, LIBRARY, DISCOVER, DOWNLOADS, **RECENTS**, **DUPLICATES**, FULL_PLAYER, **MADE_FOR_YOU**, playlist detail); instant 0ms transitions — screens swap fully-formed under the shell's green-loader transition mask; `onNavigate` callback invoked before every navigate (mask-first); **context-aware `onPlay(List<MediaTrack>, Int, Boolean shuffle)` pass-through**; Home/Library playlist tiles navigate to detail | ✅ |
+| `data/repository/DownloadRepository.kt` | Enqueue, retry, cancel, delete, stop-all, cancel-playlist-sync; bridges Room + WorkManager; threads thumbnailUrl and multi-playlist destination ids through jobs; resolves playlist-less jobs to the shared **Unsorted** playlist | ✅ |
+| `ui/shell/MainShell.kt` | ModalNavigationDrawer ("Settings" header with expandable Library / Downloads / History & discovery / App accordions, including **Duplicate checker**) + transparent Scaffold over the black base with four larger edge-oriented green blobs and persistent header gradient + BottomNav (Home/Download/Library/Discover/Create) + AnimatedVisibility MiniPlayer + AppHeader ("Luno" title is a button — opens the Settings drawer) + music-folder import strip (renders MusicFolderImportManager status) + green-loader TransitionMask (instant appear, ~300ms hold, ~400ms FastOutSlowIn reveal) over the NavHost on every route change; **shared context-aware onPlay(List<MediaTrack>, Int, Boolean shuffle)**; SAF CreateDocument launcher for selected-track/playlist exports; Last.fm API-key dialog (shared `LastfmKeyDialog`, saves via `app.discoveryRepository`); GitHub release check dialog with release notes/page/APK browser link and one-time sideload warning | ✅ |
+| `ui/navigation/NavGraph.kt` | NavHost: Routes (HOME, SEARCH, LIBRARY, DISCOVER, DOWNLOADS, **RECENTS**, **DUPLICATES**, **EXPORT_IMPORT**, FULL_PLAYER, **MADE_FOR_YOU**, playlist detail); instant 0ms transitions — screens swap fully-formed under the shell's green-loader transition mask; `onNavigate` callback invoked before every navigate (mask-first); **context-aware `onPlay(List<MediaTrack>, Int, Boolean shuffle)` pass-through** plus selected-track/playlist export callbacks; Home/Library playlist tiles navigate to detail | ✅ |
+| `ui/export/ExportImportScreen.kt` | Full-library SAF export/import page with bounded file reads, strict preview, ambiguity confirmation, additive merge status, and missing-download summary | ✅ |
 | `ui/theme/Color.kt` | Dark palette constants + restrained black/green four-blob app-shell background | ✅ |
 | `ui/theme/Theme.kt` | BoomBasticTheme (Material3 darkColorScheme) | ✅ |
 | `ui/theme/Type.kt` | Sans-serif typography scale | ✅ |
@@ -839,10 +863,10 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `ui/player/RecentsScreen.kt` | "Queue & Recents" full screen (route `Routes.RECENTS`, opened from the Settings drawer "Recently played"): back arrow + the same tab row and tab content as the sheet, lists fill the page | ✅ |
 | `ui/player/ActionSheet.kt` | Track action sheet: add to playlist (nested picker), play next, add to queue, go to artist, share | ✅ |
 | `ui/home/HomeScreen.kt` | Spotify-style Home: green-accent hero, greeting, edge-clipped Recently-played (history, **replay moves to front — desktop semantics; cards play within the history context**) / **Made-for-you random mix (up to 50 tracks sampled from the full catalogue, stable until the library changes; title/View all opens virtual detail)** / **Most popular songs and playlists (songs by persisted track play count; playlists by persisted plays started inside that playlist)**; Settings drawer via tappable "Luno" header; all-or-nothing first render; all carousels are Compose-lazy and artwork decode-capped | ✅ |
-| `ui/library/LibraryScreen.kt` | Desktop "All Music": Play + Shuffle (16dp apart) with the Playlist/Song view pill beneath Play, **far-right down-arrow SortChip (A–Z / Z–A / Recently added / Duration — tracks by own length, playlists by total length)**, search w/ clear-X, alphabetical tracks, **"Unsorted" pinned first in playlist view**, batch multi-select (3-dot: select all / add to playlist / remove), collage-thumbnail playlist cards; all-or-nothing first render; **Play/Shuffle/track-tap pass the sorted context for next/prev** | ✅ |
+| `ui/library/LibraryScreen.kt` | Desktop "All Music": Play + Shuffle (16dp apart) with the Playlist/Song view pill beneath Play, **far-right down-arrow SortChip (A–Z / Z–A / Recently added / Duration — tracks by own length, playlists by total length)**, search w/ clear-X, alphabetical tracks, **"Unsorted" pinned first in playlist view**, batch multi-select (3-dot: select all / add to playlist / remove / export selected songs or playlists), collage-thumbnail playlist cards; all-or-nothing first render; **Play/Shuffle/track-tap pass the sorted context for next/prev** | ✅ |
 | `ui/library/DuplicateScreen.kt` | Scrollable duplicate groups sourced from the live library flow; select individual copies, confirm removal, and delete track metadata from the library/playlists while preserving device audio files | ✅ |
 | `ui/search/SearchScreen.kt` | Desktop-patterned download workspace: flat Search / YT-CSV / Direct-URL source tabs; compact source input/action rows; artwork-backed YouTube result rows with inline queue states; YouTube playlist import with existing/new destination selection and saved playlist source; Exportify loader; durable app-private downloaded-songs accordion; long-press actions; multi-select playlist assignment; search-result Save to playlist; queue/retry/cancel states | ✅ |
-| `ui/library/PlaylistDetailScreen.kt` | Playlist detail for persisted `playlist/{playlistId}` and ephemeral `made_for_you`: 2x2 four-artwork collage header, name/desc/count/duration, play-all + **shuffle**, **shared SortChip**, **in-playlist search**, track list (play from track + long-press actions); persisted playlist playback carries its ID for view counting, while Made for You does not; persisted playlists read from LibraryData, Made for You reads the exact app-held Home sample | ✅ |
+| `ui/library/PlaylistDetailScreen.kt` | Playlist detail for persisted `playlist/{playlistId}` and ephemeral `made_for_you`: 2x2 four-artwork collage header, name/desc/count/duration, play-all + **shuffle**, **shared SortChip**, **in-playlist search**, track list (play from track + long-press actions), selected-song JSON export and persisted-playlist export action; persisted playlist playback carries its ID for view counting, while Made for You does not; persisted playlists read from LibraryData, Made for You reads the exact app-held Home sample | ✅ |
 | `ui/discover/DiscoverScreen.kt` | Last.fm recommendations (2026-07-31): seed = current → last played → last-added track; "Based on" header + refresh + API-key shortcut; rows with Last.fm artwork plus cached Deezer fallback + "artist • N% match"; loading is reported to MainShell so its single transition-mask spinner remains visible through the request; per-row download, per-row playlist-target download, Download all, and Download all to selected playlist (YouTube search → audio extraction → queue, Search pipeline); honest key-missing / no-seed / loading / error(retry) / no-new-recs states; library-owned recs filtered by DiscoveryRepository | ✅ |
 | `ui/discover/LastfmKeyDialog.kt` | Shared Last.fm API-key dialog (Discover empty state + Settings drawer): paste key, Save (disabled when blank) / Remove, encrypted via DiscoveryRepository | ✅ |
 | `ui/downloads/DownloadsScreen.kt` | Full download management screen: playlist sync controls, per-playlist sync, batch sync all, **Stop All**, download queue with cancel/retry/delete; renders from LibraryData (instant) | ✅ |
@@ -858,6 +882,8 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `data/repository/PlaylistRepositoryTest.kt` | 6 tests: blank name rejection, persistence, trim, list, delete, clear-playlist keeps playlist + tracks | ✅ |
 | `data/db/DownloadJobDaoTest.kt` | 11 tests: insert, query, progress, complete, fail, state filter, active-list queries, delete, bulk delete, count | ✅ |
 | `data/repository/DownloadRepositoryTest.kt` | 10 tests: enqueue/Unsorted routing and reuse, explicit playlist assignment, legacy completed-download repair, thumbnailUrl persistence, list, state filter, cancel, delete, get-null | ✅ |
+| `data/export/LibraryManifestCodecTest.kt` | Strict v1 round-trip plus unknown-field, path/reference, version, provider, and ambiguity validation | ✅ |
+| `data/repository/LibraryTransferRepositoryTest.kt` | Full/selected export coverage: playlist relation ordering, unassigned tracks, and local-URI exclusion | ✅ |
 | `playback/NotificationPermissionPolicyTest.kt` | 11 tests: API 29/33+ prompt policy, grant/deny/attempted behavior | ✅ |
 | `playback/MusicControllerTest.kt` | Contract tests: pending-play, shuffle request/random-start semantics, empty-request handling, full-queue preservation, last-request-wins, index clamp, release idempotence, stale-future guard, exact MediaItem metadata (incl. artworkUri and playlist context), moveQueueItem no-ops, setShuffle no-op, persisted recently-played restore/clear, and sanitized error emission | ✅ |
 | `data/discovery/LastfmServiceTest.kt` | 11 tests (MockWebServer): two-stage fallback (0.8 match), param/limit wiring, artist object + string parsing, largest-image pick, API error / HTTP error / network error failures, cache hit, empty-not-cached, 10-entry clear-on-exceed, clearCache | ✅ |
@@ -1046,6 +1072,7 @@ Instrumented smoke tests created for API 34 emulator (`./gradlew :app:connectedD
 
 | Date | Change |
 |------|--------|
+| 2026-08-02 | **Cross-platform export/import implemented.** Added the shared `boombastic.library.export` v1 manifest contract to desktop (`library_transfer.py`) and native Android (`data/export/LibraryManifest*.kt`), with strict untrusted-input validation and no paths/secrets/audio/history. Desktop Settings, playlist actions, and selected-track menus export/import additive metadata and queue confirmed missing downloads. Android added `LibraryTransferRepository`, SAF `ExportImportScreen`, drawer navigation, selected song/playlist export callbacks, Room v8 multi-playlist download destinations, and codec/repository tests. |
 | 2026-08-02 | **Desktop-style downloader UI.** `SearchScreen` now mirrors the desktop downloader's source-panel logic without changing the Android download pipeline: compact `Downloader` header, flat `Search` / `YT / CSV` / `Direct URL` tabs, integrated input/action rows, conditional thin queue-progress line, inline status/errors, flat result rows, and the durable downloaded-songs accordion after the source area. The YouTube playlist importer and Exportify loader now share the `YT / CSV` tab; direct-link title/artist details remain optional. |
 | 2026-08-02 | **Background blob balance refined.** Reduced the shell background from seven blobs to four larger edge-oriented radial blobs, preserving the permanent top/header gradient while leaving a calmer black center and wider gaps between glows. |
 | 2026-08-02 | **Initial blob-based app-wide background.** Replaced the broad diagonal wash in `MainShell.appBackgroundWash()` with seven separated radial green blobs over the `#101010` base, using transparent edges and small `#1ED760` highlights so black gaps remain visible. A dedicated top gradient stays behind the status-bar/Luno header area. The same shared treatment remains on `TransitionMask`; navigation, drawers, dialogs, and the artwork-driven full player keep their existing specialized surfaces. Superseded by the four-blob refinement above. |

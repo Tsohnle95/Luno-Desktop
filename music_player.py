@@ -43,6 +43,13 @@ from engine import (
 
 from views.discover import DiscoverView
 from views.song_page import SongPageView
+from library_transfer import (
+    apply_import_plan,
+    build_manifest,
+    load_manifest,
+    plan_import,
+    write_manifest,
+)
 
 # ── LIBRARY PATH SETUP ────────────────────────────────────────────────────────
 # Default to ~/Music/app_music_folder
@@ -350,6 +357,7 @@ lder."""
         self._viz_enabled          = False
         self._viz_after_id         = None
         self._sync_running         = False
+        self._transfer_running     = False
         self._playlist_urls        = {}
         self._media_command_queue  = queue.SimpleQueue()
         self._closing = False
@@ -1542,6 +1550,180 @@ lder."""
             return self._frames["artists"].get_sel_paths()
         return []
 
+    # ── Portable library transfer ───────────────────────────────────────────
+    def _export_json(self, scope="library", selected_paths=None, playlist_names=None):
+        """Export metadata references without blocking Tk on audio probing."""
+        if self._transfer_running:
+            messagebox.showinfo("Transfer in progress", "Wait for the current library transfer to finish.")
+            return
+        initial = {
+            "selected_tracks": "boombastic-selected.json",
+            "playlists": "boombastic-playlists.json",
+            "library": "boombastic-library.json",
+        }.get(scope, "boombastic-library.json")
+        path = filedialog.asksaveasfilename(
+            title="Export Library JSON",
+            defaultextension=".json",
+            filetypes=[("BoomBastic JSON", "*.json"), ("JSON", "*.json"), ("All Files", "*.*")],
+            initialfile=initial,
+        )
+        if not path:
+            return
+
+        library_snapshot = {name: list(paths) for name, paths in self._library.items()}
+        selected_snapshot = list(selected_paths or [])
+        playlist_snapshot = list(playlist_names or [])
+        self._transfer_running = True
+        self.status_var.set("Preparing export…")
+
+        def run():
+            try:
+                manifest = build_manifest(
+                    library_snapshot,
+                    self.MUSIC_ROOT,
+                    scope=scope,
+                    selected_paths=selected_snapshot,
+                    playlist_names=playlist_snapshot,
+                )
+                write_manifest(path, manifest)
+            except Exception as exc:
+                self.after(0, lambda: self._finish_transfer_error("Export failed", exc))
+                return
+            self.after(0, lambda: self._finish_export(path, len(manifest["tracks"])))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _finish_export(self, path, track_count):
+        self._transfer_running = False
+        self.status_var.set("")
+        messagebox.showinfo(
+            "Export complete",
+            f"Exported {track_count} track reference(s) to {os.path.basename(path)}.\n\n"
+            "Audio files and local paths are not included.",
+        )
+
+    def _export_selected_json(self):
+        paths = self._get_sel_paths()
+        if not paths:
+            messagebox.showinfo("Nothing selected", "Select one or more tracks first.")
+            return
+        self._export_json("selected_tracks", selected_paths=paths)
+
+    def _export_playlist_json(self):
+        selected = self._selected_playlist
+        if selected and selected != "All Music":
+            self._export_json("playlists", playlist_names=[selected])
+        else:
+            self._export_json("library")
+
+    def _export_full_library_json(self):
+        self._export_json("library")
+
+    def _import_json(self):
+        """Merge a portable manifest and optionally queue unresolved tracks."""
+        if self._transfer_running:
+            messagebox.showinfo("Transfer in progress", "Wait for the current library transfer to finish.")
+            return
+        path = filedialog.askopenfilename(
+            title="Import Library JSON",
+            filetypes=[("BoomBastic JSON", "*.json"), ("JSON", "*.json"), ("All Files", "*.*")],
+        )
+        if not path:
+            return
+
+        library_snapshot = {name: list(paths) for name, paths in self._library.items()}
+        self._transfer_running = True
+        self.status_var.set("Checking import…")
+
+        def run():
+            try:
+                manifest = load_manifest(path)
+                plan = plan_import(manifest, library_snapshot)
+                result = apply_import_plan(plan, self.MUSIC_ROOT)
+            except Exception as exc:
+                self.after(0, lambda: self._finish_transfer_error("Import failed", exc))
+                return
+            self.after(0, lambda: self._finish_import(result))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _finish_transfer_error(self, title, exc):
+        self._transfer_running = False
+        self.status_var.set("")
+        messagebox.showerror(title, str(exc))
+
+    def _finish_import(self, result):
+        self._transfer_running = False
+        self.status_var.set("")
+        missing = result.get("missing", [])
+        copied = result.get("copied", 0)
+        errors = result.get("errors", [])
+        if missing:
+            ambiguous = sum(1 for track in missing if track.get("ambiguity_confirmation_required"))
+            question = (
+                f"Merged {copied} existing track(s). {len(missing)} track(s) still need audio.\n\n"
+                "Download the missing tracks using the existing YouTube search/downloader?\n"
+                "Metadata-only matches can be a different recording, so confirm only if that is acceptable."
+            )
+            if ambiguous:
+                question += f"\n\n{ambiguous} track(s) require ambiguity confirmation."
+            if messagebox.askyesno("Download missing tracks?", question):
+                self._queue_import_downloads(missing, result.get("playlist_by_ref", {}))
+            else:
+                messagebox.showinfo(
+                    "Import partially complete",
+                    f"Merged {copied} existing track(s); {len(missing)} missing track(s) were not downloaded.",
+                )
+        else:
+            messagebox.showinfo("Import complete", f"Merged {copied} track(s) into the library.")
+        if errors:
+            self._log_error("Import", "; ".join(errors[:5]))
+        self._refresh_library()
+
+    def _queue_import_downloads(self, tracks, playlist_by_ref):
+        from downloader import Downloader
+
+        rows = []
+        for track in tracks:
+            row = {
+                "title": track.get("title", "Unknown track"),
+                "artist": track.get("artist", ""),
+                "playlist_name": playlist_by_ref.get(track.get("ref"), "Unsorted"),
+            }
+            source = track.get("source") or {}
+            if source.get("provider") == "youtube":
+                row["url"] = f"https://www.youtube.com/watch?v={source['id']}"
+            rows.append(row)
+
+        def folder_for(name):
+            existing = self._find_playlist_dir(name)
+            if existing:
+                return existing
+            if name and name != "Unsorted":
+                destination = os.path.join(self.MUSIC_ROOT, name)
+                os.makedirs(destination, exist_ok=True)
+                return destination
+            return self.MUSIC_ROOT
+
+        self.status_var.set(f"Downloading {len(rows)} imported track(s)…")
+        Downloader.download_csv_tracks(
+            rows,
+            folder_for,
+            skip_existing=True,
+            try_sc=False,
+            on_progress=lambda done, total, query: self.after(
+                0, lambda: self.status_var.set(f"Downloading imported tracks… {done}/{total}")
+            ),
+            on_log=lambda title, success, error: None,
+            on_complete=lambda: self.after(0, self._finish_import_downloads),
+            check_cancel=lambda: self._closing,
+        )
+
+    def _finish_import_downloads(self):
+        self.status_var.set("")
+        self._refresh_library()
+        messagebox.showinfo("Import downloads complete", "The imported tracks have been added to the library.")
+
     def _on_track_dbl(self, event): pass   # handled by canvas
     def _on_right_click(self, event): pass  # handled by canvas
 
@@ -2274,7 +2456,7 @@ lder."""
     def _init_watchdog(self):
         """Starts the automatic background refresh loop."""
         # Only refresh if we aren't currently in the middle of a download
-        if not self._is_dl:
+        if not self._is_dl and not self._transfer_running:
             self._refresh_library()
         
         # Schedule the next run in 30 seconds

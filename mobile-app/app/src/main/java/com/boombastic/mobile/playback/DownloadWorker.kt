@@ -189,8 +189,16 @@ class DownloadWorker(
 
             // Every download belongs to a playlist. Legacy jobs created before
             // Unsorted routing get repaired here before completion.
-            val targetPlaylistId = job.playlistId ?: ensureUnsortedPlaylistId(playlistDao)
-            targetPlaylistId.let { playlistId ->
+            val targetPlaylistIds = buildList {
+                job.playlistId?.let(::add)
+                job.playlistIdsCsv
+                    .split(',')
+                    .mapNotNull { it.trim().toLongOrNull() }
+                    .forEach { if (it !in this) add(it) }
+            }.ifEmpty {
+                listOf(ensureUnsortedPlaylistId(playlistDao))
+            }
+            targetPlaylistIds.forEach { playlistId ->
                 val sortOrder = playlistDao.maxSortOrder(playlistId) + 1
                 playlistDao.addTrackToPlaylist(
                     com.boombastic.mobile.data.db.entity.PlaylistTrack(

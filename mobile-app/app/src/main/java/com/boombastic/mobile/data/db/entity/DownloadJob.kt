@@ -25,5 +25,7 @@ data class DownloadJob(
     val completedAt: Long = 0L,
     val playlistId: Long? = null,
     val workManagerId: String = "",
-    val thumbnailUrl: String = ""
+    val thumbnailUrl: String = "",
+    /** Additional destination playlist ids for one imported download. */
+    val playlistIdsCsv: String = ""
 )

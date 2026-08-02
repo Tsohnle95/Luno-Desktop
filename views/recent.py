@@ -24,6 +24,7 @@ class RecentView(tk.Frame):
         self.ctx_menu.add_command(label="  +   Add to Queue",      command=self.controller._ctx_add_queue)
         self.ctx_menu.add_separator()
         self.ctx_menu.add_command(label="  ♫   Add to Playlist…",  command=self.controller._ctx_add_playlist)
+        self.ctx_menu.add_command(label="  ⇧   Export Selected JSON", command=self.controller._export_selected_json)
         self.ctx_menu.add_separator()
         self.ctx_menu.add_command(label="  🗑   Delete from Library",  command=self.controller._ctx_remove_from_library)
 

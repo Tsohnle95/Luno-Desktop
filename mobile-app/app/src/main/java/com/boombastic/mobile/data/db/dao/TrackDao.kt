@@ -42,4 +42,7 @@ interface TrackDao {
 
     @Query("SELECT * FROM tracks")
     suspend fun getAllTracksOnce(): List<com.boombastic.mobile.data.db.entity.Track>
+
+    @Query("SELECT * FROM tracks WHERE uri IN (:uris)")
+    suspend fun getTracksByUris(uris: List<String>): List<Track>
 }

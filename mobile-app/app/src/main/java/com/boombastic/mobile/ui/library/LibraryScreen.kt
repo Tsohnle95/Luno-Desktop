@@ -89,7 +89,9 @@ import kotlinx.coroutines.launch
 fun LibraryScreen(
     musicController: MusicController,
     onPlay: (List<MediaTrack>, Int, Boolean) -> Unit = { _, _, _ -> },
-    onOpenPlaylist: (Long) -> Unit = {}
+    onOpenPlaylist: (Long) -> Unit = {},
+    onExportTracks: (List<String>) -> Unit = {},
+    onExportPlaylists: (List<Long>) -> Unit = {}
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as BoomBasticApp
@@ -267,6 +269,14 @@ fun LibraryScreen(
                     onDismiss = ::exitSelection,
                     onAddToPlaylist = ::addSelectionToPlaylist,
                     onCreatePlaylist = ::createPlaylistFromSelection,
+                    onExportTracks = { uris ->
+                        onExportTracks(uris)
+                        exitSelection()
+                    },
+                    onExportPlaylists = { ids ->
+                        onExportPlaylists(ids)
+                        exitSelection()
+                    },
                     onRemoveTracks = { uris ->
                         scope.launch { uris.forEach { app.libraryRepository.deleteTrack(it) } }
                         exitSelection()
@@ -488,6 +498,7 @@ fun LibraryScreen(
                         onUrlChanged = { urlDialogPlaylist = playlistWithTracks.playlist },
                         onClearPlaylist = { clearDialogPlaylist = playlistWithTracks.playlist },
                         onDelete = { deleteDialogPlaylist = playlistWithTracks.playlist },
+                        onExport = { onExportPlaylists(listOf(playlistWithTracks.playlist.id)) },
                         modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
                     )
                 }

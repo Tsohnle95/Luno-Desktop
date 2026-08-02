@@ -45,12 +45,17 @@ class DownloadRepository(
         title: String,
         artist: String = "",
         playlistId: Long? = null,
-        thumbnailUrl: String = ""
+        thumbnailUrl: String = "",
+        playlistIds: List<Long> = emptyList()
     ): Long {
         Log.d(TAG, "enqueueDownload: $title by $artist")
         Log.d(TAG, "Source URL (truncated): ${sourceUrl.take(120)}")
 
         val resolvedPlaylistId = playlistId ?: ensureUnsortedPlaylistId()
+        val destinationPlaylistIds = buildList {
+            resolvedPlaylistId?.let(::add)
+            addAll(playlistIds)
+        }.distinct()
 
         val job = DownloadJob(
             sourceUrl = sourceUrl,
@@ -59,7 +64,8 @@ class DownloadRepository(
             state = DownloadState.QUEUED,
             addedAt = System.currentTimeMillis(),
             playlistId = resolvedPlaylistId,
-            thumbnailUrl = thumbnailUrl
+            thumbnailUrl = thumbnailUrl,
+            playlistIdsCsv = destinationPlaylistIds.joinToString(",")
         )
         val jobId = downloadJobDao.insertDownload(job)
         Log.d(TAG, "Inserted download job with id=$jobId")

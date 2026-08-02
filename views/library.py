@@ -29,6 +29,7 @@ class LibraryView(tk.Frame):
         self.ctx_menu.add_command(label="  +   Add to Queue",      command=self.controller._ctx_add_queue)
         self.ctx_menu.add_separator()
         self.ctx_menu.add_command(label="  ♫   Add to Playlist…",  command=self.controller._ctx_add_playlist)
+        self.ctx_menu.add_command(label="  ⇧   Export Selected JSON", command=self.controller._export_selected_json)
         self.ctx_menu.add_separator()
         self.ctx_menu.add_command(label="  ✕   Remove from Queue", command=self.controller._ctx_remove_queue)
         self.ctx_menu.add_command(label="  🗑   Delete from Library",  command=self.controller._ctx_remove_from_library)
@@ -269,7 +270,7 @@ class LibraryView(tk.Frame):
         btn_x = self.pl_actions_btn.winfo_rootx()
         btn_y = self.pl_actions_btn.winfo_rooty()
         btn_h = self.pl_actions_btn.winfo_height()
-        popup.geometry(f"420x310+{btn_x}+{btn_y + btn_h + 4}")
+        popup.geometry(f"420x390+{btn_x}+{btn_y + btn_h + 4}")
 
         popup.columnconfigure(0, weight=1)
 
@@ -341,10 +342,44 @@ class LibraryView(tk.Frame):
         sync_btn.bind("<Enter>", lambda e: sync_btn.config(bg=GREEN_HOVER))
         sync_btn.bind("<Leave>", lambda e: sync_btn.config(bg=GREEN))
 
+        export_f = tk.Frame(popup, bg=BG2)
+        export_f.grid(row=5, column=0, sticky="ew", padx=16, pady=(4, 4))
+        export_f.columnconfigure((0, 1), weight=1)
+
+        export_btn = tk.Label(
+            export_f,
+            text="⇧  Export JSON",
+            font=("Helvetica Neue", 10),
+            fg=TEXT2,
+            bg=BG3,
+            padx=10,
+            pady=6,
+            cursor="hand2",
+        )
+        export_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        export_btn.bind("<Button-1>", lambda e: (self._close_actions_popup(), self.controller._export_playlist_json()))
+        export_btn.bind("<Enter>", lambda e: export_btn.config(fg=TEXT, bg=BG4))
+        export_btn.bind("<Leave>", lambda e: export_btn.config(fg=TEXT2, bg=BG3))
+
+        import_btn = tk.Label(
+            export_f,
+            text="⇩  Import JSON",
+            font=("Helvetica Neue", 10),
+            fg=TEXT2,
+            bg=BG3,
+            padx=10,
+            pady=6,
+            cursor="hand2",
+        )
+        import_btn.grid(row=0, column=1, padx=(4, 0), sticky="ew")
+        import_btn.bind("<Button-1>", lambda e: (self._close_actions_popup(), self.controller._import_json()))
+        import_btn.bind("<Enter>", lambda e: import_btn.config(fg=TEXT, bg=BG4))
+        import_btn.bind("<Leave>", lambda e: import_btn.config(fg=TEXT2, bg=BG3))
+
         # ── Close button at bottom ──
         close_btn = tk.Label(popup, text="✕  Close", font=("Helvetica Neue", 10),
                              fg=TEXT3, bg=BG2, pady=6, cursor="hand2")
-        close_btn.grid(row=5, column=0, sticky="ew", padx=16, pady=(0, 12))
+        close_btn.grid(row=6, column=0, sticky="ew", padx=16, pady=(0, 12))
         close_btn.bind("<Button-1>", lambda e: self._close_actions_popup())
         close_btn.bind("<Enter>", lambda e: close_btn.config(fg=TEXT, bg=BG3))
         close_btn.bind("<Leave>", lambda e: close_btn.config(fg=TEXT3, bg=BG2))

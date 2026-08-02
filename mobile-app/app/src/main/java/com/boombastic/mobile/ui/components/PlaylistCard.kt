@@ -57,6 +57,7 @@ fun PlaylistCard(
     onUrlChanged: ((String) -> Unit)? = null,
     onClearPlaylist: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
+    onExport: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     selected: Boolean? = null,
     onLongClick: (() -> Unit)? = null
@@ -173,6 +174,15 @@ fun PlaylistCard(
                         onClick = {
                             showMenu = false
                             onClearPlaylist()
+                        }
+                    )
+                }
+                if (onExport != null) {
+                    DropdownMenuItem(
+                        text = { Text("Export playlist", color = PrimaryText) },
+                        onClick = {
+                            showMenu = false
+                            onExport()
                         }
                     )
                 }

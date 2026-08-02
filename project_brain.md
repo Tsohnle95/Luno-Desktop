@@ -23,6 +23,7 @@ This document is a high-level architectural map for the **Vibe Music Player**. I
 ├── downloader.py             # yt-dlp download wrapper (Downloader class)
 ├── theme.py                  # Color palette + playlist gradient system
 ├── utils.py                  # Shared helpers (resource_path, format_time, split_track_name, etc.)
+├── library_transfer.py       # Versioned, path-free JSON manifest codec and desktop merge planner
 ├── widgets.py                # Custom Canvas widgets (RoundButton, SlimSlider, PlaylistArt, ModernScrollbar)
 ├── icon.icns                 # macOS app icon (Apple Icon Image; regenerated from the current artwork)
 ├── Pixel.png                 # User-provided icon artwork (kept; NOT currently used — the app uses its original vector music-note icon)
@@ -46,6 +47,7 @@ This document is a high-level architectural map for the **Vibe Music Player**. I
 │   └── error_log.py          # Debug log viewer
 │
 ├── test_engine_playback.py   # Deterministic mocked unit tests for playback engine
+├── test_library_transfer.py   # Manifest validation, export, matching, and additive merge tests
 ├── test_media_keys.py        # Deterministic mocked unit tests for media key logic
 ├── test_audio_flet.py        # Ad-hoc test scripts (not part of the app)
 ├── test_audio_flet2.py
@@ -112,6 +114,8 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
     *   **Duplicate Exclusion**: Loads/saves allowed duplicate keys from `.vibe_allowed_dups.json`.
 3.  **Views (`views/*.py`)**:
     *   **Modular Frames**: Standalone modules that interact with the controller via `self.controller`.
+4.  **Library Transfer (`library_transfer.py`)**:
+     *   Builds and strictly validates the shared `boombastic.library.export` v1 JSON manifest. It contains metadata, ordered playlist memberships, and optional provider IDs only; it never contains audio bytes, local paths, secrets, queue state, or history.
 
 ---
 
@@ -151,6 +155,12 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 3. Worker reads `mutagen.mp3.MP3` → extracts `APIC` frame → resizes via `PIL.Image`
 4. Returns `ImageTk.PhotoImage` via `controller.after(0, ...)` callback
 
+### Export / Import
+1. Export actions snapshot `_library` and selected paths, then build the manifest and probe metadata on a worker thread.
+2. The manifest stores stable provider IDs when available and marks metadata-only tracks with `ambiguity_confirmation_required`.
+3. Import validates the untrusted JSON, matches local files by normalized artist/title and compatible duration, and additively copies matched files into sanitized playlist folders.
+4. Missing tracks are never deleted or silently replaced. After confirmation, desktop missing tracks are queued through the existing YouTube/CSV downloader; unresolved tracks remain reported.
+
 ---
 
 ## 📂 File Registry & Responsibilities
@@ -164,15 +174,16 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
   - `scan_library(roots)`: Walks directories, returns `dict[playlist → paths]`.
   - `find_duplicates(library, allowed_keys)`: Groups tracks by `_normalize_for_dupe`.
   - `probe_soundcloud(query)`, `parse_exportify_csv(filepath)`: Supporting utilities.
+- **`library_transfer.py`**: Portable transfer contract. Provides `build_manifest()`, `validate_manifest()`, `load_manifest()`, `write_manifest()`, `plan_import()`, and `apply_import_plan()` for the path-free v1 JSON format used by Android.
 - **`downloader.py`** (root `downloader.py` — not the view): The `Downloader` class — wraps `yt-dlp` for downloading audio. Static methods: `download_single()`, `download_youtube_url()`, `download_csv_tracks()`, `download_sync_tracks()`. Forces 44.1kHz, 192k MP3, EBU R 128 loudnorm. Uses `EmbedThumbnail` postprocessor. All methods spawn daemon threads. *Note: `views/downloader.py` is the UI view that calls this module.*
 - **`utils.py`**: Helpers: `resource_path` (PyInstaller asset resolution), `format_time`, `split_track_name`, `hex_to_rgb`, `rgb_to_hex`, and `draw_gradient_rect`.
 
 ### 🖼 View Modules (`views/`)
-- **`library.py`**: Virtual scrolling canvas (56px rows). Header displays playlist title, dynamic album art (via `PlaylistArt`), and a live **Audio Visualizer** with a premium `〰` toggle switch at the top right for on-demand control. Includes an **in-playlist search bar** (`Filter tracks…`) using a `tk.Label` overlay with `rely=0.5` vertical centering. Track text is strictly truncated dynamically (`char_w = 0.85`) to ensure long titles never overflow (`w - 340` boundary).
+- **`library.py`**: Virtual scrolling canvas (56px rows). Header displays playlist title, dynamic album art (via `PlaylistArt`), and a live **Audio Visualizer** with a premium `〰` toggle switch at the top right for on-demand control. Includes an **in-playlist search bar** (`Filter tracks…`) using a `tk.Label` overlay with `rely=0.5` vertical centering. Track text is strictly truncated dynamically (`char_w = 0.85`) to ensure long titles never overflow (`w - 340` boundary). Track context menus export selected JSON, and playlist actions export/import the portable manifest.
 - **`downloader.py`**: **Scrollable canvas layout** wrapping all content. Five tabs (Search, YT/CSV, Sync, Duplicates, Allowed Dups) are managed in a unified hub. Uses a dynamic `_search_limit` state to enable **Load More** functionality in YouTube/SoundCloud search. The **⚠ Duplicates** tab features displays **Playlist** and **Filename** columns. Action buttons support **bulk-exclusion** of entire duplicate sets; **double-clicking a group header** plays the first track. The **✓ Allowed Dups** tab includes **💾 Export** and **📂 Import** buttons for portable JSON backups of exclusions.
-- **`recent.py`**: Recently Played view. Gradient header with "Recently Played" title. Displays `controller._recently_played` (max 100) in a virtual scrolling canvas (56px rows). Multi-selection via Shift+Click / Cmd+Click. Context menu integration. "Play All" and "Clear History" actions.
-- **`artists.py`**: Gradient header with "Artists" title. Features an **in-app search filter** in the sidebar to dynamically narrow the artist keys. Groupings by artist name with expandable sections.
-- **`settings.py`**: Premium Spotify-style UI with clean section headers, borderless inputs, and consistent padding. Includes step-by-step instructions for Last.fm API setup and manages audio visualizer, storage paths, and Discovery keys.
+- **`recent.py`**: Recently Played view. Gradient header with "Recently Played" title. Displays `controller._recently_played` (max 100) in a virtual scrolling canvas (56px rows). Multi-selection via Shift+Click / Cmd+Click, context menu integration including selected JSON export, "Play All", and "Clear History" actions.
+- **`artists.py`**: Gradient header with "Artists" title. Features an **in-app search filter** in the sidebar to dynamically narrow the artist keys, grouping by artist name, and selected JSON export from track context menus.
+- **`settings.py`**: Premium Spotify-style UI with clean section headers, borderless inputs, and consistent padding. Includes step-by-step instructions for Last.fm API setup, manages audio visualizer/storage paths and Discovery keys, and exposes full-library JSON export/import.
 - **`discover.py`**: Discovery Hub view. Displays recommended tracks from Last.fm based on current listening; features one-click "Add to Library" download integration. Logic includes **Context-Aware Shuffle**: Shuffling now respects the user's current view (All Music, Artists, Recently Played) instead of being limited to physical disk folders. The controller passes a flattened `context_list` to the engine, allowing global randomization.
 - **`song_page.py`**: Premium Song Detail view. Displayed when clicking the player bar track info. Mimics Spotify's "Now Playing" aesthetic with a glassmorphism background (blurred album art overlay) and integrated controls. Implements a unified, centered, stacked layout across all screen sizes with a large centerpiece artwork (up to 800x800) that dynamically scales based on available window dimensions.
 - **`error_log.py`**: Debug log viewer. Displays `controller._error_logs` (list of strings) in a read-only `tk.Text` widget with `ModernScrollbar`. "Clear Logs" button resets the list.
@@ -205,6 +216,9 @@ Persisted across sessions: `music_root`, `lastfm_key`, `auto_discovery`, `volume
 ### 6. Exclusion Management
 Allowed duplicates are identified by normalized keys (derived via `_normalize_for_dupe`) and persisted in `.vibe_allowed_dups.json` within the Master Library root. **Portable Backups** (JSON) can be exported/imported manually.
 
+### 7. Portable Library Manifests
+The transfer format is `boombastic.library.export` with `manifest_version: 1` and scopes `selected_tracks`, `playlists`, or `library`. Track records contain title, artist, album, duration, an optional `{provider,id}` source identity, and an explicit ambiguity flag. Playlist records contain only sanitized names, descriptions, and ordered track references. Imports are additive and match existing audio before optionally downloading missing references; no local path, secret, audio blob, playback history, or automatic deletion is allowed.
+
 ---
 
 ## 🔄 Technical Protocols (Strict Adherence)
@@ -236,6 +250,7 @@ Allowed duplicates are identified by normalized keys (derived via `_normalize_fo
 
 ### 2. Threading & Performance
 - **Heavy tasks** (yt-dlp, duplicate scans, discovery, library scans) MUST be threaded; UI updates MUST use `.after(0, callback)`. Blocking the main loop with OS scans is prohibited.
+- **Transfer tasks** (manifest metadata probing, validation, local matching, and file merges) run off the Tk thread; completion dialogs/status mutations return through `.after(0, callback)`.
 - **Progressive UI Loading**: For result-heavy views (Duplicates, Search), rows MUST be inserted in small batches (e.g. 20 tracks / 10ms) using `self.after()` to ensure the main interface remains responsive.
 - **PlaylistArt Performance Protocol**: The `PlaylistArt` widget uses three mandatory optimizations to prevent scroll lag:
     1. **Configure size-guard**: `<Configure>` only triggers a redraw if the widget's `width` or `height` actually changed (not on scroll-induced reflows).

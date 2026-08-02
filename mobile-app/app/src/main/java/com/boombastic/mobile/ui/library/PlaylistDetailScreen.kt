@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -86,6 +87,8 @@ fun PlaylistDetailScreen(
     playlistId: Long,
     musicController: MusicController,
     onBack: () -> Unit,
+    onExportPlaylist: (Long) -> Unit = {},
+    onExportTracks: (List<String>) -> Unit = {},
     virtualName: String? = null,
     virtualDescription: String = "",
     virtualTracks: List<Track>? = null
@@ -191,6 +194,16 @@ fun PlaylistDetailScreen(
                         modifier = Modifier.size(Dimens.iconSize)
                     )
                 }
+                if (virtualTracks == null && playlistId > 0L) {
+                    IconButton(onClick = { onExportPlaylist(playlistId) }) {
+                        Icon(
+                            imageVector = Icons.Filled.UploadFile,
+                            contentDescription = "Export playlist",
+                            tint = AccentGreen,
+                            modifier = Modifier.size(Dimens.iconSize)
+                        )
+                    }
+                }
                 Spacer(modifier = Modifier.weight(1f))
             }
         }
@@ -224,6 +237,10 @@ fun PlaylistDetailScreen(
                                 Toast.makeText(context, "Created ${playlist.name}", Toast.LENGTH_SHORT).show()
                             }
                         }
+                        exitSelection()
+                    },
+                    onExportTracks = { uris ->
+                        onExportTracks(uris)
                         exitSelection()
                     },
                     onRemoveTracks = { uris ->

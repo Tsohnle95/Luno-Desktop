@@ -125,6 +125,42 @@ class SettingsView(tk.Frame):
                           fg=BG, bg=TEXT2, padx=20, pady=10, cursor="hand2")
         ch_btn.pack(side="left", padx=(12, 0))
         ch_btn.bind("<Button-1>", lambda e: self.controller._change_master_library())
+
+        transfer_f = tk.Frame(lib_box, bg=BG, pady=10)
+        transfer_f.pack(fill="x")
+        tk.Label(
+            transfer_f,
+            text="Move playlists or library metadata between BoomBastic installs",
+            font=("Helvetica Neue", 10),
+            fg=TEXT3,
+            bg=BG,
+        ).pack(side="left")
+
+        import_btn = tk.Label(
+            transfer_f,
+            text="IMPORT JSON",
+            font=("Helvetica Neue", 10, "bold"),
+            fg=BG,
+            bg=TEXT2,
+            padx=16,
+            pady=8,
+            cursor="hand2",
+        )
+        import_btn.pack(side="right", padx=(8, 0))
+        import_btn.bind("<Button-1>", lambda e: self.controller._import_json())
+
+        export_btn = tk.Label(
+            transfer_f,
+            text="EXPORT LIBRARY",
+            font=("Helvetica Neue", 10, "bold"),
+            fg=BG,
+            bg=GREEN,
+            padx=16,
+            pady=8,
+            cursor="hand2",
+        )
+        export_btn.pack(side="right")
+        export_btn.bind("<Button-1>", lambda e: self.controller._export_full_library_json())
         
         art_f = tk.Frame(lib_box, bg=BG, pady=10)
         art_f.pack(fill="x")

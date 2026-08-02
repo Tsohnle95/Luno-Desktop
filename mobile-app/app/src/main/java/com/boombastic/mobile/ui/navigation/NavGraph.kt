@@ -17,6 +17,7 @@ import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.ui.discover.DiscoverScreen
 import com.boombastic.mobile.ui.downloads.DownloadsScreen
+import com.boombastic.mobile.ui.export.ExportImportScreen
 import com.boombastic.mobile.ui.home.HomeScreen
 import com.boombastic.mobile.ui.library.LibraryScreen
 import com.boombastic.mobile.ui.library.DuplicateScreen
@@ -35,6 +36,7 @@ object Routes {
     const val DUPLICATES = "duplicates"
     const val FULL_PLAYER = "full_player"
     const val MADE_FOR_YOU = "made_for_you"
+    const val EXPORT_IMPORT = "export_import"
 
     const val PLAYLIST_DETAIL = "playlist/{playlistId}"
     fun playlistDetail(playlistId: Long) = "playlist/$playlistId"
@@ -48,7 +50,9 @@ fun BoomBasticNavHost(
     onCreatePlaylist: () -> Unit,
     onPlay: (List<MediaTrack>, Int, Boolean) -> Unit = { _, _, _ -> },
     onNavigate: () -> Unit = {},
-    onDiscoverLoadingChanged: (Boolean) -> Unit = {}
+    onDiscoverLoadingChanged: (Boolean) -> Unit = {},
+    onExportTracks: (List<String>) -> Unit = {},
+    onExportPlaylists: (List<Long>) -> Unit = {}
 ) {
     val app = LocalContext.current.applicationContext as BoomBasticApp
     val madeForYouTracks by app.madeForYouTracks.collectAsState()
@@ -105,10 +109,20 @@ fun BoomBasticNavHost(
                 }
             )
         }
+        composable(Routes.EXPORT_IMPORT) {
+            ExportImportScreen(
+                onBack = {
+                    onNavigate()
+                    navController.navigateUp()
+                }
+            )
+        }
         composable(Routes.LIBRARY) {
             LibraryScreen(
                 musicController = musicController,
                 onPlay = onPlay,
+                onExportTracks = onExportTracks,
+                onExportPlaylists = onExportPlaylists,
                 onOpenPlaylist = { playlistId ->
                     onNavigate()
                     navController.navigate(Routes.playlistDetail(playlistId))
@@ -161,7 +175,9 @@ fun BoomBasticNavHost(
                 onBack = {
                     onNavigate()
                     navController.navigateUp()
-                }
+                },
+                onExportPlaylist = { id -> onExportPlaylists(listOf(id)) },
+                onExportTracks = onExportTracks
             )
         }
     }

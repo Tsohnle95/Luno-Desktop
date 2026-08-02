@@ -95,6 +95,7 @@ import com.boombastic.mobile.BuildConfig
 import com.boombastic.mobile.R
 import com.boombastic.mobile.data.update.GitHubReleaseService
 import com.boombastic.mobile.data.update.ReleaseCheckResult
+import com.boombastic.mobile.data.export.LibraryManifest
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
 import com.boombastic.mobile.playback.NotificationPermissionPolicy
@@ -159,6 +160,8 @@ fun MainShell(musicController: MusicController) {
     var updateDialogState by remember { mutableStateOf<UpdateDialogState?>(null) }
     var showSideloadWarning by remember { mutableStateOf(false) }
     var pendingReleaseUrl by remember { mutableStateOf<String?>(null) }
+    var pendingManifestExport by remember { mutableStateOf<LibraryManifest?>(null) }
+    var manifestExportBusy by remember { mutableStateOf(false) }
     var expandedSettingsSection by rememberSaveable { mutableStateOf<String?>(null) }
     val hasActiveItem by musicController.hasActiveItem.collectAsState()
     val currentBackStackState = navController.currentBackStackEntryAsState()
@@ -269,6 +272,79 @@ fun MainShell(musicController: MusicController) {
     ) { uri: android.net.Uri? ->
         if (uri != null) {
             importManager.start(uri)
+        }
+    }
+
+    val manifestExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        val manifest = pendingManifestExport
+        if (uri == null || manifest == null) {
+            pendingManifestExport = null
+            manifestExportBusy = false
+        } else {
+            scope.launch {
+                try {
+                    val json = app.libraryTransferRepository.encode(manifest)
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { output ->
+                            output.write(json.toByteArray(Charsets.UTF_8))
+                        } ?: error("Could not open the selected file")
+                    }
+                    Toast.makeText(
+                        context,
+                        "Exported ${manifest.tracks.size} track reference(s)",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } catch (error: Exception) {
+                    Toast.makeText(
+                        context,
+                        "Export failed: ${error.message ?: "Could not write file"}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } finally {
+                    pendingManifestExport = null
+                    manifestExportBusy = false
+                }
+            }
+        }
+    }
+
+    fun exportTracks(trackUris: List<String>) {
+        if (manifestExportBusy || trackUris.isEmpty()) return
+        scope.launch {
+            manifestExportBusy = true
+            try {
+                pendingManifestExport = app.libraryTransferRepository
+                    .buildSelectedTracksManifest(trackUris)
+                manifestExportLauncher.launch("boombastic-selected.json")
+            } catch (error: Exception) {
+                manifestExportBusy = false
+                Toast.makeText(
+                    context,
+                    "Export failed: ${error.message ?: "Could not build manifest"}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    fun exportPlaylists(playlistIds: List<Long>) {
+        if (manifestExportBusy || playlistIds.isEmpty()) return
+        scope.launch {
+            manifestExportBusy = true
+            try {
+                pendingManifestExport = app.libraryTransferRepository
+                    .buildPlaylistsManifest(playlistIds)
+                manifestExportLauncher.launch("boombastic-playlists.json")
+            } catch (error: Exception) {
+                manifestExportBusy = false
+                Toast.makeText(
+                    context,
+                    "Export failed: ${error.message ?: "Could not build manifest"}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 
@@ -398,7 +474,10 @@ fun MainShell(musicController: MusicController) {
                         label = "Export / Import",
                         onClick = {
                             scope.launch { drawerState.close() }
-                            Toast.makeText(context, "Export / Import coming soon", Toast.LENGTH_SHORT).show()
+                            transitionMask = true
+                            navController.navigate(Routes.EXPORT_IMPORT) {
+                                launchSingleTop = true
+                            }
                         }
                     )
                 }
@@ -745,6 +824,8 @@ fun MainShell(musicController: MusicController) {
                             onCreatePlaylist = { showCreateSheet = true },
                             onPlay = onPlay,
                             onNavigate = { transitionMask = true },
+                            onExportTracks = ::exportTracks,
+                            onExportPlaylists = ::exportPlaylists,
                             onDiscoverLoadingChanged = { loading ->
                                 discoverLoadingState.value = loading
                                 if (loading && navController.currentDestination?.route == Routes.DISCOVER) {

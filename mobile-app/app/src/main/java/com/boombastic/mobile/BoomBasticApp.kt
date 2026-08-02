@@ -11,6 +11,7 @@ import com.boombastic.mobile.data.repository.DiscoveryRepository
 import com.boombastic.mobile.data.repository.DownloadRepository
 import com.boombastic.mobile.data.repository.LibraryData
 import com.boombastic.mobile.data.repository.LibraryRepository
+import com.boombastic.mobile.data.repository.LibraryTransferRepository
 import com.boombastic.mobile.data.repository.MusicFolderRepository
 import com.boombastic.mobile.data.repository.PlaylistRepository
 import com.boombastic.mobile.data.discovery.RecommendationArtworkService
@@ -38,6 +39,8 @@ class BoomBasticApp : Application(), Configuration.Provider {
     lateinit var playlistRepository: PlaylistRepository
         private set
     lateinit var downloadRepository: DownloadRepository
+        private set
+    lateinit var libraryTransferRepository: LibraryTransferRepository
         private set
     lateinit var musicFolderRepository: MusicFolderRepository
         private set
@@ -78,6 +81,7 @@ class BoomBasticApp : Application(), Configuration.Provider {
             context = this,
             playlistDao = database.playlistDao()
         )
+        libraryTransferRepository = LibraryTransferRepository(database, downloadRepository)
         musicFolderRepository = MusicFolderRepository(this)
         discoveryRepository = DiscoveryRepository(this)
         recommendationArtworkService = RecommendationArtworkService()
