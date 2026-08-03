@@ -1,13 +1,13 @@
 [app]
 
 # (str) Title of your application
-title = Vibe Music Player
+title = Luno
 
 # (str) Package name
-package.name = vibe
+package.name = luno
 
 # (str) Package domain (needed for android/ios packaging)
-package.domain = org.vibe
+package.domain = com.ty.luno
 
 # (str) Source code where the main.py lives
 source.dir = .

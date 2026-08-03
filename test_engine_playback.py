@@ -1,5 +1,5 @@
 """
-Deterministic unit tests for VibeEngine playback state, heartbeat rescheduling,
+Deterministic unit tests for LunoEngine playback state, heartbeat rescheduling,
 completion detection, repeat, seek, pause/resume, and multi-track transitions.
 
 Uses mocked pygame.mixer, time.monotonic, and controller so no audio device or
@@ -109,7 +109,7 @@ class MonotonicClock:
 # Fake controller (minimal Tk-like surface)
 # ---------------------------------------------------------------------------
 def make_fake_controller():
-    """Build a SimpleNamespace that quacks like VibeMusicPlayer for engine use."""
+    """Build a SimpleNamespace that quacks like LunoMusicPlayer for engine use."""
     scrub = types.SimpleNamespace()
     scrub._val = 0
     def scrub_set(v):
@@ -174,7 +174,7 @@ def make_fake_controller():
 
 
 # We need to replace pygame in the engine module's namespace before any
-# VibeEngine instantiation.  We do this once at module level, then
+# LunoEngine instantiation.  We do this once at module level, then
 # reset state per test via setUp.
 import engine
 
@@ -193,7 +193,7 @@ engine.MutagenFile = None
 # since engine module was already imported for the 'from engine import ...' in music_player
 
 
-class VibeEnginePlaybackTest(unittest.TestCase):
+class LunoEnginePlaybackTest(unittest.TestCase):
 
     def setUp(self):
         """Create a fresh engine with mocked mixer, clock, and controller."""
@@ -212,8 +212,8 @@ class VibeEnginePlaybackTest(unittest.TestCase):
         self.controller._after_queue = []
         
         # Reinitialize mixer_ready for each test by creating engine
-        # But VibeEngine.__init__ calls pygame.mixer.quit/init which our fake handles
-        self.engine = engine.VibeEngine(self.controller)
+        # But LunoEngine.__init__ calls pygame.mixer.quit/init which our fake handles
+        self.engine = engine.LunoEngine(self.controller)
         # Clear any pending after calls from __init__'s _poll
         self.controller._after_queue.clear()
         # Ensure mixer is ready

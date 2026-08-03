@@ -19,7 +19,7 @@ from typing import Any, Callable, Iterable
 from utils import split_track_name
 
 
-MANIFEST_FORMAT = "boombastic.library.export"
+MANIFEST_FORMAT = "luno.library.export"
 MANIFEST_VERSION = 1
 MAX_MANIFEST_BYTES = 10 * 1024 * 1024
 MAX_TRACKS = 50_000

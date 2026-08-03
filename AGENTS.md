@@ -1,4 +1,4 @@
-# AGENTS.md - Boombastic Operating Rules
+# AGENTS.md - Luno Operating Rules
 
 ## Start Here
 

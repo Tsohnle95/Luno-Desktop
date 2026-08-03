@@ -906,7 +906,7 @@ class DownloadView(tk.Frame):
             title="Export Allowed Duplicates Backup",
             defaultextension=".json",
             filetypes=[("JSON", "*.json"), ("All Files", "*.*")],
-            initialfile="vibe_allowed_backup.json"
+            initialfile="luno_allowed_backup.json"
         )
         if not path: return
         try:

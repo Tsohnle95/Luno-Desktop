@@ -21,8 +21,8 @@ Generate the key once and keep the keystore and passwords backed up securely. Lo
 
 ```bash
 keytool -genkeypair -v \
-  -keystore boombastic-release.jks \
-  -alias boombastic \
+  -keystore luno-release.jks \
+  -alias luno \
   -keyalg RSA \
   -keysize 4096 \
   -validity 10000
@@ -36,15 +36,15 @@ In the repository, open **Settings → Secrets and variables → Actions → New
 
 | Secret | Value |
 |---|---|
-| `ANDROID_RELEASE_KEYSTORE_BASE64` | Base64 contents of `boombastic-release.jks` |
+| `ANDROID_RELEASE_KEYSTORE_BASE64` | Base64 contents of `luno-release.jks` |
 | `ANDROID_RELEASE_STORE_PASSWORD` | Keystore password |
-| `ANDROID_RELEASE_KEY_ALIAS` | `boombastic` or the alias chosen above |
+| `ANDROID_RELEASE_KEY_ALIAS` | `luno` or the alias chosen above |
 | `ANDROID_RELEASE_KEY_PASSWORD` | Key password |
 
 On macOS, copy the encoded keystore with:
 
 ```bash
-base64 < boombastic-release.jks | pbcopy
+base64 < luno-release.jks | pbcopy
 ```
 
 ## Publish A Release
@@ -61,7 +61,7 @@ git push origin v0.1.0
 
 5. GitHub Actions builds `testDebugUnitTest`, `lintDebug`, and the release APK.
 6. The workflow verifies that the tag matches `versionName` and verifies the APK signature.
-7. A GitHub Release is created automatically with `BoomBastic-Android-v0.1.0.apk` attached.
+7. A GitHub Release is created automatically with `Luno-Android-v0.1.0.apk` attached.
 
 The Android app's **Settings → App → Check for updates** entry reads this release tag and finds the attached APK. **Download APK** downloads it into the app cache and opens Android's package installer; the first install may require enabling **Allow Luno to install unknown apps**. Users can also download it directly from the release page.
 

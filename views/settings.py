@@ -130,7 +130,7 @@ class SettingsView(tk.Frame):
         transfer_f.pack(fill="x")
         tk.Label(
             transfer_f,
-            text="Move playlists or library metadata between BoomBastic installs",
+            text="Move playlists or library metadata between Luno installs",
             font=("Helvetica Neue", 10),
             fg=TEXT3,
             bg=BG,
@@ -299,7 +299,7 @@ class SettingsView(tk.Frame):
             
         bars = 48
         bar_w = max(1, (w - bars) // bars)
-        c1, _ = playlist_gradient(self.controller._selected_playlist or "vibe")
+        c1, _ = playlist_gradient(self.controller._selected_playlist or "luno")
         for i in range(bars):
             if self.controller.engine.playing and not self.controller.engine.paused:
                 height = random.randint(5, h-5)

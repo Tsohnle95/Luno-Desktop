@@ -1,14 +1,14 @@
 #!/opt/homebrew/bin/python3.12
 """
-Vibe Music Player v4
+Luno v4
 - Fixed library search (exact title/artist matching)
 - Round play button via Canvas
 - Modern thin scrubber and volume slider via Canvas (not ttk Scale)
 - Duplicate song detection and management
 - Gradient playlist art headers
-build command: pyinstaller --noconsole --windowed --noconfirm --clean --name "Vibe" music_player.py
+build command: pyinstaller --noconsole --windowed --noconfirm --clean --name "Luno" music_player.py
 pyinstaller --noconsole --windowed --noconfirm --clean 
-  --name "DevTunes" 
+  --name "Luno"
   --icon "icon.icns" 
   music_player.py
 
@@ -38,7 +38,7 @@ from views.settings import SettingsView
 from engine import (
     scan_library, probe_soundcloud, parse_exportify_csv, find_duplicates,
     PYGAME_AVAILABLE, YT_DLP_AVAILABLE, MUTAGEN_AVAILABLE,
-    pygame, yt_dlp, MP3, VibeEngine, DiscoveryService
+    pygame, yt_dlp, MP3, LunoEngine, DiscoveryService
 )
 
 from views.discover import DiscoverView
@@ -61,7 +61,7 @@ except Exception as e:
     print(f"Error creating library folder: {e}")
 
 WATCH_ROOTS = [MUSIC_ROOT]
-CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".vibe_config.json")
+CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".luno_config.json")
 # ──────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -193,7 +193,7 @@ class ArtCache:
             self.fetching.discard((path, size))
 
 # ── Main App ──────────────────────────────────────────────────────────────
-class VibeMusicPlayer(tk.Tk):
+class LunoMusicPlayer(tk.Tk):
     def _ctx_set_playlist_url(self, pl_name):
         """Prompt user to set or remove a playlist URL."""
         current = self._get_playlist_url(pl_name) or ""
@@ -285,7 +285,7 @@ lder."""
             self._refresh_library()
             messagebox.showinfo("Success", f"Copied {count} songs to '{target}'")
 
-        # Styled Green Button (Matching the rest of the Vibe UI)
+        # Styled Green Button (Matching the rest of the Luno UI)
         btn = tk.Label(dlg, text="Confirm Transfer", font=("Helvetica Neue", 11, "bold"),
                        fg=SIDEBAR, bg=GREEN, padx=30, pady=12, cursor="hand2")
         btn.pack(pady=25)
@@ -325,7 +325,7 @@ lder."""
         self.MUSIC_ROOT = MUSIC_ROOT
         
         # 1. This happens the second you open the app
-        self.title("BoomTunes") 
+        self.title("Luno")
         
         try:
             self.create_command('tkAboutDialog', self._show_about)
@@ -394,7 +394,7 @@ lder."""
         # 3. CONFIGURE UI & ENGINE
         self._configure_styles()
         self._build_ui()
-        self.engine = VibeEngine(self)
+        self.engine = LunoEngine(self)
         
         # Restore volume from config (if loaded)
         if hasattr(self, "engine"):
@@ -430,7 +430,7 @@ lder."""
 
     def _show_about(self):
         # 2. This ONLY happens if you click "About Dev Tunes" in the menu
-        messagebox.showinfo("BoomTunes", "BoomTunes v4\nProfessional Music Player")
+        messagebox.showinfo("Luno", "Luno v4\nProfessional Music Player")
 
     def _fetch_missing_artwork(self, on_progress, on_complete):
         """Batch process to fetch missing album art for entire library"""
@@ -658,7 +658,7 @@ lder."""
         # 1. Logo area (always top)
         logo_f = tk.Frame(parent, bg=SIDEBAR)
         logo_f.pack(fill="x", padx=24, pady=(28,24))
-        tk.Label(logo_f, text="BoomTunes", font=("Helvetica Neue",24,"bold"),
+        tk.Label(logo_f, text="Luno", font=("Helvetica Neue",24,"bold"),
                  fg=TEXT, bg=SIDEBAR).pack(side="left")
         tk.Label(logo_f, text="▮", font=("Helvetica Neue",9),
                  fg=GREEN, bg=SIDEBAR).pack(side="left", padx=(3,0), pady=(10,0))
@@ -1557,14 +1557,14 @@ lder."""
             messagebox.showinfo("Transfer in progress", "Wait for the current library transfer to finish.")
             return
         initial = {
-            "selected_tracks": "boombastic-selected.json",
-            "playlists": "boombastic-playlists.json",
-            "library": "boombastic-library.json",
-        }.get(scope, "boombastic-library.json")
+            "selected_tracks": "luno-selected.json",
+            "playlists": "luno-playlists.json",
+            "library": "luno-library.json",
+        }.get(scope, "luno-library.json")
         path = filedialog.asksaveasfilename(
             title="Export Library JSON",
             defaultextension=".json",
-            filetypes=[("BoomBastic JSON", "*.json"), ("JSON", "*.json"), ("All Files", "*.*")],
+            filetypes=[("Luno JSON", "*.json"), ("JSON", "*.json"), ("All Files", "*.*")],
             initialfile=initial,
         )
         if not path:
@@ -1626,7 +1626,7 @@ lder."""
             return
         path = filedialog.askopenfilename(
             title="Import Library JSON",
-            filetypes=[("BoomBastic JSON", "*.json"), ("JSON", "*.json"), ("All Files", "*.*")],
+            filetypes=[("Luno JSON", "*.json"), ("JSON", "*.json"), ("All Files", "*.*")],
         )
         if not path:
             return
@@ -2001,7 +2001,7 @@ lder."""
         """Deletes the files AND the folder."""
         # 1. Safety Block: Identify names that represent protected folders
         root_name = os.path.basename(MUSIC_ROOT)
-        protected_names = ["All Music", "Unsorted", root_name, "Vibe_Library"]
+        protected_names = ["All Music", "Unsorted", root_name, "Luno_Library"]
 
         if pl_name in protected_names:
             messagebox.showwarning("Access Denied", 
@@ -2056,7 +2056,7 @@ lder."""
     def _find_playlist_dir(self, pl_name):
         # If it's one of the root-level names, return the MUSIC_ROOT
         root_name = os.path.basename(MUSIC_ROOT)
-        if pl_name in ["Unsorted", "Vibe_Library", root_name]:
+        if pl_name in ["Unsorted", "Luno_Library", root_name]:
             return MUSIC_ROOT
             
         # Otherwise, look for the subfolder
@@ -2408,7 +2408,7 @@ lder."""
             self._mp_rate_key = MPNowPlayingInfoPropertyPlaybackRate
             self._mp_elapsed_key = MPNowPlayingInfoPropertyElapsedPlaybackTime
             self._mp_info_center = MPNowPlayingInfoCenter.defaultCenter()
-            self._mp_info_center.setNowPlayingInfo_({self._mp_title_key: "BoomTunes"})
+            self._mp_info_center.setNowPlayingInfo_({self._mp_title_key: "Luno"})
             self._remote_commands_ready = True
         except Exception as e:
             self._log_error("GlobalKeys", f"Now Playing setup failed: {e}")
@@ -2481,7 +2481,7 @@ lder."""
         
     # ── PERSISTENCE ────────────────────────────────────────────────────────
     def _load_config(self):
-        """Restores application state from ~/.vibe_config.json"""
+        """Restores application state from ~/.luno_config.json"""
         if not os.path.exists(CONFIG_FILE):
             return
             
@@ -2525,7 +2525,7 @@ lder."""
             print(f"Failed to load config: {e}")
 
     def _save_config(self):
-        """Persists current state to ~/.vibe_config.json"""
+        """Persists current state to ~/.luno_config.json"""
         cfg = {
             "music_root": self.MUSIC_ROOT,
             "lastfm_key": self.lastfm_key_var.get(),
@@ -2543,7 +2543,7 @@ lder."""
 
     # ── PLAYLIST URL PERSISTENCE ─────────────────────────────────────────────
     def _playlist_meta_path(self):
-        return os.path.join(self.MUSIC_ROOT, ".vibe_playlist_urls.json")
+        return os.path.join(self.MUSIC_ROOT, ".luno_playlist_urls.json")
 
     def _load_playlist_meta(self):
         path = self._playlist_meta_path()
@@ -2609,5 +2609,5 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 if __name__ == "__main__":
-    app = VibeMusicPlayer()
+    app = LunoMusicPlayer()
     app.mainloop()

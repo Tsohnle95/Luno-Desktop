@@ -192,7 +192,7 @@ def find_duplicates(library, allowed_keys=None):
     # Only keep groups with 2+ entries
     return [group for group in buckets.values() if len(group) > 1]
 
-class VibeEngine:
+class LunoEngine:
     """The central heart of playback, managing audio state and polling."""
     def __init__(self, controller):
         self.c = controller
@@ -558,7 +558,7 @@ class VibeEngine:
 
     def _load_allowed_dupes(self):
         import json
-        path = os.path.join(self.c.MUSIC_ROOT, ".vibe_allowed_dups.json")
+        path = os.path.join(self.c.MUSIC_ROOT, ".luno_allowed_dups.json")
         if os.path.exists(path):
             try:
                 with open(path, "r") as f:
@@ -567,7 +567,7 @@ class VibeEngine:
 
     def save_allowed_dupes(self):
         import json
-        path = os.path.join(self.c.MUSIC_ROOT, ".vibe_allowed_dups.json")
+        path = os.path.join(self.c.MUSIC_ROOT, ".luno_allowed_dups.json")
         try:
             with open(path, "w") as f:
                 json.dump(list(self.allowed_dupe_keys), f)

@@ -10,7 +10,7 @@ import threading
 
 # Default configurations
 DEFAULT_MUSIC_ROOT = os.path.join(os.path.expanduser("~"), "Music", "app_music_folder")
-CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".vibe_config.json")
+CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".luno_config.json")
 
 from concurrent.futures import ThreadPoolExecutor
 from theme import playlist_gradient
@@ -57,7 +57,7 @@ class FletArtCache:
                 except Exception as ex:
                     print(f"Error in art callback fallback: {ex}")
 
-class FletVibePlayer:
+class FletLunoPlayer:
     def __init__(self, page: ft.Page):
         self.page = page
         
@@ -103,7 +103,7 @@ class FletVibePlayer:
         self.audio_thread.start()
         
         # Setup page configuration
-        self.page.title = "Vibe Music Player (Flet Edition)"
+        self.page.title = "Luno (Flet Edition)"
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.bgcolor = "#121212"
         self.page.padding = 0
@@ -617,7 +617,7 @@ class FletVibePlayer:
         # 1. SIDEBAR (Desktop layout)
         self.sidebar_logo = ft.Container(
             content=ft.Row([
-                ft.Text("Vibe", font_family="Outfit", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                ft.Text("Luno", font_family="Outfit", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
                 ft.Text("▮", size=10, color="#1DB954")
             ], spacing=2, vertical_alignment=ft.CrossAxisAlignment.END),
             padding=ft.Padding.only(left=24, top=24, bottom=16)
@@ -784,7 +784,7 @@ class FletVibePlayer:
                     border_radius=8,
                     content=ft.Column([
                         ft.Text(f"Config stored: {CONFIG_FILE}", size=13, color=ft.Colors.WHITE54),
-                        ft.Text(f"Vibe Music Player v4.0.0 (Flet)", size=13, color=ft.Colors.WHITE54)
+                        ft.Text(f"Luno v4.0.0 (Flet)", size=13, color=ft.Colors.WHITE54)
                     ], spacing=8)
                 )
             ], spacing=16),
@@ -1372,7 +1372,7 @@ class FletVibePlayer:
             self.page.show_snack_bar(ft.SnackBar(ft.Text("Invalid folder path!"), open=True))
 
 def main(page: ft.Page):
-    FletVibePlayer(page)
+    FletLunoPlayer(page)
 
 if __name__ == "__main__":
     ft.run(main)

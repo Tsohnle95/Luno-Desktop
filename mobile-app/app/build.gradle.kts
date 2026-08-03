@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.boombastic.mobile"
+    namespace = "com.luno.mobile"
     compileSdk = 35
 
     // Release signing is supplied by CI environment variables.  Keeping the
@@ -24,7 +24,7 @@ android {
     ).all { !it.isNullOrBlank() }
 
     defaultConfig {
-        applicationId = "com.boombastic.mobile"
+        applicationId = "com.luno.mobile"
         minSdk = 29
         targetSdk = 35
         versionCode = 1

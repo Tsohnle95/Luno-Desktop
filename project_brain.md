@@ -1,4 +1,4 @@
-# 🧠 Project Brain: Vibe Music Player (Advanced Edition)
+# 🧠 Project Brain: Luno (Advanced Edition)
 
 > [!IMPORTANT]
 > **MAINTENANCE INSTRUCTIONS FOR AI/HUMANS:**
@@ -11,14 +11,14 @@
 > 6. **Keep it High-Level**: Do not document every method. Only document component interfaces (e.g., how the Controller broadcasts to Views).
 > 7. **Verify Constraints**: Always ensure the "Technical Protocols" (44.1kHz, Threading) reflect the current reality of the engine.
 
-This document is a high-level architectural map for the **Vibe Music Player**. It provides the technical context needed for an AI assistant to understand the codebase, state flows, and logic without ingesting every file.
+This document is a high-level architectural map for the **Luno**. It provides the technical context needed for an AI assistant to understand the codebase, state flows, and logic without ingesting every file.
 
 ---
 
 ## 📁 File Tree
 
 ```
-├── music_player.py           # Main entry point — Controller (VibeMusicPlayer)
+├── music_player.py           # Main entry point — Controller (LunoMusicPlayer)
 ├── engine.py                 # Audio engine + Discovery + Library scanning
 ├── downloader.py             # yt-dlp download wrapper (Downloader class)
 ├── theme.py                  # Color palette + playlist gradient system
@@ -29,7 +29,7 @@ This document is a high-level architectural map for the **Vibe Music Player**. I
 ├── Pixel.png                 # User-provided icon artwork (kept; NOT currently used — the app uses its original vector music-note icon)
 ├── mobile-app-icon.png       # Duplicate copy of the Pixel.png artwork (kept; not used by builds)
 ├── build.command             # Executable macOS build helper; activates .venv then runs PyInstaller spec
-├── DevTunes.spec             # PyInstaller spec for macOS build
+├── Luno.spec             # PyInstaller spec for macOS build
 ├── .gitignore                # Ignores local envs, Python caches, build/dist artifacts, and OS metadata
 ├── project_brain.md          # This document
 ├── mobile-app/               # Native Android app; see mobile-app/project_brain.md for its full architecture/context
@@ -69,11 +69,11 @@ Generated/local directories are intentionally omitted from the tracked tree: `.v
 ## 📦 Build & Packaging (PyInstaller)
 To bundle the application as a standalone executable (`.app` on macOS or `.exe` on Windows), follow these protocols:
 - **Local Environment Setup**: Create the local env with `python3.12 -m venv .venv`, then install dependencies via `.venv/bin/python -m pip install -r requirements.txt`. The `.venv/` directory is local-only and ignored by Git.
-- **Executable Build Helper**: `build.command` is executable (`100755`) and can be run directly/double-clicked on macOS. It activates `.venv`, runs `pyinstaller --clean --noconfirm DevTunes.spec`, then opens `dist/BoomTunes.app` if the build succeeds.
-- **macOS Build Command**: Use `python -m PyInstaller --noconsole --windowed --noconfirm --clean --name "BoomTunes" --icon "icon.icns" --add-data "views:views" music_player.py`.
-- **macOS Bundle Identifier**: The `DevTunes.spec` file sets `bundle_identifier='com.ty.boomtunes'`. This was changed from `DevTunes` / `com.ty.devTunes` to avoid TCC permission confusion after the rename.
+- **Executable Build Helper**: `build.command` is executable (`100755`) and can be run directly/double-clicked on macOS. It activates `.venv`, runs `pyinstaller --clean --noconfirm Luno.spec`, then opens `dist/Luno.app` if the build succeeds.
+- **macOS Build Command**: Use `python -m PyInstaller --noconsole --windowed --noconfirm --clean --name "Luno" --icon "icon.icns" --add-data "views:views" music_player.py`.
+- **macOS Bundle Identifier**: The `Luno.spec` file sets `bundle_identifier='com.ty.luno'`. The bundle identifier is now Luno's stable macOS application identifier.
 - **PyInstaller hiddenimports**: The spec includes `'Foundation', 'objc', 'Quartz', 'AppKit'` to ensure PyObjC bridges resolve `True` at runtime in the bundled app.
-- **Windows Build Command**: Use `python -m PyInstaller --noconsole --windowed --noconfirm --clean --name "BoomTunes" --icon "icon.ico" --add-data "views;views" music_player.py`. **Note:** This *must* be run on a Windows OS. Windows uses a semicolon `;` as a path separator and requires an `.ico` icon file.
+- **Windows Build Command**: Use `python -m PyInstaller --noconsole --windowed --noconfirm --clean --name "Luno" --icon "icon.ico" --add-data "views;views" music_player.py`. **Note:** This *must* be run on a Windows OS. Windows uses a semicolon `;` as a path separator and requires an `.ico` icon file.
 - **Package Integrity**: The `views/` directory must contain an `__init__.py` to be correctly recognized as a package during bundling.
 - **Path Handling**: Always use `utils.resource_path()` for assets to ensure they are found within the `sys._MEIPASS` temporary directory at runtime.
 - **Environment**: Always run the build from within `.venv` to ensure all dependencies (`pyinstaller`, `pygame`, `yt-dlp`, `requests`, PyObjC frameworks, etc.) are linked. If you add a new dependency, update `requirements.txt` and reinstall inside `.venv` before building.
@@ -101,21 +101,21 @@ The following must be available in `PATH` for full functionality:
 ---
 
 ## 🏗 High-Level Architecture: CVE Pattern
-The project follows a **Controller-View-Engine (CVE)** pattern. All stateful preferences (API keys, library paths, volume) are persisted in `~/.vibe_config.json` for session continuity, independent of the music library's location.
+The project follows a **Controller-View-Engine (CVE)** pattern. All stateful preferences (API keys, library paths, volume) are persisted in `~/.luno_config.json` for session continuity, independent of the music library's location.
 
-1.  **Controller (`music_player.py` / `VibeMusicPlayer`)**:
+1.  **Controller (`music_player.py` / `LunoMusicPlayer`)**:
     *   **Shared State**: Holds `_library` (Playlists -> Paths), `tk.Variables` (status, search, etc.), and `_frames`.
     *   **Orchestration**: Manages tab switching (`_show_tab`) and broadcasts state changes to views.
     *   **ArtCache**: A `ThreadPoolExecutor`-backed cache for album art thumbnails, shared across all views.
     *   **Watchdog**: A 30-second `self.after()` polling loop (`_init_watchdog`) that auto-detects filesystem changes by calling `_refresh_library()` in the background. Skipped if a download is in progress.
-2.  **Engine (`engine.py` / `VibeEngine`)**:
+2.  **Engine (`engine.py` / `LunoEngine`)**:
     *   **Audio Logic**: Wraps `pygame.mixer`. Manages the `queue` and track transitions.
     *   **Heartbeat**: A 400ms `poll()` loop that updates the scrubber and checks for track completion.
-    *   **Duplicate Exclusion**: Loads/saves allowed duplicate keys from `.vibe_allowed_dups.json`.
+    *   **Duplicate Exclusion**: Loads/saves allowed duplicate keys from `.luno_allowed_dups.json`.
 3.  **Views (`views/*.py`)**:
     *   **Modular Frames**: Standalone modules that interact with the controller via `self.controller`.
 4.  **Library Transfer (`library_transfer.py`)**:
-     *   Builds and strictly validates the shared `boombastic.library.export` v1 JSON manifest. It contains metadata, ordered playlist memberships, and optional provider IDs only; it never contains audio bytes, local paths, secrets, queue state, or history.
+     *   Builds and strictly validates the shared `luno.library.export` v1 JSON manifest. It contains metadata, ordered playlist memberships, and optional provider IDs only; it never contains audio bytes, local paths, secrets, queue state, or history.
 
 ---
 
@@ -169,7 +169,7 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 - **`theme.py`**: The design system. Defines the full color palette (`BG`, `BG2`, `BG3`, `BG4`, `SIDEBAR`, `PLAYER_BG`, `GREEN`, `TEXT`, `TEXT2`, `TEXT3`, etc.), the `PLAYLIST_GRADIENTS` list (10 curated pairs), and the `playlist_gradient(name)` function which deterministically maps a playlist name to a gradient pair via MD5 hashing.
 - **`widgets.py`**: Custom Canvas components: `RoundButton`, `SlimSlider`, `PlaylistArt` (Spotify-style dynamic 4-quadrant thumbnails via `ArtCache`, with performance-optimized rendering — see Protocols), and **`ModernScrollbar`**.
 - **`engine.py`**: The audio engine and supporting services. Contains:
-  - `VibeEngine`: Wraps `pygame.mixer`. Manages `queue` (list of paths), `queue_idx`, `user_queue_count` (Up Next behavior), `_original_queue` (shuffle restore), `shuffle`, `repeat`, `crossfade_secs`. Methods: `play_with_context()`, `play_current()`, `toggle_play()`, `next_track()`, `prev_track()`, `toggle_shuffle()`, `on_scrub_moved()`, `on_volume_moved()`, `get_position()` (canonical mixer-clock position with monotonic fallback), `_poll()`. Uses `pygame.mixer.music.get_pos()` as the preferred live playback clock, maintains seek/base state for absolute elapsed time after scrubbing, uses `time.monotonic()` only as a safe fallback, probes duration with `mutagen.File`, reschedules heartbeat unconditionally after completion paths, and keeps get_busy mixer-idle detection for unknown-duration tracks.
+  - `LunoEngine`: Wraps `pygame.mixer`. Manages `queue` (list of paths), `queue_idx`, `user_queue_count` (Up Next behavior), `_original_queue` (shuffle restore), `shuffle`, `repeat`, `crossfade_secs`. Methods: `play_with_context()`, `play_current()`, `toggle_play()`, `next_track()`, `prev_track()`, `toggle_shuffle()`, `on_scrub_moved()`, `on_volume_moved()`, `get_position()` (canonical mixer-clock position with monotonic fallback), `_poll()`. Uses `pygame.mixer.music.get_pos()` as the preferred live playback clock, maintains seek/base state for absolute elapsed time after scrubbing, uses `time.monotonic()` only as a safe fallback, probes duration with `mutagen.File`, reschedules heartbeat unconditionally after completion paths, and keeps get_busy mixer-idle detection for unknown-duration tracks.
   - `DiscoveryService`: Last.fm API client. Two-stage: `track.getSimilar` → `artist.getTopTracks` fallback. Cache limited to 10 entries.
   - `scan_library(roots)`: Walks directories, returns `dict[playlist → paths]`.
   - `find_duplicates(library, allowed_keys)`: Groups tracks by `_normalize_for_dupe`.
@@ -206,18 +206,18 @@ When parsing YouTube names or filenames, the app looks for `" - "` to separate A
 ### 3. The Library Dict (`_library`)
 Stores aggregated and folder-specific track paths. Now includes empty directories to support new playlist creation.
 
-### 4. Global Settings (`~/.vibe_config.json`)
+### 4. Global Settings (`~/.luno_config.json`)
 Persisted across sessions: `music_root`, `lastfm_key`, `auto_discovery`, `volume`, `crossfade`, `sleep_timer`, and `global_keys` (media key toggle).
 
 ### 5. Session State
-`VibeEngine` manages the live `queue`, `queue_idx`, `_original_queue` (for shuffle restore), and playback status (`playing`, `paused`).
+`LunoEngine` manages the live `queue`, `queue_idx`, `_original_queue` (for shuffle restore), and playback status (`playing`, `paused`).
 **Queue Architecture**: The system uses a flat `queue` list, but tracks a `user_queue_count` integer to behave like a modern "Up Next" queue. "Play Next" inserts immediately after the current `queue_idx`. "Add to Queue" appends to `queue_idx + 1 + user_queue_count`, ensuring manually queued items play before the rest of the playlist context. `user_queue_count` decrements naturally during track progression and resets on hard skips/context changes.
 
 ### 6. Exclusion Management
-Allowed duplicates are identified by normalized keys (derived via `_normalize_for_dupe`) and persisted in `.vibe_allowed_dups.json` within the Master Library root. **Portable Backups** (JSON) can be exported/imported manually.
+Allowed duplicates are identified by normalized keys (derived via `_normalize_for_dupe`) and persisted in `.luno_allowed_dups.json` within the Master Library root. **Portable Backups** (JSON) can be exported/imported manually.
 
 ### 7. Portable Library Manifests
-The transfer format is `boombastic.library.export` with `manifest_version: 1` and scopes `selected_tracks`, `playlists`, or `library`. Track records contain title, artist, album, duration, an optional `{provider,id}` source identity, and an explicit ambiguity flag. Playlist records contain only sanitized names, descriptions, and ordered track references. Imports are additive and match existing audio before optionally downloading missing references; no local path, secret, audio blob, playback history, or automatic deletion is allowed.
+The transfer format is `luno.library.export` with `manifest_version: 1` and scopes `selected_tracks`, `playlists`, or `library`. Track records contain title, artist, album, duration, an optional `{provider,id}` source identity, and an explicit ambiguity flag. Playlist records contain only sanitized names, descriptions, and ordered track references. Imports are additive and match existing audio before optionally downloading missing references; no local path, secret, audio blob, playback history, or automatic deletion is allowed.
 
 ---
 
@@ -225,7 +225,7 @@ The transfer format is `boombastic.library.export` with `manifest_version: 1` an
 
 ### 1. UI Architecture (Modern Standard)
 - **Global 3-Column Layout**: Uses `tk.PanedWindow` (sashwidth=3, bg=BORDER) for independent resizing.
-    - **Sidebar**: Nav (Adaptive) | Playlists (Vertical Pane). **Minimum width: 240px** to prevent the "DevTunes" logo from being clipped.
+    - **Sidebar**: Nav (Adaptive) | Playlists (Vertical Pane). **Minimum width: 240px** to prevent the "Luno" logo from being clipped.
     - **Body**: Persistent center column for tabs (minsize=400).
     - **Queue**: Persistent right column (Canvas-based, minsize=40). Spans full app height.
 - **Adaptive Sidebar**: Navigation items (6 total: Home, Recent, Artists, Discover, Downloader, Settings) collapse into a single "☰ Menu" button if the top pane height is < 275px. Defaults to a fixed 280px height for the Nav section at startup for minimal spacing to the library panel.
@@ -242,7 +242,7 @@ The transfer format is `boombastic.library.export` with `manifest_version: 1` an
 - **URL Sanitization**: Validates that inputs start with `http` before processing to prevent terminal noise or garbage text from triggering engine errors.
 - **Playlist Persistence**: Forced parsing of `list=` parameters in YouTube URLs to ensure full playlist extraction even when pointing to a specific video.
 - **Discovery Protocol**: Employs **Last.fm `track.getSimilar`** API for Spotify-style recommendations with an **`artist.getTopTracks` fallback** for niche tracks. Features a **Discovery Hub** (`views/discover.py`) with a dedicated navigation tab. Supports both **Automatic** (trigger on track start) and **Manual** (trigger via "✨ Get Similar Tracks" button in Library—now with **Smart Selection** that targets active library rows if nothing is playing). Implements a **query cache** to minimize API redundancy. **Duplicate Check**: All recommendations are cross-referenced against a normalized index of the user's library (`artist - title`) and filtered out to ensure only new music is shown.
-- **Background Media Keys (macOS)**: Uses `MPRemoteCommandCenter` in the primary app process (no subprocess listener). When PyObjC and MediaPlayer are available, `playCommand`, `pauseCommand`, `togglePlayPauseCommand`, `nextTrackCommand`, and `previousTrackCommand` are registered with retained handler blocks/tokens via `addTargetWithHandler_`. Callbacks only enqueue onto a thread-safe `queue.SimpleQueue` and return `MPRemoteCommandHandlerStatus.Success` promptly. A Tk `after` timer (`_poll_media_commands`, 50 ms) drains the queue and dispatches to `_media_play`/`_media_pause`/`_media_toggle_play`/`engine.next_track`/`engine.prev_track`. Feature-detects PyObjC/MediaPlayer and degrades gracefully when unavailable. Global keys toggle (`global_keys_var`) registers/unregisters handlers via `removeTarget_`. Now Playing metadata (title, artist, duration, elapsed, playback rate) is published truthfully from engine state. Rate is 1.0 when actively playing, 0.0 when paused/stopped. Elapsed carries through pause/resume and updates after seek. Periodically refreshes at ~2 s cadence during `_poll_media_commands`. Metadata is cleared on explicit unregister/shutdown. No `defaults write com.apple.Music`, no subprocess, no `VIBE_RUN_LISTENER`, no `_listen.py`. **Persistence requirement**: The `MPRemoteCommandCenter` instance and all handler/token registrations must be stored as instance attributes (e.g. `self._mp_command_center`) — never as local variables — to prevent PyObjC from garbage-collecting the ObjC→Python bridge wrapper, which would cause a native segfault on media key press.
+- **Background Media Keys (macOS)**: Uses `MPRemoteCommandCenter` in the primary app process (no subprocess listener). When PyObjC and MediaPlayer are available, `playCommand`, `pauseCommand`, `togglePlayPauseCommand`, `nextTrackCommand`, and `previousTrackCommand` are registered with retained handler blocks/tokens via `addTargetWithHandler_`. Callbacks only enqueue onto a thread-safe `queue.SimpleQueue` and return `MPRemoteCommandHandlerStatus.Success` promptly. A Tk `after` timer (`_poll_media_commands`, 50 ms) drains the queue and dispatches to `_media_play`/`_media_pause`/`_media_toggle_play`/`engine.next_track`/`engine.prev_track`. Feature-detects PyObjC/MediaPlayer and degrades gracefully when unavailable. Global keys toggle (`global_keys_var`) registers/unregisters handlers via `removeTarget_`. Now Playing metadata (title, artist, duration, elapsed, playback rate) is published truthfully from engine state. Rate is 1.0 when actively playing, 0.0 when paused/stopped. Elapsed carries through pause/resume and updates after seek. Periodically refreshes at ~2 s cadence during `_poll_media_commands`. Metadata is cleared on explicit unregister/shutdown. No `defaults write com.apple.Music`, no subprocess, no `LUNO_RUN_LISTENER`, no `_listen.py`. **Persistence requirement**: The `MPRemoteCommandCenter` instance and all handler/token registrations must be stored as instance attributes (e.g. `self._mp_command_center`) — never as local variables — to prevent PyObjC from garbage-collecting the ObjC→Python bridge wrapper, which would cause a native segfault on media key press.
 - **Media-Key Readiness Guard (`_media_ready()`)**: A centralized gate added to prevent startup/shutdown crashes when media keys arrive before or after the playback system is ready. `_media_ready()` returns `True` only when `_closing` is `False`, the engine exists, and `engine.mixer_ready` is `True`. Every media-key entry point — XF86 keyboard bindings, `MPRemoteCommandCenter` handlers, `_poll_media_commands`, `_media_play`, `_media_pause`, and `_media_toggle_play` — checks `_media_ready()` before proceeding. `engine.play_current()` also guards against `_closing` to prevent Tk widget access after window destruction, while `engine.next_track()`, `prev_track()`, `toggle_play()`, and `stop()` all check `mixer_ready`. Any media-key event that arrives before full initialization or after shutdown begins is silently ignored — no crash, no queued stale commands.
 - **Decoupled Search Pattern**: The sidebar search strictly filters playlist cards, while the center search bar handles in-playlist track filtering. This prevents state-bleeding between navigation and content discovery.
 - **Entry UI Standards**: All `tk.Entry` widgets must use `highlightthickness=0` and matching background colors to eliminate native focus borders.
@@ -258,8 +258,8 @@ The transfer format is `boombastic.library.export` with `manifest_version: 1` an
     3. **State fingerprint**: Before drawing, a `(name, image_ids, size)` tuple is compared against `_last_state`. If identical, the draw is skipped entirely.
 
 ### 3. Audio & Playlist Patterns
-- **Shuffle Protocol**: `VibeEngine` maintains `_original_queue` for sequential restoration. Toggling shuffle OFF reverts to this order anchored to the current track.
-- **Playback Engine**: Live desktop elapsed time prefers `pygame.mixer.music.get_pos()` while the mixer reports audio busy, so the footer reflects the backend audio clock instead of an independent UI timer. `VibeEngine` keeps explicit base position/monotonic state for seek offsets, pause/resume, startup grace, and codecs where pygame returns unavailable positions. Duration probing uses `mutagen.File` (generic) so non-MP3 files (M4A, FLAC, WAV) report duration correctly. The `_poll()` heartbeat reschedules unconditionally (400 ms) after every invocation except during controller shutdown — even after auto-advance or repeat — ensuring the footer scrubber stays live and future completions fire.
+- **Shuffle Protocol**: `LunoEngine` maintains `_original_queue` for sequential restoration. Toggling shuffle OFF reverts to this order anchored to the current track.
+- **Playback Engine**: Live desktop elapsed time prefers `pygame.mixer.music.get_pos()` while the mixer reports audio busy, so the footer reflects the backend audio clock instead of an independent UI timer. `LunoEngine` keeps explicit base position/monotonic state for seek offsets, pause/resume, startup grace, and codecs where pygame returns unavailable positions. Duration probing uses `mutagen.File` (generic) so non-MP3 files (M4A, FLAC, WAV) report duration correctly. The `_poll()` heartbeat reschedules unconditionally (400 ms) after every invocation except during controller shutdown — even after auto-advance or repeat — ensuring the footer scrubber stays live and future completions fire.
 - **Completion Detection**: Two independent paths, both gated by a `_completion_dispatched` latch to prevent dual-fire:
   1. **Duration-based**: when `duration > 0` and elapsed ≥ duration
   2. **Mixer-idle**: `pygame.mixer.music.get_busy()` returns `False` with elapsed > 0.5 s startup grace — works for tracks with unknown duration (0.0)

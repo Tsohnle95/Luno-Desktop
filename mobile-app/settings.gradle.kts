@@ -21,7 +21,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "BoomBastic"
+rootProject.name = "Luno"
 include(":app")
 
 // NewPipeExtractor is bundled as a Git submodule at vendor/NewPipeExtractor
