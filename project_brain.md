@@ -224,7 +224,7 @@ The transfer format is `luno.library.export` with `manifest_version: 1` and scop
 ## 🔄 Technical Protocols (Strict Adherence)
 
 ### 1. UI Architecture (Modern Standard)
-- **Global 3-Column Layout**: Uses `tk.PanedWindow` (sashwidth=3, bg=BORDER) for independent resizing.
+- **Global 3-Column Layout**: Uses `tk.PanedWindow` (sashwidth=6, bg=BG) for independent resizing — the bg-colored sash is invisible but leaves a grabbable drag area.
     - **Sidebar**: Nav (Adaptive) | Playlists (Vertical Pane). **Minimum width: 240px** to prevent the "Luno" logo from being clipped.
     - **Body**: Persistent center column for tabs (minsize=400).
     - **Queue**: Persistent right column (Canvas-based, minsize=40). Spans full app height.

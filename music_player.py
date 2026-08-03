@@ -626,9 +626,12 @@ lder."""
         self.grid_rowconfigure(1, weight=0)
         self.grid_columnconfigure(0, weight=1)
 
-        # Root PanedWindow for Sidebar | Main Content | Queue
+        # Root PanedWindow for Sidebar | Main Content | Queue.
+        # sashwidth=6 (bg-colored, invisible) keeps a grabbable drag area without
+        # any visible splitter bars; the sash follows the cursor so the tray
+        # opens the way you drag.
         self._root_paned = tk.PanedWindow(self, orient="horizontal", bg=BG,
-                                           sashwidth=3, sashpad=0, bd=0, sashrelief="flat")
+                                           sashwidth=6, sashpad=0, bd=0, sashrelief="flat")
         self._root_paned.grid(row=0, column=0, sticky="nsew")
 
         sidebar = tk.Frame(self._root_paned, bg=SIDEBAR, width=240)
