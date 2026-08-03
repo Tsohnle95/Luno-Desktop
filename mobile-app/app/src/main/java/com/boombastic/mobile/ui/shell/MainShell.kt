@@ -95,6 +95,8 @@ import com.boombastic.mobile.BuildConfig
 import com.boombastic.mobile.R
 import com.boombastic.mobile.data.update.GitHubReleaseService
 import com.boombastic.mobile.data.update.ReleaseCheckResult
+import com.boombastic.mobile.data.update.ApkInstallResult
+import com.boombastic.mobile.data.update.ApkInstaller
 import com.boombastic.mobile.data.export.LibraryManifest
 import com.boombastic.mobile.playback.MediaTrack
 import com.boombastic.mobile.playback.MusicController
@@ -188,9 +190,38 @@ fun MainShell(musicController: MusicController) {
         }
     }
 
+    fun downloadAndInstallApk(url: String) {
+        updateDialogState = null
+        scope.launch {
+            Toast.makeText(context, "Downloading update…", Toast.LENGTH_SHORT).show()
+            when (val result = withContext(Dispatchers.IO) {
+                ApkInstaller.downloadAndOpenInstaller(context, url)
+            }) {
+                ApkInstallResult.InstallerOpened -> Unit
+                ApkInstallResult.UnknownSourcesPermissionRequired -> {
+                    Toast.makeText(
+                        context,
+                        "Allow Luno to install unknown apps, then tap Check for updates again.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        })
+                    }
+                }
+                is ApkInstallResult.Failure -> Toast.makeText(
+                    context,
+                    result.message,
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
     fun openReleaseWithWarning(url: String) {
         if (updatePreferences.getBoolean("sideload_warning_shown", false)) {
-            openReleaseUrl(url)
+            downloadAndInstallApk(url)
         } else {
             pendingReleaseUrl = url
             showSideloadWarning = true
@@ -927,8 +958,8 @@ fun MainShell(musicController: MusicController) {
                 )
             }
 
-            // GitHub Releases update check.  APK installation stays in the
-            // browser so Android's normal package-installer trust flow is used.
+            // GitHub Releases update check. The APK is downloaded into private
+            // cache storage and handed to Android's package installer.
             when (val state = updateDialogState) {
                 UpdateDialogState.Checking -> AlertDialog(
                     onDismissRequest = { updateDialogState = null },
@@ -992,7 +1023,7 @@ fun MainShell(musicController: MusicController) {
                                 val url = pendingReleaseUrl
                                 showSideloadWarning = false
                                 pendingReleaseUrl = null
-                                if (url != null) openReleaseUrl(url)
+                                if (url != null) downloadAndInstallApk(url)
                             },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = AccentGreen,
