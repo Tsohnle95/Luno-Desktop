@@ -2,24 +2,36 @@ package com.luno.mobile.ui.components
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,6 +44,7 @@ import com.luno.mobile.ui.theme.Dimens
 import com.luno.mobile.ui.theme.PrimaryText
 import com.luno.mobile.ui.theme.SecondaryText
 import com.luno.mobile.ui.theme.SurfaceDark
+import com.luno.mobile.ui.theme.SurfaceElevated
 
 /** Bottom sheet listing all playlists; [onPick] is called with the choice. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -44,6 +57,10 @@ fun PlaylistPickerSheet(
 ) {
     val app = LocalContext.current.applicationContext as LunoApp
     val playlists by app.playlistRepository.getAllPlaylists().collectAsState(initial = emptyList())
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    val filteredPlaylists = playlists.filter { playlist ->
+        playlist.name.contains(searchQuery.trim(), ignoreCase = true)
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -52,12 +69,52 @@ fun PlaylistPickerSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .fillMaxHeight(0.9f)
                 .padding(horizontal = Dimens.paddingLarge)
         ) {
             Text(
                 text = title,
                 style = MaterialTheme.typography.headlineMedium,
                 color = PrimaryText
+            )
+            Spacer(modifier = Modifier.height(Dimens.paddingMedium))
+
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Search playlists", color = SecondaryText) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = null,
+                        tint = SecondaryText
+                    )
+                },
+                trailingIcon = if (searchQuery.isNotEmpty()) {
+                    {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(
+                                imageVector = Icons.Filled.Clear,
+                                contentDescription = "Clear playlist search",
+                                tint = SecondaryText
+                            )
+                        }
+                    }
+                } else {
+                    null
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(Dimens.cornerSmall),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = PrimaryText,
+                    unfocusedTextColor = PrimaryText,
+                    cursorColor = AccentGreen,
+                    focusedBorderColor = AccentGreen,
+                    unfocusedBorderColor = SurfaceElevated,
+                    focusedContainerColor = SurfaceDark,
+                    unfocusedContainerColor = SurfaceDark
+                )
             )
             Spacer(modifier = Modifier.height(Dimens.paddingMedium))
 
@@ -85,44 +142,65 @@ fun PlaylistPickerSheet(
                 }
             }
 
-            if (playlists.isEmpty()) {
-                Text(
-                    text = if (onCreateNew != null) {
-                        "No playlists yet. Create a destination above."
-                    } else {
-                        "No playlists yet. Create one in Your Library."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = SecondaryText,
-                    modifier = Modifier.padding(vertical = Dimens.paddingMedium)
-                )
-            } else {
-                playlists.forEach { playlist ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(Dimens.cornerMedium))
-                            .clickable { onPick(playlist) }
-                            .padding(vertical = Dimens.paddingMedium, horizontal = Dimens.paddingSmall),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
-                            contentDescription = null,
-                            tint = PrimaryText,
-                            modifier = Modifier.size(Dimens.iconSize)
-                        )
-                        Spacer(modifier = Modifier.width(Dimens.paddingLarge))
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentPadding = PaddingValues(bottom = Dimens.paddingXLarge)
+            ) {
+                if (playlists.isEmpty()) {
+                    item {
                         Text(
-                            text = playlist.name,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = PrimaryText
+                            text = if (onCreateNew != null) {
+                                "No playlists yet. Create a destination above."
+                            } else {
+                                "No playlists yet. Create one in Your Library."
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SecondaryText,
+                            modifier = Modifier.padding(vertical = Dimens.paddingMedium)
                         )
+                    }
+                } else if (filteredPlaylists.isEmpty()) {
+                    item {
+                        Text(
+                            text = "No playlists match \"${searchQuery.trim()}\".",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SecondaryText,
+                            modifier = Modifier.padding(vertical = Dimens.paddingMedium)
+                        )
+                    }
+                } else {
+                    items(
+                        items = filteredPlaylists,
+                        key = { it.id }
+                    ) { playlist ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(Dimens.cornerMedium))
+                                .clickable { onPick(playlist) }
+                                .padding(vertical = Dimens.paddingMedium, horizontal = Dimens.paddingSmall),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                                contentDescription = null,
+                                tint = PrimaryText,
+                                modifier = Modifier.size(Dimens.iconSize)
+                            )
+                            Spacer(modifier = Modifier.width(Dimens.paddingLarge))
+                            Text(
+                                text = playlist.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = PrimaryText
+                            )
+                        }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(Dimens.paddingXLarge))
+            Spacer(modifier = Modifier.height(Dimens.paddingSmall))
         }
     }
 }

@@ -12,9 +12,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -25,7 +24,6 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -91,62 +89,28 @@ fun TrackActionsSheet(
             }
         )
     } else if (showPlaylistPicker) {
-        val playlists by app.playlistRepository.getAllPlaylists().collectAsState(initial = emptyList())
-        ModalBottomSheet(
-            onDismissRequest = { showPlaylistPicker = false },
-            containerColor = SurfaceDark
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Dimens.paddingLarge)
-            ) {
-                Text(
-                    text = "Add to playlist",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = PrimaryText
-                )
-                Spacer(modifier = Modifier.height(Dimens.paddingMedium))
-
-                TrackActionRow(
-                    icon = Icons.Filled.Add,
-                    label = "New playlist",
-                    onClick = { showNewPlaylistDialog = true }
-                )
-
-                if (playlists.isEmpty()) {
-                    Text(
-                        text = "No playlists yet.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SecondaryText,
-                        modifier = Modifier.padding(vertical = Dimens.paddingMedium)
+        PlaylistPickerSheet(
+            onPick = { playlist ->
+                scope.launch {
+                    app.playlistRepository.addTrackToPlaylist(
+                        playlistId = playlist.id,
+                        trackUri = track.uri
                     )
-                } else {
-                    playlists.forEach { playlist ->
-                        TrackActionRow(
-                            icon = Icons.Filled.PlaylistAdd,
-                            label = playlist.name,
-                            onClick = {
-                                scope.launch {
-                                    app.playlistRepository.addTrackToPlaylist(
-                                        playlistId = playlist.id,
-                                        trackUri = track.uri
-                                    )
-                                }
-                                Toast.makeText(
-                                    context,
-                                    "Added to ${playlist.name}",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                                onDismiss()
-                            }
-                        )
-                    }
                 }
-
-                Spacer(modifier = Modifier.height(Dimens.paddingXLarge))
+                Toast.makeText(
+                    context,
+                    "Added to ${playlist.name}",
+                    Toast.LENGTH_SHORT
+                ).show()
+                showPlaylistPicker = false
+                onDismiss()
+            },
+            onDismiss = { showPlaylistPicker = false },
+            onCreateNew = {
+                showPlaylistPicker = false
+                showNewPlaylistDialog = true
             }
-        }
+        )
     } else if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
@@ -198,7 +162,7 @@ fun TrackActionsSheet(
                 Spacer(modifier = Modifier.height(Dimens.paddingMedium))
 
                 TrackActionRow(
-                    icon = Icons.Filled.PlaylistAdd,
+                    icon = Icons.AutoMirrored.Filled.PlaylistAdd,
                     label = "Add to playlist",
                     onClick = { showPlaylistPicker = true }
                 )
