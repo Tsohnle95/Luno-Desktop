@@ -26,6 +26,9 @@ class RecentView(tk.Frame):
         self.ctx_menu.add_command(label="  ♫   Add to Playlist…",  command=self.controller._ctx_add_playlist)
         self.ctx_menu.add_command(label="  ⇧   Export Selected JSON", command=self.controller._export_selected_json)
         self.ctx_menu.add_separator()
+        self._favorite_menu_index = self.ctx_menu.index("end") + 1
+        self.ctx_menu.add_command(label="  ☆   Add to Favorites", command=self.controller._ctx_toggle_favorite)
+        self.ctx_menu.add_separator()
         self.ctx_menu.add_command(label="  🗑   Delete from Library",  command=self.controller._ctx_remove_from_library)
 
         self._build_ui()
@@ -167,6 +170,9 @@ class RecentView(tk.Frame):
                           font=("Helvetica Neue",9), fill=TEXT3, anchor="w")
             c.create_text(w-16, y0+rh//2, text=pl[:22],
                           font=("Helvetica Neue",9), fill=TEXT3, anchor="e")
+            if self.controller._is_favorite(path):
+                c.create_text(w - 105, y0 + rh // 2, text="★",
+                              font=("Helvetica Neue", 12), fill=GREEN, anchor="center")
             c.create_line(12, y1-1, w-12, y1-1, fill=BORDER)
 
     def _on_recent_click(self, event):
@@ -204,6 +210,7 @@ class RecentView(tk.Frame):
                 self._sel_indices = [idx]
                 self._sel_anchor = idx
             self.redraw()
+            self.controller._prepare_favorite_menu(self.ctx_menu, self._favorite_menu_index)
             self.ctx_menu.post(event.x_root, event.y_root)
 
     def get_sel_paths(self):

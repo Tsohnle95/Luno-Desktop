@@ -28,6 +28,9 @@ class ArtistsView(tk.Frame):
         self.ctx_menu.add_command(label="  ♫   Add to Playlist…",  command=self.controller._ctx_add_playlist)
         self.ctx_menu.add_command(label="  ⇧   Export Selected JSON", command=self.controller._export_selected_json)
         self.ctx_menu.add_separator()
+        self._favorite_menu_index = self.ctx_menu.index("end") + 1
+        self.ctx_menu.add_command(label="  ☆   Add to Favorites", command=self.controller._ctx_toggle_favorite)
+        self.ctx_menu.add_separator()
         self.ctx_menu.add_command(label="  🗑   Delete from Library",  command=self.controller._ctx_remove_from_library)
 
         self._build_ui()
@@ -222,6 +225,9 @@ class ArtistsView(tk.Frame):
                           font=("Helvetica Neue",11,"bold"), fill=GREEN if is_playing else TEXT, anchor="w")
             c.create_text(bar_x + 24, y0+rh//2+10, text=pl[:50],
                           font=("Helvetica Neue",9), fill=TEXT3, anchor="w")
+            if self.controller._is_favorite(path):
+                c.create_text(w - 22, y0 + rh // 2, text="★",
+                              font=("Helvetica Neue", 12), fill=GREEN, anchor="e")
             c.create_line(8, y1-1, w-8, y1-1, fill=BORDER)
 
     def _on_artist_track_click(self, event):
@@ -258,6 +264,7 @@ class ArtistsView(tk.Frame):
                 self._sel_indices = [idx]
                 self._sel_anchor = idx
             self.redraw_tracks()
+            self.controller._prepare_favorite_menu(self.ctx_menu, self._favorite_menu_index)
             self.ctx_menu.post(event.x_root, event.y_root)
 
     def get_sel_paths(self):

@@ -553,7 +553,7 @@ class DownloadView(tk.Frame):
         options = ["Auto (match by playlist name)"]
         if hasattr(self.controller, '_library'):
             for name in sorted(self.controller._library.keys()):
-                if name not in ("Unsorted", "All Music"):
+                if name not in ("Unsorted", "All Music", "Favorites"):
                     options.append(name)
         self.uq_dest_combo["values"] = options
         if self.uq_dest_var.get() not in options:

@@ -142,6 +142,12 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
    - **Mixer-idle completion**: `pygame.mixer.music.get_busy()` false with `elapsed > 0.5s` startup grace — works for unknown-duration tracks too
    - Advances via `next_track()` or `play_current()` (repeat), which resets the latch and clears the scrub to 0
 
+### Favorites
+1. Favorites are persisted as normalized absolute file paths in the `favorite_songs` array of `~/.luno_config.json`.
+2. The controller intersects the persisted set with every completed library scan, so missing files are removed from favorite state.
+3. The desktop sidebar exposes a reserved virtual `Favorites` playlist; it never creates or scans a physical Favorites folder. Its play/shuffle context is the current favorite track list.
+4. Track context menus, the queue menu, the player bar, and Song Page toggle favorite state. Library rows show an outlined or green filled star immediately before the playlist name, and the library action row can stably move favorites ahead of other tracks.
+
 ### Download Pipeline
 1. `DownloadView._download_selected()` or `DownloadView._download_all()` → `Downloader.download_youtube_url(url, ...)`
 2. `Downloader._create_opts()` → yt-dlp options: 44.1kHz, 192k MP3, loudnorm, EmbedThumbnail
@@ -179,7 +185,7 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 - **`utils.py`**: Helpers: `resource_path` (PyInstaller asset resolution), `format_time`, `split_track_name`, `hex_to_rgb`, `rgb_to_hex`, and `draw_gradient_rect`.
 
 ### 🖼 View Modules (`views/`)
-- **`library.py`**: Virtual scrolling canvas (56px rows). Header displays playlist title, dynamic album art (via `PlaylistArt`), and a live **Audio Visualizer** with a premium `〰` toggle switch at the top right for on-demand control. Includes an **in-playlist search bar** (`Filter tracks…`) using a `tk.Label` overlay with `rely=0.5` vertical centering. Track text is strictly truncated dynamically (`char_w = 0.85`) to ensure long titles never overflow (`w - 340` boundary). Track context menus export selected JSON, and playlist actions export/import the portable manifest.
+- **`library.py`**: Virtual scrolling canvas (56px rows). Header displays playlist title, dynamic album art (via `PlaylistArt`), and a live **Audio Visualizer** with a premium `〰` toggle switch at the top right for on-demand control. Includes an **in-playlist search bar** (`Filter tracks…`) using a `tk.Label` overlay with `rely=0.5` vertical centering. Track text is strictly truncated dynamically (`char_w = 0.85`) to ensure long titles never overflow (`w - 340` boundary). Each row has an outlined/filled favorite star about 16 px before its playlist name; clicking it toggles the track without changing selection, while track context menus retain favorite actions. The Library sidebar header returns to All Music, Unsorted navigation resets the virtual list to its first row, and Unsorted shows the subtitle `songs yet to find a home`. The reserved virtual Favorites playlist supports normal play/shuffle context and favorite-first ordering. Playlist actions export/import the portable manifest.
 - **`downloader.py`**: **Scrollable canvas layout** wrapping all content. Five tabs (Search, YT/CSV, Sync, Duplicates, Allowed Dups) are managed in a unified hub. Uses a dynamic `_search_limit` state to enable **Load More** functionality in YouTube/SoundCloud search. The **⚠ Duplicates** tab features displays **Playlist** and **Filename** columns. Action buttons support **bulk-exclusion** of entire duplicate sets; **double-clicking a group header** plays the first track. The **✓ Allowed Dups** tab includes **💾 Export** and **📂 Import** buttons for portable JSON backups of exclusions.
 - **`recent.py`**: Recently Played view. Gradient header with "Recently Played" title. Displays `controller._recently_played` (max 100) in a virtual scrolling canvas (56px rows). Multi-selection via Shift+Click / Cmd+Click, context menu integration including selected JSON export, "Play All", and "Clear History" actions.
 - **`artists.py`**: Gradient header with "Artists" title. Features an **in-app search filter** in the sidebar to dynamically narrow the artist keys, grouping by artist name, and selected JSON export from track context menus.
@@ -207,7 +213,7 @@ When parsing YouTube names or filenames, the app looks for `" - "` to separate A
 Stores aggregated and folder-specific track paths. Now includes empty directories to support new playlist creation.
 
 ### 4. Global Settings (`~/.luno_config.json`)
-Persisted across sessions: `music_root`, `lastfm_key`, `auto_discovery`, `volume`, `crossfade`, `sleep_timer`, and `global_keys` (media key toggle).
+Persisted across sessions: `music_root`, `lastfm_key`, `auto_discovery`, `volume`, `crossfade`, `sleep_timer`, `global_keys` (media key toggle), and `favorite_songs` (normalized absolute paths for locally favorited tracks).
 
 ### 5. Session State
 `LunoEngine` manages the live `queue`, `queue_idx`, `_original_queue` (for shuffle restore), and playback status (`playing`, `paused`).
@@ -216,7 +222,10 @@ Persisted across sessions: `music_root`, `lastfm_key`, `auto_discovery`, `volume
 ### 6. Exclusion Management
 Allowed duplicates are identified by normalized keys (derived via `_normalize_for_dupe`) and persisted in `.luno_allowed_dups.json` within the Master Library root. **Portable Backups** (JSON) can be exported/imported manually.
 
-### 7. Portable Library Manifests
+### 7. Favorites
+`_favorite_paths` is a controller-owned set of normalized absolute file paths. It is persisted in `~/.luno_config.json`, pruned against scanned library paths, and projected as the reserved virtual `Favorites` playlist. Favorite state is independent of physical playlist membership; deleting a file also removes its favorite state. The portable library manifest intentionally does not include favorites because they are local playback metadata, matching Android's local Room flag behavior.
+
+### 8. Portable Library Manifests
 The transfer format is `luno.library.export` with `manifest_version: 1` and scopes `selected_tracks`, `playlists`, or `library`. Track records contain title, artist, album, duration, an optional `{provider,id}` source identity, and an explicit ambiguity flag. Playlist records contain only sanitized names, descriptions, and ordered track references. Imports are additive and match existing audio before optionally downloading missing references; no local path, secret, audio blob, playback history, or automatic deletion is allowed.
 
 ---
@@ -230,7 +239,7 @@ The transfer format is `luno.library.export` with `manifest_version: 1` and scop
     - **Queue**: Persistent right column (Canvas-based, minsize=40). Spans full app height.
 - **Adaptive Sidebar**: Navigation items (6 total: Home, Recent, Artists, Discover, Downloader, Settings) collapse into a single "☰ Menu" button if the top pane height is < 275px. Defaults to a fixed 280px height for the Nav section at startup for minimal spacing to the library panel.
 - **Scrolling Policy**: Custom `ModernScrollbar`. Side panels and all canvas views (`library.py`, `downloader.py`) use **explicit redraw hooks** or **Bound Checked Clamping** in `<MouseWheel>` handlers. All scrollable views employ **Clamped Logic**; sidebar uses `winfo_reqheight()` to reliably measure inner content vs. canvas viewport — if content fits, scrolling is disabled at both the wheel handler (early-return) and `scrollregion` (locked to canvas height). The library track canvas uses `total_items * row_height <= canvas_height`. Both apply `yview_moveto(0)` reset when content fits.
-- **Canonical Playlist Ordering / Sidebar Search**: `_populate_sidebar()` establishes canonical widget children order (All Music → Unsorted → Alphabetical). Search filtering uses **lightweight `_reshow_all_cards()`** — unpacks all cards via `pack_forget()` then re-packs in original children order. **No widget destruction** — eliminates visual flicker. `_lib_key_released` always unpacks all first, then re-packs matches (or all if query is empty) preserving canonical order. `populate_track_list()` in `library.py` mirrors this ordering for the track list.
+- **Canonical Playlist Ordering / Sidebar Search**: The sidebar header is a clickable `Library` button with an `Unsorted (N)` tab; `_populate_sidebar()` establishes playlist-card order as All Music → Favorites → Alphabetical user playlists. Search filtering applies only to playlist cards, not the Unsorted tab. Selecting Library or Unsorted resets the virtual track canvas to `yview_moveto(0)`. Search filtering uses **lightweight `_reshow_all_cards()`** — unpacks all cards via `pack_forget()` then re-packs in original children order. **No widget destruction** — eliminates visual flicker. `_lib_key_released` always unpacks all first, then re-packs matches (or all if query is empty) preserving canonical order. `populate_track_list()` in `library.py` mirrors this ordering for the track list.
 - **Treeview Theming (macOS)**: Enforces `bordercolor`, `lightcolor`, and `darkcolor` attributes mapped to the background color in the `clam` theme configuration to thoroughly eliminate native OS 3D white borders around `Results`, `Queue`, and `Library` data tables.
 - **Gradient Header Pattern**: All view headers (Downloader, Settings, Artists, Recent) use a `<Configure>` callback that: (1) deletes old gradient items, (2) redraws gradient via `draw_gradient_rect`, (3) calls `tag_raise("title")` to keep text above gradient rectangles. Title text must use `tags="title"`.
 - **Context Logic**: Playing a song from a playlist context force-refreshes the current queue to match that playlist's tracks. Launching a track from a search result **retains** the active search filter instead of reverting the view to the full unfiltered library (accomplished by directing `play_current` to trigger a silent `_redraw_track_list` instead of a full `_populate`).

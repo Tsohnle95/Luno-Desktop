@@ -17,8 +17,10 @@ class LibraryView(tk.Frame):
         self._track_sel_idx = []
         self._sel_anchor = None
         self._track_hover_idx = None
+        self._favorite_star_positions = {}
         self._pulse_frame = 0
         self._pulse_running = False
+        self._favorites_first = False
         
         # Context menu
         self.ctx_menu = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT,
@@ -30,6 +32,9 @@ class LibraryView(tk.Frame):
         self.ctx_menu.add_separator()
         self.ctx_menu.add_command(label="  ♫   Add to Playlist…",  command=self.controller._ctx_add_playlist)
         self.ctx_menu.add_command(label="  ⇧   Export Selected JSON", command=self.controller._export_selected_json)
+        self.ctx_menu.add_separator()
+        self._favorite_menu_index = self.ctx_menu.index("end") + 1
+        self.ctx_menu.add_command(label="  ☆   Add to Favorites", command=self.controller._ctx_toggle_favorite)
         self.ctx_menu.add_separator()
         self.ctx_menu.add_command(label="  ✕   Remove from Queue", command=self.controller._ctx_remove_queue)
         self.ctx_menu.add_command(label="  🗑   Delete from Library",  command=self.controller._ctx_remove_from_library)
@@ -81,6 +86,12 @@ class LibraryView(tk.Frame):
                                            fg=TEXT2, bg=BG, anchor="w")
         self.playlist_meta_lbl.pack(anchor="w")
 
+        self.playlist_subtitle_lbl = tk.Label(
+            title_area, text="", font=("Helvetica Neue",10),
+            fg=TEXT3, bg=BG, anchor="w"
+        )
+        self.playlist_subtitle_lbl.pack(anchor="w", pady=(2, 0))
+
         self.viz_canvas = tk.Canvas(title_area, bg=BG, height=28, highlightthickness=0)
         self.viz_canvas.pack(anchor="w", fill="x", pady=(8,0))
         self.after(500, self._draw_visualizer)
@@ -102,6 +113,15 @@ class LibraryView(tk.Frame):
         self.shuf_lbl.bind("<Button-1>", lambda e: self._on_shuffle_button_click())
         self.shuf_lbl.bind("<Enter>", lambda e: self.shuf_lbl.config(fg=TEXT))
         self.shuf_lbl.bind("<Leave>", lambda e: self.shuf_lbl.config(fg=GREEN if self.controller.engine.shuffle else TEXT2))
+
+        self.favorites_first_lbl = tk.Label(
+            act, text="☆  Favorites first", font=("Helvetica Neue", 10),
+            fg=TEXT3, bg=BG, cursor="hand2"
+        )
+        self.favorites_first_lbl.pack(side="left", padx=(0, 20))
+        self.favorites_first_lbl.bind("<Button-1>", lambda e: self._toggle_favorites_first())
+        self.favorites_first_lbl.bind("<Enter>", lambda e: self.favorites_first_lbl.config(fg=TEXT))
+        self.favorites_first_lbl.bind("<Leave>", lambda e: self._sync_favorites_first_label())
 
         recs_btn = tk.Label(act, text="✨  Get Similar Tracks", font=("Helvetica Neue",10),
                              fg=TEXT3, bg=BG, cursor="hand2")
@@ -258,7 +278,7 @@ class LibraryView(tk.Frame):
 
         pl_name = self.controller._selected_playlist
         all_playlists = [p for p in sorted(self.controller._library.keys())
-                         if p not in ("Unsorted", "All Music")]
+                         if p not in ("Unsorted", "All Music", "Favorites")]
 
         popup = tk.Toplevel(self)
         popup.title("")
@@ -436,6 +456,17 @@ class LibraryView(tk.Frame):
         else:
             self.shuf_lbl.config(fg=TEXT2)
 
+    def _toggle_favorites_first(self):
+        self._favorites_first = not self._favorites_first
+        self._sync_favorites_first_label()
+        self.populate_track_list(self._pl_search_entry.get().strip())
+
+    def _sync_favorites_first_label(self):
+        self.favorites_first_lbl.config(
+            text="★  Favorites first" if self._favorites_first else "☆  Favorites first",
+            fg=GREEN if self._favorites_first else TEXT3,
+        )
+
     def _draw_lib_header(self):
         w = self._hdr_canvas.winfo_width()
         self._hdr_canvas.delete("grad")
@@ -503,7 +534,9 @@ class LibraryView(tk.Frame):
         self.after(100, self._draw_visualizer)
 
     def populate_track_list(self, filter_str=""):
-        if self.controller._selected_playlist and self.controller._selected_playlist in self.controller._library:
+        if self.controller._selected_playlist == "Favorites":
+            ordered_playlists = [("Favorites", self.controller._favorite_paths_in_library())]
+        elif self.controller._selected_playlist and self.controller._selected_playlist in self.controller._library:
             # Single playlist selected
             ordered_playlists = [(self.controller._selected_playlist,
                                   self.controller._library[self.controller._selected_playlist])]
@@ -514,7 +547,7 @@ class LibraryView(tk.Frame):
             if "Unsorted" in lib:
                 ordered_playlists.append(("Unsorted", lib["Unsorted"]))
             for name in sorted(lib.keys()):
-                if name not in ["Unsorted", "All Music"]:
+                if name not in ["Unsorted", "All Music", "Favorites"]:
                     ordered_playlists.append((name, lib[name]))
 
         f = filter_str.strip().lower()
@@ -525,6 +558,8 @@ class LibraryView(tk.Frame):
                 if f and f not in title.lower() and f not in artist.lower():
                     continue
                 self._track_items.append((path, title, artist, pl_name))
+        if self._favorites_first:
+            self._track_items.sort(key=lambda item: not self.controller._is_favorite(item[0]))
         self._track_sel_idx = []
         self.after(2000, self._start_pulse)
         self._redraw_track_list()
@@ -567,6 +602,7 @@ class LibraryView(tk.Frame):
         else:
             full_h = content_h
         c.configure(scrollregion=(0, 0, w, full_h))
+        self._favorite_star_positions = {}
 
         # Get visible range
         v0, v1 = c.yview()
@@ -644,7 +680,20 @@ class LibraryView(tk.Frame):
             c.create_text(bar_x + 30, y0+18, text=title_disp, font=("Helvetica Neue", 11, "bold"), fill=GREEN if is_playing else TEXT, anchor="w", tags="row")
             c.create_text(bar_x + 30, y0+36, text=artist_disp, font=("Helvetica Neue", 9), fill=TEXT3, anchor="w", tags="row")
 
-            c.create_text(w - 25, y0+rh//2, text=pl_disp, font=("Helvetica Neue", 9), fill=TEXT3, anchor="e", tags="row")
+            playlist_item = c.create_text(
+                w - 25, y0+rh//2, text=pl_disp,
+                font=("Helvetica Neue", 9), fill=TEXT3, anchor="e", tags="row"
+            )
+            playlist_bbox = c.bbox(playlist_item)
+            star_x = playlist_bbox[0] - 16 if playlist_bbox else w - 155
+            self._favorite_star_positions[i] = star_x
+            c.create_text(
+                star_x, y0 + rh // 2,
+                text="★" if self.controller._is_favorite(path) else "☆",
+                font=("Helvetica Neue", 12),
+                fill=GREEN if self.controller._is_favorite(path) else TEXT3,
+                anchor="center", tags=("row", "favorite_star")
+            )
             c.create_line(12, y1-1, w-12, y1-1, fill=BORDER, tags="row")
 
     def _row_at_y(self, y):
@@ -666,6 +715,15 @@ class LibraryView(tk.Frame):
     def _on_track_canvas_click(self, event):
         idx = self._row_at_y(event.y)
         if idx is not None:
+            # Keep the star independent from row selection so a favorite click
+            # does not change the active multi-selection.
+            star_x = self._favorite_star_positions.get(
+                idx, self._track_canvas.winfo_width() - 155
+            )
+            if abs(event.x - star_x) <= 14:
+                self.controller._toggle_favorite_paths([self._track_items[idx][0]])
+                return "break"
+
             if not isinstance(self._track_sel_idx, list):
                 self._track_sel_idx = []
 
@@ -724,6 +782,7 @@ class LibraryView(tk.Frame):
             if idx not in self._track_sel_idx:
                 self._track_sel_idx = [idx]
             self._redraw_track_list()
+            self.controller._prepare_favorite_menu(self.ctx_menu, self._favorite_menu_index)
             self.ctx_menu.post(event.x_root, event.y_root)
 
     def get_sel_paths(self):
@@ -735,19 +794,27 @@ class LibraryView(tk.Frame):
 
     def _get_current_playlist_paths(self):
         paths = []
-        if self.controller._selected_playlist and self.controller._selected_playlist in self.controller._library:
+        if self.controller._selected_playlist == "Favorites":
+            paths = self.controller._favorite_paths_in_library()
+        elif self.controller._selected_playlist and self.controller._selected_playlist in self.controller._library:
             paths = self.controller._library[self.controller._selected_playlist]
         else:
             for tracks in self.controller._library.values():
                 paths.extend(tracks)
         return paths
 
-    def update_header_art(self, text, meta_text):
+    def update_header_art(self, text, meta_text, subtitle_text=""):
         self.playlist_title_lbl.config(text=text)
         self.playlist_meta_lbl.config(text=meta_text)
+        self.playlist_subtitle_lbl.config(text=subtitle_text)
         self._current_art.update_art(text, self._get_current_playlist_paths())
         self._draw_lib_header()
         # Reset in-playlist search when switching playlists
         self._pl_search_entry.delete(0, "end")
         self._update_placeholder()
         self._pl_search_entry.config(fg=TEXT) # Use normal text color
+
+    def reset_track_scroll(self):
+        """Return the virtual track list to its first row after navigation."""
+        self._track_canvas.yview_moveto(0)
+        self._redraw_track_list()

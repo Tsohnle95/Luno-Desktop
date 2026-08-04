@@ -54,6 +54,7 @@ from library_transfer import (
 # ── LIBRARY PATH SETUP ────────────────────────────────────────────────────────
 # Default to ~/Music/app_music_folder
 MUSIC_ROOT = os.path.join(os.path.expanduser("~"), "Music", "app_music_folder")
+FAVORITES_PLAYLIST = "Favorites"
 
 try:
     os.makedirs(MUSIC_ROOT, exist_ok=True)
@@ -352,6 +353,7 @@ lder."""
         self._current_tab          = "library"
         self._lib_searching        = False
         self._recently_played      = []
+        self._favorite_paths       = set()
         self._crossfade_secs       = 0
         self._sleep_after_id       = None
         self._viz_enabled          = False
@@ -724,8 +726,24 @@ lder."""
         
         lib_hdr = tk.Frame(self._playlist_container, bg=SIDEBAR)
         lib_hdr.pack(fill="x", padx=16, pady=(0,8))
-        tk.Label(lib_hdr, text="Your Library",
-                 font=("Helvetica Neue",12,"bold"), fg=TEXT2, bg=SIDEBAR).pack(side="left", padx=8)
+        self._library_header_btn = tk.Label(
+            lib_hdr, text="Library", font=("Helvetica Neue",12,"bold"),
+            fg=TEXT2, bg=SIDEBAR, cursor="hand2"
+        )
+        self._library_header_btn.pack(side="left", padx=8)
+        self._library_header_btn.bind("<Button-1>", lambda e: self._select_playlist_card(-1, "All Music"))
+        self._library_header_btn.bind("<Enter>", lambda e: self._library_header_btn.config(fg=TEXT))
+        self._library_header_btn.bind("<Leave>", lambda e: self._sync_library_header_button())
+
+        self._unsorted_tab = tk.Label(
+            lib_hdr, text="Unsorted", font=("Helvetica Neue",9,"bold"),
+            fg=TEXT3, bg=SIDEBAR, cursor="hand2"
+        )
+        self._unsorted_tab.pack(side="left", padx=(8, 0))
+        self._unsorted_tab.bind("<Button-1>", lambda e: self._select_playlist_card(-1, "Unsorted"))
+        self._unsorted_tab.bind("<Enter>", lambda e: self._unsorted_tab.config(fg=TEXT))
+        self._unsorted_tab.bind("<Leave>", lambda e: self._sync_unsorted_tab())
+
         for txt, cmd in [("+", self._create_playlist_dialog), ("↻", self._refresh_library)]:
             l = tk.Label(lib_hdr, text=txt, font=("Helvetica Neue",15 if txt=="+" else 14),
                          fg=TEXT3, bg=SIDEBAR, cursor="hand2")
@@ -965,6 +983,10 @@ lder."""
         def show_q_context(e, idx=q_idx):
             m = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT, font=("Helvetica Neue", 11))
             m.add_command(label="▶ Play Now", command=lambda: play_from_q())
+            m.add_command(
+                label="★ Remove from Favorites" if self._is_favorite(path) else "☆ Add to Favorites",
+                command=lambda: self._toggle_favorite_paths([path]),
+            )
             if idx is not None:
                 m.add_command(label="✕ Remove from Queue", command=lambda: self._ctx_remove_from_queue_idx(idx))
             m.post(e.x_root, e.y_root)
@@ -1007,13 +1029,25 @@ lder."""
         a_lbl.pack(fill="x")
         a_lbl.bind("<Button-1>", lambda e: play_from_q())
 
+        fav_lbl = tk.Label(
+            f,
+            text="★" if self._is_favorite(path) else "☆",
+            font=("Helvetica Neue", 12),
+            fg=GREEN if self._is_favorite(path) else TEXT3,
+            bg=BG2,
+            cursor="hand2",
+        )
+        fav_lbl.pack(side="right", padx=(4, 12))
+        fav_lbl.bind("<Button-1>", lambda e: self._toggle_favorite_paths([path]))
+
         # Consolidated hover consistency (Now that all widgets exist)
         def _set_row_style(bg, fg1, fg2):
             f.config(bg=bg); txt.config(bg=bg)
+            fav_lbl.config(bg=bg)
             if t_lbl.winfo_exists(): t_lbl.config(bg=bg, fg=GREEN if is_playing else fg1)
             if a_lbl.winfo_exists(): a_lbl.config(bg=bg, fg=fg2)
 
-        for w in [f, txt, t_lbl, a_lbl, art]:
+        for w in [f, txt, t_lbl, a_lbl, art, fav_lbl]:
             w.bind("<Enter>", lambda e: _set_row_style(BG3, TEXT, TEXT3))
             w.bind("<Leave>", lambda e: _set_row_style(BG2, TEXT if is_playing else TEXT, TEXT3))
 
@@ -1049,6 +1083,13 @@ lder."""
                                     font=("Helvetica Neue",10),
                                     fg=TEXT2, bg=PLAYER_BG, anchor="w", wraplength=220)
         self.now_artist.pack(anchor="w")
+
+        self.favorite_lbl = tk.Label(info, text="☆", font=("Helvetica Neue",20),
+                                     fg=TEXT3, bg=PLAYER_BG, cursor="hand2", width=2)
+        self.favorite_lbl.grid(row=0, column=2, padx=(8, 16), sticky="e")
+        self.favorite_lbl.bind("<Button-1>", lambda e: self._toggle_current_favorite())
+        self.favorite_lbl.bind("<Enter>", lambda e: self.favorite_lbl.config(fg=TEXT))
+        self.favorite_lbl.bind("<Leave>", lambda e: self._update_favorite_ui())
 
         # Song Page Trigger
         for w in [self.player_art_lbl, self.now_title, self.now_artist, txt_col]:
@@ -1117,6 +1158,7 @@ lder."""
         if not path:
             self.player_art_lbl.config(image="", text="♫", width=4, height=2, bg=BG3)
             self._update_player_accent(path)
+            self._update_favorite_ui()
             return
             
         def _on_p_art_loaded(p):
@@ -1132,6 +1174,7 @@ lder."""
         else:
             self.player_art_lbl.config(image="", text="♫", width=4, height=2, bg=BG3)
         self._update_player_accent(path)
+        self._update_favorite_ui()
 
     def _update_player_accent(self, path):
         color = self.art_cache.get_dominant_color(path, fallback=GREEN)
@@ -1189,9 +1232,116 @@ lder."""
     # ═══════════════════════════════════════════════════════════════════════════
     # LIBRARY
     # ═══════════════════════════════════════════════════════════════════════════
-    
+    def _favorite_key(self, path):
+        """Return the stable local-file key used for favorite persistence."""
+        return os.path.abspath(os.path.normpath(path)) if path else ""
 
-    
+    def _favorite_paths_in_library(self):
+        """Return favorite files in library order, without playlist duplicates."""
+        favorites = []
+        seen = set()
+        for tracks in self._library.values():
+            for path in tracks:
+                key = self._favorite_key(path)
+                if key in self._favorite_paths and key not in seen:
+                    favorites.append(path)
+                    seen.add(key)
+        return favorites
+
+    def _is_favorite(self, path):
+        return self._favorite_key(path) in self._favorite_paths
+
+    def _prepare_favorite_menu(self, menu, menu_index):
+        """Keep track context-menu wording in sync with the current selection."""
+        paths = self._get_sel_paths()
+        if not paths:
+            return
+        all_favorite = all(self._is_favorite(path) for path in paths)
+        menu.entryconfig(
+            menu_index,
+            label="  ★   Remove from Favorites" if all_favorite else "  ☆   Add to Favorites",
+        )
+
+    def _toggle_current_favorite(self):
+        if not hasattr(self, "engine") or not self.engine.queue:
+            return
+        idx = self.engine.queue_idx
+        if 0 <= idx < len(self.engine.queue):
+            self._toggle_favorite_paths([self.engine.queue[idx]])
+
+    def _ctx_toggle_favorite(self):
+        self._toggle_favorite_paths(self._get_sel_paths())
+
+    def _toggle_favorite_paths(self, paths):
+        keys = [self._favorite_key(path) for path in paths if path]
+        keys = list(dict.fromkeys(keys))
+        if not keys:
+            return
+
+        remove = all(key in self._favorite_paths for key in keys)
+        if remove:
+            self._favorite_paths.difference_update(keys)
+            message = "Removed from Favorites"
+        else:
+            self._favorite_paths.update(keys)
+            message = "Added to Favorites"
+        self._save_config()
+        self.status_var.set(f"{message} · {len(keys)} song(s)")
+        if not self._closing:
+            self.after(1800, lambda: self.status_var.set("") if not self._closing else None)
+        self._refresh_favorite_views()
+
+    def _refresh_favorite_views(self):
+        """Refresh favorite-derived UI without rescanning the filesystem."""
+        if not hasattr(self, "_frames"):
+            return
+        self._populate_sidebar()
+        library = self._frames.get("library")
+        if library:
+            selected_paths = set(library.get_sel_paths())
+            track_filter = library._pl_search_entry.get().strip()
+            if track_filter == library._pl_search_ph:
+                track_filter = ""
+            library.populate_track_list(track_filter)
+            library._track_sel_idx = [
+                index for index, item in enumerate(library._track_items)
+                if item[0] in selected_paths
+            ]
+            library._sel_anchor = library._track_sel_idx[0] if library._track_sel_idx else None
+            library._redraw_track_list()
+            if self._selected_playlist == FAVORITES_PLAYLIST:
+                count = len(self._favorite_paths_in_library())
+                library.playlist_meta_lbl.config(text=f"{count} songs")
+                library.playlist_subtitle_lbl.config(text="")
+                library._current_art.update_art(
+                    FAVORITES_PLAYLIST, library._get_current_playlist_paths()
+                )
+                library._draw_lib_header()
+        recent = self._frames.get("recent")
+        if recent:
+            recent.redraw()
+        artists = self._frames.get("artists")
+        if artists and getattr(artists, "artist_tracks", None):
+            artists.redraw_tracks()
+        self._update_queue()
+        song_page = self._frames.get("song_page")
+        if song_page and song_page.winfo_ismapped():
+            song_page.update_view()
+        self._update_favorite_ui()
+
+    def _update_favorite_ui(self):
+        if not hasattr(self, "favorite_lbl"):
+            return
+        path = ""
+        if hasattr(self, "engine") and self.engine.queue:
+            idx = self.engine.queue_idx
+            if 0 <= idx < len(self.engine.queue):
+                path = self.engine.queue[idx]
+        self.favorite_lbl.config(
+            text="★" if self._is_favorite(path) else "☆",
+            fg=GREEN if path and self._is_favorite(path) else TEXT3,
+            cursor="hand2" if path else "arrow",
+        )
 
     def _log_error(self, area, msg):
         """Global error logger."""
@@ -1358,6 +1508,19 @@ lder."""
             
         self._last_lib_hash = current_hash
         self._library = new_lib
+
+        # Favorites are metadata over the scanned files, not a physical folder.
+        # Drop entries for files that no longer exist so the virtual playlist and
+        # persisted state cannot accumulate dead paths.
+        known_paths = {
+            os.path.abspath(os.path.normpath(path))
+            for tracks in self._library.values()
+            for path in tracks
+        }
+        before_favorites = set(self._favorite_paths)
+        self._favorite_paths.intersection_update(known_paths)
+        if self._favorite_paths != before_favorites:
+            self._save_config()
         
         # 1. Redraw the sidebar cards (updates song counts)
         self._populate_sidebar()
@@ -1373,13 +1536,20 @@ lder."""
         if lib_view:
             name = self._selected_playlist or "All Music"
             total = sum(len(v) for v in self._library.values())
-            cnt = len(self._library.get(name, [])) if self._selected_playlist else total
-            lib_view.update_header_art(name, f"{cnt} songs")
+            if name == FAVORITES_PLAYLIST:
+                cnt = len(self._favorite_paths_in_library())
+            else:
+                cnt = len(self._library.get(name, [])) if self._selected_playlist else total
+            lib_view.update_header_art(
+                name,
+                f"{cnt} songs",
+                "songs yet to find a home" if name == "Unsorted" else "",
+            )
         
         # 4. Update the download destination dropdown options
         options = ["— choose playlist —", "All Music", "Unsorted"]
         for pl in sorted(self._library.keys()):
-            if pl not in ["Unsorted", "All Music"]:
+            if pl not in ["Unsorted", "All Music", FAVORITES_PLAYLIST]:
                 options.append(f"{pl}  ({len(self._library[pl])})")
         self._dest_options = options
         
@@ -1409,11 +1579,13 @@ lder."""
 
         # Organize playlist order
         total_songs = sum(len(v) for v in self._library.values())
-        entries = [("All Music", total_songs)]
-        if "Unsorted" in self._library: entries.append(("Unsorted", len(self._library["Unsorted"])))
+        entries = [("All Music", total_songs), (FAVORITES_PLAYLIST, len(self._favorite_paths_in_library()))]
         for name in sorted(self._library.keys()):
-            if name not in ["Unsorted", "All Music"]:
+            if name not in ["Unsorted", "All Music", FAVORITES_PLAYLIST]:
                 entries.append((name, len(self._library[name])))
+
+        self._sync_library_header_button()
+        self._sync_unsorted_tab()
 
         for idx, (name, count) in enumerate(entries):
             card = tk.Frame(self._pl_inner, bg=SIDEBAR, cursor="hand2")
@@ -1422,7 +1594,9 @@ lder."""
             inner.pack(fill="x", padx=8, pady=3)
 
             pl_paths = []
-            if name == "All Music":
+            if name == FAVORITES_PLAYLIST:
+                pl_paths = self._favorite_paths_in_library()
+            elif name == "All Music":
                 for t in self._library.values(): pl_paths.extend(t)
             else:
                 pl_paths = self._library.get(name, [])
@@ -1440,7 +1614,7 @@ lder."""
 
             def show_context(e, pl_name=name):
                 m = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT, font=("Helvetica Neue", 12))
-                if pl_name != "All Music":
+                if pl_name not in ("All Music", FAVORITES_PLAYLIST):
                     m.add_command(label=f"Dump '{pl_name}' elsewhere...", command=lambda: self._ctx_dump_playlist(pl_name))
                     m.add_separator()
                     m.add_command(label="🔗 Set Playlist URL...", command=lambda: self._ctx_set_playlist_url(pl_name))
@@ -1467,12 +1641,39 @@ lder."""
             self._selected_playlist = None
             total = sum(len(v) for v in self._library.values())
             self._frames["library"].update_header_art("All Music", f"{total} songs")
+        elif name == FAVORITES_PLAYLIST:
+            self._selected_playlist = FAVORITES_PLAYLIST
+            count = len(self._favorite_paths_in_library())
+            self._frames["library"].update_header_art(FAVORITES_PLAYLIST, f"{count} songs")
         else:
             self._selected_playlist = name
             cnt = len(self._library.get(name, []))
-            self._frames["library"].update_header_art(name, f"{cnt} songs")
+            self._frames["library"].update_header_art(
+                name,
+                f"{cnt} songs",
+                "songs yet to find a home" if name == "Unsorted" else "",
+            )
+        self._sync_library_header_button()
+        self._sync_unsorted_tab()
         self._populate_track_list()
         self._show_tab("library")
+        self._frames["library"].reset_track_scroll()
+
+    def _sync_library_header_button(self):
+        if not hasattr(self, "_library_header_btn"):
+            return
+        self._library_header_btn.config(
+            fg=GREEN if self._selected_playlist is None else TEXT2
+        )
+
+    def _sync_unsorted_tab(self):
+        if not hasattr(self, "_unsorted_tab"):
+            return
+        count = len(self._library.get("Unsorted", []))
+        self._unsorted_tab.config(
+            text=f"Unsorted ({count})",
+            fg=GREEN if self._selected_playlist == "Unsorted" else TEXT3,
+        )
 
     def _on_playlist_select(self, event):
         pass  # replaced by _select_playlist_card
@@ -1979,6 +2180,9 @@ lder."""
                         os.remove(path)
                 except Exception as e:
                     print(f"Error deleting file: {e}")
+
+            self._favorite_paths.difference_update(self._favorite_key(path) for path in paths)
+            self._save_config()
             
             # Refresh the UI to show the songs are gone
             self._refresh_library()
@@ -2523,6 +2727,14 @@ lder."""
 
             if "global_keys" in cfg:
                 self.global_keys_var.set(cfg["global_keys"])
+
+            favorite_paths = cfg.get("favorite_songs", [])
+            if isinstance(favorite_paths, list):
+                self._favorite_paths = {
+                    self._favorite_key(path)
+                    for path in favorite_paths
+                    if isinstance(path, str) and path.strip()
+                }
                 
         except Exception as e:
             print(f"Failed to load config: {e}")
@@ -2536,7 +2748,8 @@ lder."""
             "volume": self.vol_var.get(),
             "crossfade": self._cf_var.get(),
             "sleep_timer": self._sleep_var.get(),
-            "global_keys": self.global_keys_var.get()
+            "global_keys": self.global_keys_var.get(),
+            "favorite_songs": sorted(self._favorite_paths),
         }
         try:
             with open(CONFIG_FILE, "w") as f:

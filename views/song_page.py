@@ -66,6 +66,15 @@ class SongPageView(tk.Frame):
                                     fg=TEXT2, bg=BG, justify="center")
         self.artist_lbl.grid(row=3, column=0, pady=(0, 60))
 
+        self.favorite_btn = tk.Label(
+            self.main_f, text="☆  Add to Favorites", font=("Helvetica Neue", 11, "bold"),
+            fg=TEXT3, bg=BG, cursor="hand2"
+        )
+        self.favorite_btn.grid(row=4, column=0, pady=(0, 18))
+        self.favorite_btn.bind("<Button-1>", lambda e: self.controller._toggle_current_favorite())
+        self.favorite_btn.bind("<Enter>", lambda e: self.favorite_btn.config(fg=TEXT))
+        self.favorite_btn.bind("<Leave>", lambda e: self._sync_favorite_button())
+
     def populate(self):
         """Called when this tab is shown."""
         self.update_view()
@@ -108,12 +117,14 @@ class SongPageView(tk.Frame):
         if not path:
             self.title_lbl.config(text="Nothing playing")
             self.artist_lbl.config(text="")
+            self._sync_favorite_button(None)
             self._draw_background(None)
             return
 
         title, artist = split_track_name(path)
         self.title_lbl.config(text=title)
         self.artist_lbl.config(text=artist or "Unknown Artist")
+        self._sync_favorite_button(path)
         
         # Artwork Fetching
         img = self.controller.art_cache.get(path, art_size, lambda p: self.after(0, self.update_view))
@@ -171,6 +182,20 @@ class SongPageView(tk.Frame):
             self.controller.after(0, lambda: [self._draw_background(pi), setattr(self, '_bg_loading', False)])
         except Exception:
             self.controller.after(0, lambda: [self._draw_background(None), setattr(self, '_bg_loading', False)])
+
+    def _sync_favorite_button(self, path="__current__"):
+        if path == "__current__":
+            path = ""
+            if hasattr(self.controller, "engine") and self.controller.engine.queue:
+                idx = self.controller.engine.queue_idx
+                if 0 <= idx < len(self.controller.engine.queue):
+                    path = self.controller.engine.queue[idx]
+        is_favorite = bool(path and self.controller._is_favorite(path))
+        self.favorite_btn.config(
+            text="★  Remove from Favorites" if is_favorite else "☆  Add to Favorites",
+            fg=GREEN if is_favorite else TEXT3,
+            cursor="hand2" if path else "arrow",
+        )
 
     def _draw_background(self, bg_img_or_path):
         self.canvas.delete("all")
