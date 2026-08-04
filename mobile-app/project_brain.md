@@ -160,7 +160,7 @@ luno/
 │   │       │               └── CreatePlaylistSheet.kt # AlertDialog with name validation
 │   │       ├── data/artwork/
 │   │       │   ├── ArtworkStorage.kt                 # Embedded-artwork extraction, usable-image validation, 512px JPEG cache in filesDir/artwork, Palette dominant color
-│   │       │   └── ArtworkFetchService.kt             # Deezer cover search/download fallback for missing local artwork
+│   │       │   └── ArtworkFetchService.kt             # Broad + metadata fallback Deezer cover search/download for missing local artwork; validates decoded cache output
 │   │       └── test/java/com/luno/mobile/
 │   │           ├── data/export/
 │   │           │   └── LibraryManifestCodecTest.kt  # Strict manifest round-trip, unknown-field, path, version, and ambiguity validation
@@ -170,7 +170,8 @@ luno/
 │   │           │   └── PlaylistDaoTest.kt            # 7 tests: CRUD, cascade, sortOrder
 │   │           ├── data/repository/
 │   │           │   ├── LibraryRepositoryTest.kt    # 10 tests: SAF tree + multi-picker folder recursion incl. AOSP + Samsung-style + tree-URI + non-audio guard + cross-flow doc-id dedupe (fake DocumentsProvider)
-│   │           │   ├── LibraryRepositoryArtworkFetchTest.kt # 10 tests: missing-artwork sweep — null/blank/deleted/invalid-cache detection, embedded + remote refill, DAO persistence, valid-artwork skip, failed-extraction skip, file:// URI passthrough, per-track progress sequence, empty library
+│   │           │   ├── LibraryRepositoryArtworkFetchTest.kt # 11 tests: missing-artwork sweep — null/blank/deleted/invalid-cache detection, embedded + remote refill, DAO persistence, valid-artwork skip, failed-extraction skip, file:// URI passthrough, per-track progress sequence, empty library
+│   │           │   ├── ArtworkFetchServiceTest.kt       # Deezer combined-search success + title-search fallback, image download, and decoded-cache validation
 │   │           │   ├── PlaylistRepositoryTest.kt   # 5 tests: validation, CRUD, trim
 │   │           │   └── LibraryTransferRepositoryTest.kt # Manifest export ordering, unassigned tracks, and local-URI exclusion
 │   │           ├── playback/
@@ -824,7 +825,7 @@ All files listed below exist in `mobile-app/` as of this writing.
 | `playback/RecentlyPlayedStore.kt` | App-private JSON persistence for the ordered, bounded `MediaTrack` history; malformed data safely resets to empty | ✅ |
 | `playback/NotificationPermissionPolicy.kt` | One-shot `POST_NOTIFICATIONS` prompt policy using SharedPreferences | ✅ |
 | `data/artwork/ArtworkStorage.kt` | Embedded-artwork extraction + usable-image validation + ≤512px JPEG cache (filesDir/artwork), sampled decode, Palette dominant color | ✅ |
-| `data/artwork/ArtworkFetchService.kt` | Deezer cover search/download fallback, saves downloaded images through ArtworkStorage | ✅ |
+| `data/artwork/ArtworkFetchService.kt` | Broad + metadata fallback Deezer cover search/download, validates decoded downloaded images through ArtworkStorage | ✅ |
 | `data/db/AppDatabase.kt` | Room database (4 entities, version 8, singleton, migrations 1→2→3→4→5→6→7→8; v6 adds local track play counts, v7 adds playlist-view play counts, v8 carries multiple import destination playlist ids) | ✅ |
 | `data/db/entity/Track.kt` | Track entity (uri PK, title, artist, album, durationMs, albumArtPath, playCount, addedAt) + albumArtUri() helper | ✅ |
 | `data/db/entity/Playlist.kt` | Playlist entity (autoId, name, description, playlist playCount, createdAt) | ✅ |
@@ -1029,7 +1030,7 @@ These are issues in the existing codebase that the native app should NOT reprodu
 | Unit | JUnit 4 + Truth + Turbine + Robolectric | Room DAOs, Repositories | ✅ **43 tests** across the Room DAO/repository suite, including `TrackDaoTest` local play-count coverage |
 | Unit | JUnit 4 + Truth + Robolectric | Notification permission policy | ✅ **11 tests** |
 | Unit | JUnit 4 + Truth + Robolectric | Last.fm discovery | ✅ **17 tests** — `LastfmServiceTest` (11, MockWebServer: two-stage fallback, cache policy, error handling, parsing), `DiscoveryRepositoryTest` (6, encrypted-key round-trip + library filtering) |
-| Unit | JUnit 4 + Truth + Robolectric | Missing-artwork sweep | ✅ **13 tests** — `LibraryRepositoryArtworkFetchTest` (10: valid/invalid cache detection, embedded + remote refill, skip/progress with injectable seams), `ArtworkFetchManagerTest` (3: Progress→Finished→auto-clear, re-tap guard, failure resolution) |
+| Unit | JUnit 4 + Truth + Robolectric | Missing-artwork sweep | ✅ **16 tests** — `LibraryRepositoryArtworkFetchTest` (11: valid/invalid cache detection, embedded + remote refill, skip/progress with injectable seams), `ArtworkFetchManagerTest` (3: Progress→Finished→auto-clear, re-tap guard, failure resolution), and `ArtworkFetchServiceTest` (2: combined/title Deezer search and decoded image persistence) |
 | Unit | JUnit 4 + Truth + Robolectric | MusicController pending-play/lifecycle contract | ✅ **40 tests** — full-queue preservation, empty-request handling, last-request-wins, index clamp, release idempotence, stale-future guard, exact MediaItem metadata (incl. artworkUri), moveQueueItem no-ops, setShuffle no-op, and sanitized error emission |
 | Instrumentation | Android Instrumentation Test + emulator | Media3 connection, queue dispatch, playback state, notification posting, activity recreation, SAF import, and revoked URI access | ✅ **13 smoke tests compile** — `MusicControllerInstrumentedTest` (7), `LibrarySmokeTest` (6); **not run in CI** (emulator job removed 2026-07-30); local emulator execution possible |
 | UI | Compose UI Test | Screen composables, navigation | **Planned** |
@@ -1084,7 +1085,7 @@ Instrumented smoke tests created for API 34 emulator (`./gradlew :app:connectedD
 
 | Date | Change |
 |------|--------|
-| 2026-08-03 | **Missing artwork recovery fixed.** `LibraryRepository.fetchMissingArtwork` now validates that cached paths contain decodable images, safely retries per-track embedded extraction, and falls back to `ArtworkFetchService` for Deezer cover search/download when migrated audio has no embedded art. Downloaded images use the existing ≤512px `filesDir/artwork` cache and persist through `TrackDao.updateTrack`; extractor and remote fetch seams keep tests offline and deterministic. |
+| 2026-08-04 | **Missing artwork network lookup hardened.** `ArtworkFetchService` now tries a broad artist/title Deezer query followed by title/artist fallbacks, validates that downloaded bytes decode into usable cached artwork, and has MockWebServer coverage for both lookup paths. |
 | 2026-08-03 | **Playlist picker made searchable and scroll-safe.** `PlaylistPickerSheet` now uses a bounded lazy list so every playlist is reachable, keeps a case-insensitive search field at the top, shows a clear no-match state, and is reused by long-press track actions as well as download-result assignment. |
 | 2026-08-02 | **Cross-platform export/import implemented.** Added the shared `luno.library.export` v1 manifest contract to desktop (`library_transfer.py`) and native Android (`data/export/LibraryManifest*.kt`), with strict untrusted-input validation and no paths/secrets/audio/history. Desktop Settings, playlist actions, and selected-track menus export/import additive metadata and queue confirmed missing downloads. Android added `LibraryTransferRepository`, SAF `ExportImportScreen`, drawer navigation, selected song/playlist export callbacks, Room v8 multi-playlist download destinations, and codec/repository tests. |
 | 2026-08-02 | **Desktop-style downloader UI.** `SearchScreen` now mirrors the desktop downloader's source-panel logic without changing the Android download pipeline: compact `Downloader` header, flat `Search` / `YT / CSV` / `Direct URL` tabs, integrated input/action rows, conditional thin queue-progress line, inline status/errors, flat result rows, and the durable downloaded-songs accordion after the source area. The YouTube playlist importer and Exportify loader now share the `YT / CSV` tab; direct-link title/artist details remain optional. |

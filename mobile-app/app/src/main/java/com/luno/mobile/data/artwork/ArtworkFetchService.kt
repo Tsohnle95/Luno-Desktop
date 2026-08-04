@@ -12,50 +12,79 @@ import java.util.concurrent.TimeUnit
 
 /** Downloads a cover from Deezer and stores it in the app artwork cache. */
 class ArtworkFetchService(
+    private val baseUrl: String = DEEZER_SEARCH_URL,
     private val client: OkHttpClient = defaultClient()
 ) {
     suspend fun fetchAndSave(context: Context, artist: String, title: String): String? =
         withContext(Dispatchers.IO) {
             try {
-                val query = listOf(artist, title)
-                    .map(String::trim)
-                    .filter { it.isNotBlank() && !it.equals("Unknown Artist", ignoreCase = true) }
-                    .joinToString(" ")
-                if (query.isBlank()) return@withContext null
-
-                val searchUrl = "https://api.deezer.com/search".toHttpUrl().newBuilder()
-                    .addQueryParameter("q", query)
-                    .addQueryParameter("limit", "1")
-                    .build()
-                val imageUrl = client.newCall(
-                    Request.Builder()
-                        .url(searchUrl)
-                        .header("User-Agent", "Luno/1.0 (Android)")
-                        .build()
-                ).execute().use { response ->
-                    if (!response.isSuccessful) return@withContext null
-                    val album = JSONObject(response.body?.string().orEmpty())
-                        .optJSONArray("data")
-                        ?.optJSONObject(0)
-                        ?.optJSONObject("album")
-                        ?: return@withContext null
-                    album.optString("cover_xl")
-                        .ifBlank { album.optString("cover_big") }
-                        .ifBlank { album.optString("cover_medium") }
-                        .trim()
-                        .takeIf { it.startsWith("https://") || it.startsWith("http://") }
-                        ?.let { url ->
-                            if (url.startsWith("http://")) "https://${url.substring(7)}" else url
-                        }
-                } ?: return@withContext null
-
-                fetchAndSaveImage(context, imageUrl)
+                for (query in searchQueries(artist, title)) {
+                    val imageUrl = findImageUrl(query) ?: continue
+                    val path = fetchAndSaveImage(context, imageUrl)
+                    if (!path.isNullOrBlank() && ArtworkStorage.hasUsableArtwork(path)) {
+                        return@withContext path
+                    }
+                }
+                null
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Throwable) {
                 null
             }
         }
+
+    private fun findImageUrl(query: String): String? {
+        val searchUrl = baseUrl.toHttpUrl().newBuilder()
+            .addQueryParameter("q", query)
+            .addQueryParameter("limit", "1")
+            .build()
+        return client.newCall(
+            Request.Builder()
+                .url(searchUrl)
+                .header("Accept", "application/json")
+                .header("User-Agent", "Luno/1.0 (Android)")
+                .build()
+        ).execute().use { response ->
+            if (!response.isSuccessful) return null
+            val album = JSONObject(response.body?.string().orEmpty())
+                .optJSONArray("data")
+                ?.optJSONObject(0)
+                ?.optJSONObject("album")
+                ?: return null
+            normalizeImageUrl(
+                album.optString("cover_xl")
+                    .ifBlank { album.optString("cover_big") }
+                    .ifBlank { album.optString("cover_medium") }
+            )
+        }
+    }
+
+    /** Keep working with less structured metadata when a combined query misses. */
+    private fun searchQueries(artist: String, title: String): List<String> {
+        val cleanArtist = artist.trim()
+            .takeUnless { it.isBlank() || it.equals("Unknown Artist", ignoreCase = true) }
+        val cleanTitle = title.trim()
+            .takeUnless { it.isBlank() || it.equals("Unknown Track", ignoreCase = true) }
+        return buildList {
+            if (cleanArtist != null && cleanTitle != null) {
+                add("$cleanArtist $cleanTitle")
+                add(cleanTitle)
+                add(cleanArtist)
+            } else {
+                cleanArtist?.let(::add)
+                cleanTitle?.let(::add)
+            }
+        }.distinct()
+    }
+
+    private fun normalizeImageUrl(rawUrl: String): String? {
+        val url = rawUrl.trim()
+        return when {
+            url.startsWith("https://", ignoreCase = true) -> url
+            url.startsWith("http://", ignoreCase = true) -> "https://${url.substring(7)}"
+            else -> null
+        }
+    }
 
     /** Fetches a known image URL, such as a stored YouTube thumbnail. */
     suspend fun fetchAndSaveImage(context: Context, imageUrl: String): String? =
@@ -83,6 +112,7 @@ class ArtworkFetchService(
         }
 
     companion object {
+        private const val DEEZER_SEARCH_URL = "https://api.deezer.com/search"
         private const val TIMEOUT_SECONDS = 8L
 
         private fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
