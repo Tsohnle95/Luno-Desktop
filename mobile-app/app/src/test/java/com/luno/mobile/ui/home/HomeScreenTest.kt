@@ -33,4 +33,17 @@ class HomeScreenTest {
             .containsExactly("track://one", "track://two")
             .inOrder()
     }
+
+    @Test
+    fun catalogueKeyIgnoresRoomOrderingChanges() {
+        val firstOrder = listOf(
+            Track(uri = "track://two", title = "Two"),
+            Track(uri = "track://one", title = "One")
+        )
+        val secondOrder = firstOrder.asReversed()
+
+        assertThat(homeCatalogueKey(firstOrder))
+            .containsExactlyElementsIn(homeCatalogueKey(secondOrder))
+            .inOrder()
+    }
 }

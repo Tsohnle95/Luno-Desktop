@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -46,6 +47,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,6 +65,7 @@ import com.luno.mobile.playback.MediaTrack
 import com.luno.mobile.playback.MusicController
 import com.luno.mobile.ui.components.ArtworkImage
 import com.luno.mobile.ui.components.BulkSelectionToolbar
+import com.luno.mobile.ui.components.MiniPlayerOverlayHeight
 import com.luno.mobile.ui.components.TrackActionsSheet
 import com.luno.mobile.ui.theme.AccentGreen
 import com.luno.mobile.ui.theme.Dimens
@@ -83,8 +86,14 @@ private data class HomeContentSnapshot(
     val hasCurrentTrack: Boolean
 )
 
+private data class HomeScrollAnchor(
+    val key: Any,
+    val offset: Int
+)
+
 /** Catalogue identity must not change when mutable playback metadata changes. */
-internal fun homeCatalogueKey(tracks: List<Track>): List<String> = tracks.map { it.uri }
+internal fun homeCatalogueKey(tracks: List<Track>): List<String> =
+    tracks.asSequence().map { it.uri }.sorted().toList()
 
 /**
  * Spotify-inspired Home: greeting, edge-clipped "Recently played" and
@@ -147,7 +156,7 @@ fun HomeScreen(
     // during a fling can change section membership and move the content under
     // the user's finger. Keep one render snapshot until every Home list is
     // idle, then apply the newest library/history data in one update.
-    val latestContent by rememberUpdatedState(
+    val latestContent = rememberUpdatedState(
         HomeContentSnapshot(
             tracks = allTracks,
             playlists = playlistsWithTracks,
@@ -155,7 +164,8 @@ fun HomeScreen(
             hasCurrentTrack = currentTrack != null
         )
     )
-    var renderedContent by remember { mutableStateOf(latestContent) }
+    var renderedContent by remember { mutableStateOf(latestContent.value) }
+    var anchorToRestore by remember { mutableStateOf<HomeScrollAnchor?>(null) }
     fun isHomeScrolling(): Boolean =
         homeListState.isScrollInProgress ||
             recentlyPlayedListState.isScrollInProgress ||
@@ -164,10 +174,22 @@ fun HomeScreen(
             popularTracksListState.isScrollInProgress ||
             popularPlaylistsListState.isScrollInProgress
 
+    // Room can emit while a fling is settling. Apply the newest snapshot only
+    // while idle, and preserve the first visible keyed item if a section's
+    // membership or height changed. This prevents a data refresh from moving
+    // the content under the user's finger or appearing to reverse direction.
+    fun applyLatestContent() {
+        if (isHomeScrolling()) return
+        val nextContent = latestContent.value
+        if (renderedContent == nextContent) return
+        anchorToRestore = homeListState.layoutInfo.visibleItemsInfo
+            .firstOrNull()
+            ?.let { HomeScrollAnchor(key = it.key, offset = it.offset) }
+        renderedContent = nextContent
+    }
+
     LaunchedEffect(allTracks, playlistsWithTracks, recentlyPlayed, currentTrack != null) {
-        if (!isHomeScrolling()) {
-            renderedContent = latestContent
-        }
+        applyLatestContent()
     }
     LaunchedEffect(
         homeListState,
@@ -180,8 +202,31 @@ fun HomeScreen(
         snapshotFlow { isHomeScrolling() }
             .distinctUntilChanged()
             .collect { isScrolling ->
-                if (!isScrolling) renderedContent = latestContent
+                if (!isScrolling) {
+                    // Wait for the idle layout to be committed before taking
+                    // an anchor. A fling can report idle one frame before its
+                    // final layout is visible to the parent composition.
+                    withFrameNanos { }
+                    applyLatestContent()
+                }
             }
+    }
+
+    LaunchedEffect(renderedContent) {
+        val anchor = anchorToRestore ?: return@LaunchedEffect
+        withFrameNanos { }
+        val updatedItem = homeListState.layoutInfo.visibleItemsInfo
+            .firstOrNull { it.key == anchor.key }
+        anchorToRestore = null
+        // A new gesture may begin during the frame wait. Never issue a
+        // corrective scroll once the user has taken control again.
+        if (isHomeScrolling()) return@LaunchedEffect
+        if (updatedItem != null) {
+            val correction = updatedItem.offset - anchor.offset
+            if (correction != 0) {
+                homeListState.scrollBy(correction.toFloat())
+            }
+        }
     }
 
     val homeTracks = renderedContent.tracks
@@ -217,13 +262,17 @@ fun HomeScreen(
             .sortedWith(
                 compareByDescending<Track> { it.playCount }
                     .thenBy { it.title.lowercase() }
+                    .thenBy { it.uri }
             )
             .take(20)
     }
     val favoriteTracks = remember(homeTracks) {
         homeTracks
             .filter { it.isFavorite }
-            .sortedByDescending { it.addedAt }
+            .sortedWith(
+                compareByDescending<Track> { it.addedAt }
+                    .thenBy { it.uri }
+            )
             .take(20)
     }
     val favoriteTracksMedia = remember(favoriteTracks) {
@@ -253,7 +302,10 @@ fun HomeScreen(
     val popularPlaylists = remember(homePlaylists) {
         homePlaylists
             .filter { it.playlist.playCount > 0 }
-            .sortedByDescending { it.playlist.playCount }
+            .sortedWith(
+                compareByDescending<PlaylistWithTracks> { it.playlist.playCount }
+                    .thenBy { it.playlist.id }
+            )
             .take(10)
     }
 
@@ -304,10 +356,17 @@ fun HomeScreen(
     LazyColumn(
         state = homeListState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(top = Dimens.paddingLarge, bottom = Dimens.paddingXLarge)
+        // The shell overlays the mini-player on Home so its appearance never
+        // changes the viewport while this list is being dragged. Keep a
+        // permanent end inset so the last carousel remains reachable under
+        // either shell state.
+        contentPadding = PaddingValues(
+            top = Dimens.paddingLarge,
+            bottom = Dimens.paddingXLarge + MiniPlayerOverlayHeight
+        )
     ) {
         // Greeting header
-        item(key = "greeting") {
+        item(key = "greeting", contentType = "hero") {
             HomeHero(
                 greeting = greeting,
                 displayName = displayName,
@@ -323,7 +382,7 @@ fun HomeScreen(
         }
 
         if (selectionMode) {
-            item(key = "selection-toolbar") {
+            item(key = "selection-toolbar", contentType = "toolbar") {
                 BulkSelectionToolbar(
                     selectedTracks = selectedTracks,
                     selectedPlaylists = selectedPlaylists,
@@ -368,11 +427,11 @@ fun HomeScreen(
 
         // Recently played — swipeable horizontal carousel of the full
         // persisted history, edge-clipped like "Made for you"
-        item(key = "recently-header") {
+        item(key = "recently-header", contentType = "section-header") {
             SectionHeader(title = "Recently played")
         }
         if (homeRecentlyPlayed.isEmpty() && !homeHasCurrentTrack) {
-            item(key = "recently-empty") {
+            item(key = "recently-empty", contentType = "empty-state") {
                 EmptyStateCard(
                     title = "No tracks yet",
                     subtitle = "Use Download to find music and get started",
@@ -380,7 +439,7 @@ fun HomeScreen(
                 )
             }
         } else {
-            item(key = "recently-carousel") {
+            item(key = "recently-carousel", contentType = "track-carousel") {
                 // distinctBy: a track may legitimately appear twice in
                 // history (non-consecutive plays); duplicate keys would
                 // make the LazyRow jump or throw.
@@ -416,7 +475,7 @@ fun HomeScreen(
         }
 
         // Made for you — a random mix from the entire catalogue.
-        item(key = "made-header") {
+        item(key = "made-header", contentType = "section-header") {
             SectionHeader(
                 title = "Made for you",
                 supportingText = "A fresh mix from your library",
@@ -429,7 +488,7 @@ fun HomeScreen(
             )
         }
         if (homeTracks.isEmpty()) {
-            item(key = "made-empty") {
+            item(key = "made-empty", contentType = "empty-state") {
                 EmptyStateCard(
                     title = "Nothing here yet",
                     subtitle = "Songs from your library will appear here",
@@ -437,7 +496,7 @@ fun HomeScreen(
                 )
             }
         } else {
-            item(key = "made-carousel") {
+            item(key = "made-carousel", contentType = "track-carousel") {
                 LazyRow(
                     state = madeForYouListState,
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
@@ -468,14 +527,14 @@ fun HomeScreen(
 
         // Favorites — songs explicitly marked by the user, kept ahead of the
         // popularity section while retaining the same edge-clipped carousel.
-        item(key = "favorites-header") {
+        item(key = "favorites-header", contentType = "section-header") {
             SectionHeader(
                 title = "Favorites",
                 supportingText = "Songs you marked as favorites"
             )
         }
         if (favoriteTracks.isNotEmpty()) {
-            item(key = "favorites-carousel") {
+            item(key = "favorites-carousel", contentType = "track-carousel") {
                 LazyRow(
                     state = favoritesListState,
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
@@ -509,14 +568,14 @@ fun HomeScreen(
 
         // Most popular — local play counts are persisted in Room. Songs and
         // playlists are kept in separate edge-clipped carousels.
-        item(key = "popular-header") {
+        item(key = "popular-header", contentType = "section-header") {
             SectionHeader(
                 title = "Most popular",
                 supportingText = "Based on your local play counts"
             )
         }
         if (popularTracks.isEmpty() && popularPlaylists.isEmpty()) {
-            item(key = "popular-empty") {
+            item(key = "popular-empty", contentType = "empty-state") {
                 EmptyStateCard(
                     title = "Nothing popular yet",
                     subtitle = "Play songs to build your local favorites",
@@ -525,10 +584,10 @@ fun HomeScreen(
             }
         }
         if (popularTracks.isNotEmpty()) {
-            item(key = "popular-songs-header") {
+            item(key = "popular-songs-header", contentType = "section-header") {
                 SectionHeader(title = "Popular songs", topPadding = 0.dp)
             }
-            item(key = "popular-songs-carousel") {
+            item(key = "popular-songs-carousel", contentType = "track-carousel") {
                 LazyRow(
                     state = popularTracksListState,
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
@@ -557,10 +616,10 @@ fun HomeScreen(
             }
         }
         if (popularPlaylists.isNotEmpty()) {
-            item(key = "popular-playlists-header") {
+            item(key = "popular-playlists-header", contentType = "section-header") {
                 SectionHeader(title = "Popular playlists", topPadding = 0.dp)
             }
-            item(key = "popular-playlists-carousel") {
+            item(key = "popular-playlists-carousel", contentType = "playlist-carousel") {
                 LazyRow(
                     state = popularPlaylistsListState,
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),

@@ -411,6 +411,106 @@ fun MainShell(musicController: MusicController) {
         }
     }
 
+    @Composable
+    fun BottomNavigationBar() {
+        NavigationBar(
+            containerColor = NavBarSurface,
+            tonalElevation = 0.dp
+        ) {
+            bottomNavItems.forEach { item ->
+                val selected = currentRoute == item.route
+                NavigationBarItem(
+                    selected = selected,
+                    onClick = {
+                        if (item.route == currentRoute) return@NavigationBarItem
+                        if (item.route == Routes.DISCOVER) {
+                            // The request starts as soon as Discover composes. Set
+                            // this before navigation so a fast recomposition cannot
+                            // release the mask before the request reports loading.
+                            discoverLoadingState.value = true
+                        }
+                        // Mask FIRST: the black layer is opaque before the new
+                        // screen composes, so it never flashes in early.
+                        transitionMask = true
+                        if (item.route == Routes.HOME) {
+                            // Home always returns to the Home screen, even from
+                            // drawer/deep routes (Downloads, playlist detail, etc.).
+                            val popped = navController.popBackStack(
+                                Routes.HOME,
+                                inclusive = false
+                            )
+                            if (!popped) {
+                                navController.navigate(Routes.HOME) {
+                                    launchSingleTop = true
+                                }
+                            }
+                        } else {
+                            navController.navigate(item.route) {
+                                popUpTo(navController.graph.startDestinationId) {
+                                    saveState = true
+                                }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        }
+                    },
+                    icon = {
+                        Icon(
+                            imageVector = ImageVector.vectorResource(id = item.icon),
+                            contentDescription = item.label,
+                            // Download renders at 28dp because its glyph is
+                            // optically smaller than the other tabs.
+                            modifier = Modifier.size(
+                                if (item.route == Routes.SEARCH) {
+                                    Dimens.iconSizeMedium
+                                } else {
+                                    Dimens.bottomNavIconSize
+                                }
+                            )
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = item.label,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = AccentGreen,
+                        selectedTextColor = AccentGreen,
+                        unselectedIconColor = NavBarUnselected,
+                        unselectedTextColor = NavBarUnselected,
+                        indicatorColor = NavBarSurface
+                    )
+                )
+            }
+
+            // Create action item (does not navigate)
+            NavigationBarItem(
+                selected = false,
+                onClick = { showCreateSheet = true },
+                icon = {
+                    Icon(
+                        imageVector = ImageVector.vectorResource(id = R.drawable.ic_create),
+                        contentDescription = "Create",
+                        modifier = Modifier.size(Dimens.iconSizeLarge)
+                    )
+                },
+                label = {
+                    Text(
+                        text = "Create",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                },
+                colors = NavigationBarItemDefaults.colors(
+                    unselectedIconColor = NavBarUnselected,
+                    unselectedTextColor = NavBarUnselected,
+                    indicatorColor = NavBarSurface
+                )
+            )
+        }
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -628,123 +728,24 @@ fun MainShell(musicController: MusicController) {
                 bottomBar = {
                     // Full player is truly full-screen — hide mini player + nav bar.
                     if (currentRoute != Routes.FULL_PLAYER) {
-                        Column {
-                            // Mini player
-                            AnimatedVisibility(
-                                visible = hasActiveItem,
-                                enter = slideInVertically(initialOffsetY = { it }),
-                                exit = slideOutVertically(targetOffsetY = { it })
-                            ) {
-                                MiniPlayer(
-                                    musicController = musicController,
-                                    onMiniPlayerTap = {
-                                        transitionMask = true
-                                        navController.navigate(Routes.FULL_PLAYER)
-                                    }
-                                )
-                            }
-
-                            // Bottom navigation: Home / Download / Library /
-                            // Discover / Create.  Downloads and other local
-                            // functions live in the options drawer.
-                            NavigationBar(
-                                containerColor = NavBarSurface,
-                                tonalElevation = 0.dp
-                            ) {
-                                bottomNavItems.forEach { item ->
-                                    val selected = currentRoute == item.route
-                                    NavigationBarItem(
-                                        selected = selected,
-                                        onClick = {
-                                            if (item.route == currentRoute) return@NavigationBarItem
-                                            if (item.route == Routes.DISCOVER) {
-                                                // The request starts as soon as Discover composes. Set
-                                                // this before navigation so a fast recomposition cannot
-                                                // release the mask before the request reports loading.
-                                                discoverLoadingState.value = true
-                                            }
-                                            // Mask FIRST: the black layer
-                                            // is opaque before the new
-                                            // screen composes, so it never
-                                            // flashes in early.
+                        if (currentRoute == Routes.HOME) {
+                            BottomNavigationBar()
+                        } else {
+                            Column {
+                                AnimatedVisibility(
+                                    visible = hasActiveItem,
+                                    enter = slideInVertically(initialOffsetY = { it }),
+                                    exit = slideOutVertically(targetOffsetY = { it })
+                                ) {
+                                    MiniPlayer(
+                                        musicController = musicController,
+                                        onMiniPlayerTap = {
                                             transitionMask = true
-                                            if (item.route == Routes.HOME) {
-                                                // Home always returns to the Home screen,
-                                                // even from drawer/deep routes (Downloads,
-                                                // playlist detail, etc.).
-                                                val popped = navController.popBackStack(
-                                                    Routes.HOME,
-                                                    inclusive = false
-                                                )
-                                                if (!popped) {
-                                                    navController.navigate(Routes.HOME) {
-                                                        launchSingleTop = true
-                                                    }
-                                                }
-                                            } else {
-                                                navController.navigate(item.route) {
-                                                    popUpTo(navController.graph.startDestinationId) {
-                                                        saveState = true
-                                                    }
-                                                    launchSingleTop = true
-                                                    restoreState = true
-                                                }
-                                            }
-                                        },
-                                        icon = {
-                                            Icon(
-                                                imageVector = ImageVector.vectorResource(id = item.icon),
-                                                contentDescription = item.label,
-                                                // Download (and Create below) render at 28dp — their
-                                                // glyphs are optically smaller than the other tabs.
-                                                modifier = Modifier.size(
-                                                    if (item.route == Routes.SEARCH) {
-                                                        Dimens.iconSizeMedium
-                                                    } else {
-                                                        Dimens.bottomNavIconSize
-                                                    }
-                                                )
-                                            )
-                                        },
-                                        label = {
-                                            Text(
-                                                text = item.label,
-                                                style = MaterialTheme.typography.labelSmall
-                                            )
-                                        },
-                                        colors = NavigationBarItemDefaults.colors(
-                                            selectedIconColor = AccentGreen,
-                                            selectedTextColor = AccentGreen,
-                                            unselectedIconColor = NavBarUnselected,
-                                            unselectedTextColor = NavBarUnselected,
-                                            indicatorColor = NavBarSurface
-                                        )
+                                            navController.navigate(Routes.FULL_PLAYER)
+                                        }
                                     )
                                 }
-
-                                // Create action item (does not navigate)
-                                NavigationBarItem(
-                                    selected = false,
-                                    onClick = { showCreateSheet = true },
-                                    icon = {
-                                        Icon(
-                                            imageVector = ImageVector.vectorResource(id = R.drawable.ic_create),
-                                            contentDescription = "Create",
-                                            modifier = Modifier.size(Dimens.iconSizeLarge)
-                                        )
-                                    },
-                                    label = {
-                                        Text(
-                                            text = "Create",
-                                            style = MaterialTheme.typography.labelSmall
-                                        )
-                                    },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        unselectedIconColor = NavBarUnselected,
-                                        unselectedTextColor = NavBarUnselected,
-                                        indicatorColor = NavBarSurface
-                                    )
-                                )
+                                BottomNavigationBar()
                             }
                         }
                     }
@@ -890,6 +891,16 @@ fun MainShell(musicController: MusicController) {
                         // the content area while the new screen fades in
                         // underneath, then fades away to reveal it.
                         TransitionMask(visible = transitionMask)
+                        if (currentRoute == Routes.HOME) {
+                            HomeMiniPlayerOverlay(
+                                visible = hasActiveItem,
+                                musicController = musicController,
+                                onMiniPlayerTap = {
+                                    transitionMask = true
+                                    navController.navigate(Routes.FULL_PLAYER)
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -1064,6 +1075,32 @@ fun MainShell(musicController: MusicController) {
                     }
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun HomeMiniPlayerOverlay(
+    visible: Boolean,
+    musicController: MusicController,
+    onMiniPlayerTap: () -> Unit
+) {
+    // Keep the player in the content layer rather than the Scaffold bottom
+    // bar. Its appearance never changes the measured Home viewport, and the
+    // full-size overlay remains touchable above the navigation bar.
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = slideInVertically(initialOffsetY = { it }),
+            exit = slideOutVertically(targetOffsetY = { it })
+        ) {
+            MiniPlayer(
+                musicController = musicController,
+                onMiniPlayerTap = onMiniPlayerTap
+            )
         }
     }
 }

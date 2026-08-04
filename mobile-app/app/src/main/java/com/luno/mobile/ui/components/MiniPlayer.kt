@@ -171,3 +171,6 @@ fun MiniPlayer(
         }
     }
 }
+
+/** Height occupied above the navigation bar when the mini-player is shown. */
+val MiniPlayerOverlayHeight = Dimens.miniPlayerHeight + 2.dp
