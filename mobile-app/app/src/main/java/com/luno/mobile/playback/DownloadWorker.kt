@@ -12,6 +12,7 @@ import com.luno.mobile.data.db.entity.DownloadState
 import com.luno.mobile.data.db.entity.Playlist
 import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.data.repository.DownloadRepository
+import com.luno.mobile.data.repository.MusicFolderRepository
 import okhttp3.ConnectionSpec
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -177,8 +178,29 @@ class DownloadWorker(
                 }
             }
 
+            val destinationUri = MusicFolderRepository(context).copyFileToSelectedFolder(
+                sourceFile = file,
+                displayName = "$safeFileName$ext",
+                mimeType = contentType.substringBefore(';').ifBlank { mimeTypeForExtension(ext) }
+            )
+            if (destinationUri != null && albumArtPath != null) {
+                val artworkFile = File(albumArtPath)
+                if (artworkFile.isFile) {
+                    runCatching {
+                        MusicFolderRepository(context).copyFileToSelectedFolder(
+                            sourceFile = artworkFile,
+                            displayName = "$safeFileName.jpg",
+                            mimeType = "image/jpeg"
+                        )
+                    }.onFailure { error ->
+                        Log.w(TAG, "Could not sync artwork for download $jobId", error)
+                    }
+                }
+            }
+            val trackUri = destinationUri?.toString() ?: file.toURI().toString()
+
             val track = Track(
-                uri = file.toURI().toString(),
+                uri = trackUri,
                 title = job.title,
                 artist = job.artist,
                 durationMs = durationMs,
@@ -186,6 +208,7 @@ class DownloadWorker(
                 addedAt = System.currentTimeMillis()
             )
             trackDao.insertTrack(track)
+            if (destinationUri != null) file.delete()
 
             // Every download belongs to a playlist. Legacy jobs created before
             // Unsorted routing get repaired here before completion.
@@ -209,7 +232,7 @@ class DownloadWorker(
                 )
             }
 
-            jobDao.markCompleted(jobId, DownloadState.COMPLETED, file.toURI().toString(), System.currentTimeMillis())
+            jobDao.markCompleted(jobId, DownloadState.COMPLETED, track.uri, System.currentTimeMillis())
             Log.d(TAG, "Job $jobId complete")
             return Result.success()
         } catch (e: IOException) {
@@ -224,6 +247,14 @@ class DownloadWorker(
     ): Long {
         return playlistDao.getPlaylistByName(DownloadRepository.UNSORTED_PLAYLIST_NAME)?.id
             ?: playlistDao.insertPlaylist(Playlist(name = DownloadRepository.UNSORTED_PLAYLIST_NAME))
+    }
+
+    private fun mimeTypeForExtension(extension: String): String = when (extension) {
+        ".mp3" -> "audio/mpeg"
+        ".m4a" -> "audio/mp4"
+        ".opus" -> "audio/opus"
+        ".ogg" -> "audio/ogg"
+        else -> "application/octet-stream"
     }
 
     /**

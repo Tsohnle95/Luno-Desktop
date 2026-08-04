@@ -7,6 +7,8 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.luno.mobile.data.db.AppDatabase
+import com.luno.mobile.data.db.entity.DownloadJob
+import com.luno.mobile.data.db.entity.DownloadState
 import com.luno.mobile.data.db.entity.Track
 import com.google.common.truth.Truth.assertThat
 import java.io.File
@@ -194,6 +196,44 @@ class LibraryRepositoryArtworkFetchTest {
         assertThat(updated).isEqualTo(1)
         assertThat(database.trackDao().getTrack("content://media/external/audio/7")!!.albumArtPath)
             .isEqualTo("/artwork/remote.jpg")
+    }
+
+    @Test
+    fun completedDownloadThumbnail_isUsedBeforeRemoteSearch() = runBlocking {
+        val uri = "file:///data/app/files/downloads/thumbnail-song.mp3"
+        insertTrack(uri)
+        database.downloadJobDao().insertDownload(
+            DownloadJob(
+                sourceUrl = "https://example.com/audio",
+                title = "Title",
+                artist = "Artist",
+                state = DownloadState.COMPLETED,
+                localUri = uri,
+                thumbnailUrl = "https://i.ytimg.com/vi/video123/hqdefault.jpg"
+            )
+        )
+        val thumbnailUrls = mutableListOf<String>()
+        val thumbnailRepository = LibraryRepository(
+            context = context,
+            trackDao = database.trackDao(),
+            playlistDao = database.playlistDao(),
+            uriPermissionPersister = LibraryRepository.UriPermissionPersister { },
+            remoteArtwork = { "/artwork/remote.jpg" },
+            thumbnailArtwork = { url ->
+                thumbnailUrls += url
+                "/artwork/youtube-thumbnail.jpg"
+            },
+            downloadJobDao = database.downloadJobDao()
+        )
+
+        val updated = thumbnailRepository.fetchMissingArtwork(extract = { null })
+
+        assertThat(updated).isEqualTo(1)
+        assertThat(thumbnailUrls).containsExactly(
+            "https://i.ytimg.com/vi/video123/hqdefault.jpg"
+        )
+        assertThat(database.trackDao().getTrack(uri)!!.albumArtPath)
+            .isEqualTo("/artwork/youtube-thumbnail.jpg")
     }
 
     @Test

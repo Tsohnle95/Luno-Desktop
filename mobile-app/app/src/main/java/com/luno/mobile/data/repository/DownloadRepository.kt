@@ -18,14 +18,19 @@ import com.luno.mobile.data.db.entity.Playlist
 import com.luno.mobile.playback.DownloadWorker
 import com.luno.mobile.playback.PlaylistSyncWorker
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import android.net.Uri
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 class DownloadRepository(
     private val downloadJobDao: DownloadJobDao,
     private val context: Context,
-    private val playlistDao: PlaylistDao? = null
+    private val playlistDao: PlaylistDao? = null,
+    private val trackDao: TrackDao? = null
 ) {
     private val unsortedMutex = Mutex()
 
@@ -137,6 +142,84 @@ class DownloadRepository(
                 )
             )
         }
+    }
+
+    /** Copies app-private downloaded songs into the selected Music folder. */
+    suspend fun syncAppSongsToMusicFolder(): SyncSongsResult = withContext(Dispatchers.IO) {
+        val trackDao = trackDao ?: return@withContext SyncSongsResult(
+            error = "Download library is unavailable"
+        )
+        if (MusicFolderRepository(context).loadTreeUri().isNullOrBlank()) {
+            return@withContext SyncSongsResult(error = "Choose a Music folder first")
+        }
+
+        val downloadRoot = File(context.filesDir, DownloadWorker.KEY_DOWNLOAD_DIR)
+            .canonicalFile
+        val memberships = playlistDao?.getAllPlaylistTracksOnce().orEmpty()
+        val completedJobs = downloadJobDao.getCompletedDownloadsOnce()
+        var synced = 0
+        var skipped = 0
+        var failed = 0
+
+        trackDao.getAllTracksOnce()
+            .filter { track ->
+                val uri = Uri.parse(track.uri)
+                val file = if (uri.scheme == "file") uri.path?.let(::File) else null
+                file != null && file.canonicalFile.toPath().startsWith(downloadRoot.toPath())
+            }
+            .forEach { track ->
+                val sourceFile = Uri.parse(track.uri).path?.let(::File)
+                if (sourceFile == null || !sourceFile.isFile) {
+                    skipped++
+                    return@forEach
+                }
+
+                try {
+                    val destinationUri = MusicFolderRepository(context)
+                        .copyFileToSelectedFolder(
+                            sourceFile = sourceFile,
+                            displayName = sourceFile.name,
+                            mimeType = mimeTypeForExtension(sourceFile.extension)
+                        ) ?: throw java.io.IOException("Choose a Music folder first")
+                    track.albumArtPath
+                        ?.let(::File)
+                        ?.takeIf { it.isFile }
+                        ?.let { artworkFile ->
+                            MusicFolderRepository(context).copyFileToSelectedFolder(
+                                sourceFile = artworkFile,
+                                displayName = "${sourceFile.nameWithoutExtension}.jpg",
+                                mimeType = "image/jpeg"
+                            )
+                        }
+                    val newUri = destinationUri.toString()
+                    val trackMemberships = memberships.filter { it.trackUri == track.uri }
+
+                    trackDao.deleteTrack(track.uri)
+                    trackDao.insertTrack(track.copy(uri = newUri))
+                    playlistDao?.addTracksToPlaylist(
+                        trackMemberships.map { it.copy(trackUri = newUri) }
+                    )
+                    completedJobs
+                        .filter { it.localUri == track.uri }
+                        .forEach { job ->
+                            downloadJobDao.updateDownload(job.copy(localUri = newUri))
+                        }
+                    sourceFile.delete()
+                    synced++
+                } catch (_: Exception) {
+                    failed++
+                }
+            }
+
+        SyncSongsResult(synced = synced, skipped = skipped, failed = failed)
+    }
+
+    private fun mimeTypeForExtension(extension: String): String = when (extension.lowercase()) {
+        "mp3" -> "audio/mpeg"
+        "m4a" -> "audio/mp4"
+        "opus" -> "audio/opus"
+        "ogg" -> "audio/ogg"
+        else -> "application/octet-stream"
     }
 
     suspend fun retryDownload(id: Long) {
@@ -269,3 +352,10 @@ class DownloadRepository(
             )
     }
 }
+
+data class SyncSongsResult(
+    val synced: Int = 0,
+    val skipped: Int = 0,
+    val failed: Int = 0,
+    val error: String? = null
+)

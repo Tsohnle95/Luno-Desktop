@@ -8,6 +8,7 @@ import android.provider.OpenableColumns
 import com.luno.mobile.data.artwork.ArtworkFetchService
 import com.luno.mobile.data.artwork.ArtworkStorage
 import com.luno.mobile.data.db.dao.TrackDao
+import com.luno.mobile.data.db.dao.DownloadJobDao
 import com.luno.mobile.data.db.entity.Track
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
@@ -40,7 +41,11 @@ class LibraryRepository(
     private val artworkFetchService: ArtworkFetchService = ArtworkFetchService(),
     private val remoteArtwork: suspend (Track) -> String? = { track ->
         artworkFetchService.fetchAndSave(context, track.artist, track.title)
-    }
+    },
+    private val thumbnailArtwork: suspend (String) -> String? = { url ->
+        artworkFetchService.fetchAndSaveImage(context, url)
+    },
+    private val downloadJobDao: DownloadJobDao? = null
 ) {
     /**
      * Imports a single audio document.
@@ -935,9 +940,8 @@ class LibraryRepository(
      * every track whose cached artwork is missing (never extracted, or
      * the cache file was deleted) is re-scanned for **embedded** artwork
      * via [ArtworkStorage] against its persisted source (SAF grant /
-     * local file).  Offline by design — the desktop's Deezer/yt-dlp
-     * network fallbacks are not reproduced; YouTube downloads already
-     * store their video thumbnail at download time.
+     * local file).  Completed downloads use their stored video thumbnail URL
+     * first, then the Deezer lookup fallback for tracks without a thumbnail.
      *
      * The extraction call is the same one used at import time
      * ([importAudioUri] → [ArtworkStorage.saveEmbeddedArtwork]), so any
@@ -957,6 +961,12 @@ class LibraryRepository(
         extract: (Uri) -> String? = { uri -> ArtworkStorage.saveEmbeddedArtwork(context, uri) }
     ): Int = withContext(Dispatchers.IO) {
         val tracks = trackDao.getAllTracksOnce()
+        val thumbnailByTrackUri = downloadJobDao
+            ?.getCompletedDownloadsOnce()
+            ?.asSequence()
+            ?.filter { it.thumbnailUrl.isNotBlank() && it.localUri.isNotBlank() }
+            ?.associate { it.localUri to it.thumbnailUrl }
+            .orEmpty()
         var updated = 0
         tracks.forEachIndexed { index, track ->
             val cached = track.albumArtPath
@@ -969,7 +979,17 @@ class LibraryRepository(
                 } catch (_: Throwable) {
                     null
                 }
+                val thumbnailPath = thumbnailByTrackUri[track.uri]?.let { url ->
+                    try {
+                        thumbnailArtwork(url)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
+                        null
+                    }
+                }
                 val path = embeddedPath?.takeUnless { it.isBlank() }
+                    ?: thumbnailPath?.takeUnless { it.isBlank() }
                     ?: try {
                         remoteArtwork(track)
                     } catch (e: CancellationException) {

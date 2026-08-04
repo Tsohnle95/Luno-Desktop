@@ -74,12 +74,18 @@ class LunoApp : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         database = AppDatabase.getInstance(this)
-        libraryRepository = LibraryRepository(this, database.trackDao(), database.playlistDao())
+        libraryRepository = LibraryRepository(
+            context = this,
+            trackDao = database.trackDao(),
+            playlistDao = database.playlistDao(),
+            downloadJobDao = database.downloadJobDao()
+        )
         playlistRepository = PlaylistRepository(database.playlistDao(), database.trackDao())
         downloadRepository = DownloadRepository(
             downloadJobDao = database.downloadJobDao(),
             context = this,
-            playlistDao = database.playlistDao()
+            playlistDao = database.playlistDao(),
+            trackDao = database.trackDao()
         )
         libraryTransferRepository = LibraryTransferRepository(database, downloadRepository)
         musicFolderRepository = MusicFolderRepository(this)

@@ -125,9 +125,16 @@ fun SearchScreen(
     val downloadsRootUri = remember(context) {
         File(context.filesDir, "downloads").toURI().toString()
     }
-    val downloadedTracks = remember(allTracks, downloadsRootUri) {
+    val completedDownloadUris = remember(downloads) {
+        downloads
+            .asSequence()
+            .filter { it.state == DownloadState.COMPLETED && it.localUri.isNotBlank() }
+            .map { it.localUri }
+            .toSet()
+    }
+    val downloadedTracks = remember(allTracks, downloadsRootUri, completedDownloadUris) {
         allTracks
-            .filter { it.uri.startsWith(downloadsRootUri) }
+            .filter { it.uri.startsWith(downloadsRootUri) || it.uri in completedDownloadUris }
             .sortedByDescending { it.addedAt }
     }
 

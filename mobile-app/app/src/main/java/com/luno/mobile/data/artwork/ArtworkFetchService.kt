@@ -49,15 +49,31 @@ class ArtworkFetchService(
                         }
                 } ?: return@withContext null
 
+                fetchAndSaveImage(context, imageUrl)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                null
+            }
+        }
+
+    /** Fetches a known image URL, such as a stored YouTube thumbnail. */
+    suspend fun fetchAndSaveImage(context: Context, imageUrl: String): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                val normalizedUrl = if (imageUrl.startsWith("http://")) {
+                    "https://${imageUrl.substring(7)}"
+                } else {
+                    imageUrl
+                }
                 val bytes = client.newCall(
                     Request.Builder()
-                        .url(imageUrl)
+                        .url(normalizedUrl)
                         .header("User-Agent", "Luno/1.0 (Android)")
                         .build()
                 ).execute().use { response ->
                     if (!response.isSuccessful) null else response.body?.bytes()
                 } ?: return@withContext null
-
                 ArtworkStorage.saveImageBytes(context, bytes)
             } catch (e: CancellationException) {
                 throw e

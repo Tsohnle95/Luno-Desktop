@@ -46,6 +46,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -451,6 +452,26 @@ fun MainShell(musicController: MusicController) {
                         onClick = {
                             scope.launch { drawerState.close() }
                             folderImportLauncher.launch(null)
+                        }
+                    )
+                    DrawerItem(
+                        icon = Icons.Filled.Sync,
+                        label = "Sync app songs to music folder",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            scope.launch {
+                                val result = app.downloadRepository.syncAppSongsToMusicFolder()
+                                val message = result.error ?: buildString {
+                                    append("Synced ${result.synced} songs to the music folder")
+                                    if (result.skipped > 0) append("; ${result.skipped} skipped")
+                                    if (result.failed > 0) append("; ${result.failed} failed")
+                                }
+                                Toast.makeText(
+                                    context,
+                                    message,
+                                    if (result.error == null) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                                ).show()
+                            }
                         }
                     )
                     DrawerItem(
