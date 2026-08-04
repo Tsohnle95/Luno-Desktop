@@ -60,7 +60,8 @@ fun PlaylistCard(
     onExport: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     selected: Boolean? = null,
-    onLongClick: (() -> Unit)? = null
+    onLongClick: (() -> Unit)? = null,
+    showOptions: Boolean = true
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -122,78 +123,80 @@ fun PlaylistCard(
             )
         }
 
-        // Green 3-dot options
-        Box {
-            IconButton(onClick = { showMenu = true }) {
-                Icon(
-                    imageVector = Icons.Default.MoreVert,
-                    contentDescription = "Playlist options",
-                    tint = AccentGreen,
-                    modifier = Modifier.size(Dimens.iconSize)
-                )
-            }
-            DropdownMenu(
-                expanded = showMenu,
-                onDismissRequest = { showMenu = false }
-            ) {
-                if (onSync != null && playlist.playlistUrl.isNotBlank()) {
-                    DropdownMenuItem(
-                        text = { Text("Sync playlist", color = PrimaryText) },
-                        onClick = {
-                            showMenu = false
-                            onSync()
-                        }
+        if (showOptions) {
+            // Green 3-dot options
+            Box {
+                IconButton(onClick = { showMenu = true }) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Playlist options",
+                        tint = AccentGreen,
+                        modifier = Modifier.size(Dimens.iconSize)
                     )
                 }
-                if (onStopSync != null) {
-                    DropdownMenuItem(
-                        text = { Text("Stop sync", color = PrimaryText) },
-                        onClick = {
-                            showMenu = false
-                            onStopSync()
-                        }
-                    )
-                }
-                if (onUrlChanged != null) {
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                if (playlist.playlistUrl.isNotBlank()) "Edit YouTube URL" else "Set YouTube URL",
-                                color = PrimaryText
-                            )
-                        },
-                        onClick = {
-                            showMenu = false
-                            onUrlChanged(playlist.playlistUrl)
-                        }
-                    )
-                }
-                if (onClearPlaylist != null && tracks.isNotEmpty()) {
-                    DropdownMenuItem(
-                        text = { Text("Clear playlist", color = PrimaryText) },
-                        onClick = {
-                            showMenu = false
-                            onClearPlaylist()
-                        }
-                    )
-                }
-                if (onExport != null) {
-                    DropdownMenuItem(
-                        text = { Text("Export playlist", color = PrimaryText) },
-                        onClick = {
-                            showMenu = false
-                            onExport()
-                        }
-                    )
-                }
-                if (onDelete != null) {
-                    DropdownMenuItem(
-                        text = { Text("Delete playlist", color = PrimaryText) },
-                        onClick = {
-                            showMenu = false
-                            onDelete()
-                        }
-                    )
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false }
+                ) {
+                    if (onSync != null && playlist.playlistUrl.isNotBlank()) {
+                        DropdownMenuItem(
+                            text = { Text("Sync playlist", color = PrimaryText) },
+                            onClick = {
+                                showMenu = false
+                                onSync()
+                            }
+                        )
+                    }
+                    if (onStopSync != null) {
+                        DropdownMenuItem(
+                            text = { Text("Stop sync", color = PrimaryText) },
+                            onClick = {
+                                showMenu = false
+                                onStopSync()
+                            }
+                        )
+                    }
+                    if (onUrlChanged != null) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (playlist.playlistUrl.isNotBlank()) "Edit YouTube URL" else "Set YouTube URL",
+                                    color = PrimaryText
+                                )
+                            },
+                            onClick = {
+                                showMenu = false
+                                onUrlChanged(playlist.playlistUrl)
+                            }
+                        )
+                    }
+                    if (onClearPlaylist != null && tracks.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("Clear playlist", color = PrimaryText) },
+                            onClick = {
+                                showMenu = false
+                                onClearPlaylist()
+                            }
+                        )
+                    }
+                    if (onExport != null) {
+                        DropdownMenuItem(
+                            text = { Text("Export playlist", color = PrimaryText) },
+                            onClick = {
+                                showMenu = false
+                                onExport()
+                            }
+                        )
+                    }
+                    if (onDelete != null) {
+                        DropdownMenuItem(
+                            text = { Text("Delete playlist", color = PrimaryText) },
+                            onClick = {
+                                showMenu = false
+                                onDelete()
+                            }
+                        )
+                    }
                 }
             }
         }

@@ -926,6 +926,10 @@ class LibraryRepository(
 
     suspend fun getTrack(uri: String) = trackDao.getTrack(uri)
 
+    suspend fun setFavorite(uri: String, isFavorite: Boolean) {
+        trackDao.setFavorite(uri, isFavorite)
+    }
+
     suspend fun deleteTrack(uri: String) = trackDao.deleteTrack(uri)
 
     /** Records global song popularity and, when applicable, playlist popularity. */

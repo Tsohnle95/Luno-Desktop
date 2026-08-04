@@ -29,8 +29,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -60,6 +62,7 @@ import com.luno.mobile.playback.MediaTrack
 import com.luno.mobile.playback.MusicController
 import com.luno.mobile.ui.components.ArtworkImage
 import com.luno.mobile.ui.components.BulkSelectionToolbar
+import com.luno.mobile.ui.components.TrackActionsSheet
 import com.luno.mobile.ui.theme.AccentGreen
 import com.luno.mobile.ui.theme.Dimens
 import com.luno.mobile.ui.theme.PrimaryText
@@ -135,6 +138,7 @@ fun HomeScreen(
     // changes) — with per-item remembers the state could reset or jump.
     val recentlyPlayedListState = rememberLazyListState()
     val madeForYouListState = rememberLazyListState()
+    val favoritesListState = rememberLazyListState()
     val popularTracksListState = rememberLazyListState()
     val popularPlaylistsListState = rememberLazyListState()
 
@@ -155,6 +159,7 @@ fun HomeScreen(
         homeListState.isScrollInProgress ||
             recentlyPlayedListState.isScrollInProgress ||
             madeForYouListState.isScrollInProgress ||
+            favoritesListState.isScrollInProgress ||
             popularTracksListState.isScrollInProgress ||
             popularPlaylistsListState.isScrollInProgress
 
@@ -167,6 +172,7 @@ fun HomeScreen(
         homeListState,
         recentlyPlayedListState,
         madeForYouListState,
+        favoritesListState,
         popularTracksListState,
         popularPlaylistsListState
     ) {
@@ -213,6 +219,24 @@ fun HomeScreen(
             )
             .take(20)
     }
+    val favoriteTracks = remember(homeTracks) {
+        homeTracks
+            .filter { it.isFavorite }
+            .sortedByDescending { it.addedAt }
+            .take(20)
+    }
+    val favoriteTracksMedia = remember(favoriteTracks) {
+        favoriteTracks.map {
+            MediaTrack(
+                uri = it.uri,
+                title = it.title,
+                artist = it.artist,
+                album = it.album,
+                durationMs = it.durationMs,
+                artworkUri = it.albumArtUri()
+            )
+        }
+    }
     val popularTracksMedia = remember(popularTracks) {
         popularTracks.map {
             MediaTrack(
@@ -234,14 +258,22 @@ fun HomeScreen(
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedKeys by remember { mutableStateOf(setOf<String>()) }
+    var actionsTrack by remember { mutableStateOf<Track?>(null) }
     val selectedTracks = homeTracks.filter { it.uri in selectedKeys }
     val selectedPlaylists = homePlaylists.filter {
         "p${it.playlist.id}" in selectedKeys
     }
-    val selectableKeys = remember(homeRecentlyPlayed, madeForYou, popularTracks, popularPlaylists) {
+    val selectableKeys = remember(
+        homeRecentlyPlayed,
+        madeForYou,
+        favoriteTracks,
+        popularTracks,
+        popularPlaylists
+    ) {
         buildSet {
             addAll(homeRecentlyPlayed.map { it.uri })
             addAll(madeForYou.map { it.uri })
+            addAll(favoriteTracks.map { it.uri })
             addAll(popularTracks.map { it.uri })
             addAll(popularPlaylists.map { "p${it.playlist.id}" })
         }
@@ -433,6 +465,55 @@ fun HomeScreen(
             }
         }
 
+        // Favorites — songs explicitly marked by the user, kept ahead of the
+        // popularity section while retaining the same edge-clipped carousel.
+        item(key = "favorites-header") {
+            SectionHeader(
+                title = "Favorites",
+                supportingText = "Songs you marked as favorites"
+            )
+        }
+        if (favoriteTracks.isEmpty()) {
+            item(key = "favorites-empty") {
+                EmptyStateCard(
+                    title = "No favorites yet",
+                    subtitle = "Use a song's 3-dot menu to add it here",
+                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                )
+            }
+        } else {
+            item(key = "favorites-carousel") {
+                LazyRow(
+                    state = favoritesListState,
+                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+                    contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
+                ) {
+                    items(
+                        favoriteTracks,
+                        key = { it.uri },
+                        contentType = { "track-card" }
+                    ) { track ->
+                        TrackCard(
+                            title = track.title,
+                            artist = track.artist,
+                            artworkUri = track.albumArtUri(),
+                            selected = if (selectionMode) track.uri in selectedKeys else null,
+                            onClick = {
+                                if (selectionMode) {
+                                    toggleSelection(track.uri)
+                                } else {
+                                    val index = favoriteTracks.indexOfFirst { it.uri == track.uri }
+                                    onPlay(favoriteTracksMedia, index.coerceAtLeast(0), false)
+                                }
+                            },
+                            onLongClick = { beginSelection(track.uri) },
+                            onMenuClick = { actionsTrack = track }
+                        )
+                    }
+                }
+            }
+        }
+
         // Most popular — local play counts are persisted in Room. Songs and
         // playlists are kept in separate edge-clipped carousels.
         item(key = "popular-header") {
@@ -521,6 +602,12 @@ fun HomeScreen(
         }
     }
 
+    actionsTrack?.let { track ->
+        TrackActionsSheet(
+            track = track,
+            onDismiss = { actionsTrack = null }
+        )
+    }
 }
 
 /**
@@ -751,7 +838,8 @@ fun TrackCard(
     artworkUri: String? = null,
     onClick: () -> Unit = {},
     onLongClick: (() -> Unit)? = null,
-    selected: Boolean? = null
+    selected: Boolean? = null,
+    onMenuClick: (() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -795,6 +883,20 @@ fun TrackCard(
                         .align(Alignment.TopEnd)
                         .padding(Dimens.paddingSmall)
                 )
+            }
+            if (onMenuClick != null) {
+                IconButton(
+                    onClick = onMenuClick,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.MoreVert,
+                        contentDescription = "Track options",
+                        tint = AccentGreen
+                    )
+                }
             }
         }
         Spacer(modifier = Modifier.height(Dimens.paddingSmall))

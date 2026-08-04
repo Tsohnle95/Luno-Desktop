@@ -13,6 +13,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.luno.mobile.LunoApp
+import com.luno.mobile.data.db.entity.SystemPlaylists
 import com.luno.mobile.playback.MediaTrack
 import com.luno.mobile.playback.MusicController
 import com.luno.mobile.ui.discover.DiscoverScreen
@@ -56,6 +57,7 @@ fun LunoNavHost(
 ) {
     val app = LocalContext.current.applicationContext as LunoApp
     val madeForYouTracks by app.madeForYouTracks.collectAsState()
+    val allTracks by app.libraryData.tracks.collectAsState()
 
     NavHost(
         navController = navController,
@@ -169,6 +171,7 @@ fun LunoNavHost(
             arguments = listOf(navArgument("playlistId") { type = NavType.LongType })
         ) { backStackEntry ->
             val playlistId = backStackEntry.arguments?.getLong("playlistId") ?: -1L
+            val isFavoritesPlaylist = playlistId == SystemPlaylists.FAVORITES_ID
             PlaylistDetailScreen(
                 playlistId = playlistId,
                 musicController = musicController,
@@ -177,7 +180,18 @@ fun LunoNavHost(
                     navController.navigateUp()
                 },
                 onExportPlaylist = { id -> onExportPlaylists(listOf(id)) },
-                onExportTracks = onExportTracks
+                onExportTracks = onExportTracks,
+                virtualName = if (isFavoritesPlaylist) SystemPlaylists.FAVORITES_NAME else null,
+                virtualDescription = if (isFavoritesPlaylist) {
+                    "Songs you marked as favorites"
+                } else {
+                    ""
+                },
+                virtualTracks = if (isFavoritesPlaylist) {
+                    allTracks.filter { it.isFavorite }
+                } else {
+                    null
+                }
             )
         }
     }

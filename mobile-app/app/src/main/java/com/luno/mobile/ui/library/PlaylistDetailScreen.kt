@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,9 +25,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.Button
@@ -57,6 +61,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.luno.mobile.LunoApp
 import com.luno.mobile.data.db.dao.PlaylistWithTracks
+import com.luno.mobile.data.db.entity.SystemPlaylists
 import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.playback.MediaTrack
 import com.luno.mobile.playback.MusicController
@@ -64,6 +69,7 @@ import com.luno.mobile.ui.components.ArtworkCollage
 import com.luno.mobile.ui.components.ArtworkImage
 import com.luno.mobile.ui.components.BulkSelectionToolbar
 import com.luno.mobile.ui.components.SortChip
+import com.luno.mobile.ui.components.TrackActionsSheet
 import com.luno.mobile.ui.components.TrackSortMode
 import com.luno.mobile.ui.components.sortedByMode
 import com.luno.mobile.ui.player.formatTime
@@ -106,8 +112,10 @@ fun PlaylistDetailScreen(
     // play context) by title/artist/album, Spotify style.
     var query by rememberSaveable { mutableStateOf("") }
     var showSearch by rememberSaveable { mutableStateOf(false) }
+    var favoritesFirst by rememberSaveable { mutableStateOf(false) }
     var selectionMode by remember { mutableStateOf(false) }
     var selectedUris by remember { mutableStateOf(setOf<String>()) }
+    var actionsTrack by remember { mutableStateOf<Track?>(null) }
 
     // Reads from the app-warmed LibraryData playlists flow: the detail
     // screen is only reachable via a playlist card, so the list is already
@@ -156,6 +164,9 @@ fun PlaylistDetailScreen(
         }
     }
     val sortedTracks = remember(filteredTracks, sortMode) { filteredTracks.sortedByMode(sortMode) }
+    val displayedTracks = remember(sortedTracks, favoritesFirst) {
+        if (favoritesFirst) sortedTracks.sortedByDescending { it.isFavorite } else sortedTracks
+    }
     val selectedTracks = tracks.filter { it.uri in selectedUris }
 
     fun toggleSelection(uri: String) {
@@ -300,14 +311,14 @@ fun PlaylistDetailScreen(
                     totalDurationMs = tracks.sumOf { it.durationMs },
                     onPlayAll = {
                         musicController.play(
-                            sortedTracks.map { it.toMediaTrack() },
+                            displayedTracks.map { it.toMediaTrack() },
                             0,
                             playbackPlaylistId
                         )
                     },
                     onShuffleAll = {
                         musicController.playShuffled(
-                            sortedTracks.map { it.toMediaTrack() },
+                            displayedTracks.map { it.toMediaTrack() },
                             playbackPlaylistId
                         )
                     },
@@ -315,7 +326,9 @@ fun PlaylistDetailScreen(
                     searchVisible = showSearch,
                     sortMode = sortMode,
                     onSortModeChange = { sortMode = it },
-                    shuffleActive = shuffleEnabled
+                    shuffleActive = shuffleEnabled,
+                    favoritesFirst = favoritesFirst,
+                    onFavoritesFirstChange = { favoritesFirst = it }
                 )
             }
 
@@ -378,7 +391,7 @@ fun PlaylistDetailScreen(
                 }
             } else {
                 items(
-                    sortedTracks,
+                    displayedTracks,
                     key = { it.uri },
                     contentType = { "playlist-track" }
                 ) { track ->
@@ -389,21 +402,39 @@ fun PlaylistDetailScreen(
                             if (selectionMode) {
                                 toggleSelection(track.uri)
                             } else {
-                                val index = sortedTracks.indexOfFirst { it.uri == track.uri }
+                                val index = displayedTracks.indexOfFirst { it.uri == track.uri }
                                 musicController.play(
-                                    sortedTracks.map { it.toMediaTrack() },
+                                    displayedTracks.map { it.toMediaTrack() },
                                     index.coerceAtLeast(0),
                                     playbackPlaylistId
                                 )
                             }
                         },
-                        onLongPress = { beginSelection(track.uri) }
+                        onLongPress = { beginSelection(track.uri) },
+                        onMenuClick = { actionsTrack = track },
+                        showFavoriteIcon = favoritesFirst || playlistId == SystemPlaylists.FAVORITES_ID
                     )
                 }
             }
         }
     }
 
+    actionsTrack?.let { track ->
+        TrackActionsSheet(
+            track = track,
+            onDismiss = { actionsTrack = null },
+            onRemoveFromPlaylist = if (virtualTracks == null) {
+                {
+                    scope.launch {
+                        app.playlistRepository.removeTrackFromPlaylist(playlistId, track.uri)
+                        Toast.makeText(context, "Removed from playlist", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } else {
+                null
+            }
+        )
+    }
 }
 
 @Composable
@@ -418,7 +449,9 @@ private fun PlaylistHeader(
     searchVisible: Boolean = false,
     sortMode: TrackSortMode = TrackSortMode.AZ,
     onSortModeChange: ((TrackSortMode) -> Unit)? = null,
-    shuffleActive: Boolean = false
+    shuffleActive: Boolean = false,
+    favoritesFirst: Boolean = false,
+    onFavoritesFirstChange: ((Boolean) -> Unit)? = null
 ) {
     Column(modifier = Modifier.padding(horizontal = Dimens.paddingLarge)) {
         Spacer(modifier = Modifier.height(Dimens.paddingLarge))
@@ -521,6 +554,25 @@ private fun PlaylistHeader(
 
                 Spacer(modifier = Modifier.weight(1f))
 
+                if (onFavoritesFirstChange != null) {
+                    IconButton(onClick = { onFavoritesFirstChange(!favoritesFirst) }) {
+                        Icon(
+                            imageVector = if (favoritesFirst) {
+                                Icons.Filled.Star
+                            } else {
+                                Icons.Filled.StarBorder
+                            },
+                            contentDescription = if (favoritesFirst) {
+                                "Show favorites first"
+                            } else {
+                                "Sort favorites first"
+                            },
+                            tint = if (favoritesFirst) AccentGreen else SecondaryText,
+                            modifier = Modifier.size(Dimens.iconSize)
+                        )
+                    }
+                }
+
                 // Filter menu stays opposite Play at the far right.
                 if (onSortModeChange != null) {
                     SortChip(
@@ -540,7 +592,9 @@ private fun PlaylistTrackRow(
     track: Track,
     selected: Boolean?,
     onClick: () -> Unit,
-    onLongPress: () -> Unit
+    onLongPress: () -> Unit,
+    onMenuClick: () -> Unit,
+    showFavoriteIcon: Boolean
 ) {
     Row(
         modifier = Modifier
@@ -590,6 +644,24 @@ private fun PlaylistTrackRow(
                 color = SecondaryText,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (showFavoriteIcon && track.isFavorite) {
+            Icon(
+                imageVector = Icons.Filled.Star,
+                contentDescription = "Favorite",
+                tint = AccentGreen,
+                modifier = Modifier
+                    .size(Dimens.iconSize)
+                    .offset(x = 8.dp)
+            )
+        }
+        IconButton(onClick = onMenuClick) {
+            Icon(
+                imageVector = Icons.Filled.MoreVert,
+                contentDescription = "Track options",
+                tint = AccentGreen,
+                modifier = Modifier.size(Dimens.iconSize)
             )
         }
     }

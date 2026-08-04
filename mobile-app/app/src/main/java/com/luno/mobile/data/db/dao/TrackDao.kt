@@ -34,6 +34,9 @@ interface TrackDao {
     @Query("UPDATE tracks SET playCount = playCount + 1 WHERE uri = :uri")
     suspend fun incrementPlayCount(uri: String)
 
+    @Query("UPDATE tracks SET isFavorite = :isFavorite WHERE uri = :uri")
+    suspend fun setFavorite(uri: String, isFavorite: Boolean)
+
     @Query("SELECT COUNT(*) FROM tracks")
     suspend fun trackCount(): Int
 

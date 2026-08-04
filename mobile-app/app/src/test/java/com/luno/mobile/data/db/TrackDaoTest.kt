@@ -136,6 +136,17 @@ class TrackDaoTest : AppDatabaseTest() {
     }
 
     @Test
+    fun setFavorite_persistsFavoriteFlag() = runBlocking {
+        trackDao.insertTrack(Track(uri = "content://test/favorite", title = "Favorite"))
+
+        trackDao.setFavorite("content://test/favorite", true)
+        assertThat(trackDao.getTrack("content://test/favorite")!!.isFavorite).isTrue()
+
+        trackDao.setFavorite("content://test/favorite", false)
+        assertThat(trackDao.getTrack("content://test/favorite")!!.isFavorite).isFalse()
+    }
+
+    @Test
     fun trackCount_returnsCorrectCount() = runBlocking {
         assertThat(trackDao.trackCount()).isEqualTo(0)
 

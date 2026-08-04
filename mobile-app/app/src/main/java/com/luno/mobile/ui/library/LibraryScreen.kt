@@ -56,7 +56,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.luno.mobile.LunoApp
+import com.luno.mobile.data.db.dao.PlaylistWithTracks
 import com.luno.mobile.data.db.entity.Playlist
+import com.luno.mobile.data.db.entity.SystemPlaylists
 import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.playback.MediaTrack
 import com.luno.mobile.playback.MusicController
@@ -171,13 +173,29 @@ fun LibraryScreen(
     val sortedTracks = remember(filteredTracks, sortMode) {
         filteredTracks.sortedByMode(sortMode)
     }
-    val displayPlaylists = remember(filteredPlaylists, sortMode) {
-        // Keep the reserved root-level playlist visible at the top before
-        // applying the user's selected ordering to the remaining playlists.
-        filteredPlaylists
-            .sortedPlaylistsByMode(sortMode)
-            .partition { it.playlist.name.equals("Unsorted", ignoreCase = true) }
-            .let { (unsorted, playlists) -> unsorted + playlists }
+    val displayPlaylists = remember(filteredPlaylists, sortMode, allTracks, query) {
+        val favoritePlaylist = PlaylistWithTracks(
+            playlist = Playlist(
+                id = SystemPlaylists.FAVORITES_ID,
+                name = SystemPlaylists.FAVORITES_NAME,
+                description = "Songs you marked as favorites"
+            ),
+            tracks = allTracks.filter { it.isFavorite }
+        )
+        val includeFavorites = query.isBlank() ||
+            favoritePlaylist.playlist.name.contains(query, ignoreCase = true)
+        buildList {
+            if (includeFavorites) add(favoritePlaylist)
+            // Keep the reserved root-level playlist below Favorites and above
+            // the user's other playlists, regardless of the selected sort.
+            filteredPlaylists
+                .sortedPlaylistsByMode(sortMode)
+                .partition { it.playlist.name.equals("Unsorted", ignoreCase = true) }
+                .let { (unsorted, playlists) ->
+                    addAll(unsorted)
+                    addAll(playlists)
+                }
+        }
     }
 
     val mediaTracks = remember(sortedTracks) { sortedTracks.map { it.toMediaTrack() } }
@@ -185,7 +203,10 @@ fun LibraryScreen(
     // Batch-action helpers: keys are track URIs in songs view, "p<id>" in
     // playlist view.
     val allKeys = if (playlistView) {
-        displayPlaylists.map { "p${it.playlist.id}" }.toSet()
+        displayPlaylists
+            .filter { it.playlist.id != SystemPlaylists.FAVORITES_ID }
+            .map { "p${it.playlist.id}" }
+            .toSet()
     } else {
         sortedTracks.map { it.uri }.toSet()
     }
@@ -463,30 +484,41 @@ fun LibraryScreen(
                     contentType = { "playlist" }
                 ) { playlistWithTracks ->
                     val playlistKey = "p${playlistWithTracks.playlist.id}"
+                    val isFavoritesPlaylist = playlistWithTracks.playlist.id == SystemPlaylists.FAVORITES_ID
                     PlaylistCard(
                         playlist = playlistWithTracks.playlist,
                         tracks = playlistWithTracks.tracks,
-                        selected = if (selectionMode) playlistKey in selectedKeys else null,
+                        selected = if (!isFavoritesPlaylist && selectionMode) {
+                            playlistKey in selectedKeys
+                        } else {
+                            null
+                        },
                         onClick = {
-                            if (selectionMode) {
+                            if (selectionMode && !isFavoritesPlaylist) {
                                 toggleSelection(playlistKey)
                             } else {
                                 onOpenPlaylist(playlistWithTracks.playlist.id)
                             }
                         },
-                        onLongClick = { beginSelection(playlistKey) },
-                        onSync = {
-                            if (playlistWithTracks.playlist.playlistUrl.isNotBlank()) {
-                                scope.launch {
-                                    app.downloadRepository.syncPlaylist(
-                                        playlistId = playlistWithTracks.playlist.id,
-                                        playlistName = playlistWithTracks.playlist.name,
-                                        playlistUrl = playlistWithTracks.playlist.playlistUrl
-                                    )
+                        onLongClick = if (isFavoritesPlaylist) {
+                            null
+                        } else {
+                            { beginSelection(playlistKey) }
+                        },
+                        onSync = if (isFavoritesPlaylist) null else {
+                            {
+                                if (playlistWithTracks.playlist.playlistUrl.isNotBlank()) {
+                                    scope.launch {
+                                        app.downloadRepository.syncPlaylist(
+                                            playlistId = playlistWithTracks.playlist.id,
+                                            playlistName = playlistWithTracks.playlist.name,
+                                            playlistUrl = playlistWithTracks.playlist.playlistUrl
+                                        )
+                                    }
                                 }
                             }
                         },
-                        onStopSync = if (playlistHasActiveJobs(playlistWithTracks.playlist.id)) {
+                        onStopSync = if (!isFavoritesPlaylist && playlistHasActiveJobs(playlistWithTracks.playlist.id)) {
                             {
                                 scope.launch {
                                     app.downloadRepository.cancelPlaylistSync(playlistWithTracks.playlist.id)
@@ -495,11 +527,20 @@ fun LibraryScreen(
                         } else {
                             null
                         },
-                        onUrlChanged = { urlDialogPlaylist = playlistWithTracks.playlist },
-                        onClearPlaylist = { clearDialogPlaylist = playlistWithTracks.playlist },
-                        onDelete = { deleteDialogPlaylist = playlistWithTracks.playlist },
-                        onExport = { onExportPlaylists(listOf(playlistWithTracks.playlist.id)) },
-                        modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                        onUrlChanged = if (isFavoritesPlaylist) null else {
+                            { urlDialogPlaylist = playlistWithTracks.playlist }
+                        },
+                        onClearPlaylist = if (isFavoritesPlaylist) null else {
+                            { clearDialogPlaylist = playlistWithTracks.playlist }
+                        },
+                        onDelete = if (isFavoritesPlaylist) null else {
+                            { deleteDialogPlaylist = playlistWithTracks.playlist }
+                        },
+                        onExport = if (isFavoritesPlaylist) null else {
+                            { onExportPlaylists(listOf(playlistWithTracks.playlist.id)) }
+                        },
+                        modifier = Modifier.padding(horizontal = Dimens.paddingLarge),
+                        showOptions = !isFavoritesPlaylist
                     )
                 }
             }
