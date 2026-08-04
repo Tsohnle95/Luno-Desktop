@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.luno.mobile.LunoApp
 import com.luno.mobile.data.db.dao.PlaylistWithTracks
@@ -473,15 +474,7 @@ fun HomeScreen(
                 supportingText = "Songs you marked as favorites"
             )
         }
-        if (favoriteTracks.isEmpty()) {
-            item(key = "favorites-empty") {
-                EmptyStateCard(
-                    title = "No favorites yet",
-                    subtitle = "Use a song's 3-dot menu to add it here",
-                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
-                )
-            }
-        } else {
+        if (favoriteTracks.isNotEmpty()) {
             item(key = "favorites-carousel") {
                 LazyRow(
                     state = favoritesListState,
@@ -533,7 +526,7 @@ fun HomeScreen(
         }
         if (popularTracks.isNotEmpty()) {
             item(key = "popular-songs-header") {
-                SectionHeader(title = "Popular songs")
+                SectionHeader(title = "Popular songs", topPadding = 0.dp)
             }
             item(key = "popular-songs-carousel") {
                 LazyRow(
@@ -565,7 +558,7 @@ fun HomeScreen(
         }
         if (popularPlaylists.isNotEmpty()) {
             item(key = "popular-playlists-header") {
-                SectionHeader(title = "Popular playlists")
+                SectionHeader(title = "Popular playlists", topPadding = 0.dp)
             }
             item(key = "popular-playlists-carousel") {
                 LazyRow(
@@ -772,7 +765,8 @@ private fun HomeHero(
 fun SectionHeader(
     title: String,
     supportingText: String? = null,
-    onClick: (() -> Unit)? = null
+    onClick: (() -> Unit)? = null,
+    topPadding: Dp = Dimens.paddingXLarge
 ) {
     Row(
         modifier = Modifier
@@ -780,7 +774,7 @@ fun SectionHeader(
             .padding(
                 start = Dimens.paddingLarge,
                 end = Dimens.paddingLarge,
-                top = Dimens.paddingXLarge,
+                top = topPadding,
                 bottom = Dimens.paddingSmall
             ),
         verticalAlignment = Alignment.CenterVertically

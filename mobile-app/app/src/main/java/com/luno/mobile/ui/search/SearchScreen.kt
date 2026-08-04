@@ -800,7 +800,7 @@ private fun SearchSourcePanel(
             leadingIcon = Icons.Filled.Search,
             actionLabel = "SEARCH",
             actionEnabled = query.isNotBlank() && !isSearching,
-            actionProgress = isSearching,
+            actionHighlighted = isSearching,
             onAction = onSearch,
             onClear = { onQueryChange("") },
             onEditorAction = onSearch
@@ -817,6 +817,7 @@ private fun DownloaderInputRow(
     actionLabel: String,
     actionEnabled: Boolean,
     actionProgress: Boolean = false,
+    actionHighlighted: Boolean = actionProgress,
     onAction: () -> Unit,
     onClear: (() -> Unit)? = null,
     onEditorAction: (() -> Unit)? = null
@@ -875,7 +876,7 @@ private fun DownloaderInputRow(
                 .height(48.dp)
                 .width(82.dp)
                 .background(
-                    if (actionEnabled || actionProgress) {
+                    if (actionEnabled || actionHighlighted) {
                         AccentGreen
                     } else {
                         SurfaceElevated
@@ -898,7 +899,7 @@ private fun DownloaderInputRow(
                     text = actionLabel,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
-                    color = if (actionEnabled) Color.Black else SecondaryText
+                    color = if (actionEnabled || actionHighlighted) Color.Black else SecondaryText
                 )
             }
         }

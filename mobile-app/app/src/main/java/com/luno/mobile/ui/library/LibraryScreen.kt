@@ -2,8 +2,10 @@ package com.luno.mobile.ui.library
 
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,11 +52,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.focus.onFocusChanged
 import com.luno.mobile.LunoApp
 import com.luno.mobile.data.db.dao.PlaylistWithTracks
 import com.luno.mobile.data.db.entity.Playlist
@@ -397,46 +401,70 @@ fun LibraryScreen(
 
         // Search bar
         item {
-            OutlinedTextField(
+            var searchFocused by remember { mutableStateOf(false) }
+            val searchShape = RoundedCornerShape(24.dp)
+            BasicTextField(
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = Dimens.paddingLarge),
-                placeholder = { Text("Search your library", color = SecondaryText) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Filled.Search,
-                        contentDescription = null,
-                        tint = SecondaryText
+                    .padding(horizontal = Dimens.paddingLarge)
+                    .height(48.dp)
+                    .clip(searchShape)
+                    .background(SurfaceDark)
+                    .border(
+                        width = 1.dp,
+                        color = if (searchFocused) AccentGreen else SurfaceElevated,
+                        shape = searchShape
                     )
-                },
-                trailingIcon = {
-                    if (query.isNotEmpty()) {
+                    .onFocusChanged { searchFocused = it.isFocused },
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = PrimaryText),
+                cursorBrush = SolidColor(AccentGreen),
+                singleLine = true,
+                decorationBox = { innerTextField ->
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Icon(
-                            imageVector = Icons.Filled.Clear,
-                            contentDescription = "Clear search",
+                            imageVector = Icons.Filled.Search,
+                            contentDescription = null,
                             tint = SecondaryText,
                             modifier = Modifier
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                    onClick = { query = "" }
-                                )
-                                .padding(Dimens.paddingSmall)
+                                .padding(start = 12.dp)
+                                .size(19.dp)
                         )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 10.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            if (query.isBlank()) {
+                                Text(
+                                    text = "Search your library",
+                                    color = SecondaryText,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1
+                                )
+                            }
+                            innerTextField()
+                        }
+                        if (query.isNotEmpty()) {
+                            IconButton(
+                                onClick = { query = "" },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Clear,
+                                    contentDescription = "Clear search",
+                                    tint = SecondaryText,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
                     }
-                },
-                singleLine = true,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = PrimaryText,
-                    unfocusedTextColor = PrimaryText,
-                    cursorColor = AccentGreen,
-                    focusedBorderColor = AccentGreen,
-                    unfocusedBorderColor = SurfaceElevated,
-                    focusedContainerColor = SurfaceDark,
-                    unfocusedContainerColor = SurfaceDark
-                )
+                }
             )
         }
 
