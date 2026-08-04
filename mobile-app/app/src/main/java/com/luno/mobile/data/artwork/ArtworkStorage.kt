@@ -106,6 +106,20 @@ object ArtworkStorage {
         }
     }
 
+    /** True only when [path] points to a readable image, not just an old path. */
+    fun hasUsableArtwork(path: String?): Boolean {
+        if (path.isNullOrBlank()) return false
+        val file = File(path)
+        if (!file.isFile || file.length() == 0L) return false
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            bounds.outWidth > 0 && bounds.outHeight > 0
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     /**
      * Dominant color of the artwork file (Palette vibrant → muted →
      * average), or `null` when the artwork cannot be decoded.

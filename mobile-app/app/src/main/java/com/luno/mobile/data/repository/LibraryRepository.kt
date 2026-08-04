@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import com.luno.mobile.data.artwork.ArtworkFetchService
 import com.luno.mobile.data.artwork.ArtworkStorage
 import com.luno.mobile.data.db.dao.TrackDao
 import com.luno.mobile.data.db.entity.Track
@@ -20,7 +21,6 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.BufferedReader
-import java.io.File
 import java.io.InputStreamReader
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
@@ -36,7 +36,11 @@ class LibraryRepository(
     private val trackDao: TrackDao,
     private val playlistDao: com.luno.mobile.data.db.dao.PlaylistDao? = null,
     private val uriPermissionPersister: UriPermissionPersister =
-        UriPermissionPersister.Default(context)
+        UriPermissionPersister.Default(context),
+    private val artworkFetchService: ArtworkFetchService = ArtworkFetchService(),
+    private val remoteArtwork: suspend (Track) -> String? = { track ->
+        artworkFetchService.fetchAndSave(context, track.artist, track.title)
+    }
 ) {
     /**
      * Imports a single audio document.
@@ -938,6 +942,9 @@ class LibraryRepository(
      * The extraction call is the same one used at import time
      * ([importAudioUri] → [ArtworkStorage.saveEmbeddedArtwork]), so any
      * source the library accepted at import can be re-extracted here.
+     * If the file has no embedded art, a Deezer cover is downloaded as a
+     * fallback, matching the desktop feature.  A stale or corrupt cache file
+     * is treated as missing even when its old path still exists.
      *
      * [onProgress] receives `(scanned, total, updated)` after every track,
      * so the UI can render a live progress strip (a 4000-track library
@@ -953,9 +960,23 @@ class LibraryRepository(
         var updated = 0
         tracks.forEachIndexed { index, track ->
             val cached = track.albumArtPath
-            val missing = cached.isNullOrBlank() || !File(cached).exists()
+            val missing = !ArtworkStorage.hasUsableArtwork(cached)
             if (missing) {
-                val path = extract(Uri.parse(track.uri))
+                val embeddedPath = try {
+                    extract(Uri.parse(track.uri))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    null
+                }
+                val path = embeddedPath?.takeUnless { it.isBlank() }
+                    ?: try {
+                        remoteArtwork(track)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
+                        null
+                    }
                 if (!path.isNullOrBlank()) {
                     trackDao.updateTrack(track.copy(albumArtPath = path))
                     updated++

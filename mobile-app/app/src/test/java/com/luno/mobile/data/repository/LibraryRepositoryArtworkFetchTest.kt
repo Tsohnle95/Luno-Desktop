@@ -1,6 +1,7 @@
 package com.luno.mobile.data.repository
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
@@ -40,7 +41,8 @@ class LibraryRepositoryArtworkFetchTest {
             context = context,
             trackDao = database.trackDao(),
             playlistDao = database.playlistDao(),
-            uriPermissionPersister = LibraryRepository.UriPermissionPersister { }
+            uriPermissionPersister = LibraryRepository.UriPermissionPersister { },
+            remoteArtwork = { null }
         )
     }
 
@@ -65,6 +67,14 @@ class LibraryRepositoryArtworkFetchTest {
         return extract to called
     }
 
+    private fun validArtwork(name: String): String {
+        val file = File(context.filesDir, "artwork/$name.jpg").apply { parentFile?.mkdirs() }
+        val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+        file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+        bitmap.recycle()
+        return file.absolutePath
+    }
+
     @Test
     fun missingArtwork_isExtractedAndPersisted() = runBlocking {
         insertTrack("content://media/external/audio/1")
@@ -79,10 +89,7 @@ class LibraryRepositoryArtworkFetchTest {
 
     @Test
     fun existingValidArtwork_isNotRescanned() = runBlocking {
-        val existing = File(context.filesDir, "artwork/existing.jpg").apply {
-            parentFile?.mkdirs()
-            writeBytes(byteArrayOf(1, 2, 3))
-        }
+        val existing = File(validArtwork("existing.jpg"))
         insertTrack("content://media/external/audio/2", albumArtPath = existing.absolutePath)
         val (extract, called) = fakeExtractor()
 
@@ -141,10 +148,7 @@ class LibraryRepositoryArtworkFetchTest {
     fun progress_reportsScannedTotalAndUpdatedPerTrack() = runBlocking {
         insertTrack("content://media/external/audio/1")
         insertTrack("content://media/external/audio/2")
-        val existing = File(context.filesDir, "artwork/existing2.jpg").apply {
-            parentFile?.mkdirs()
-            writeBytes(byteArrayOf(1, 2, 3))
-        }
+        val existing = File(validArtwork("existing2.jpg"))
         insertTrack("content://media/external/audio/3", albumArtPath = existing.absolutePath)
         val (extract, _) = fakeExtractor()
         val progress = mutableListOf<Triple<Int, Int, Int>>()
@@ -158,6 +162,38 @@ class LibraryRepositoryArtworkFetchTest {
             Triple(2, 3, 2), // track 2 missing → filled
             Triple(3, 3, 2)  // track 3 has valid artwork → skipped
         ).inOrder()
+    }
+
+    @Test
+    fun invalidExistingArtwork_isRefilled() = runBlocking {
+        val stale = File(context.filesDir, "artwork/stale.jpg").apply {
+            parentFile?.mkdirs()
+            writeBytes(ByteArray(0))
+        }
+        insertTrack("content://media/external/audio/6", albumArtPath = stale.absolutePath)
+        val (extract, _) = fakeExtractor()
+
+        val updated = repository.fetchMissingArtwork(extract = extract)
+
+        assertThat(updated).isEqualTo(1)
+    }
+
+    @Test
+    fun remoteArtwork_isUsedWhenEmbeddedArtworkIsUnavailable() = runBlocking {
+        insertTrack("content://media/external/audio/7")
+        val remoteRepository = LibraryRepository(
+            context = context,
+            trackDao = database.trackDao(),
+            playlistDao = database.playlistDao(),
+            uriPermissionPersister = LibraryRepository.UriPermissionPersister { },
+            remoteArtwork = { "/artwork/remote.jpg" }
+        )
+
+        val updated = remoteRepository.fetchMissingArtwork(extract = { null })
+
+        assertThat(updated).isEqualTo(1)
+        assertThat(database.trackDao().getTrack("content://media/external/audio/7")!!.albumArtPath)
+            .isEqualTo("/artwork/remote.jpg")
     }
 
     @Test
