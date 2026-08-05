@@ -1,6 +1,6 @@
 import tkinter as tk
 from theme import BG, BG2, BG3, BG4, TEXT, TEXT2, TEXT3, GREEN, BORDER
-from utils import draw_gradient_rect
+from utils import draw_gradient_rect, bind_scroll_events, scroll_amount
 
 class SettingsView(tk.Frame):
     def __init__(self, parent, controller):
@@ -38,11 +38,13 @@ class SettingsView(tk.Frame):
             w = e.widget
             while w:
                 if w == self:
-                    self.canvas.yview_scroll(-2 if e.delta > 0 else 2, "units")
+                    amount = scroll_amount(e, wheel_units=2)
+                    if amount:
+                        self.canvas.yview_scroll(amount, "units")
                     return
                 try: w = w.master
                 except: break
-        self.canvas.bind_all("<MouseWheel>", _on_wheel) 
+        bind_scroll_events(self.canvas, _on_wheel, add="+", bind_all=True)
         
         # Header with Spotify-style flat gradient
         hdr = tk.Canvas(sf, height=180, bg=BG, highlightthickness=0)

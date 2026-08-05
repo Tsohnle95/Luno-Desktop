@@ -5,7 +5,7 @@ import math
 import os
 import threading
 from theme import BG, BG2, BG3, BG4, BORDER, GREEN, GREEN_HOVER, TEXT, TEXT2, TEXT3, WARNING, SIDEBAR
-from utils import split_track_name, hex_to_rgb, rgb_to_hex
+from utils import split_track_name, hex_to_rgb, rgb_to_hex, bind_scroll_events, scroll_amount
 from widgets import PlaylistArt
 from theme import playlist_gradient
 import random
@@ -28,6 +28,7 @@ class LibraryView(tk.Frame):
         self._sort_modes = {"Unsorted": "Recently added"}
         self._duration_cache = {}
         self._duration_pending = set()
+        self._track_redraw_after = None
         
         # Context menu
         self.ctx_menu = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT,
@@ -227,13 +228,13 @@ class LibraryView(tk.Frame):
             if total_h <= canvas_h:
                 return  # Content fits — no scrolling needed
 
-            if event.delta > 0:
-                self._track_canvas.yview_scroll(-2, "units")
-            else:
-                self._track_canvas.yview_scroll(2, "units")
-            self._redraw_track_list() # Crucial: Redraw after wheel scroll
+            amount = scroll_amount(event, wheel_units=2)
+            if not amount:
+                return
+            self._track_canvas.yview_scroll(amount, "units")
+            self._schedule_track_redraw()
             
-        self._track_canvas.bind("<MouseWheel>", _lib_wheel)
+        bind_scroll_events(self._track_canvas, _lib_wheel)
         self._track_canvas.bind("<Configure>",   lambda e: self._redraw_track_list())
         
         self._track_canvas.bind("<Button-1>",    self._on_track_canvas_click)
@@ -818,6 +819,16 @@ class LibraryView(tk.Frame):
                 anchor="center", tags=("row", "favorite_star")
             )
             c.create_line(12, y1-1, w-12, y1-1, fill=BORDER, tags="row")
+
+    def _schedule_track_redraw(self):
+        """Coalesce high-resolution scroll redraws to keep the UI responsive."""
+        if self._track_redraw_after is None:
+            self._track_redraw_after = self.after(16, self._flush_track_redraw)
+
+    def _flush_track_redraw(self):
+        self._track_redraw_after = None
+        if self.winfo_exists():
+            self._redraw_track_list()
 
     def _row_at_y(self, y):
         cy = self._track_canvas.canvasy(y)

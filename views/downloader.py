@@ -4,7 +4,7 @@ import threading
 import os, re
 from urllib.parse import urlparse
 from theme import BG, BG2, BG3, BG4, BORDER, GREEN, GREEN_HOVER, TEXT, TEXT2, TEXT3, SUCCESS, WARNING, RED, SC_COLOR, BLUE, SIDEBAR
-from utils import split_track_name, format_time
+from utils import split_track_name, format_time, bind_scroll_events, scroll_amount
 from engine import parse_exportify_csv
 from widgets import ModernScrollbar
 import yt_dlp
@@ -56,6 +56,19 @@ class DownloadView(tk.Frame):
         self._scroll_canvas.bind("<Configure>", _on_scroll_cfg)
 
         def _on_wheel(e):
+            if isinstance(e.widget, (ttk.Treeview, tk.Text)):
+                return
+            widget = e.widget
+            while widget:
+                if widget == self:
+                    break
+                try:
+                    widget = widget.master
+                except AttributeError:
+                    return
+            else:
+                return
+
             bbox = self._scroll_canvas.bbox("all")
             if not bbox: return
             
@@ -63,25 +76,17 @@ class DownloadView(tk.Frame):
             if bbox[3] - bbox[1] <= c_height: 
                 return # Content fits; disable scrolling
                 
+            amount = scroll_amount(e, wheel_units=2)
+            if not amount:
+                return
             y_v = self._scroll_canvas.yview()
-            if e.delta > 0 and y_v[0] <= 0: return # Clamped at top
-            if e.delta < 0 and y_v[1] >= 1.0: return # Clamped at bottom
-            
-            if e.delta > 0:
-                self._scroll_canvas.yview_scroll(-2, "units")
-            else:
-                self._scroll_canvas.yview_scroll(2, "units")
-            
-        self._scroll_canvas.bind("<MouseWheel>", _on_wheel)
-        self._inner.bind("<MouseWheel>", _on_wheel)
+            if amount < 0 and y_v[0] <= 0: return # Clamped at top
+            if amount > 0 and y_v[1] >= 1.0: return # Clamped at bottom
 
-        # Propagate wheel events from child widgets
-        def _bind_wheel_recursive(widget):
-            if isinstance(widget, ttk.Treeview) or isinstance(widget, tk.Text): return
-            widget.bind("<MouseWheel>", _on_wheel)
-            for child in widget.winfo_children():
-                _bind_wheel_recursive(child)
-        self._inner.bind("<Map>", lambda e: self.after(100, lambda: _bind_wheel_recursive(self._inner)))
+            self._scroll_canvas.yview_scroll(amount, "units")
+
+        # A global binding keeps dynamically-created result cards scrollable.
+        bind_scroll_events(self, _on_wheel, add="+", bind_all=True)
 
         # Now build all content inside self._inner
         self._inner.grid_columnconfigure(0, weight=1)

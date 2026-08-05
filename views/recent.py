@@ -1,7 +1,10 @@
 import tkinter as tk
 import math
 from theme import BG, BG3, BG4, TEXT, TEXT2, TEXT3, GREEN, GREEN_HOVER, SIDEBAR, BORDER
-from utils import draw_gradient_rect, split_track_name, hex_to_rgb, rgb_to_hex
+from utils import (
+    draw_gradient_rect, split_track_name, hex_to_rgb, rgb_to_hex,
+    bind_scroll_events, scroll_amount,
+)
 from widgets import playlist_gradient
 
 class RecentView(tk.Frame):
@@ -78,8 +81,10 @@ class RecentView(tk.Frame):
         self.recent_canvas.bind("<Configure>",  lambda e: self.redraw())
         
         def _scroll_recent(event):
-            self.recent_canvas.yview_scroll(int(-1*(event.delta)), "units")
-        self.recent_canvas.bind("<MouseWheel>", _scroll_recent)
+            amount = scroll_amount(event)
+            if amount:
+                self.recent_canvas.yview_scroll(amount, "units")
+        bind_scroll_events(self.recent_canvas, _scroll_recent)
         self.recent_canvas.bind("<Button-1>",   self._on_recent_click)
         self.recent_canvas.bind("<Double-Button-1>", self._on_recent_dbl)
         self.recent_canvas.bind("<Button-2>",   self._on_recent_right)

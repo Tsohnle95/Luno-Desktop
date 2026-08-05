@@ -1,7 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from theme import BG, BG2, BG3, BG4, TEXT, TEXT2, TEXT3, GREEN, GREEN_HOVER, BORDER, SIDEBAR
-from utils import draw_gradient_rect, hex_to_rgb, rgb_to_hex
+from utils import (
+    draw_gradient_rect, hex_to_rgb, rgb_to_hex,
+    bind_scroll_events, scroll_amount,
+)
 import threading
 
 class DiscoverView(tk.Frame):
@@ -49,9 +52,10 @@ class DiscoverView(tk.Frame):
         
         # Internal mousewheel binding
         def _on_wheel(e):
-             self.canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
-        self.canvas.bind("<MouseWheel>", _on_wheel)
-        self.inner.bind("<MouseWheel>", _on_wheel)
+             amount = scroll_amount(e)
+             if amount:
+                 self.canvas.yview_scroll(amount, "units")
+        bind_scroll_events(self.canvas, _on_wheel, add="+", bind_all=True)
 
     def render_recommendations(self, recs):
         self.recs = recs
@@ -113,7 +117,3 @@ class DiscoverView(tk.Frame):
         btn.bind("<Button-1>", lambda e: do_add())
         btn.bind("<Enter>", lambda e: btn.config(bg=TEXT) if btn.cget("state") != "disabled" else None)
         btn.bind("<Leave>", lambda e: btn.config(bg=TEXT2) if btn.cget("state") != "disabled" else None)
-        
-        # Propagate wheel
-        for w in [f, info, act, t_lbl, a_lbl, btn]:
-            w.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))

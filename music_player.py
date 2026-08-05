@@ -28,7 +28,10 @@ os.environ["PATH"] += os.pathsep + "/opt/homebrew/bin"
 
 import sys
 from theme import *
-from utils import resource_path, format_time, hex_to_rgb, rgb_to_hex, draw_gradient_rect, split_track_name
+from utils import (
+    resource_path, format_time, hex_to_rgb, rgb_to_hex, draw_gradient_rect,
+    split_track_name, bind_scroll_events, scroll_amount,
+)
 from widgets import RoundButton, SlimSlider, PlaylistArt
 from views.library import LibraryView
 from views.downloader import DownloadView
@@ -832,7 +835,12 @@ class LunoMusicPlayer(tk.Tk):
 
         self._pl_inner.bind("<Configure>", _update_sidebar_scroll)
         self._pl_scroll_canvas.bind("<Configure>", _update_sidebar_scroll)
-        self._pl_scroll_canvas.bind("<MouseWheel>", self._on_sidebar_wheel)
+        bind_scroll_events(
+            self._pl_scroll_canvas,
+            self._on_sidebar_wheel,
+            add="+",
+            bind_all=True,
+        )
 
     # ── Main ──────────────────────────────────────────────────────────────────
     def _build_main(self, parent):
@@ -908,7 +916,7 @@ class LunoMusicPlayer(tk.Tk):
         self._q_window = self._q_canvas.create_window(0, 0, window=self._q_inner, anchor="nw")
         
         self._q_canvas.bind("<Configure>", lambda e: self._q_canvas.itemconfig(self._q_window, width=e.width))
-        self._q_canvas.bind("<MouseWheel>", self._on_queue_wheel)
+        bind_scroll_events(self._q_canvas, self._on_queue_wheel, add="+", bind_all=True)
 
     def _on_queue_wheel(self, event):
         """Clamped scrolling for the queue canvas. Prevents negative scrolling."""
@@ -916,11 +924,14 @@ class LunoMusicPlayer(tk.Tk):
         # If content fits entirely, don't scroll
         if lo <= 0.0 and hi >= 1.0: return
         # Prevent scrolling past top (delta > 0 is up)
-        if lo <= 0.001 and event.delta > 0: return
+        amount = scroll_amount(event, wheel_units=2)
+        if not amount:
+            return
+        if lo <= 0.001 and amount < 0: return
         # Prevent scrolling past bottom (delta < 0 is down)
-        if hi >= 0.999 and event.delta < 0: return
+        if hi >= 0.999 and amount > 0: return
         
-        self._q_canvas.yview_scroll(-2 if event.delta > 0 else 2, "units")
+        self._q_canvas.yview_scroll(amount, "units")
 
     def _set_queue_tab(self, tab):
         self._queue_tab = tab
@@ -948,21 +959,6 @@ class LunoMusicPlayer(tk.Tk):
         # Reset scroll to top to ensure "Now Playing" is visible
         self._q_canvas.yview_moveto(0)
         
-        # Ensure scrolling works even on child widgets recursively
-        self._bind_mousewheel_recursive(self._q_inner)
-
-    def _bind_mousewheel_recursive(self, widget):
-        def _on_wheel(e):
-             lo, hi = self._q_canvas.yview()
-             if lo <= 0.0 and hi >= 1.0: return
-             if lo <= 0.001 and e.delta > 0: return
-             if hi >= 0.999 and e.delta < 0: return
-             self._q_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
-        
-        widget.bind("<MouseWheel>", _on_wheel)
-        for child in widget.winfo_children():
-            self._bind_mousewheel_recursive(child)
-
     def _draw_queue_items(self):
         q = self.engine.queue
         idx = self.engine.queue_idx
@@ -1229,10 +1225,9 @@ class LunoMusicPlayer(tk.Tk):
         canvas_h = self._pl_scroll_canvas.winfo_height()
         if content_h <= canvas_h:
             return  # Content fits — no scrolling
-        if event.delta > 0:
-            self._pl_scroll_canvas.yview_scroll(-2, "units")
-        else:
-            self._pl_scroll_canvas.yview_scroll(2, "units")
+        amount = scroll_amount(event, wheel_units=2)
+        if amount:
+            self._pl_scroll_canvas.yview_scroll(amount, "units")
 
     def _broadcast_shuffle_state(self):
         """Updates all shuffle icons/labels across all views."""
@@ -1664,7 +1659,6 @@ class LunoMusicPlayer(tk.Tk):
                 w.bind("<Button-3>", show_context)
                 w.bind("<Enter>", lambda e, c=card, inn=inner, n=nl, cll=cl, tx=txt_f: [x.config(bg=BG3) for x in [c,inn,n,cll,tx]])
                 w.bind("<Leave>", lambda e, c=card, inn=inner, n=nl, cll=cl, tx=txt_f: [x.config(bg=SIDEBAR) for x in [c,inn,n,cll,tx]])
-                w.bind("<MouseWheel>", self._on_sidebar_wheel, add="+")
 
     def _select_playlist_card(self, idx, name):
         self._pl_selected_idx = idx
