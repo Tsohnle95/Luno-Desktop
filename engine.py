@@ -109,6 +109,14 @@ except ImportError:
 def scan_library(roots):
     lib = {}
     EXTS = (".mp3", ".m4a", ".wav", ".flac", ".mp4", ".webm")
+
+    def recent_first(path):
+        try:
+            modified = os.path.getmtime(path)
+        except OSError:
+            modified = 0.0
+        return (-modified, os.path.basename(path).casefold())
+
     for root in roots:
         if not os.path.exists(root): continue
         for entry in sorted(os.scandir(root), key=lambda e: e.name.lower()):
@@ -117,14 +125,15 @@ def scan_library(roots):
                                if f.lower().endswith(EXTS)],
                                key=lambda x: os.path.basename(x).lower())
                 lib[entry.name] = songs
-        root_songs = sorted([os.path.join(root, f) for f in os.listdir(root)
-                            if f.lower().endswith(EXTS)],
-                           key=lambda x: os.path.basename(x).lower())
+        root_songs = [os.path.join(root, f) for f in os.listdir(root)
+                      if f.lower().endswith(EXTS)]
         if root_songs:
             if "Unsorted" not in lib: lib["Unsorted"] = []
             existing = set(lib["Unsorted"])
             for s in root_songs:
                 if s not in existing: lib["Unsorted"].append(s)
+        if "Unsorted" in lib:
+            lib["Unsorted"].sort(key=recent_first)
     return lib
 
 def probe_soundcloud(query):

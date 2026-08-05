@@ -233,12 +233,8 @@ class LunoMusicPlayer(tk.Tk):
         self._show_add_to_playlist_dialog(paths, f"Dump all from {source_pl_name}")
 
     def _show_add_to_playlist_dialog(self, paths, title_text):
-        """Styled dialog to        # Global Media Keys Toggle
-        row_keys = tk.Frame(viz_box, bg=BG)
-        row_keys.pack(fill="x", pady=(20, 0))
-        tk.Label(row_keys, text="Global Media Keys (Experimental / macOS Crash Risk)", font=("Helvetica Neue", 11), fg=TEXT2, bg=BG).pack(side="left")
-lder."""
-        playlists = [p for p in self._library.keys()]
+        """Show a searchable destination playlist picker."""
+        playlists = sorted(self._library.keys(), key=str.casefold)
         if not playlists:
             messagebox.showinfo("No Playlists", "Create a destination playlist first.")
             return
@@ -254,23 +250,55 @@ lder."""
         tk.Label(dlg, text=title_text, font=("Helvetica Neue", 14, "bold"), 
                  fg=TEXT, bg=BG2).pack(pady=(25, 5))
         tk.Label(dlg, text=f"{len(paths)} tracks will be copied", font=("Helvetica Neue", 10), 
-                 fg=TEXT3, bg=BG2).pack(pady=(0, 15))
-        
+                  fg=TEXT3, bg=BG2).pack(pady=(0, 15))
+
+        search_frame = tk.Frame(dlg, bg=BG3, highlightbackground=BORDER, highlightthickness=1)
+        search_frame.pack(fill="x", padx=30, pady=(0, 10), ipady=2)
+        tk.Label(search_frame, text="⌕", font=("Helvetica Neue", 11),
+                 fg=TEXT3, bg=BG3, padx=8).pack(side="left")
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(
+            search_frame, textvariable=search_var, bg=BG3, fg=TEXT,
+            insertbackground=TEXT, relief="flat", font=("Helvetica Neue", 11),
+            bd=0, highlightthickness=0,
+        )
+        search_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
         lb_frame = tk.Frame(dlg, bg=BG3, bd=1, highlightbackground=BORDER, highlightthickness=1)
         lb_frame.pack(fill="both", expand=True, padx=30, pady=10)
 
-        lb = tk.Listbox(lb_frame, bg=BG3, fg=TEXT2, font=("Helvetica Neue", 12), 
-                        relief="flat", borderwidth=0, highlightthickness=0, 
-                        selectbackground=BG4, activestyle="none")
-        lb.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        for pl in playlists:
-            lb.insert("end", f"  {pl}")
+        lb = tk.Listbox(lb_frame, bg=BG3, fg=TEXT2, font=("Helvetica Neue", 12),
+                         relief="flat", borderwidth=0, highlightthickness=0,
+                         selectbackground=BG4, activestyle="none")
+        from widgets import ModernScrollbar
+        lb_sb = ModernScrollbar(lb_frame, command=lb.yview, bg=BG3, width=6)
+        lb.configure(yscrollcommand=lb_sb.set)
+        lb_sb.pack(side="right", fill="y", padx=(0, 4), pady=5)
+        lb.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+
+        visible_playlists = []
+
+        def populate_playlists(*_):
+            query = search_var.get().strip().casefold()
+            visible_playlists[:] = [
+                playlist for playlist in playlists
+                if not query or query in playlist.casefold()
+            ]
+            lb.delete(0, "end")
+            for playlist in visible_playlists:
+                lb.insert("end", f"  {playlist}")
+            if visible_playlists:
+                lb.selection_set(0)
+                lb.activate(0)
+
+        search_var.trace_add("write", populate_playlists)
+        populate_playlists()
 
         def do_transfer():
             sel = lb.curselection()
-            if not sel: return
-            target = playlists[sel[0]]
+            if not sel or sel[0] >= len(visible_playlists):
+                return
+            target = visible_playlists[sel[0]]
             dest_dir = self._find_playlist_dir(target)
             
             if not dest_dir: return
@@ -293,6 +321,9 @@ lder."""
         btn.bind("<Button-1>", lambda e: do_transfer())
         btn.bind("<Enter>", lambda e: btn.config(bg=GREEN_HOVER))
         btn.bind("<Leave>", lambda e: btn.config(bg=GREEN))
+        search_entry.bind("<Return>", lambda e: do_transfer())
+        lb.bind("<Double-Button-1>", lambda e: do_transfer())
+        dlg.after(0, search_entry.focus_set)
 
     # Now, find the existing _ctx_add_playlist and replace it with this one-liner:
     def _ctx_add_playlist(self):
@@ -356,8 +387,6 @@ lder."""
         self._favorite_paths       = set()
         self._crossfade_secs       = 0
         self._sleep_after_id       = None
-        self._viz_enabled          = False
-        self._viz_after_id         = None
         self._sync_running         = False
         self._transfer_running     = False
         self._playlist_urls        = {}
@@ -1084,7 +1113,7 @@ lder."""
                                     fg=TEXT2, bg=PLAYER_BG, anchor="w", wraplength=220)
         self.now_artist.pack(anchor="w")
 
-        self.favorite_lbl = tk.Label(info, text="☆", font=("Helvetica Neue",20),
+        self.favorite_lbl = tk.Label(info, text="☆", font=("Helvetica Neue",14),
                                      fg=TEXT3, bg=PLAYER_BG, cursor="hand2", width=2)
         self.favorite_lbl.grid(row=0, column=2, padx=(8, 16), sticky="e")
         self.favorite_lbl.bind("<Button-1>", lambda e: self._toggle_current_favorite())

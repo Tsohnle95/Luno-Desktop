@@ -1,15 +1,11 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-import time, random
-from theme import BG, BG2, BG3, BG4, TEXT, TEXT2, TEXT3, GREEN, GREEN_HOVER, RED, SUCCESS, WARNING, BORDER, PLAYER_BG, SIDEBAR, BLUE
-from utils import draw_gradient_rect, hex_to_rgb, rgb_to_hex
-from widgets import playlist_gradient, RoundButton
+from theme import BG, BG2, BG3, BG4, TEXT, TEXT2, TEXT3, GREEN, BORDER
+from utils import draw_gradient_rect
 
 class SettingsView(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg=BG)
         self.controller = controller
-        self.viz_enabled = False
         
         # Track pill widgets for updating styles
         self._pill_groups = {}
@@ -191,6 +187,19 @@ class SettingsView(tk.Frame):
                                 ["Off", "5 mins", "15 mins", "30 mins", "60 mins"],
                                 self.controller._sleep_var,
                                 self.controller._set_sleep_timer)
+
+        keys_row = tk.Frame(aud_box, bg=BG)
+        keys_row.pack(fill="x", pady=(20, 0))
+        tk.Label(
+            keys_row, text="Global Media Keys (macOS Remote Commands)",
+            font=("Helvetica Neue", 11), fg=TEXT2, bg=BG
+        ).pack(side="left")
+        keys_cb = tk.Checkbutton(
+            keys_row, variable=self.controller.global_keys_var,
+            bg=BG, activebackground=BG, selectcolor=BG2, relief="flat",
+            borderwidth=0, highlightthickness=0
+        )
+        keys_cb.pack(side="right")
         
         # ─── MAINTENANCE & DEBUG ──────────────────────────────────────────
         self._add_section_header(content, "Troubleshooting")
@@ -205,34 +214,6 @@ class SettingsView(tk.Frame):
                            fg=BG, bg=TEXT3, padx=20, pady=10, cursor="hand2")
         err_btn.pack(side="right")
         err_btn.bind("<Button-1>", lambda e: self.controller._show_tab("error_log"))
-
-        # ─── VISUALIZER SECTION ──────────────────────────────────────────
-        self._add_section_header(content, "Visuals")
-        
-        viz_box = tk.Frame(content, bg=BG)
-        viz_box.pack(fill="x", pady=(0, 40))
-        
-        viz_row = tk.Frame(viz_box, bg=BG)
-        viz_row.pack(fill="x", pady=(0, 10))
-        tk.Label(viz_row, text="Real-time Audio Bar Visualizer", font=("Helvetica Neue", 11), fg=TEXT2, bg=BG).pack(side="left")
-
-        self.viz_toggle_btn = tk.Label(viz_row, text="ENABLE", font=("Helvetica Neue", 9, "bold"),
-                                       fg=BG, bg=GREEN, padx=16, pady=6, cursor="hand2")
-        self.viz_toggle_btn.pack(side="right")
-        self.viz_toggle_btn.bind("<Button-1>", lambda e: self._toggle_visualizer())
-
-        self.viz_canvas = tk.Canvas(viz_box, bg="#000000", height=80, highlightthickness=0)
-        self.viz_canvas.pack(fill="x", pady=4)
-
-        # Global Media Keys Toggle
-        row_keys = tk.Frame(viz_box, bg=BG)
-        row_keys.pack(fill="x", pady=(20, 0))
-        tk.Label(row_keys, text="Global Media Keys (macOS Remote Commands)", font=("Helvetica Neue", 11), fg=TEXT2, bg=BG).pack(side="left")
-        
-        keys_cb = tk.Checkbutton(row_keys, variable=self.controller.global_keys_var,
-                                 bg=BG, activebackground=BG, selectcolor=BG2, relief="flat",
-                                 borderwidth=0, highlightthickness=0)
-        keys_cb.pack(side="right")
 
         # Padding
         tk.Frame(sf, bg=BG, height=100).pack()
@@ -278,41 +259,6 @@ class SettingsView(tk.Frame):
             bg_col = GREEN if is_active else BG3
             fg_col = BG if is_active else TEXT3
             widget.config(bg=bg_col, fg=fg_col)
-
-    def _toggle_visualizer(self):
-        self.viz_enabled = not self.viz_enabled
-        if self.viz_enabled:
-            self.viz_toggle_btn.config(text="DISABLE", bg=RED)
-            self._draw_visualizer()
-        else:
-            self.viz_toggle_btn.config(text="ENABLE", bg=GREEN)
-            self.viz_canvas.delete("all")
-
-    def _draw_visualizer(self):
-        if not self.viz_enabled: return
-        c = self.viz_canvas
-        c.delete("all")
-        w = c.winfo_width(); h = c.winfo_height()
-        if w < 10 or h < 10: 
-            self.after(500, self._draw_visualizer)
-            return
-            
-        bars = 48
-        bar_w = max(1, (w - bars) // bars)
-        c1, _ = playlist_gradient(self.controller._selected_playlist or "luno")
-        for i in range(bars):
-            if self.controller.engine.playing and not self.controller.engine.paused:
-                height = random.randint(5, h-5)
-            else:
-                height = 5
-            x0 = i * (bar_w + 1)
-            x1 = x0 + bar_w
-            r1,g1,b1 = hex_to_rgb(c1)
-            r2,g2,b2 = hex_to_rgb(GREEN)
-            t = i / bars
-            col = rgb_to_hex(int(r1+(r2-r1)*t), int(g1+(g2-g1)*t), int(b1+(b2-b1)*t))
-            c.create_rectangle(x0, h-height, x1, h, fill=col, outline="")
-        self.after(80, self._draw_visualizer)
 
     def _on_fetch_artwork(self):
         if self.art_btn.cget("text") == "FETCHING...":

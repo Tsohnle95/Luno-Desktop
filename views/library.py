@@ -2,6 +2,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from urllib.parse import urlparse
 import math
+import os
+import threading
 from theme import BG, BG2, BG3, BG4, BORDER, GREEN, GREEN_HOVER, TEXT, TEXT2, TEXT3, WARNING, SIDEBAR
 from utils import split_track_name, hex_to_rgb, rgb_to_hex
 from widgets import PlaylistArt
@@ -9,6 +11,8 @@ from theme import playlist_gradient
 import random
 
 class LibraryView(tk.Frame):
+    _SORT_MODES = ("A-Z", "Z-A", "Recently added", "Duration")
+
     def __init__(self, parent, controller):
         super().__init__(parent, bg=BG)
         self.controller = controller
@@ -21,6 +25,9 @@ class LibraryView(tk.Frame):
         self._pulse_frame = 0
         self._pulse_running = False
         self._favorites_first = False
+        self._sort_modes = {"Unsorted": "Recently added"}
+        self._duration_cache = {}
+        self._duration_pending = set()
         
         # Context menu
         self.ctx_menu = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT,
@@ -56,13 +63,14 @@ class LibraryView(tk.Frame):
             lambda e: (self._draw_lib_header(),
                        self._hdr_canvas.itemconfig("overlay", width=e.width, height=220)))
 
-        self.viz_toggle_btn = tk.Label(self._hdr_overlay, text="〰", font=("Helvetica",22), fg=TEXT3, bg=BG, cursor="hand2")
-        self.viz_toggle_btn.place(relx=1.0, rely=0.0, x=-28, y=18, anchor="ne")
-        self.viz_toggle_btn.bind("<Button-1>", lambda e: self._toggle_viz())
-        self.viz_toggle_btn.bind("<Enter>", lambda e: self.viz_toggle_btn.config(fg=TEXT))
-        self.viz_toggle_btn.bind("<Leave>", lambda e: self._sync_viz_icon())
-        self.after(200, self._sync_viz_icon)
-        self.after(2000, self._sync_viz_icon) # Extra sync for safety after init
+        self.playlist_settings_btn = tk.Label(
+            self._hdr_overlay, text="⚙", font=("Helvetica", 20),
+            fg=TEXT3, bg=BG, cursor="hand2"
+        )
+        self.playlist_settings_btn.place(relx=1.0, rely=0.0, x=-28, y=18, anchor="ne")
+        self.playlist_settings_btn.bind("<Button-1>", lambda e: self._show_playlist_actions())
+        self.playlist_settings_btn.bind("<Enter>", lambda e: self.playlist_settings_btn.config(fg=TEXT))
+        self.playlist_settings_btn.bind("<Leave>", lambda e: self.playlist_settings_btn.config(fg=TEXT3))
 
         self._art_container = tk.Frame(self._hdr_overlay, bg=BG, width=150, height=150)
         self._art_container.pack(side="left", padx=(32,22), pady=(35,0), anchor="n")
@@ -92,52 +100,57 @@ class LibraryView(tk.Frame):
         )
         self.playlist_subtitle_lbl.pack(anchor="w", pady=(2, 0))
 
-        self.viz_canvas = tk.Canvas(title_area, bg=BG, height=28, highlightthickness=0)
-        self.viz_canvas.pack(anchor="w", fill="x", pady=(8,0))
-        self.after(500, self._draw_visualizer)
-
         # Action row
         act = tk.Frame(self, bg=BG)
         act.grid(row=1, column=0, columnspan=2, sticky="ew", padx=28, pady=(14,6))
 
-        play_lbl = tk.Label(act, text="▶", font=("Helvetica Neue",20,"bold"),
+        # Flexible spacer columns provide the Tkinter equivalent of
+        # justify-content: space-between for the five playlist controls.
+        controls = tk.Frame(act, bg=BG)
+        controls.pack(side="top", fill="x")
+        for spacer in (1, 3, 5, 7):
+            controls.grid_columnconfigure(spacer, weight=1)
+
+        play_lbl = tk.Label(controls, text="▶", font=("Helvetica Neue",20,"bold"),
                             fg=SIDEBAR, bg=GREEN, padx=14, pady=6, cursor="hand2")
-        play_lbl.pack(side="left", padx=(0,16))
+        play_lbl.grid(row=0, column=0, sticky="w")
         play_lbl.bind("<Button-1>", lambda e: self.controller._play_all())
         play_lbl.bind("<Enter>", lambda e: play_lbl.config(bg=GREEN_HOVER))
         play_lbl.bind("<Leave>", lambda e: play_lbl.config(bg=GREEN))
 
-        self.shuf_lbl = tk.Label(act, text="⇄  Shuffle", font=("Helvetica Neue",11),
-                        fg=TEXT2, bg=BG, cursor="hand2")
-        self.shuf_lbl.pack(side="left", padx=(0,20))
+        self.shuf_lbl = tk.Label(controls, text="Shuffle", font=("Helvetica Neue",11),
+                        fg=GREEN, bg=BG, cursor="hand2")
+        self.shuf_lbl.grid(row=0, column=2, sticky="w")
         self.shuf_lbl.bind("<Button-1>", lambda e: self._on_shuffle_button_click())
-        self.shuf_lbl.bind("<Enter>", lambda e: self.shuf_lbl.config(fg=TEXT))
-        self.shuf_lbl.bind("<Leave>", lambda e: self.shuf_lbl.config(fg=GREEN if self.controller.engine.shuffle else TEXT2))
+        self.shuf_lbl.bind("<Enter>", lambda e: self.shuf_lbl.config(fg=GREEN_HOVER))
+        self.shuf_lbl.bind("<Leave>", lambda e: self.on_shuffle_changed(self.controller.engine.shuffle))
 
         self.favorites_first_lbl = tk.Label(
-            act, text="☆  Favorites first", font=("Helvetica Neue", 10),
-            fg=TEXT3, bg=BG, cursor="hand2"
+            controls, text="☆  Favorites first", font=("Helvetica Neue", 10),
+            fg=GREEN, bg=BG, cursor="hand2"
         )
-        self.favorites_first_lbl.pack(side="left", padx=(0, 20))
+        self.favorites_first_lbl.grid(row=0, column=4, sticky="w")
         self.favorites_first_lbl.bind("<Button-1>", lambda e: self._toggle_favorites_first())
-        self.favorites_first_lbl.bind("<Enter>", lambda e: self.favorites_first_lbl.config(fg=TEXT))
+        self.favorites_first_lbl.bind("<Enter>", lambda e: self.favorites_first_lbl.config(fg=GREEN_HOVER))
         self.favorites_first_lbl.bind("<Leave>", lambda e: self._sync_favorites_first_label())
-
-        recs_btn = tk.Label(act, text="✨  Get Similar Tracks", font=("Helvetica Neue",10),
-                             fg=TEXT3, bg=BG, cursor="hand2")
-        recs_btn.pack(side="left", padx=(0,20))
-        recs_btn.bind("<Button-1>", lambda e: self.controller._trigger_discovery())
-        recs_btn.bind("<Enter>", lambda e: recs_btn.config(fg="#F1C40F"))
-        recs_btn.bind("<Leave>", lambda e: recs_btn.config(fg=TEXT3))
 
         self._actions_popup = None
 
-        self.pl_actions_btn = tk.Label(act, text="⚙  Playlist", font=("Helvetica Neue",10),
-                                       fg=TEXT3, bg=BG, cursor="hand2")
-        self.pl_actions_btn.pack(side="right")
-        self.pl_actions_btn.bind("<Button-1>", lambda e: self._show_playlist_actions())
-        self.pl_actions_btn.bind("<Enter>", lambda e: self.pl_actions_btn.config(fg=TEXT))
-        self.pl_actions_btn.bind("<Leave>", lambda e: self.pl_actions_btn.config(fg=TEXT3))
+        self.sort_lbl = tk.Label(
+            controls, text="Sort  ▾", font=("Helvetica Neue", 10),
+            fg=GREEN, bg=BG, cursor="hand2"
+        )
+        self.sort_lbl.grid(row=0, column=8, sticky="w")
+        self.sort_lbl.bind("<Button-1>", lambda e: self._show_sort_menu())
+        self.sort_lbl.bind("<Enter>", lambda e: self.sort_lbl.config(fg=GREEN_HOVER))
+        self.sort_lbl.bind("<Leave>", lambda e: self.sort_lbl.config(fg=GREEN))
+
+        self.recs_btn = tk.Label(controls, text="✨  Get Similar Tracks", font=("Helvetica Neue",10),
+                                 fg=GREEN, bg=BG, cursor="hand2")
+        self.recs_btn.grid(row=0, column=6, sticky="w")
+        self.recs_btn.bind("<Button-1>", lambda e: self._open_discover())
+        self.recs_btn.bind("<Enter>", lambda e: self.recs_btn.config(fg=GREEN_HOVER))
+        self.recs_btn.bind("<Leave>", lambda e: self.recs_btn.config(fg=GREEN))
 
         # Outside-click handler registered once (not inside _show_playlist_actions)
         self.controller.bind_all("<Button-1>", self._on_app_click, add="+")
@@ -149,9 +162,6 @@ class LibraryView(tk.Frame):
             style="Green.Horizontal.TProgressbar")
         self._sync_prog_bar.pack(fill="x")
         self._sync_prog_frame.pack_forget()
-
-        self._act_sep = tk.Frame(act, bg=BG3, height=1)
-        self._act_sep.pack(side="bottom", fill="x")
 
         # In-playlist search bar
         search_row = tk.Frame(self, bg=BG)
@@ -166,7 +176,16 @@ class LibraryView(tk.Frame):
                                           relief="flat", font=("Helvetica Neue",10), bd=0,
                                           highlightthickness=0, highlightbackground=BG3, highlightcolor=BG3)
         self._pl_search_entry.pack(side="left", fill="x", expand=True)
-        
+
+        self._pl_search_clear_btn = tk.Label(
+            sf, text="×", font=("Helvetica Neue", 13, "bold"),
+            fg=TEXT3, bg=BG3, cursor="hand2", padx=8
+        )
+        self._pl_search_clear_btn.bind("<Button-1>", lambda e: self._clear_playlist_search())
+        self._pl_search_clear_btn.bind("<Enter>", lambda e: self._pl_search_clear_btn.config(fg=TEXT))
+        self._pl_search_clear_btn.bind("<Leave>", lambda e: self._pl_search_clear_btn.config(fg=TEXT3))
+        self._search_clear_visible = False
+
         self._pl_search_ph_lbl = tk.Label(sf, text=self._pl_search_ph, font=("Helvetica Neue",10), 
                                           fg=TEXT3, bg=BG3, cursor="xterm")
         # Initialize placeholder visibility state
@@ -220,19 +239,136 @@ class LibraryView(tk.Frame):
         self._track_canvas.bind("<Motion>", self._on_track_hover)
         self._track_canvas.bind("<Leave>",  lambda e: self._set_track_hover(None))
 
+    # ── Track sorting ───────────────────────────────────────────────────────
+    def _sort_scope(self):
+        return self.controller._selected_playlist or "All Music"
+
+    def _current_sort_mode(self):
+        return self._sort_modes.get(self._sort_scope(), "A-Z")
+
+    def _sync_sort_label(self):
+        if hasattr(self, "sort_lbl") and self.sort_lbl.winfo_exists():
+            self.sort_lbl.config(text="Sort  ▾", fg=GREEN)
+
+    def _show_sort_menu(self):
+        if getattr(self, "_sort_menu", None):
+            try:
+                self._sort_menu.unpost()
+            except tk.TclError:
+                pass
+
+        menu = tk.Menu(
+            self, tearoff=0, bg=BG3, fg=TEXT,
+            activebackground=BG4, activeforeground=TEXT,
+            font=("Helvetica Neue", 10), bd=0,
+        )
+        current = self._current_sort_mode()
+        for mode in self._SORT_MODES:
+            prefix = "✓  " if mode == current else "    "
+            menu.add_command(
+                label=f"{prefix}{mode}",
+                command=lambda selected=mode: self._set_sort_mode(selected),
+            )
+        self._sort_menu = menu
+        menu.post(
+            self.sort_lbl.winfo_rootx(),
+            self.sort_lbl.winfo_rooty() + self.sort_lbl.winfo_height(),
+        )
+
+    def _set_sort_mode(self, mode):
+        if mode not in self._SORT_MODES:
+            return
+        self._sort_modes[self._sort_scope()] = mode
+        if getattr(self, "_sort_menu", None):
+            try:
+                self._sort_menu.unpost()
+            except tk.TclError:
+                pass
+            self._sort_menu = None
+        self._sync_sort_label()
+        self.populate_track_list(self._pl_search_entry.get().strip())
+        self.reset_track_scroll()
+
+    @staticmethod
+    def _file_mtime(path):
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            return 0.0
+
+    def _request_track_durations(self, paths):
+        pending = [path for path in dict.fromkeys(paths) if path not in self._duration_pending]
+        if not pending:
+            return
+        self._duration_pending.update(pending)
+
+        def load_durations():
+            durations = {}
+            try:
+                from mutagen import File as MutagenFile
+            except ImportError:
+                durations = {path: 0.0 for path in pending}
+            else:
+                for path in pending:
+                    duration = 0.0
+                    try:
+                        audio = MutagenFile(path)
+                        duration = float(getattr(getattr(audio, "info", None), "length", 0.0) or 0.0)
+                    except Exception:
+                        pass
+                    durations[path] = duration
+            self.after(0, lambda: self._finish_track_durations(durations))
+
+        threading.Thread(target=load_durations, daemon=True).start()
+
+    def _finish_track_durations(self, durations):
+        self._duration_cache.update(durations)
+        self._duration_pending.difference_update(durations)
+        if self._current_sort_mode() == "Duration":
+            self.populate_track_list(self._pl_search_entry.get().strip())
+            self.reset_track_scroll()
+
+    def _sort_track_items(self, items):
+        mode = self._current_sort_mode()
+        if mode == "Z-A":
+            return sorted(items, key=lambda item: (item[1].casefold(), item[2].casefold()), reverse=True)
+        if mode == "Recently added":
+            return sorted(
+                items,
+                key=lambda item: (-self._file_mtime(item[0]), item[1].casefold(), item[2].casefold()),
+            )
+        if mode == "Duration":
+            self._request_track_durations(
+                item[0] for item in items if item[0] not in self._duration_cache
+            )
+            return sorted(
+                items,
+                key=lambda item: (
+                    -self._duration_cache.get(item[0], 0.0),
+                    item[1].casefold(),
+                    item[2].casefold(),
+                ),
+            )
+        return sorted(items, key=lambda item: (item[1].casefold(), item[2].casefold()))
+
     # ── Sync Progress Bar ──────────────────────────────────────────────────
     def show_sync_progress(self):
         self.controller.prog_var.set(0)
-        self._sync_prog_frame.pack(side="bottom", fill="x", before=self._act_sep)
+        self._sync_prog_frame.pack(side="bottom", fill="x")
 
     def hide_sync_progress(self):
         self._sync_prog_frame.pack_forget()
 
     # ── Playlist Actions Dropdown ────────────────────────────────────────────
+    def _open_discover(self):
+        """Fetch recommendations for the current context, then show Discover."""
+        self.controller._trigger_discovery()
+        self.controller._show_tab("discover")
+
     def _on_app_click(self, e):
         if self._actions_popup is None:
             return
-        if e.widget == self.pl_actions_btn:
+        if e.widget == self.playlist_settings_btn:
             return
         if getattr(self, '_popup_just_opened', False):
             return
@@ -276,7 +412,7 @@ class LibraryView(tk.Frame):
             self._close_actions_popup()
             return
 
-        pl_name = self.controller._selected_playlist
+        pl_name = self.controller._selected_playlist or "All Music"
         all_playlists = [p for p in sorted(self.controller._library.keys())
                          if p not in ("Unsorted", "All Music", "Favorites")]
 
@@ -287,9 +423,9 @@ class LibraryView(tk.Frame):
         popup.overrideredirect(True)
 
         # Position below the actions button
-        btn_x = self.pl_actions_btn.winfo_rootx()
-        btn_y = self.pl_actions_btn.winfo_rooty()
-        btn_h = self.pl_actions_btn.winfo_height()
+        btn_x = self.playlist_settings_btn.winfo_rootx()
+        btn_y = self.playlist_settings_btn.winfo_rooty()
+        btn_h = self.playlist_settings_btn.winfo_height()
         popup.geometry(f"420x390+{btn_x}+{btn_y + btn_h + 4}")
 
         popup.columnconfigure(0, weight=1)
@@ -412,7 +548,24 @@ class LibraryView(tk.Frame):
         self.after(150, lambda: setattr(self, '_popup_just_opened', False))
 
     # ── Playlist search helpers ──────────────────────────────────────────────
+    def _sync_search_clear(self):
+        should_show = bool(self._pl_search_entry.get())
+        if should_show and not self._search_clear_visible:
+            self._pl_search_clear_btn.pack(side="right", padx=(0, 2))
+            self._search_clear_visible = True
+        elif not should_show and self._search_clear_visible:
+            self._pl_search_clear_btn.pack_forget()
+            self._search_clear_visible = False
+
+    def _clear_playlist_search(self):
+        self._pl_search_entry.delete(0, "end")
+        self._sync_search_clear()
+        self._update_placeholder()
+        self.populate_track_list("")
+        self._pl_search_entry.focus_set()
+
     def _update_placeholder(self):
+        self._sync_search_clear()
         if not self._pl_search_entry.get():
             # If empty and we are NOT focused, show it. The user also said "reappear when not focused".
             # Standard HTML: always show if empty. But let's follow standard HTML.
@@ -450,11 +603,13 @@ class LibraryView(tk.Frame):
         self.after(80, self._pulse_tick)
 
     def on_shuffle_changed(self, is_shuffled):
-        """Callback from controller to sync shuffle icon color."""
-        if is_shuffled:
-            self.shuf_lbl.config(fg=GREEN)
-        else:
-            self.shuf_lbl.config(fg=TEXT2)
+        """Sync the green Shuffle control and its active underline."""
+        self.shuf_lbl.config(
+            text="Shuffle",
+            fg=GREEN,
+            font=("Helvetica Neue", 11, "bold", "roman", True)
+            if is_shuffled else ("Helvetica Neue", 11),
+        )
 
     def _toggle_favorites_first(self):
         self._favorites_first = not self._favorites_first
@@ -464,7 +619,8 @@ class LibraryView(tk.Frame):
     def _sync_favorites_first_label(self):
         self.favorites_first_lbl.config(
             text="★  Favorites first" if self._favorites_first else "☆  Favorites first",
-            fg=GREEN if self._favorites_first else TEXT3,
+            fg=GREEN,
+            font=("Helvetica Neue", 10, "bold" if self._favorites_first else "normal"),
         )
 
     def _draw_lib_header(self):
@@ -489,49 +645,6 @@ class LibraryView(tk.Frame):
             self._hdr_canvas.create_rectangle(0, y, w, yn,
                                                fill=rgb_to_hex(r,g,b), outline="",
                                                tags="grad")
-
-    def _toggle_viz(self):
-        if hasattr(self.controller, '_frames') and 'settings' in self.controller._frames:
-            s = self.controller._frames['settings']
-            s._toggle_visualizer()
-            self._sync_viz_icon()
-
-    def _sync_viz_icon(self):
-        if hasattr(self.controller, '_frames') and 'settings' in self.controller._frames:
-            on = self.controller._frames['settings'].viz_enabled
-            self.viz_toggle_btn.config(fg=GREEN if on else TEXT3)
-
-    def _draw_visualizer(self):
-        c = self.viz_canvas
-        c.delete("all")
-        w = c.winfo_width(); h = c.winfo_height()
-        
-        viz_enabled = True
-        if hasattr(self.controller, '_frames') and 'settings' in self.controller._frames:
-            viz_enabled = self.controller._frames['settings'].viz_enabled
-            
-        if w < 10 or h < 10 or not viz_enabled:
-            self.after(500, self._draw_visualizer)
-            return
-
-        bars = 32
-        bar_w = max(1, (w - bars) // bars)
-        c1, _ = playlist_gradient(self.controller._selected_playlist or "vibe")
-        
-        for i in range(bars):
-            if hasattr(self.controller, 'engine') and self.controller.engine.playing and not self.controller.engine.paused:
-                height = random.randint(4, h)
-            else:
-                height = 4
-            x0 = i * (bar_w + 1)
-            x1 = x0 + bar_w
-            r1,g1,b1 = hex_to_rgb(c1)
-            r2,g2,b2 = hex_to_rgb(GREEN)
-            t = i / bars
-            col = rgb_to_hex(int(r1+(r2-r1)*t), int(g1+(g2-g1)*t), int(b1+(b2-b1)*t))
-            c.create_rectangle(x0, h-height, x1, h, fill=col, outline="")
-        
-        self.after(100, self._draw_visualizer)
 
     def populate_track_list(self, filter_str=""):
         if self.controller._selected_playlist == "Favorites":
@@ -558,6 +671,7 @@ class LibraryView(tk.Frame):
                 if f and f not in title.lower() and f not in artist.lower():
                     continue
                 self._track_items.append((path, title, artist, pl_name))
+        self._track_items = self._sort_track_items(self._track_items)
         if self._favorites_first:
             self._track_items.sort(key=lambda item: not self.controller._is_favorite(item[0]))
         self._track_sel_idx = []
@@ -809,6 +923,7 @@ class LibraryView(tk.Frame):
         self.playlist_subtitle_lbl.config(text=subtitle_text)
         self._current_art.update_art(text, self._get_current_playlist_paths())
         self._draw_lib_header()
+        self._sync_sort_label()
         # Reset in-playlist search when switching playlists
         self._pl_search_entry.delete(0, "end")
         self._update_placeholder()
