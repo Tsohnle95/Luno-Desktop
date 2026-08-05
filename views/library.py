@@ -120,7 +120,11 @@ class LibraryView(tk.Frame):
 
         self.shuf_lbl = tk.Label(controls, text="Shuffle", font=("Helvetica Neue",11),
                         fg=GREEN, bg=BG, cursor="hand2")
-        self.shuf_lbl.grid(row=0, column=2, sticky="w")
+        self.shuf_lbl.grid(row=0, column=2, sticky="sw")
+        self._shuffle_indicator = tk.Frame(controls, bg=GREEN, width=52, height=2)
+        self._shuffle_indicator.grid(row=1, column=2, sticky="w", pady=(1, 0))
+        self._shuffle_indicator.grid_propagate(False)
+        self._shuffle_indicator.grid_remove()
         self.shuf_lbl.bind("<Button-1>", lambda e: self._on_shuffle_button_click())
         self.shuf_lbl.bind("<Enter>", lambda e: self.shuf_lbl.config(fg=GREEN_HOVER))
         self.shuf_lbl.bind("<Leave>", lambda e: self.on_shuffle_changed(self.controller.engine.shuffle))
@@ -129,7 +133,7 @@ class LibraryView(tk.Frame):
             controls, text="☆  Favorites first", font=("Helvetica Neue", 10),
             fg=GREEN, bg=BG, cursor="hand2"
         )
-        self.favorites_first_lbl.grid(row=0, column=4, sticky="w")
+        self.favorites_first_lbl.grid(row=0, column=4, sticky="sw")
         self.favorites_first_lbl.bind("<Button-1>", lambda e: self._toggle_favorites_first())
         self.favorites_first_lbl.bind("<Enter>", lambda e: self.favorites_first_lbl.config(fg=GREEN_HOVER))
         self.favorites_first_lbl.bind("<Leave>", lambda e: self._sync_favorites_first_label())
@@ -140,14 +144,14 @@ class LibraryView(tk.Frame):
             controls, text="Sort  ▾", font=("Helvetica Neue", 10),
             fg=GREEN, bg=BG, cursor="hand2"
         )
-        self.sort_lbl.grid(row=0, column=8, sticky="w")
+        self.sort_lbl.grid(row=0, column=8, sticky="sw")
         self.sort_lbl.bind("<Button-1>", lambda e: self._show_sort_menu())
         self.sort_lbl.bind("<Enter>", lambda e: self.sort_lbl.config(fg=GREEN_HOVER))
         self.sort_lbl.bind("<Leave>", lambda e: self.sort_lbl.config(fg=GREEN))
 
         self.recs_btn = tk.Label(controls, text="✨  Get Similar Tracks", font=("Helvetica Neue",10),
                                  fg=GREEN, bg=BG, cursor="hand2")
-        self.recs_btn.grid(row=0, column=6, sticky="w")
+        self.recs_btn.grid(row=0, column=6, sticky="sw")
         self.recs_btn.bind("<Button-1>", lambda e: self._open_discover())
         self.recs_btn.bind("<Enter>", lambda e: self.recs_btn.config(fg=GREEN_HOVER))
         self.recs_btn.bind("<Leave>", lambda e: self.recs_btn.config(fg=GREEN))
@@ -607,9 +611,14 @@ class LibraryView(tk.Frame):
         self.shuf_lbl.config(
             text="Shuffle",
             fg=GREEN,
-            font=("Helvetica Neue", 11, "bold", "roman", True)
+            font=("Helvetica Neue", 11, "bold")
             if is_shuffled else ("Helvetica Neue", 11),
         )
+        self._shuffle_indicator.config(width=self.shuf_lbl.winfo_reqwidth())
+        if is_shuffled:
+            self._shuffle_indicator.grid()
+        else:
+            self._shuffle_indicator.grid_remove()
 
     def _toggle_favorites_first(self):
         self._favorites_first = not self._favorites_first

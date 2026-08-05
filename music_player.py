@@ -33,7 +33,6 @@ from widgets import RoundButton, SlimSlider, PlaylistArt
 from views.library import LibraryView
 from views.downloader import DownloadView
 from views.recent import RecentView
-from views.artists import ArtistsView
 from views.settings import SettingsView
 from engine import (
     scan_library, probe_soundcloud, parse_exportify_csv, find_duplicates,
@@ -639,6 +638,13 @@ class LunoMusicPlayer(tk.Tk):
         s.configure("Green.Horizontal.TProgressbar",
                     troughcolor=BG3, background=GREEN,
                     bordercolor=BG3, lightcolor=GREEN, darkcolor=GREEN, thickness=3)
+        s.configure("Dark.TCombobox",
+                    fieldbackground=BG3, background=BG3, foreground=TEXT,
+                    bordercolor=BG3, lightcolor=BG3, darkcolor=BG3,
+                    arrowcolor=TEXT2)
+        s.map("Dark.TCombobox",
+              fieldbackground=[("readonly", BG3)],
+              foreground=[("readonly", TEXT)])
         for style, bg, rh in [("Lib.Treeview",BG,48),
                                ("Queue.Treeview",BG2,38),
                                ("Results.Treeview",BG,44)]:
@@ -676,7 +682,7 @@ class LunoMusicPlayer(tk.Tk):
 
         # 3rd Column: Global Queue
         queue_col = tk.Frame(self._root_paned, bg=BG2, width=270)
-        self._root_paned.add(queue_col, width=270, minsize=40, stretch="never")
+        self._root_paned.add(queue_col, width=270, minsize=240, stretch="never")
         queue_col.grid_propagate(False)
         self._build_queue_panel(queue_col)
 
@@ -719,7 +725,6 @@ class LunoMusicPlayer(tk.Tk):
         for icon, label, cmd in [
             ("⌂","Home",        lambda: self._show_tab("library")),
             ("🕐","Recent",      lambda: self._show_tab("recent")),
-            ("👤","Artists",     lambda: self._show_tab("artists")),
             ("✨","Discover",    lambda: self._show_tab("discover")),
             ("⬇","Downloader", lambda: self._show_tab("download")),
             ("⚙","Settings",    lambda: self._show_tab("settings")),
@@ -838,7 +843,6 @@ class LunoMusicPlayer(tk.Tk):
         self._frames["library"]  = LibraryView(parent, self)
         self._frames["download"] = DownloadView(parent, self)
         self._frames["recent"]   = RecentView(parent, self)
-        self._frames["artists"]  = ArtistsView(parent, self)
         self._frames["settings"] = SettingsView(parent, self)
         self._frames["discover"] = DiscoverView(parent, self)
         from views.error_log import ErrorLogView
@@ -857,8 +861,6 @@ class LunoMusicPlayer(tk.Tk):
         
         if name == "library":
             self._frames["library"].populate_track_list()
-        elif name == "artists":
-            self._frames["artists"].populate()
         elif name == "recent":
             self._frames["recent"].redraw()
         elif name == "error_log":
@@ -1044,16 +1046,20 @@ class LunoMusicPlayer(tk.Tk):
         txt.pack(side="left", fill="both", expand=True)
         txt.bind("<Button-1>", lambda e: play_from_q())
 
-        def q_truncate(s, limit=28):
+        queue_width = self._q_canvas.winfo_width() or 270
+        text_width = max(88, queue_width - 104)
+        text_limit = max(14, int(text_width / 7))
+
+        def q_truncate(s, limit):
             if len(s) > limit: return s[:limit-3] + "..."
             return s
 
-        t_lbl = tk.Label(txt, text=q_truncate(title, 26), font=("Helvetica Neue",10, "bold" if is_playing else "normal"),
+        t_lbl = tk.Label(txt, text=q_truncate(title, min(26, text_limit)), font=("Helvetica Neue",10, "bold" if is_playing else "normal"),
                          fg=(GREEN if is_playing else TEXT), bg=BG2, anchor="w")
         t_lbl.pack(fill="x")
         t_lbl.bind("<Button-1>", lambda e: play_from_q())
         
-        a_lbl = tk.Label(txt, text=q_truncate(artist, 32), font=("Helvetica Neue",9),
+        a_lbl = tk.Label(txt, text=q_truncate(artist, min(32, text_limit)), font=("Helvetica Neue",9),
                          fg=TEXT3, bg=BG2, anchor="w")
         a_lbl.pack(fill="x")
         a_lbl.bind("<Button-1>", lambda e: play_from_q())
@@ -1349,9 +1355,6 @@ class LunoMusicPlayer(tk.Tk):
         recent = self._frames.get("recent")
         if recent:
             recent.redraw()
-        artists = self._frames.get("artists")
-        if artists and getattr(artists, "artist_tracks", None):
-            artists.redraw_tracks()
         self._update_queue()
         song_page = self._frames.get("song_page")
         if song_page and song_page.winfo_ismapped():
@@ -1381,8 +1384,9 @@ class LunoMusicPlayer(tk.Tk):
         print(entry) # Also keep in terminal
 
     def _on_nav_configure(self, event):
-        # Adaptive UI: 275px threshold accommodates all 6 nav items comfortably.
-        if event.height < 275:
+        # Adaptive UI: 220px keeps the five remaining nav items expanded while
+        # still allowing the playlist pane to reclaim the removed Artists space.
+        if event.height < 220:
             if self._nav_items_inner.winfo_ismapped():
                 self._nav_items_inner.pack_forget()
                 self._nav_menu_btn.pack(fill="x")
@@ -1399,8 +1403,8 @@ class LunoMusicPlayer(tk.Tk):
             if h <= 1:
                 self.after(200, self._set_initial_sidebar_sash)
                 return
-            # 280px accommodates all 6 nav items comfortably with a small buffer.
-            pos = 280
+            # 235px accommodates all 5 nav items with a small buffer.
+            pos = 235
             self._side_paned.sash_place(0, 0, pos)
         except:
             pass
@@ -1410,7 +1414,6 @@ class LunoMusicPlayer(tk.Tk):
         for icon, label, cmd in [
             ("⌂","Home",        lambda: self._show_tab("library")),
             ("🕐","Recent",      lambda: self._show_tab("recent")),
-            ("👤","Artists",     lambda: self._show_tab("artists")),
             ("✨","Discover",    lambda: self._show_tab("discover")),
             ("⬇","Downloader", lambda: self._show_tab("download")),
             ("⚙","Settings",    lambda: self._show_tab("settings")),
@@ -1779,8 +1782,6 @@ class LunoMusicPlayer(tk.Tk):
             return self._frames["library"].get_sel_paths()
         elif tab == "recent" and "recent" in self._frames:
             return self._frames["recent"].get_sel_paths()
-        elif tab == "artists" and "artists" in self._frames:
-            return self._frames["artists"].get_sel_paths()
         return []
 
     # ── Portable library transfer ───────────────────────────────────────────

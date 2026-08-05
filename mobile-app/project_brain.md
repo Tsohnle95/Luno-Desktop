@@ -965,7 +965,6 @@ All files listed below exist in `mobile-app/` as of this writing.
 These are issues in the existing codebase that the native app should NOT reproduce:
 
 1. **`music_player.py` orphaned inline sidebar rebuild** (desktop brain line 246): After calling `_populate_sidebar()`, the function has a second block of orphaned code that destroys and rebuilds the sidebar cards again.
-2. **`views/artists.py` uninitialized attributes** (desktop brain line 247): `_sel_indices`, `_sel_anchor`, and `artist_tracks` are not initialized in `__init__`.
 3. **`views/song_page.py` thread leak** (desktop brain line 248): `_load_blur_bg` spawns a new thread on every `update_view()` call with no cancellation mechanism.
 4. **Flet prototype mixed desktop/mobile in one file** (`music_player_flet.py`): Over 1300 lines with conditional visibility toggles; native app should use proper navigation architecture.
 5. **Flet prototype hardcoded color constants** (lines 108, 429, 449, 628, etc.): Colors scattered instead of using a theme system.

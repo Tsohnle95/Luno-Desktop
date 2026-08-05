@@ -4,8 +4,8 @@ import threading
 import os, re
 from urllib.parse import urlparse
 from theme import BG, BG2, BG3, BG4, BORDER, GREEN, GREEN_HOVER, TEXT, TEXT2, TEXT3, SUCCESS, WARNING, RED, SC_COLOR, BLUE, SIDEBAR
-from utils import draw_gradient_rect, split_track_name, format_time
-from engine import probe_soundcloud, parse_exportify_csv
+from utils import split_track_name, format_time
+from engine import parse_exportify_csv
 from widgets import ModernScrollbar
 import yt_dlp
 from downloader import Downloader
@@ -25,6 +25,12 @@ class DownloadView(tk.Frame):
         self._active_tab = "search"
         self._preview_tracks = []  # Tracks from YT/CSV preview
         self._search_limit = 10
+        self._search_card_rows = []
+        self._search_card_selected = None
+        self._search_art_cache = {}
+        self._search_art_fetching = set()
+        self._downloaded_expanded = False
+        self._direct_details_visible = False
 
         self._build_ui()
 
@@ -82,31 +88,45 @@ class DownloadView(tk.Frame):
 
         row_idx = 0
         # ── ROW 0: HEADER ────────────────────────────────────────────────────
-        hdr = tk.Canvas(self._inner, height=90, bg=BG, highlightthickness=0)
-        hdr.grid(row=row_idx, column=0, sticky="ew")
-        def _draw_dl_hdr(e, c=hdr):
-            c.delete("grad")
-            draw_gradient_rect(c, 0, 0, e.width, 90, "#1a2a2a", BG)
-            c.tag_raise("title")
-        hdr.bind("<Configure>", _draw_dl_hdr)
-        hdr.create_text(28, 90 - 12, text="Downloader",
-                        font=("Helvetica Neue", 28, "bold"), fill=TEXT, anchor="sw",
-                        tags="title")
+        hdr = tk.Frame(self._inner, bg=BG, height=92)
+        hdr.grid(row=row_idx, column=0, sticky="ew", padx=28, pady=(24, 0))
+        hdr.grid_propagate(False)
+        tk.Label(hdr, text="Downloader", font=("Helvetica Neue", 28, "bold"),
+                 fg=TEXT, bg=BG, anchor="w").pack(anchor="w")
+        tk.Label(hdr, text="Search and queue music.", font=("Helvetica Neue", 10),
+                 fg=TEXT2, bg=BG, anchor="w").pack(anchor="w", pady=(2, 0))
+
+        self._activity_row = tk.Frame(hdr, bg=BG, cursor="hand2")
+        self._activity_row.pack(fill="x", pady=(10, 0))
+        self._activity_row.pack_forget()
+        self._activity_dot = tk.Label(self._activity_row, text="●", font=("Helvetica Neue", 9),
+                                      fg=GREEN, bg=BG)
+        self._activity_dot.pack(side="left")
+        self._activity_lbl = tk.Label(self._activity_row, text="", font=("Helvetica Neue", 9),
+                                      fg=TEXT2, bg=BG, anchor="w")
+        self._activity_lbl.pack(side="left", padx=(7, 0))
+        self._activity_link = tk.Label(self._activity_row, text="View queue  →",
+                                       font=("Helvetica Neue", 9, "bold"), fg=GREEN, bg=BG,
+                                       cursor="hand2")
+        self._activity_link.pack(side="right")
+        for widget in (self._activity_row, self._activity_link):
+            widget.bind("<Button-1>", lambda e: self._switch_tab("urlqueue"))
 
         # ── ROW 1: TAB BAR ───────────────────────────────────────────────────
         row_idx = 1
         tab_bar_f = tk.Frame(self._inner, bg=BG)
-        tab_bar_f.grid(row=row_idx, column=0, sticky="ew", padx=28, pady=(12, 12))
+        tab_bar_f.grid(row=row_idx, column=0, sticky="ew", padx=28, pady=(10, 10))
 
         self._tab_btns = {}
         for tab_id, label in [("search", "⌕  Search"),
                                ("playlist", "📋  YT / CSV"),
+                               ("direct", "↗  Direct URL"),
                                ("sync", "🔗  Sync"),
                                ("urlqueue", "📋 URL Queue"),
                                ("dupes", "⚠ Duplicates"),
                                ("allowed", "✓ Allowed Dups")]:
-            btn = tk.Label(tab_bar_f, text=label, font=("Helvetica Neue", 11, "bold"),
-                           fg=TEXT3, bg=BG, padx=16, pady=8, cursor="hand2")
+            btn = tk.Label(tab_bar_f, text=label, font=("Helvetica Neue", 8, "bold"),
+                           fg=TEXT3, bg=BG, padx=6, pady=8, cursor="hand2")
             btn.pack(side="left")
             btn.bind("<Button-1>", lambda e, t=tab_id: self._switch_tab(t))
             btn.bind("<Enter>", lambda e, b=btn: b.config(fg=TEXT) if b.cget("bg") == BG else None)
@@ -116,7 +136,7 @@ class DownloadView(tk.Frame):
         # Thin progress bar (hidden by default, shown only during downloads)
         row_idx = 2
         self._prog_frame = tk.Frame(self._inner, bg=BG, height=3)
-        self._prog_frame.grid(row=row_idx, column=0, sticky="ew", padx=28, pady=(16, 16))
+        self._prog_frame.grid(row=row_idx, column=0, sticky="ew", padx=28, pady=(4, 12))
         self._prog_frame.grid_remove()  # Hidden by default
 
         self._prog_bar = ttk.Progressbar(self._prog_frame, variable=self.controller.prog_var,
@@ -133,61 +153,42 @@ class DownloadView(tk.Frame):
         self._build_search_tab()
         self._build_sync_tab()
         self._build_playlist_tab()
+        self._build_direct_tab()
         self._build_urlqueue_tab()
         self._build_dupes_tab()
         self._build_allowed_tab()
 
-        # ── Divider ──────────────────────────────────────────────────────────
+        # ── ROW 4: RESULTS ───────────────────────────────────────────────────
         row_idx = 4
-        tk.Frame(self._inner, bg=BG4, height=1).grid(row=row_idx, column=0,
-                                                       sticky="ew", padx=28, pady=(20, 8))
-
-        # ── ROW 5: CONTROLS (destination + options) ──────────────────────────
-        row_idx = 5
-        self.ctrl_f = tk.Frame(self._inner, bg=BG)
-        self.ctrl_f.grid(row=row_idx, column=0, sticky="ew", padx=28, pady=(14, 6))
-
-        tk.Label(self.ctrl_f, text="SAVE TO", font=("Helvetica Neue", 9, "bold"),
-                 fg=TEXT3, bg=BG).pack(side="left", padx=(0, 6))
-        self.dest_combo_var = tk.StringVar(value="— choose playlist —")
-        self.dest_combo = ttk.Combobox(self.ctrl_f, textvariable=self.dest_combo_var,
-                                       font=("Helvetica Neue", 10), state="readonly", width=20)
-        self.dest_combo.pack(side="left")
-        self.dest_combo.bind("<<ComboboxSelected>>", self._on_dest_selected)
-
-        # + New playlist button
-        new_pl_btn = tk.Label(self.ctrl_f, text="+ New", font=("Helvetica Neue", 9, "bold"),
-                              fg=TEXT2, bg=BG3, padx=10, pady=4, cursor="hand2")
-        new_pl_btn.pack(side="left", padx=(8, 0))
-        new_pl_btn.bind("<Button-1>", lambda e: self._create_playlist_and_refresh())
-        new_pl_btn.bind("<Enter>", lambda e: new_pl_btn.config(fg=TEXT, bg=BG4))
-        new_pl_btn.bind("<Leave>", lambda e: new_pl_btn.config(fg=TEXT2, bg=BG3))
-
-        # Spacer
-        tk.Frame(self.ctrl_f, bg=BG, width=14).pack(side="left")
-
-        for var, lbl in [(self.controller.skip_var, "Skip Existing"),
-                         (self.controller.sc_var, "SC First")]:
-            tk.Checkbutton(self.ctrl_f, text=lbl, variable=var,
-                           font=("Helvetica Neue", 9), fg=TEXT2, bg=BG,
-                           selectcolor=BG3, activebackground=BG,
-                           activeforeground=TEXT, highlightthickness=0,
-                           bd=0, cursor="hand2").pack(side="left", padx=(0, 10))
-
-        clear_btn = tk.Label(self.ctrl_f, text="Clear", font=("Helvetica Neue", 10),
-                             fg=TEXT3, bg=BG, padx=6, cursor="hand2")
-        clear_btn.pack(side="right")
-        clear_btn.bind("<Button-1>", lambda e: self._clear_results())
-        clear_btn.bind("<Enter>", lambda e: clear_btn.config(fg=TEXT))
-        clear_btn.bind("<Leave>", lambda e: clear_btn.config(fg=TEXT3))
-
-        # ── ROW 7: RESULTS TREE ──────────────────────────────────────────────
-        row_idx = 7
         self.results_f = tk.Frame(self._inner, bg=BG, bd=0, highlightthickness=0)
-        self.results_f.grid(row=row_idx, column=0, sticky="ew", padx=28, pady=(10, 0))
+        self.results_f.grid(row=row_idx, column=0, sticky="ew", padx=28, pady=(4, 0))
         self.results_f.grid_columnconfigure(0, weight=1)
 
-        self.results_tree = ttk.Treeview(self.results_f, style="Results.Treeview",
+        self.search_results_f = tk.Frame(self.results_f, bg=BG)
+        self.search_results_f.grid(row=0, column=0, sticky="ew")
+        self.search_results_f.grid_columnconfigure(0, weight=1)
+        self._search_results_heading = tk.Label(
+            self.search_results_f, text="Search results appear here.",
+            font=("Helvetica Neue", 12, "bold"),
+            fg=TEXT, bg=BG, anchor="w"
+        )
+        self._search_results_heading.pack(fill="x", pady=(4, 2))
+        self._search_results_subheading = tk.Label(
+            self.search_results_f,
+            text="Use the tabs above for playlists, CSV imports, or a direct audio URL.",
+            font=("Helvetica Neue", 9),
+            fg=TEXT2, bg=BG, anchor="w"
+        )
+        self._search_results_subheading.pack(fill="x", pady=(0, 4))
+        self._search_cards_f = tk.Frame(self.search_results_f, bg=BG)
+        self._search_cards_f.pack(fill="x")
+
+        self._tree_results_f = tk.Frame(self.results_f, bg=BG)
+        self._tree_results_f.grid(row=0, column=0, sticky="ew")
+        self._tree_results_f.grid_columnconfigure(0, weight=1)
+        self._tree_results_f.grid_remove()
+
+        self.results_tree = ttk.Treeview(self._tree_results_f, style="Results.Treeview",
                                          columns=("status", "title", "artist", "info"),
                                          show="headings", height=1,
                                          selectmode="extended")
@@ -200,7 +201,8 @@ class DownloadView(tk.Frame):
         self.results_tree.column("artist", width=200, stretch=True)
         self.results_tree.column("info",   width=80,  stretch=False, anchor="e")
 
-        tree_sb = ModernScrollbar(self.results_f, command=self.results_tree.yview, bg=BG, width=4)
+        tree_sb = ModernScrollbar(self._tree_results_f, command=self.results_tree.yview,
+                                  bg=BG, width=4)
         self.results_tree.config(yscrollcommand=tree_sb.set)
         tree_sb.grid(row=0, column=1, sticky="ns")
         self.results_tree.grid(row=0, column=0, sticky="ew")
@@ -212,6 +214,49 @@ class DownloadView(tk.Frame):
         self.results_tree.bind("<Double-Button-1>", lambda e: self._on_tree_double_click())
         self.results_tree.bind("<Return>", lambda e: self._download_selected())
         self.results_tree.bind("<KP_Enter>", lambda e: self._download_selected())
+
+        # ── ROW 5: CONTROLS (destination + options) ──────────────────────────
+        row_idx = 5
+        self.ctrl_f = tk.Frame(self._inner, bg=BG2, highlightbackground=BORDER,
+                               highlightthickness=1)
+        self.ctrl_f.grid(row=row_idx, column=0, sticky="ew", padx=28, pady=(14, 6))
+
+        controls_inner = tk.Frame(self.ctrl_f, bg=BG2)
+        controls_inner.pack(fill="x", padx=12, pady=9)
+        tk.Label(controls_inner, text="SAVE TO", font=("Helvetica Neue", 9, "bold"),
+                 fg=TEXT2, bg=BG2).pack(side="left", padx=(0, 6))
+        self.dest_combo_var = tk.StringVar(value="— choose playlist —")
+        self.dest_combo = ttk.Combobox(controls_inner, textvariable=self.dest_combo_var,
+                                       font=("Helvetica Neue", 10), state="readonly", width=20,
+                                       style="Dark.TCombobox")
+        self.dest_combo.pack(side="left")
+        self.dest_combo.bind("<<ComboboxSelected>>", self._on_dest_selected)
+
+        # + New playlist button
+        new_pl_btn = tk.Label(controls_inner, text="+ New", font=("Helvetica Neue", 9, "bold"),
+                              fg=TEXT2, bg=BG3, padx=10, pady=4, cursor="hand2")
+        new_pl_btn.pack(side="left", padx=(8, 0))
+        new_pl_btn.bind("<Button-1>", lambda e: self._create_playlist_and_refresh())
+        new_pl_btn.bind("<Enter>", lambda e: new_pl_btn.config(fg=TEXT, bg=BG4))
+        new_pl_btn.bind("<Leave>", lambda e: new_pl_btn.config(fg=TEXT2, bg=BG3))
+
+        # Spacer
+        tk.Frame(controls_inner, bg=BG2, width=14).pack(side="left")
+
+        for var, lbl in [(self.controller.skip_var, "Skip Existing"),
+                         (self.controller.sc_var, "SC First")]:
+            tk.Checkbutton(controls_inner, text=lbl, variable=var,
+                           font=("Helvetica Neue", 9), fg=TEXT2, bg=BG2,
+                           selectcolor=BG3, activebackground=BG2,
+                           activeforeground=TEXT, highlightthickness=0,
+                           bd=0, cursor="hand2").pack(side="left", padx=(0, 10))
+
+        clear_btn = tk.Label(controls_inner, text="Clear", font=("Helvetica Neue", 10),
+                             fg=TEXT3, bg=BG2, padx=6, cursor="hand2")
+        clear_btn.pack(side="right")
+        clear_btn.bind("<Button-1>", lambda e: self._clear_results())
+        clear_btn.bind("<Enter>", lambda e: clear_btn.config(fg=TEXT))
+        clear_btn.bind("<Leave>", lambda e: clear_btn.config(fg=TEXT3))
 
         # ── ROW 6: ACTION BAR (buttons + inline download status) ─────────────
         row_idx = 6
@@ -243,7 +288,11 @@ class DownloadView(tk.Frame):
                                       fg=TEXT3, bg=BG, anchor="e")
         self.dl_status_lbl.grid(row=0, column=1, sticky="e", padx=(12, 0))
 
-        # ── ROW 8: COLLAPSIBLE LOG (toggle dropdown) ────────────────────────
+        # ── ROW 7: DOWNLOADED SONGS ACCORDION ────────────────────────────────
+        row_idx = 7
+        self._build_downloaded_section(row_idx)
+
+        # ── ROW 8: COLLAPSIBLE LOG (toggle dropdown) ─────────────────────────
         row_idx = 8
         self.log_f = tk.Frame(self._inner, bg=BG2, highlightbackground=BORDER,
                               highlightthickness=1)
@@ -288,6 +337,93 @@ class DownloadView(tk.Frame):
             
         self._switch_tab("search")
 
+    def _build_downloaded_section(self, row_idx):
+        """Build the mobile-parity completed-downloads accordion."""
+        self.downloaded_f = tk.Frame(self._inner, bg=BG)
+        self.downloaded_f.grid(row=row_idx, column=0, sticky="ew", padx=28, pady=(8, 0))
+        self.downloaded_f.grid_columnconfigure(0, weight=1)
+
+        header = tk.Frame(self.downloaded_f, bg=BG, cursor="hand2")
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_columnconfigure(1, weight=1)
+        icon = tk.Label(header, text="↓", font=("Helvetica Neue", 13, "bold"),
+                        fg=GREEN, bg=BG3, width=3, pady=4, cursor="hand2")
+        icon.grid(row=0, column=0, rowspan=2, padx=(0, 10))
+        self._downloaded_title_lbl = tk.Label(
+            header, text="Downloaded songs", font=("Helvetica Neue", 11, "bold"),
+            fg=TEXT, bg=BG, anchor="w", cursor="hand2"
+        )
+        self._downloaded_title_lbl.grid(row=0, column=1, sticky="ew")
+        self._downloaded_count_lbl = tk.Label(
+            header, text="Completed downloads will appear here", font=("Helvetica Neue", 9),
+            fg=TEXT2, bg=BG, anchor="w", cursor="hand2"
+        )
+        self._downloaded_count_lbl.grid(row=1, column=1, sticky="ew", pady=(2, 0))
+        self._downloaded_toggle_lbl = tk.Label(
+            header, text="⌄", font=("Helvetica Neue", 16), fg=TEXT2, bg=BG,
+            cursor="hand2", padx=8
+        )
+        self._downloaded_toggle_lbl.grid(row=0, column=2, rowspan=2)
+        for widget in (header, icon, self._downloaded_title_lbl,
+                       self._downloaded_count_lbl, self._downloaded_toggle_lbl):
+            widget.bind("<Button-1>", lambda e: self._toggle_downloaded_section())
+
+        tk.Frame(self.downloaded_f, bg=BG4, height=1).grid(
+            row=1, column=0, sticky="ew", pady=(10, 0)
+        )
+        self._downloaded_body = tk.Frame(self.downloaded_f, bg=BG)
+        self._downloaded_body.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+        self._downloaded_body.grid_remove()
+
+    def _build_direct_tab(self):
+        f = tk.Frame(self._tab_content, bg=BG)
+        self._tab_frames["direct"] = f
+
+        tk.Label(f, text="Direct audio URL", font=("Helvetica Neue", 13, "bold"),
+                 fg=TEXT, bg=BG, anchor="w").pack(anchor="w")
+        tk.Label(f, text="Paste a link to an audio file and queue it directly.",
+                 font=("Helvetica Neue", 10), fg=TEXT2, bg=BG,
+                 anchor="w").pack(anchor="w", pady=(2, 10))
+
+        self.direct_url_var = tk.StringVar()
+        bar = tk.Frame(f, bg=BG2, highlightbackground=BG4, highlightthickness=1)
+        bar.pack(fill="x")
+        tk.Label(bar, text="↗", font=("Helvetica Neue", 13), fg=TEXT2, bg=BG2,
+                 padx=10).pack(side="left")
+        self.direct_url_entry = tk.Entry(
+            bar, textvariable=self.direct_url_var, bg=BG2, fg=TEXT,
+            insertbackground=TEXT, relief="flat", font=("Helvetica Neue", 11),
+            bd=8, highlightthickness=0
+        )
+        self.direct_url_entry.pack(side="left", fill="x", expand=True)
+        self.direct_url_entry.bind("<Return>", lambda e: self._queue_direct_url())
+        self.direct_url_entry.bind("<KP_Enter>", lambda e: self._queue_direct_url())
+        direct_queue_btn = tk.Label(bar, text="QUEUE", font=("Helvetica Neue", 9, "bold"),
+                                    fg=SIDEBAR, bg=GREEN, padx=18, pady=8,
+                                    cursor="hand2")
+        direct_queue_btn.pack(side="right")
+        direct_queue_btn.bind("<Button-1>", lambda e: self._queue_direct_url())
+        direct_queue_btn.bind("<Enter>", lambda e: direct_queue_btn.config(bg=GREEN_HOVER))
+        direct_queue_btn.bind("<Leave>", lambda e: direct_queue_btn.config(bg=GREEN))
+
+        details_toggle = tk.Label(f, text="Add details  ⌄", font=("Helvetica Neue", 10, "bold"),
+                                 fg=GREEN, bg=BG, cursor="hand2")
+        details_toggle.pack(anchor="w", pady=(8, 4))
+        details_toggle.bind("<Button-1>", lambda e: self._toggle_direct_details(details_toggle))
+
+        self._direct_details_f = tk.Frame(f, bg=BG)
+        self.direct_title_var = tk.StringVar()
+        self.direct_artist_var = tk.StringVar()
+        for label, variable in (("Title", self.direct_title_var), ("Artist", self.direct_artist_var)):
+            tk.Label(self._direct_details_f, text=label, font=("Helvetica Neue", 9, "bold"),
+                     fg=TEXT2, bg=BG).pack(anchor="w", pady=(4, 2))
+            entry = tk.Entry(self._direct_details_f, textvariable=variable, bg=BG2, fg=TEXT,
+                             insertbackground=TEXT, relief="flat", font=("Helvetica Neue", 10),
+                             bd=8, highlightthickness=0)
+            entry.pack(fill="x")
+
+        tk.Frame(f, bg=BG4, height=1).pack(fill="x", pady=(14, 0))
+
     # ═════════════════════════════════════════════════════════════════════════
     # TAB BUILDERS
     # ═════════════════════════════════════════════════════════════════════════
@@ -296,20 +432,29 @@ class DownloadView(tk.Frame):
         f = tk.Frame(self._tab_content, bg=BG)
         self._tab_frames["search"] = f
 
-        tk.Label(f, text="Search YouTube & SoundCloud for individual songs.",
-                 font=("Helvetica Neue", 10), fg=TEXT3, bg=BG).pack(anchor="w", pady=(0, 10))
+        tk.Label(f, text="Search YouTube and SoundCloud for individual songs.",
+                 font=("Helvetica Neue", 10), fg=TEXT2, bg=BG).pack(anchor="w", pady=(0, 8))
 
-        bar = tk.Frame(f, bg=BG3, highlightbackground=BG4, highlightthickness=1)
+        bar = tk.Frame(f, bg=BG2, highlightbackground=BG4, highlightthickness=1)
         bar.pack(fill="x")
-        tk.Label(bar, text="⌕", font=("Helvetica Neue", 13), fg=TEXT3, bg=BG3,
+        tk.Label(bar, text="⌕", font=("Helvetica Neue", 13), fg=TEXT2, bg=BG2,
                  padx=10).pack(side="left")
         self.search_entry = tk.Entry(bar, textvariable=self.controller.search_var,
-                                     bg=BG3, fg=TEXT, insertbackground=TEXT,
+                                     bg=BG2, fg=TEXT, insertbackground=TEXT,
                                      relief="flat", font=("Helvetica Neue", 11), bd=8,
-                                     highlightthickness=0, highlightbackground=BG3, highlightcolor=BG3)
+                                     highlightthickness=0, highlightbackground=BG2, highlightcolor=BG2)
         self.search_entry.pack(side="left", fill="x", expand=True)
         self.search_entry.bind("<Return>", lambda e: self.do_search())
         self.search_entry.bind("<KP_Enter>", lambda e: self.do_search())
+
+        self.search_clear_btn = tk.Label(bar, text="×", font=("Helvetica Neue", 15),
+                                         fg=TEXT2, bg=BG2, padx=8, cursor="hand2")
+        self.search_clear_btn.pack(side="right")
+        self.search_clear_btn.bind("<Button-1>", lambda e: self._clear_search_input())
+        self.search_clear_btn.bind("<Enter>", lambda e: self.search_clear_btn.config(fg=TEXT))
+        self.search_clear_btn.bind("<Leave>", lambda e: self.search_clear_btn.config(fg=TEXT2))
+        self.search_clear_btn.pack_forget()
+        self.controller.search_var.trace_add("write", lambda *_: self._sync_search_clear_button())
 
         s_btn = tk.Label(bar, text="SEARCH", font=("Helvetica Neue", 9, "bold"),
                          fg=SIDEBAR, bg=GREEN, padx=18, pady=8, cursor="hand2")
@@ -325,6 +470,19 @@ class DownloadView(tk.Frame):
         self.load_more_btn.bind("<Enter>", lambda e: self.load_more_btn.config(fg=TEXT, bg=BG4))
         self.load_more_btn.bind("<Leave>", lambda e: self.load_more_btn.config(fg=TEXT2, bg=BG3))
         self.load_more_btn.pack_forget() # Hidden until first search
+
+    def _clear_search_input(self):
+        self.controller.search_var.set("")
+        self._clear_results()
+
+    def _sync_search_clear_button(self):
+        if not hasattr(self, "search_clear_btn"):
+            return
+        if self.controller.search_var.get().strip():
+            if not self.search_clear_btn.winfo_ismapped():
+                self.search_clear_btn.pack(side="right")
+        elif self.search_clear_btn.winfo_ismapped():
+            self.search_clear_btn.pack_forget()
 
     def _build_sync_tab(self):
         f = tk.Frame(self._tab_content, bg=BG)
@@ -464,8 +622,9 @@ class DownloadView(tk.Frame):
         self.uq_dest_var = tk.StringVar(value="Auto (match by playlist name)")
         uq_dest_options = ["Auto (match by playlist name)"]
         self.uq_dest_combo = ttk.Combobox(dest_row, textvariable=self.uq_dest_var,
-                                           values=uq_dest_options, font=("Helvetica Neue", 10),
-                                           state="readonly", width=30)
+                                          values=uq_dest_options, font=("Helvetica Neue", 10),
+                                          state="readonly", width=30,
+                                          style="Dark.TCombobox")
         self.uq_dest_combo.pack(side="left")
 
         # Process button
@@ -802,25 +961,24 @@ class DownloadView(tk.Frame):
         self._tab_frames[tab_id].pack(fill="x")
         
         # Toggle component visibility
-        if tab_id == "dupes":
+        if tab_id in ("dupes", "allowed", "urlqueue"):
             self.ctrl_f.grid_remove()
             self.results_f.grid_remove()
             self.action_f.grid_remove()
-            self._tab_frames["dupes"].pack(fill="both", expand=True)
-            self._populate_dupes()
-        elif tab_id == "allowed":
+            self._tab_frames[tab_id].pack(fill="both", expand=True)
+            if tab_id == "dupes":
+                self._populate_dupes()
+            elif tab_id == "allowed":
+                self._populate_allowed()
+            else:
+                self._uq_redraw_list()
+                self._refresh_dest_options()
+        elif tab_id == "direct":
+            # The direct URL form owns its queue action, matching the mobile
+            # source screen. Destination and table controls are not relevant.
             self.ctrl_f.grid_remove()
             self.results_f.grid_remove()
             self.action_f.grid_remove()
-            self._tab_frames["allowed"].pack(fill="both", expand=True)
-            self._populate_allowed()
-        elif tab_id == "urlqueue":
-            self.ctrl_f.grid_remove()
-            self.results_f.grid_remove()
-            self.action_f.grid_remove()
-            self._tab_frames["urlqueue"].pack(fill="both", expand=True)
-            self._uq_redraw_list()
-            self._refresh_dest_options()
         else:
             self.ctrl_f.grid()
             self.results_f.grid()
@@ -829,6 +987,7 @@ class DownloadView(tk.Frame):
                 self._tab_frames["dupes"].pack_forget()
             if "allowed" in self._tab_frames:
                 self._tab_frames["allowed"].pack_forget()
+            self._show_result_surface(tab_id)
             
         # Update tab button styles
         for tid, btn in self._tab_btns.items():
@@ -966,9 +1125,110 @@ class DownloadView(tk.Frame):
     def _show_progress(self):
         self.controller.prog_var.set(0)
         self._prog_frame.grid()
+        self._activity_lbl.config(text="Download in progress", fg=TEXT2)
+        self._activity_row.pack(fill="x", pady=(10, 0))
 
     def _hide_progress(self):
         self.after(1500, lambda: self._prog_frame.grid_remove())
+        self.after(1500, self._hide_activity)
+
+    def _hide_activity(self):
+        if self._activity_row.winfo_ismapped():
+            self._activity_row.pack_forget()
+
+    def _toggle_direct_details(self, toggle):
+        self._direct_details_visible = not self._direct_details_visible
+        if self._direct_details_visible:
+            self._direct_details_f.pack(fill="x")
+            toggle.config(text="Hide details  ⌃")
+        else:
+            self._direct_details_f.pack_forget()
+            toggle.config(text="Add details  ⌄")
+        self._inner.update_idletasks()
+        self._scroll_canvas.config(scrollregion=self._scroll_canvas.bbox("all"))
+
+    def _toggle_downloaded_section(self):
+        self._downloaded_expanded = not self._downloaded_expanded
+        if self._downloaded_expanded:
+            self._downloaded_toggle_lbl.config(text="⌃", fg=GREEN)
+            self._downloaded_body.grid()
+            self._refresh_downloaded_section()
+        else:
+            self._downloaded_toggle_lbl.config(text="⌄", fg=TEXT2)
+            self._downloaded_body.grid_remove()
+        self._inner.update_idletasks()
+        self._scroll_canvas.config(scrollregion=self._scroll_canvas.bbox("all"))
+
+    def _downloaded_paths(self):
+        paths = []
+        seen = set()
+        for path in self.controller._library.get("Unsorted", []):
+            key = os.path.abspath(os.path.normpath(path))
+            if key not in seen and os.path.isfile(path):
+                paths.append(path)
+                seen.add(key)
+        return paths
+
+    def _refresh_downloaded_section(self):
+        if not hasattr(self, "_downloaded_body"):
+            return
+        paths = self._downloaded_paths()
+        if paths:
+            self._downloaded_count_lbl.config(text=f"{len(paths)} songs saved in Unsorted")
+        else:
+            self._downloaded_count_lbl.config(text="Completed downloads will appear here")
+        if not self._downloaded_expanded:
+            return
+
+        for child in self._downloaded_body.winfo_children():
+            child.destroy()
+        if not paths:
+            tk.Label(self._downloaded_body,
+                     text="Start a search above and your finished songs will collect here.",
+                     font=("Helvetica Neue", 9), fg=TEXT2, bg=BG,
+                     anchor="w").pack(fill="x", pady=(8, 4))
+            return
+
+        for path in paths[:40]:
+            self._add_downloaded_row(path)
+        if len(paths) > 40:
+            tk.Label(self._downloaded_body, text=f"Showing 40 of {len(paths)} songs",
+                     font=("Helvetica Neue", 9), fg=TEXT3, bg=BG,
+                     anchor="w").pack(fill="x", pady=(6, 0))
+
+    def _add_downloaded_row(self, path):
+        title, artist = split_track_name(path)
+        row = tk.Frame(self._downloaded_body, bg=BG, cursor="hand2")
+        row.pack(fill="x", pady=1)
+        art = tk.Label(row, text="♫", font=("Helvetica Neue", 14), fg=TEXT3,
+                       bg=BG3, width=4, height=2, cursor="hand2")
+        art.pack(side="left", padx=(0, 10), pady=4)
+
+        text = tk.Frame(row, bg=BG, cursor="hand2")
+        text.pack(side="left", fill="both", expand=True, pady=4)
+        tk.Label(text, text=title or os.path.basename(path),
+                 font=("Helvetica Neue", 10, "bold"), fg=TEXT, bg=BG,
+                 anchor="w").pack(fill="x")
+        if artist:
+            tk.Label(text, text=artist, font=("Helvetica Neue", 9), fg=TEXT2,
+                     bg=BG, anchor="w").pack(fill="x", pady=(2, 0))
+
+        def play(_event=None, p=path):
+            self.controller._play_with_context(p)
+
+        for widget in (row, art, text, *text.winfo_children()):
+            widget.bind("<Button-1>", play)
+            widget.bind("<Enter>", lambda e, r=row: r.config(bg=BG3))
+            widget.bind("<Leave>", lambda e, r=row: r.config(bg=BG))
+
+        img = self.controller.art_cache.get(path, 48, lambda p: self._refresh_downloaded_section())
+        if img:
+            art.config(image=img, text="", width=48, height=48, bg=BG)
+            art._downloaded_image = img
+
+    def on_library_updated(self):
+        """Refresh downloaded-song metadata after the controller rescans."""
+        self._refresh_downloaded_section()
 
     # ═════════════════════════════════════════════════════════════════════════
     # LOG
@@ -1005,14 +1265,217 @@ class DownloadView(tk.Frame):
     # ═════════════════════════════════════════════════════════════════════════
 
     def _set_dl_status(self, text, color=WARNING):
-        self.after(0, lambda: self.dl_status_lbl.config(text=text, fg=color))
+        def update():
+            self.dl_status_lbl.config(text=text, fg=color)
+            if self._activity_row.winfo_ismapped():
+                self._activity_lbl.config(text=text or "Download in progress", fg=color)
+        self.after(0, update)
 
     def _clear_dl_status(self):
-        self.after(0, lambda: self.dl_status_lbl.config(text="", fg=TEXT3))
+        def clear():
+            self.dl_status_lbl.config(text="", fg=TEXT3)
+            if self._activity_row.winfo_ismapped():
+                self._activity_lbl.config(text="Download in progress", fg=TEXT2)
+        self.after(0, clear)
 
     # ═════════════════════════════════════════════════════════════════════════
     # SEARCH LOGIC
     # ═════════════════════════════════════════════════════════════════════════
+
+    def _queue_direct_url(self):
+        url = self.direct_url_var.get().strip()
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            messagebox.showwarning("Invalid URL", "Enter a valid http/https audio URL.")
+            return
+        if self.is_dl:
+            messagebox.showwarning("Busy", "A download is already in progress.")
+            return
+
+        dest = self._get_dest_dir()
+        os.makedirs(dest, exist_ok=True)
+        self.is_dl = True
+        self._show_progress()
+        self._show_log()
+        title = self.direct_title_var.get().strip() or os.path.basename(parsed.path) or "Direct audio"
+        artist = self.direct_artist_var.get().strip()
+        display = f"{artist} - {title}" if artist else title
+        self._set_dl_status(f"Queuing {display}", WARNING)
+        self._log(f"⬇ {display}", "normal")
+
+        def on_done():
+            def finish():
+                self.is_dl = False
+                self.direct_url_var.set("")
+                self.direct_title_var.set("")
+                self.direct_artist_var.set("")
+                self.controller._refresh_library()
+                self._set_dl_status(f"✓ {display}", SUCCESS)
+                self._log(f"✓ {display}", "success")
+                self._refresh_downloaded_section()
+            self.after(0, finish)
+            self._hide_progress()
+
+        def on_error(error):
+            def finish():
+                self.is_dl = False
+                self._set_dl_status(f"✗ Failed — {error}", RED)
+                self._log(f"✗ {display}: {error}", "error")
+            self.after(0, finish)
+            self._hide_progress()
+
+        Downloader.download_single(
+            url, dest, on_done, on_error, progress_hook=self._on_yt_progress
+        )
+
+    def _show_result_surface(self, tab_id):
+        if tab_id == "search":
+            self._tree_results_f.grid_remove()
+            self.search_results_f.grid()
+        else:
+            self.search_results_f.grid_remove()
+            self._tree_results_f.grid()
+
+    def _selected_search_result(self):
+        index = self._search_card_selected
+        if index is None or index >= len(self.search_results):
+            return None
+        return self.search_results[index]
+
+    def _select_search_card(self, index):
+        self._search_card_selected = index
+        for row_index, item in enumerate(self._search_card_rows):
+            row, widgets = item
+            selected = row_index == index
+            bg = BG3 if selected else BG
+            row.config(bg=bg)
+            for widget in widgets:
+                try:
+                    widget.config(bg=bg)
+                except tk.TclError:
+                    pass
+
+    def _search_thumbnail_url(self, entry):
+        thumbnail = entry.get("thumbnail")
+        if thumbnail:
+            return thumbnail
+        thumbnails = entry.get("thumbnails") or []
+        if thumbnails:
+            return thumbnails[-1].get("url")
+        return ""
+
+    def _render_search_results(self, results):
+        for child in self._search_cards_f.winfo_children():
+            child.destroy()
+        self._search_card_rows = []
+        self._search_card_selected = None
+
+        if not results:
+            if self.controller.search_var.get().strip():
+                self._search_results_heading.config(text="No matches yet")
+                self._search_results_subheading.config(
+                    text="Try adding the artist or a different title."
+                )
+            else:
+                self._search_results_heading.config(text="Search results appear here.")
+                self._search_results_subheading.config(
+                    text="Use the tabs above for playlists, CSV imports, or a direct audio URL."
+                )
+            return
+
+        query = self.controller.search_var.get().strip()
+        self._search_results_heading.config(text=f"Search results  ·  {len(results)} matches")
+        self._search_results_subheading.config(text=f'For "{query}"')
+        for index, result in enumerate(results):
+            self._add_search_result_card(index, result)
+
+    def _add_search_result_card(self, index, result):
+        row = tk.Frame(self._search_cards_f, bg=BG, cursor="hand2")
+        row.pack(fill="x", pady=1)
+        row.grid_columnconfigure(1, weight=1)
+
+        art = tk.Label(row, text="♫", font=("Helvetica Neue", 16), fg=TEXT3,
+                       bg=BG3, width=5, height=3, cursor="hand2")
+        art.grid(row=0, column=0, padx=(0, 12), pady=6, sticky="ns")
+
+        content = tk.Frame(row, bg=BG, cursor="hand2")
+        content.grid(row=0, column=1, sticky="nsew", pady=6)
+        title = result.get("title") or "Unknown title"
+        artist = result.get("artist") or "Unknown artist"
+        duration = format_time(result.get("duration", 0)) if result.get("duration") else ""
+        metadata = " • ".join(value for value in (artist, duration) if value)
+        tk.Label(content, text=title, font=("Helvetica Neue", 11, "bold"), fg=TEXT,
+                 bg=BG, anchor="w", justify="left", wraplength=420).pack(fill="x")
+        tk.Label(content, text=metadata or result.get("source", ""),
+                 font=("Helvetica Neue", 9), fg=TEXT2, bg=BG, anchor="w",
+                 justify="left").pack(fill="x", pady=(3, 0))
+        tk.Label(content, text=result.get("source", ""), font=("Helvetica Neue", 8),
+                 fg=TEXT3, bg=BG, anchor="w").pack(fill="x", pady=(2, 0))
+
+        action = tk.Label(row, text="DOWNLOAD", font=("Helvetica Neue", 8, "bold"),
+                          fg=SIDEBAR, bg=GREEN, padx=10, pady=6, cursor="hand2")
+        action.grid(row=0, column=2, padx=(10, 0), pady=6, sticky="e")
+
+        self._search_card_rows.append((row, [art, content]))
+
+        def select(_event=None, selected=index):
+            row.focus_set()
+            self._select_search_card(selected)
+
+        def download(_event=None, selected=index):
+            self._select_search_card(selected)
+            self._download_selected()
+
+        for widget in (row, art, content, *content.winfo_children()):
+            widget.bind("<Button-1>", select)
+            widget.bind("<Double-Button-1>", lambda e: self._on_tree_double_click())
+        row.configure(takefocus=True)
+        action.bind("<Button-1>", download)
+        action.bind("<Enter>", lambda e, button=action: button.config(bg=GREEN_HOVER))
+        action.bind("<Leave>", lambda e, button=action: button.config(bg=GREEN))
+
+        thumbnail_url = result.get("thumbnail", "")
+        if thumbnail_url:
+            self._load_search_artwork(thumbnail_url, art)
+
+    def _load_search_artwork(self, url, label):
+        if url in self._search_art_cache:
+            image = self._search_art_cache[url]
+            label.config(image=image, text="", width=60, height=60, bg=BG)
+            label._search_image = image
+            return
+        if url in self._search_art_fetching:
+            return
+        self._search_art_fetching.add(url)
+
+        def fetch():
+            try:
+                import io
+                import requests
+                from PIL import Image, ImageOps
+
+                response = requests.get(url, timeout=8)
+                response.raise_for_status()
+                image = Image.open(io.BytesIO(response.content)).convert("RGB")
+                image = ImageOps.fit(image, (60, 60), method=Image.Resampling.LANCZOS)
+            except Exception:
+                self._search_art_fetching.discard(url)
+                return
+            self.after(0, lambda: self._finish_search_artwork(url, image, label))
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _finish_search_artwork(self, url, image, label):
+        self._search_art_fetching.discard(url)
+        try:
+            from PIL import ImageTk
+            photo = ImageTk.PhotoImage(image)
+        except Exception:
+            return
+        self._search_art_cache[url] = photo
+        if label.winfo_exists():
+            label.config(image=photo, text="", width=60, height=60, bg=BG)
+            label._search_image = photo
 
     def do_search(self, reset_limit=True):
         q = self.controller.search_var.get().strip()
@@ -1036,7 +1499,8 @@ class DownloadView(tk.Frame):
                         "title": e.get("title", "?"),
                         "artist": e.get("uploader") or e.get("channel", "?"),
                         "url": f"https://www.youtube.com/watch?v={e.get('id', '')}",
-                        "source": "YouTube", "duration": e.get("duration", 0)
+                        "source": "YouTube", "duration": e.get("duration", 0),
+                        "thumbnail": self._search_thumbnail_url(e),
                     })
             except Exception as e:
                 self._set_dl_status(f"Search Error: {e}", RED)
@@ -1051,20 +1515,14 @@ class DownloadView(tk.Frame):
                         "title": e.get("title", "?"),
                         "artist": e.get("uploader") or e.get("channel", "?"),
                         "url": e.get("url") or e.get("webpage_url", ""),
-                        "source": "SoundCloud", "duration": e.get("duration", 0)
+                        "source": "SoundCloud", "duration": e.get("duration", 0),
+                        "thumbnail": self._search_thumbnail_url(e),
                     })
             except: pass
 
             def update_ui():
-                self.results_tree.delete(*self.results_tree.get_children())
                 self.search_results = results
-                for r in results:
-                    tag = "sc" if r["source"] == "SoundCloud" else "yt"
-                    dur = format_time(r["duration"]) if r["duration"] else "?"
-                    self.results_tree.insert("", "end", tags=(tag,),
-                        values=(r["source"], r["title"], r["artist"], dur))
-                
-                self.results_tree.config(height=min(12, max(1, len(results))))
+                self._render_search_results(results)
                 self._set_dl_status(
                     f"{len(results)} results" if results else "No results", TEXT3)
                 
@@ -1292,22 +1750,27 @@ class DownloadView(tk.Frame):
     # ═════════════════════════════════════════════════════════════════════════
 
     def _download_selected(self):
-        sel = self.results_tree.selection()
-        if not sel:
-            messagebox.showwarning("No Selection", "Select a result first.")
-            return
-
-        idx = self.results_tree.index(sel[0])
-        vals = self.results_tree.item(sel[0], "values")
-
         track = None
-        if self.search_results and idx < len(self.search_results):
-            track = self.search_results[idx]
-        elif self.sync_tracks:
-            for t in self.sync_tracks:
-                if t["title"] == vals[1]:
-                    track = t
-                    break
+        if self._active_tab == "search":
+            track = self._selected_search_result()
+            if not track:
+                messagebox.showwarning("No Selection", "Select a result first.")
+                return
+        else:
+            sel = self.results_tree.selection()
+            if not sel:
+                messagebox.showwarning("No Selection", "Select a result first.")
+                return
+
+            idx = self.results_tree.index(sel[0])
+            vals = self.results_tree.item(sel[0], "values")
+            if self.search_results and idx < len(self.search_results):
+                track = self.search_results[idx]
+            elif self.sync_tracks:
+                for candidate in self.sync_tracks:
+                    if candidate["title"] == vals[1]:
+                        track = candidate
+                        break
 
         if not track or not track.get("url"):
             messagebox.showwarning("No URL", "Cannot download: no URL for this track.")
@@ -1437,7 +1900,8 @@ class DownloadView(tk.Frame):
             self._set_dl_status(f"Downloading {display} — {idx}/{tot}", WARNING)
             try:
                 clean_p = re.sub(r'\x1b\[[0-9;]*m', '', p).replace('%', '').strip()
-                self.controller.prog_var.set(float(clean_p))
+                progress = float(clean_p)
+                self.after(0, lambda value=progress: self.controller.prog_var.set(value))
             except: pass
         elif d['status'] == 'finished':
             fn = d.get('filename', '')
@@ -1477,6 +1941,7 @@ class DownloadView(tk.Frame):
 
     def _clear_results(self):
         self.results_tree.delete(*self.results_tree.get_children())
+        self._render_search_results([])
         self.search_results = []
         self.sync_tracks = []
         self._preview_tracks = []
@@ -1487,10 +1952,17 @@ class DownloadView(tk.Frame):
         self.after(50, lambda: self._scroll_canvas.config(scrollregion=self._scroll_canvas.bbox("all")))
 
     def _on_tree_double_click(self):
-        sel = self.results_tree.selection()
-        if not sel: return
-        vals = self.results_tree.item(sel[0], "values")
-        title = vals[1].lower()
+        if self._active_tab == "search":
+            result = self._selected_search_result()
+            if not result:
+                return
+            title = (result.get("title") or "").lower()
+        else:
+            sel = self.results_tree.selection()
+            if not sel:
+                return
+            vals = self.results_tree.item(sel[0], "values")
+            title = vals[1].lower()
         for pl_name, tracks in self.controller._library.items():
             for path in tracks:
                 if title in path.lower():
