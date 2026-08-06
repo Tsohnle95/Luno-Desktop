@@ -756,9 +756,12 @@ class MusicController @JvmOverloads constructor(
             return
         }
         val current = ctrl.currentMediaItemIndex
-        var randomIndex = Random.nextInt(ctrl.mediaItemCount)
-        if (randomIndex == current) {
-            randomIndex = (randomIndex + 1) % ctrl.mediaItemCount
+        val randomIndex = if (current in 0 until ctrl.mediaItemCount) {
+            // Pick uniformly from the N-1 items other than the current one.
+            val randomOffset = Random.nextInt(ctrl.mediaItemCount - 1)
+            randomIndexExcludingCurrent(ctrl.mediaItemCount, current, randomOffset)
+        } else {
+            Random.nextInt(ctrl.mediaItemCount)
         }
         ctrl.seekToDefaultPosition(randomIndex)
         ctrl.play()
@@ -872,3 +875,15 @@ data class MediaTrack(
     val durationMs: Long = 0L,
     val artworkUri: String? = null
 )
+
+/** Maps a uniform offset in the N-1 eligible items to the original item index. */
+internal fun randomIndexExcludingCurrent(
+    itemCount: Int,
+    currentIndex: Int,
+    randomOffset: Int
+): Int {
+    require(itemCount > 1) { "At least two items are required" }
+    require(currentIndex in 0 until itemCount) { "Current index is out of range" }
+    require(randomOffset in 0 until (itemCount - 1)) { "Random offset is out of range" }
+    return if (randomOffset >= currentIndex) randomOffset + 1 else randomOffset
+}

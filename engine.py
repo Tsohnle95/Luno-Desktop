@@ -220,6 +220,7 @@ class LunoEngine:
         
         # State
         self.queue = []
+        self._original_queue = []
         self.queue_idx = -1
         self.user_queue_count = 0
         self.playing = False
@@ -418,9 +419,22 @@ class LunoEngine:
             # Loop around to the start of the playlist or extend
             pl = self.c._queue_playlist_paths
             if self.shuffle:
-                # Re-shuffle the entire set if we loop in shuffle mode
+                # Re-shuffle the entire set if we loop in shuffle mode, while
+                # avoiding an immediate repeat across the cycle boundary.
+                previous = (
+                    self.queue[self.queue_idx]
+                    if 0 <= self.queue_idx < len(self.queue)
+                    else None
+                )
                 new_q = list(pl)
                 random.shuffle(new_q)
+                if previous is not None and len(new_q) > 1 and new_q[0] == previous:
+                    eligible = [
+                        i for i in range(1, len(new_q)) if new_q[i] != previous
+                    ]
+                    if eligible:
+                        swap_idx = random.choice(eligible)
+                        new_q[0], new_q[swap_idx] = new_q[swap_idx], new_q[0]
                 self.queue = new_q
             else:
                 self.queue = list(pl)

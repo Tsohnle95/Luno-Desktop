@@ -252,6 +252,37 @@ class LunoEnginePlaybackTest(unittest.TestCase):
         _fake_mixer.music._busy = True
 
     # ------------------------------------------------------------------
+    # Shuffle
+    # ------------------------------------------------------------------
+    def test_original_queue_starts_empty_and_shuffle_can_be_disabled_safely(self):
+        self.assertEqual(self.engine._original_queue, [])
+        self.engine.queue = ["/fake/song1.mp3", "/fake/song2.mp3"]
+        self.engine.queue_idx = 0
+        self.engine.shuffle = True
+
+        self.engine.toggle_shuffle()
+
+        self.assertFalse(self.engine.shuffle)
+
+    def test_shuffle_cycle_avoids_immediate_boundary_repeat(self):
+        songs = ["/fake/song1.mp3", "/fake/song2.mp3", "/fake/song3.mp3"]
+        self.engine.queue = list(songs)
+        self.engine.queue_idx = len(songs) - 1
+        self.engine.shuffle = True
+        self.controller._queue_playlist_paths = list(songs)
+
+        # Force the freshly shuffled order to put the previous final track
+        # first, then verify the boundary guard swaps it out.
+        with patch("engine.random.shuffle", side_effect=lambda items: items.reverse()), \
+             patch("engine.random.choice", return_value=1), \
+             patch.object(self.engine, "play_current"):
+            self.engine.next_track()
+
+        self.assertNotEqual(self.engine.queue[0], songs[-1])
+        self.assertEqual(sorted(self.engine.queue), sorted(songs))
+        self.assertEqual(self.engine.queue_idx, 0)
+
+    # ------------------------------------------------------------------
     # get_position
     # ------------------------------------------------------------------
     def test_get_position_while_playing(self):

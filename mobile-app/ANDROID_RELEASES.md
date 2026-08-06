@@ -9,11 +9,17 @@ Android downloads are published to the repository's GitHub Releases page:
 Keep using the existing debug workflow:
 
 ```bash
+./build-mobile.command
+```
+
+The underlying direct Gradle workflow remains:
+
+```bash
 cd mobile-app
 ./gradlew installDebug
 ```
 
-The debug variant does not use the release keystore or release secrets.
+The root helper builds and installs/launches when `adb` sees a connected device; without a device it builds the APK only. The debug variant does not use the release keystore or release secrets.
 
 ## Create The Signing Key
 

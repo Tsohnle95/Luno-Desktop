@@ -29,6 +29,7 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── Pixel.png                 # User-provided icon artwork (kept; NOT currently used — the app uses its original vector music-note icon)
 ├── mobile-app-icon.png       # Duplicate copy of the Pixel.png artwork (kept; not used by builds)
 ├── build.command             # Executable macOS build helper; activates .venv then runs PyInstaller spec
+├── build-mobile.command      # Executable macOS helper; builds the Android debug APK and installs/launches it when a device is connected
 ├── Luno.spec             # PyInstaller spec for macOS build
 ├── .gitignore                # Ignores local envs, Python caches, build/dist artifacts, and OS metadata
 ├── project_brain.md          # This document
@@ -69,6 +70,7 @@ Generated/local directories are intentionally omitted from the tracked tree: `.v
 To bundle the application as a standalone executable (`.app` on macOS or `.exe` on Windows), follow these protocols:
 - **Local Environment Setup**: Create the local env with `python3.12 -m venv .venv`, then install dependencies via `.venv/bin/python -m pip install -r requirements.txt`. The `.venv/` directory is local-only and ignored by Git.
 - **Executable Build Helper**: `build.command` is executable (`100755`) and can be run directly/double-clicked on macOS. It activates `.venv`, runs `pyinstaller --clean --noconfirm Luno.spec`, then opens `dist/Luno.app` if the build succeeds.
+- **Native Android Build Helper**: `build-mobile.command` is executable (`100755`) and can be run directly/double-clicked on macOS. It runs the Android Gradle wrapper from `mobile-app/`; with an `adb`-connected device it runs `:app:installDebug` and launches `com.luno.mobile`, otherwise it runs `:app:assembleDebug` and reports the APK path.
 - **macOS Build Command**: Use `python -m PyInstaller --noconsole --windowed --noconfirm --clean --name "Luno" --icon "icon.icns" --add-data "views:views" music_player.py`.
 - **macOS Bundle Identifier**: The `Luno.spec` file sets `bundle_identifier='com.ty.luno'`. The bundle identifier is now Luno's stable macOS application identifier.
 - **PyInstaller hiddenimports**: The spec includes `'Foundation', 'objc', 'Quartz', 'AppKit'` to ensure PyObjC bridges resolve `True` at runtime in the bundled app.
@@ -265,7 +267,7 @@ The transfer format is `luno.library.export` with `manifest_version: 1` and scop
     3. **State fingerprint**: Before drawing, a `(name, image_ids, size)` tuple is compared against `_last_state`. If identical, the draw is skipped entirely.
 
 ### 3. Audio & Playlist Patterns
-- **Shuffle Protocol**: `LunoEngine` maintains `_original_queue` for sequential restoration. Toggling shuffle OFF reverts to this order anchored to the current track.
+- **Shuffle Protocol**: `LunoEngine` maintains `_original_queue` for sequential restoration. Toggling shuffle OFF reverts to this order anchored to the current track. Fresh shuffle cycles avoid immediately replaying the track at the previous cycle boundary when another track is available.
 - **Playback Engine**: Live desktop elapsed time prefers `pygame.mixer.music.get_pos()` while the mixer reports audio busy, so the footer reflects the backend audio clock instead of an independent UI timer. `LunoEngine` keeps explicit base position/monotonic state for seek offsets, pause/resume, startup grace, and codecs where pygame returns unavailable positions. Duration probing uses `mutagen.File` (generic) so non-MP3 files (M4A, FLAC, WAV) report duration correctly. The `_poll()` heartbeat reschedules unconditionally (400 ms) after every invocation except during controller shutdown — even after auto-advance or repeat — ensuring the footer scrubber stays live and future completions fire.
 - **Completion Detection**: Two independent paths, both gated by a `_completion_dispatched` latch to prevent dual-fire:
   1. **Duration-based**: when `duration > 0` and elapsed ≥ duration

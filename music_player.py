@@ -2333,6 +2333,7 @@ class LunoMusicPlayer(tk.Tk):
         
         # Set context so we can un-shuffle later
         self._queue_playlist_paths = list(paths)
+        self.engine._original_queue = list(paths)
         
         # Scramble
         shuffled = list(paths); random.shuffle(shuffled)

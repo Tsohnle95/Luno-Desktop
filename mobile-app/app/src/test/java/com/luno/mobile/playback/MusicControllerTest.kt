@@ -75,6 +75,19 @@ class MusicControllerTest {
     }
 
     @Test
+    fun `random current replacement maps every eligible item exactly once`() {
+        val mapped = (0 until 4).map { offset ->
+            randomIndexExcludingCurrent(
+                itemCount = 5,
+                currentIndex = 2,
+                randomOffset = offset
+            )
+        }
+
+        assertThat(mapped).containsExactly(0, 1, 3, 4).inOrder()
+    }
+
+    @Test
     fun `play with empty list returns true before connection`() {
         assertThat(controller.play(emptyList<String>())).isTrue()
     }
