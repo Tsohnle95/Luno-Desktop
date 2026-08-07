@@ -45,7 +45,8 @@ import com.luno.mobile.ui.theme.SecondaryText
 @Composable
 fun MiniPlayer(
     musicController: MusicController,
-    onMiniPlayerTap: () -> Unit = {}
+    onMiniPlayerTap: () -> Unit = {},
+    onNext: () -> Unit = { musicController.skipToNext() }
 ) {
     val isPlaying by musicController.isPlaying.collectAsState()
     val currentTrack by musicController.currentTrack.collectAsState()
@@ -83,7 +84,7 @@ fun MiniPlayer(
                     },
                     onDragEnd = {
                         when {
-                            horizontalDrag <= -swipeThresholdPx -> musicController.skipToNext()
+                            horizontalDrag <= -swipeThresholdPx -> onNext()
                             horizontalDrag >= swipeThresholdPx -> musicController.skipToPrevious()
                         }
                         horizontalDrag = 0f

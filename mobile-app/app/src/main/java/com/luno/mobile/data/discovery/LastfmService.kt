@@ -61,7 +61,7 @@ open class LastfmService(
             .build()
     }
 
-    private val cache = mutableMapOf<Pair<String, String>, List<LastfmTrack>>()
+    private val cache = mutableMapOf<Triple<String, String, Int>, List<LastfmTrack>>()
 
     /**
      * Fetches similar tracks for (artist, title).  Returns the cached
@@ -79,7 +79,11 @@ open class LastfmService(
             return LastfmResult.Success(emptyList())
         }
 
-        val cacheKey = seedArtist.lowercase() to seedTitle.lowercase()
+        val cacheKey = Triple(
+            seedArtist.lowercase(),
+            seedTitle.lowercase(),
+            limit.coerceAtLeast(0)
+        )
         synchronized(cache) {
             cache[cacheKey]?.let { return LastfmResult.Success(it) }
         }
@@ -232,7 +236,7 @@ open class LastfmService(
         }
     }
 
-    private fun storeCache(key: Pair<String, String>, tracks: List<LastfmTrack>) {
+    private fun storeCache(key: Triple<String, String, Int>, tracks: List<LastfmTrack>) {
         if (tracks.isEmpty()) return
         synchronized(cache) {
             // Desktop parity: clear the whole cache once it exceeds 10.

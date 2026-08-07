@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -88,7 +90,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private const val FULL_PLAYER_RECOMMENDATION_LIMIT = 6
+private const val FULL_PLAYER_RECOMMENDATION_LIMIT = 1_000
 
 private sealed interface FullPlayerRecommendationState {
     data object Idle : FullPlayerRecommendationState
@@ -170,7 +172,7 @@ fun FullPlayerScreen(
         recommendationState = when (result) {
             is LastfmResult.Success -> FullPlayerRecommendationState.Ready(
                 seedUri = track.uri,
-                tracks = result.tracks.take(FULL_PLAYER_RECOMMENDATION_LIMIT)
+                tracks = result.tracks.distinctBy(::recommendationKey)
             )
             is LastfmResult.Failure -> FullPlayerRecommendationState.Error(
                 seedUri = track.uri,
@@ -203,9 +205,6 @@ fun FullPlayerScreen(
     LaunchedEffect(readyRecommendations) {
         fallbackArtwork = emptyMap()
         fallbackArtworkRequested = emptySet()
-        readyRecommendations
-            .filter { it.imageUrl.isNullOrBlank() }
-            .forEach(::requestFallbackArtwork)
     }
 
     fun saveRecommendation(recommendation: LastfmTrack, playlist: Playlist) {
@@ -461,7 +460,11 @@ fun FullPlayerScreen(
                     )
                 }
                 IconButton(
-                    onClick = { musicController.skipToNext() },
+                    onClick = {
+                        if (!app.recommendationPreviewManager.skipToNext()) {
+                            musicController.skipToNext()
+                        }
+                    },
                     modifier = Modifier.size(Dimens.touchTargetMin)
                 ) {
                     Icon(
@@ -504,35 +507,33 @@ fun FullPlayerScreen(
 
             Spacer(modifier = Modifier.height(Dimens.paddingXLarge))
             }
-            item(key = "recommendations", contentType = "recommendations") {
-                FullPlayerRecommendations(
-                    seedUri = recommendationSeedUri,
-                    apiKeyConfigured = !apiKey.isNullOrBlank(),
-                    state = recommendationState,
-                    recommendations = readyRecommendations,
-                    previewState = previewState,
-                    previewPlaying = isPlaying,
-                    fallbackArtwork = fallbackArtwork,
-                    onRefresh = { recommendationRefresh++ },
-                    onArtworkError = ::requestFallbackArtwork,
-                    onPreview = { recommendation ->
-                        val index = readyRecommendations.indexOf(recommendation)
-                        val seedUri = recommendationSeedUri
-                        if (index >= 0 && seedUri != null) {
-                            app.recommendationPreviewManager.startPreview(
-                                seedUri = seedUri,
-                                recommendations = readyRecommendations,
-                                startIndex = index,
-                                artworkByKey = readyRecommendations.associate { item ->
-                                    val key = recommendationKey(item)
-                                    key to (fallbackArtwork[key] ?: item.imageUrl)
-                                }
-                            )
-                        }
-                    },
-                    onSave = { recommendationToSaveKey = recommendationKey(it) }
-                )
-            }
+            fullPlayerRecommendations(
+                seedUri = recommendationSeedUri,
+                apiKeyConfigured = !apiKey.isNullOrBlank(),
+                state = recommendationState,
+                recommendations = readyRecommendations,
+                previewState = previewState,
+                previewPlaying = isPlaying,
+                fallbackArtwork = fallbackArtwork,
+                onRefresh = { recommendationRefresh++ },
+                onArtworkError = ::requestFallbackArtwork,
+                onPreview = { recommendation ->
+                    val index = readyRecommendations.indexOf(recommendation)
+                    val seedUri = recommendationSeedUri
+                    if (index >= 0 && seedUri != null) {
+                        app.recommendationPreviewManager.startPreview(
+                            seedUri = seedUri,
+                            recommendations = readyRecommendations,
+                            startIndex = index,
+                            artworkByKey = readyRecommendations.associate { item ->
+                                val key = recommendationKey(item)
+                                key to (fallbackArtwork[key] ?: item.imageUrl)
+                            }
+                        )
+                    }
+                },
+                onSave = { recommendationToSaveKey = recommendationKey(it) }
+            )
         }
     }
     }
@@ -578,8 +579,7 @@ fun FullPlayerScreen(
         }
 }
 
-@Composable
-private fun FullPlayerRecommendations(
+private fun LazyListScope.fullPlayerRecommendations(
     seedUri: String?,
     apiKeyConfigured: Boolean,
     state: FullPlayerRecommendationState,
@@ -604,80 +604,81 @@ private fun FullPlayerRecommendations(
         }
     } ?: FullPlayerRecommendationState.Idle
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = Dimens.paddingSmall)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
+    item(key = "recommendations-header", contentType = "recommendations-header") {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = Dimens.paddingSmall)
         ) {
-            Text(
-                text = "Recommended for this song",
-                style = MaterialTheme.typography.titleLarge,
-                color = PrimaryText,
-                modifier = Modifier.weight(1f)
-            )
-            if (apiKeyConfigured && seedUri != null && !previewState.active) {
-                IconButton(onClick = onRefresh) {
-                    Icon(
-                        imageVector = Icons.Filled.Refresh,
-                        contentDescription = "Refresh recommendations",
-                        tint = AccentGreen
-                    )
-                }
-            }
-        }
-
-        when {
-            seedUri == null -> RecommendationMessage("Play a song to see recommendations")
-            !apiKeyConfigured -> RecommendationMessage(
-                "Add a Last.fm API key in Settings to see recommendations"
-            )
-            !previewState.active && (
-                matchingState is FullPlayerRecommendationState.Loading ||
-                    matchingState is FullPlayerRecommendationState.Idle
-                ) -> {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = Dimens.paddingLarge),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(Dimens.iconSizeSmall),
-                        color = AccentGreen,
-                        strokeWidth = 2.dp
-                    )
-                    Text(
-                        text = "Finding similar songs...",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SecondaryText,
-                        modifier = Modifier.padding(start = Dimens.paddingMedium)
-                    )
-                }
-            }
-            !previewState.active && matchingState is FullPlayerRecommendationState.Error -> {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = Dimens.paddingMedium)
-                ) {
-                    Text(
-                        text = matchingState.message,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SecondaryText
-                    )
-                    TextButton(onClick = onRefresh) {
-                        Text("Retry", color = AccentGreen)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Recommended for this song",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = PrimaryText,
+                    modifier = Modifier.weight(1f)
+                )
+                if (apiKeyConfigured && seedUri != null && !previewState.active) {
+                    IconButton(onClick = onRefresh) {
+                        Icon(
+                            imageVector = Icons.Filled.Refresh,
+                            contentDescription = "Refresh recommendations",
+                            tint = AccentGreen
+                        )
                     }
                 }
             }
-            else -> {
-                if (recommendations.isEmpty()) {
+
+            when {
+                seedUri == null -> RecommendationMessage("Play a song to see recommendations")
+                !apiKeyConfigured -> RecommendationMessage(
+                    "Add a Last.fm API key in Settings to see recommendations"
+                )
+                !previewState.active && (
+                    matchingState is FullPlayerRecommendationState.Loading ||
+                        matchingState is FullPlayerRecommendationState.Idle
+                    ) -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = Dimens.paddingLarge),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(Dimens.iconSizeSmall),
+                            color = AccentGreen,
+                            strokeWidth = 2.dp
+                        )
+                        Text(
+                            text = "Finding similar songs...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SecondaryText,
+                            modifier = Modifier.padding(start = Dimens.paddingMedium)
+                        )
+                    }
+                }
+                !previewState.active && matchingState is FullPlayerRecommendationState.Error -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = Dimens.paddingMedium)
+                    ) {
+                        Text(
+                            text = matchingState.message,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SecondaryText
+                        )
+                        TextButton(onClick = onRefresh) {
+                            Text("Retry", color = AccentGreen)
+                        }
+                    }
+                }
+                recommendations.isEmpty() -> {
                     RecommendationMessage("No recommendations available for this song")
-                } else {
+                }
+                else -> {
                     Text(
                         text = if (previewState.active) {
                             "Temporary preview queue - tap a song to restart from there"
@@ -688,30 +689,37 @@ private fun FullPlayerRecommendations(
                         color = SecondaryText,
                         modifier = Modifier.padding(bottom = Dimens.paddingSmall)
                     )
-                    recommendations.forEach { recommendation ->
-                        val key = recommendationKey(recommendation)
-                        FullPlayerRecommendationRow(
-                            recommendation = recommendation,
-                            artworkUri = fallbackArtwork[recommendationKey(recommendation)]
-                                ?: recommendation.imageUrl,
-                            resolving = key in previewState.resolvingKeys,
-                            preparing = key in previewState.preparingKeys,
-                            playing = previewPlaying && key == previewState.currentKey,
-                            ready = key in previewState.readyKeys,
-                            saving = key in previewState.savingKeys,
-                            queued = key in previewState.queuedKeys,
-                            permanent = key in previewState.permanentKeys,
-                            failure = previewState.failures[key],
-                            saveFailure = previewState.saveFailures[key],
-                            onArtworkError = {
-                                onArtworkError(recommendation)
-                            },
-                            onPreview = { onPreview(recommendation) },
-                            onSave = { onSave(recommendation) }
-                        )
-                    }
                 }
             }
+        }
+    }
+
+    if (recommendations.isNotEmpty() &&
+        (previewState.active || matchingState is FullPlayerRecommendationState.Ready)
+    ) {
+        items(
+            items = recommendations,
+            key = { recommendation -> "recommendation-${recommendationKey(recommendation)}" },
+            contentType = { "recommendation-row" }
+        ) { recommendation ->
+            val key = recommendationKey(recommendation)
+            FullPlayerRecommendationRow(
+                recommendation = recommendation,
+                artworkUri = fallbackArtwork[key] ?: recommendation.imageUrl,
+                waiting = key in previewState.waitingKeys,
+                resolving = key in previewState.resolvingKeys,
+                preparing = key in previewState.preparingKeys,
+                playing = previewPlaying && key == previewState.currentKey,
+                ready = key in previewState.readyKeys,
+                saving = key in previewState.savingKeys,
+                queued = key in previewState.queuedKeys,
+                permanent = key in previewState.permanentKeys,
+                failure = previewState.failures[key],
+                saveFailure = previewState.saveFailures[key],
+                onArtworkError = { onArtworkError(recommendation) },
+                onPreview = { onPreview(recommendation) },
+                onSave = { onSave(recommendation) }
+            )
         }
     }
 }
@@ -720,6 +728,7 @@ private fun FullPlayerRecommendations(
 private fun FullPlayerRecommendationRow(
     recommendation: LastfmTrack,
     artworkUri: String?,
+    waiting: Boolean,
     resolving: Boolean,
     preparing: Boolean,
     playing: Boolean,
@@ -767,6 +776,7 @@ private fun FullPlayerRecommendationRow(
                     saveFailure != null -> "Save failed: $saveFailure"
                     playing -> "Previewing now"
                     failure != null -> failure
+                    waiting -> "Waiting for 75% of current preview"
                     resolving -> "Finding a playable source..."
                     preparing -> "Downloading temporary preview..."
                     ready -> "Ready in temporary queue"

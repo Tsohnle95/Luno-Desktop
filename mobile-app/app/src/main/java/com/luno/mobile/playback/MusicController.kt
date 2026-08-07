@@ -481,6 +481,27 @@ class MusicController @JvmOverloads constructor(
     }
 
     /**
+     * Returns the exact playback-order continuation after the current item.
+     * `null` means the current item/timeline could not be identified; an empty
+     * list means the current item is known and has no following items.
+     */
+    fun getQueueAfterCurrent(): List<MediaTrack>? {
+        val ctrl = controller ?: return null
+        return runCatching {
+            val playbackIndices = playbackOrderIndices(ctrl)
+            val currentRawIndex = ctrl.currentMediaItemIndex
+            val currentPlaybackIndex = playbackIndices.indexOf(currentRawIndex)
+            if (currentPlaybackIndex < 0) return@runCatching null
+            playbackIndices.drop(currentPlaybackIndex + 1).map { index ->
+                mediaTrackFromItem(ctrl.getMediaItemAt(index))
+            }
+        }.getOrElse {
+            Log.e(TAG, "getQueueAfterCurrent failed: ${it.message}")
+            null
+        }
+    }
+
+    /**
      * Inserts the track immediately after the currently playing item
      * ("Play next", desktop `_ctx_play_next` semantics: the item plays
      * before anything previously queued).  No-op before connection.

@@ -44,6 +44,7 @@ data class RecommendationPreviewState(
     val active: Boolean = false,
     val seedUri: String? = null,
     val recommendations: List<LastfmTrack> = emptyList(),
+    val waitingKeys: Set<String> = emptySet(),
     val resolvingKeys: Set<String> = emptySet(),
     val preparingKeys: Set<String> = emptySet(),
     val readyKeys: Set<String> = emptySet(),
@@ -134,6 +135,9 @@ class RecommendationPreviewManager(
     private var initialNormalTrackUri: String? = null
     private var baselineController: MusicController? = null
     private var baselinePlayRequestRevision = 0L
+    private var continuationTracks: List<MediaTrack> = emptyList()
+    private var forcedAdvanceUri: String? = null
+    private var forcedAdvanceInProgress = false
 
     private val startupCleanup: Deferred<Unit> = appScope.async(Dispatchers.IO) {
         previewDirectory.deleteRecursively()
@@ -152,28 +156,37 @@ class RecommendationPreviewManager(
         monitorJob = appScope.launch(start = CoroutineStart.UNDISPATCHED) {
             launch(start = CoroutineStart.UNDISPATCHED) {
                 controller.currentTrack.collect { track ->
-                    val transition = synchronized(lock) {
+                    val transitionGeneration = synchronized(lock) {
                         if (!_state.value.active || musicController !== controller ||
                             !controller.isConnected.value
                         ) {
-                            return@collect
+                            return@synchronized null
                         }
                         val key = track?.uri?.let(keyByUri::get)
                         val recoveryTransition = recoveringPlaybackError
                         if (recoveryTransition) recoveringPlaybackError = false
-                        when {
+                        val forcedTransition = forcedAdvanceInProgress
+                        val shouldFinish = when {
                             key != null -> {
                                 observedPreviewTrack = true
+                                if (forcedTransition) {
+                                    forcedAdvanceInProgress = false
+                                    forcedAdvanceUri = null
+                                }
                                 _state.value = _state.value.copy(currentKey = key)
                                 false
                             }
+                            forcedTransition -> false
                             observedPreviewTrack && track != null -> true
                             recoveryTransition -> false
                             observedPreviewTrack -> true
                             else -> false
                         }
+                        if (shouldFinish) generation else null
                     }
-                    if (transition) finishForPlaybackIntervention()
+                    if (transitionGeneration != null && isCurrent(transitionGeneration)) {
+                        finishForPlaybackIntervention()
+                    }
                 }
             }
             launch(start = CoroutineStart.UNDISPATCHED) {
@@ -231,8 +244,17 @@ class RecommendationPreviewManager(
         val oldFiles: List<File>
         val clearOldPlayback: Boolean
         val sessionGeneration: Long
+        val restoreOriginalQueue: Boolean
+        val currentUri = controller.currentTrack.value?.uri
+        val currentIsPreview = synchronized(lock) { currentUri in keyByUri }
+        val nextQueueTracks = if (currentIsPreview) {
+            synchronized(lock) { continuationTracks }
+        } else {
+            queueContinuationAfterCurrent(controller, currentUri)
+        }
         synchronized(lock) {
             clearOldPlayback = controller.currentTrack.value?.uri in keyByUri
+            restoreOriginalQueue = currentIsPreview
             generation++
             sessionGeneration = generation
             sessionJob?.cancel()
@@ -244,11 +266,14 @@ class RecommendationPreviewManager(
             previewPlaybackStarted = false
             preparationComplete = false
             recoveringPlaybackError = false
+            forcedAdvanceUri = null
+            forcedAdvanceInProgress = false
             initialNormalTrackUri = controller.currentTrack.value
                 ?.takeUnless { it.isTransient }
                 ?.uri
             baselineController = controller
             baselinePlayRequestRevision = controller.playRequestRevision.value
+            continuationTracks = nextQueueTracks
             _state.value = withSaveState(
                 RecommendationPreviewState(
                     active = true,
@@ -264,9 +289,21 @@ class RecommendationPreviewManager(
         val firstIndex = startIndex.coerceIn(0, recommendations.lastIndex)
         sessionJob = appScope.launch {
             startupCleanup.await()
+            var previousPlayableTrack: MediaTrack? = null
             for ((offset, recommendation) in recommendations.drop(firstIndex).withIndex()) {
                 if (!isCurrent(sessionGeneration)) return@launch
                 val key = recommendationKey(recommendation)
+                previousPlayableTrack?.let { previous ->
+                    updateState(sessionGeneration) { state ->
+                        state.copy(waitingKeys = state.waitingKeys + key)
+                    }
+                    if (!awaitPrefetchThreshold(sessionGeneration, previous.uri)) {
+                        return@launch
+                    }
+                    updateState(sessionGeneration) { state ->
+                        state.copy(waitingKeys = state.waitingKeys - key)
+                    }
+                }
                 updateState(sessionGeneration) { state ->
                     state.copy(
                         resolvingKeys = state.resolvingKeys + key,
@@ -346,13 +383,65 @@ class RecommendationPreviewManager(
                     }
                     return@launch
                 }
+                previousPlayableTrack = mediaTrack
             }
 
             synchronized(lock) {
                 if (generation == sessionGeneration) preparationComplete = true
             }
+            if (restoreOriginalQueue && !synchronized(lock) { previewPlaybackStarted }) {
+                restoreQueueContinuation(sessionGeneration)
+            } else {
+                appendQueueContinuation(sessionGeneration)
+            }
             finishEmptyPreviewSession(sessionGeneration)
         }
+    }
+
+    /**
+     * Handles Next while a recommendation preview is active. If the next
+     * preview is already queued, normal Media3 skipping is sufficient. If it
+     * is not, stop the current preview and wake the preparation loop so the
+     * next recommendation is resolved immediately instead of waiting for 75%.
+     */
+    fun skipToNext(): Boolean {
+        val controller = musicController ?: return false
+        val currentTrack = controller.currentTrack.value ?: return false
+        val currentKey = synchronized(lock) {
+            if (!_state.value.active) null else keyByUri[currentTrack.uri]
+        } ?: return false
+
+        val queueAfterCurrent = controller.getQueueAfterCurrent()
+        if (!queueAfterCurrent.isNullOrEmpty()) {
+            controller.skipToNext()
+            return true
+        }
+
+        val recommendations = synchronized(lock) { _state.value.recommendations }
+        val currentIndex = recommendations.indexOfFirst {
+            recommendationKey(it) == currentKey
+        }
+        if (currentIndex < 0 || currentIndex >= recommendations.lastIndex) return false
+
+        synchronized(lock) {
+            forcedAdvanceUri = currentTrack.uri
+            forcedAdvanceInProgress = true
+            val skippedAsset = assetsByKey.remove(currentKey)
+            keyByUri.remove(currentTrack.uri)
+            _state.value = _state.value.copy(
+                readyKeys = _state.value.readyKeys - currentKey,
+                currentKey = null
+            )
+            skippedAsset?.file?.let { deleteFiles(listOf(it)) }
+        }
+        if (!controller.removeCurrentFromPlaybackContext()) {
+            synchronized(lock) {
+                forcedAdvanceUri = null
+                forcedAdvanceInProgress = false
+            }
+            return false
+        }
+        return true
     }
 
     suspend fun saveToPlaylist(
@@ -474,6 +563,9 @@ class RecommendationPreviewManager(
             recoveringPlaybackError = false
             initialNormalTrackUri = null
             baselineController = null
+            continuationTracks = emptyList()
+            forcedAdvanceUri = null
+            forcedAdvanceInProgress = false
             _state.value = withSaveState(RecommendationPreviewState())
         }
         appScope.launch(Dispatchers.Main.immediate) {
@@ -532,6 +624,107 @@ class RecommendationPreviewManager(
             }
         }
         return false
+    }
+
+    private suspend fun awaitPrefetchThreshold(
+        sessionGeneration: Long,
+        previousTrackUri: String
+    ): Boolean {
+        var observedPreviousTrack = false
+        while (isCurrent(sessionGeneration)) {
+            val forcedAdvance = synchronized(lock) {
+                forcedAdvanceInProgress &&
+                    (forcedAdvanceUri == null || forcedAdvanceUri == previousTrackUri)
+            }
+            if (forcedAdvance) return true
+            val controller = awaitController(sessionGeneration) ?: return false
+            val currentTrack = controller.currentTrack.value
+            when {
+                currentTrack?.uri == previousTrackUri -> {
+                    observedPreviousTrack = true
+                    val durationMs = currentTrack.durationMs.takeIf { it > 0L }
+                        ?: controller.duration.value
+                    if (hasReachedPrefetchThreshold(controller.progress.value, durationMs)) {
+                        return true
+                    }
+                }
+                !synchronized(lock) { keyByUri.containsKey(previousTrackUri) } -> {
+                    // Playback validation failed and removed this preview.
+                    return true
+                }
+                currentTrack != null && !currentTrack.isTransient -> {
+                    val staleInitialTrack = !observedPreviousTrack &&
+                        currentTrack.uri == initialNormalTrackUri &&
+                        controller.playRequestRevision.value == baselinePlayRequestRevision
+                    if (!staleInitialTrack) {
+                        finishForPlaybackIntervention()
+                        return false
+                    }
+                }
+                observedPreviousTrack && currentTrack == null -> {
+                    finishForPlaybackIntervention()
+                    return false
+                }
+                observedPreviousTrack && currentTrack?.isTransient == true -> return true
+            }
+            delay(PREFETCH_POLL_INTERVAL_MS)
+        }
+        return false
+    }
+
+    private fun queueContinuationAfterCurrent(
+        controller: MusicController,
+        currentUri: String?
+    ): List<MediaTrack> {
+        controller.getQueueAfterCurrent()?.let { queue ->
+            return queue.filterNot { it.isTransient }
+        }
+        controller.lastDispatchedRequest?.let { request ->
+            if (request.items.getOrNull(request.startIndex)?.uri == currentUri) {
+                return request.items
+                    .drop((request.startIndex + 1).coerceAtMost(request.items.size))
+                    .filterNot { it.isTransient }
+            }
+        }
+        return controller.pendingRequest?.let { request ->
+            request.items.drop((request.startIndex + 1).coerceAtMost(request.items.size))
+                .filterNot { it.isTransient }
+        }.orEmpty()
+    }
+
+    private suspend fun appendQueueContinuation(sessionGeneration: Long) {
+        val tracks = synchronized(lock) {
+            if (generation == sessionGeneration && previewPlaybackStarted) continuationTracks
+            else emptyList()
+        }
+        if (tracks.isEmpty()) return
+        val controller = awaitController(sessionGeneration) ?: return
+        withContext(Dispatchers.Main.immediate) {
+            if (!isCurrent(sessionGeneration) || musicController !== controller ||
+                !controller.isConnected.value || normalPlaybackSupersededPreview(controller)
+            ) {
+                return@withContext
+            }
+            tracks.forEach { track ->
+                if (!enqueuePreparedTrack(sessionGeneration, track)) return@withContext
+            }
+        }
+    }
+
+    private suspend fun restoreQueueContinuation(sessionGeneration: Long) {
+        val tracks = synchronized(lock) {
+            if (generation == sessionGeneration) continuationTracks else emptyList()
+        }
+        if (tracks.isEmpty()) return
+        val controller = awaitController(sessionGeneration) ?: return
+        withContext(Dispatchers.Main.immediate) {
+            if (!isCurrent(sessionGeneration) || musicController !== controller ||
+                !controller.isConnected.value || normalPlaybackSupersededPreview(controller)
+            ) {
+                return@withContext
+            }
+            controller.play(tracks)
+        }
     }
 
     private fun normalPlaybackSupersededPreview(controller: MusicController): Boolean =
@@ -667,6 +860,7 @@ class RecommendationPreviewManager(
     private fun markFailure(sessionGeneration: Long, key: String, message: String) {
         updateState(sessionGeneration) { state ->
             state.copy(
+                waitingKeys = state.waitingKeys - key,
                 resolvingKeys = state.resolvingKeys - key,
                 preparingKeys = state.preparingKeys - key,
                 failures = state.failures + (key to message)
@@ -719,6 +913,7 @@ class RecommendationPreviewManager(
 
     companion object {
         private const val CONTROLLER_WAIT_INTERVAL_MS = 100L
+        private const val PREFETCH_POLL_INTERVAL_MS = 250L
         internal const val PREVIEW_RESOLVE_TIMEOUT_MS = 15_000L
         internal const val PREVIEW_DOWNLOAD_TIMEOUT_MS = 30_000L
         private const val METADATA_TIMEOUT_MS = 5_000L
@@ -732,6 +927,24 @@ class RecommendationPreviewManager(
         fun recommendationKey(track: LastfmTrack): String =
             "${track.artist.trim().lowercase(Locale.ROOT)}|" +
                 track.title.trim().lowercase(Locale.ROOT)
+
+        internal fun hasReachedPrefetchThreshold(
+            progressMs: Long,
+            durationMs: Long
+        ): Boolean {
+            if (durationMs <= 0L) return false
+            val thresholdMs = durationMs - durationMs / 4L
+            return progressMs.coerceAtLeast(0L) >= thresholdMs
+        }
+
+        internal fun continuationAfterCurrent(
+            queue: List<MediaTrack>,
+            currentUri: String?
+        ): List<MediaTrack>? {
+            val currentIndex = currentUri?.let { uri -> queue.indexOfFirst { it.uri == uri } } ?: -1
+            if (currentIndex < 0) return null
+            return queue.drop(currentIndex + 1).filterNot { it.isTransient }
+        }
 
         private val client = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)

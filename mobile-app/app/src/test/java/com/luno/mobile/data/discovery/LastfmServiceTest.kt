@@ -183,6 +183,28 @@ class LastfmServiceTest {
     }
 
     @Test
+    fun differentLimits_doNotReuseAShorterCachedRecommendationSet() = runBlocking {
+        server.enqueue(
+            similarResponse(
+                """[{"name":"Song A","match":0.9,"artist":{"name":"A"}}]"""
+            )
+        )
+        service.getSimilar("Artist", "Title", limit = 6)
+
+        server.enqueue(
+            similarResponse(
+                """[{"name":"Song A","match":0.9,"artist":{"name":"A"}},
+                    {"name":"Song B","match":0.8,"artist":{"name":"B"}}]"""
+            )
+        )
+        val larger = service.getSimilar("Artist", "Title", limit = 100)
+
+        assertThat(larger).isInstanceOf(LastfmResult.Success::class.java)
+        assertThat((larger as LastfmResult.Success).tracks).hasSize(2)
+        assertThat(server.requestCount).isEqualTo(2)
+    }
+
+    @Test
     fun emptyResults_areNotCached() = runBlocking {
         // An empty outcome is a transient API state — a Refresh must be able
         // to re-ask instead of being stuck on a cached empty list.

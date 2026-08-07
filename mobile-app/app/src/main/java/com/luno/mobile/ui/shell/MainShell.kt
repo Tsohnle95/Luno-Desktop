@@ -246,6 +246,11 @@ fun MainShell(musicController: MusicController) {
     // through this state so its page is not revealed with a second loader.
     var transitionMask by remember { mutableStateOf(false) }
     val app = context.applicationContext as com.luno.mobile.LunoApp
+    fun skipToNext() {
+        if (!app.recommendationPreviewManager.skipToNext()) {
+            musicController.skipToNext()
+        }
+    }
     val libraryLoadedState = app.libraryData.loaded.collectAsState()
     val discoverLoadingState = remember { mutableStateOf(false) }
     LaunchedEffect(transitionMask) {
@@ -739,6 +744,7 @@ fun MainShell(musicController: MusicController) {
                                 ) {
                                     MiniPlayer(
                                         musicController = musicController,
+                                        onNext = ::skipToNext,
                                         onMiniPlayerTap = {
                                             transitionMask = true
                                             navController.navigate(Routes.FULL_PLAYER)
@@ -895,6 +901,7 @@ fun MainShell(musicController: MusicController) {
                             HomeMiniPlayerOverlay(
                                 visible = hasActiveItem,
                                 musicController = musicController,
+                                onNext = ::skipToNext,
                                 onMiniPlayerTap = {
                                     transitionMask = true
                                     navController.navigate(Routes.FULL_PLAYER)
@@ -1083,6 +1090,7 @@ fun MainShell(musicController: MusicController) {
 private fun HomeMiniPlayerOverlay(
     visible: Boolean,
     musicController: MusicController,
+    onNext: () -> Unit,
     onMiniPlayerTap: () -> Unit
 ) {
     // Keep the player in the content layer rather than the Scaffold bottom
@@ -1099,6 +1107,7 @@ private fun HomeMiniPlayerOverlay(
         ) {
             MiniPlayer(
                 musicController = musicController,
+                onNext = onNext,
                 onMiniPlayerTap = onMiniPlayerTap
             )
         }

@@ -78,6 +78,43 @@ class RecommendationPreviewManagerTest {
     }
 
     @Test
+    fun prefetchThreshold_startsAtExactlySeventyFivePercent() {
+        assertThat(
+            RecommendationPreviewManager.hasReachedPrefetchThreshold(
+                progressMs = 749,
+                durationMs = 1_000
+            )
+        ).isFalse()
+        assertThat(
+            RecommendationPreviewManager.hasReachedPrefetchThreshold(
+                progressMs = 750,
+                durationMs = 1_000
+            )
+        ).isTrue()
+        assertThat(
+            RecommendationPreviewManager.hasReachedPrefetchThreshold(
+                progressMs = 1_000,
+                durationMs = 0
+            )
+        ).isFalse()
+    }
+
+    @Test
+    fun continuationAfterCurrent_keepsOnlyLaterNonPreviewQueueItems() {
+        val queue = listOf(
+            MediaTrack(uri = "current"),
+            MediaTrack(uri = "next"),
+            MediaTrack(uri = "temporary", isTransient = true),
+            MediaTrack(uri = "later")
+        )
+
+        assertThat(
+            RecommendationPreviewManager.continuationAfterCurrent(queue, "current")
+                ?.map { it.uri }
+        ).containsExactly("next", "later").inOrder()
+    }
+
+    @Test
     fun unpreparedSave_isQueuedOnceAndBecomesPermanentOnlyAfterCompletion() = runBlocking {
         val playlistId = database.playlistDao().insertPlaylist(Playlist(name = "Saved previews"))
         val recommendation = LastfmTrack("Artist", "Song", 0.9)
