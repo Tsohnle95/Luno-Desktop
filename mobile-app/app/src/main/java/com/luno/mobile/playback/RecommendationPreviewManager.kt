@@ -596,7 +596,6 @@ class RecommendationPreviewManager(
         ) || (deferUntilCurrentEnds && currentIsPreview)
         if (deferUntilCurrentEnds && !deferPlayback) return
         val discoverSession = synchronized(lock) { _state.value.discoverMode }
-        val singlePreviewSession = !discoverSession && !deferPlayback
         val nextQueueTracks = if (currentIsPreview) {
             synchronized(lock) { continuationTracks }
         } else {
@@ -842,8 +841,7 @@ class RecommendationPreviewManager(
                 if (discoverSession || offset == 0) {
                     if (!enqueuePreparedTrack(
                             sessionGeneration = sessionGeneration,
-                            mediaTrack = mediaTrack,
-                            singlePreviewSession = singlePreviewSession
+                            mediaTrack = mediaTrack
                         )
                     ) {
                         if (isCurrent(sessionGeneration)) {
@@ -861,7 +859,7 @@ class RecommendationPreviewManager(
             }
             if (restoreOriginalQueue && !synchronized(lock) { previewPlaybackStarted }) {
                 restoreQueueContinuation(sessionGeneration)
-            } else if (!synchronized(lock) { deferredInitialPlayback } && !singlePreviewSession) {
+            } else if (!synchronized(lock) { deferredInitialPlayback }) {
                 appendQueueContinuation(sessionGeneration)
             }
             finishEmptyPreviewSession(sessionGeneration)
@@ -869,11 +867,12 @@ class RecommendationPreviewManager(
     }
 
     /**
-     * Handles Next while a recommendation preview is active. If the next
-     * preview is already queued, normal Media3 skipping is sufficient. If it
-     * is not, stop the current preview and wake the preparation loop so the
-     * next recommendation is resolved immediately instead of waiting for the
-     * rolling five-item window.
+     * Handles Next while a recommendation preview is active. In normal
+     * (non-Discover) mode the transport buttons navigate the surrounding
+     * physical library: Next leaves the preview session and plays the
+     * physical item after the captured seed, mirroring [skipToPrevious].
+     * Discover mode routes Next through the queued recommendations, waking
+     * the preparation loop when the next item is not prepared yet.
      */
     fun skipToNext(): Boolean {
         val controller = musicController ?: return false
@@ -889,6 +888,24 @@ class RecommendationPreviewManager(
         if (!active) return false
         if (!discoverMode) {
             if (currentKey == null) return false
+            val physicalContext = synchronized(lock) {
+                if (physicalQueueBeforePreview.isEmpty() ||
+                    physicalCurrentIndexBeforePreview !in physicalQueueBeforePreview.indices
+                ) {
+                    null
+                } else {
+                    PreviewPlaybackContext(
+                        tracks = physicalQueueBeforePreview,
+                        startIndex = (physicalCurrentIndexBeforePreview + 1)
+                            .coerceAtMost(physicalQueueBeforePreview.lastIndex)
+                    )
+                }
+            }
+            if (physicalContext != null) {
+                val moved = controller.play(physicalContext.tracks, physicalContext.startIndex)
+                if (moved) finishForPlaybackIntervention()
+                return moved
+            }
             val next = controller.getQueueAfterCurrent()?.firstOrNull() ?: return false
             if (synchronized(lock) { keyByUri.containsKey(next.uri) }) return false
             return controller.skipToNextPlaybackItem()
@@ -1192,8 +1209,7 @@ class RecommendationPreviewManager(
 
     private suspend fun enqueuePreparedTrack(
         sessionGeneration: Long,
-        mediaTrack: MediaTrack,
-        singlePreviewSession: Boolean = false
+        mediaTrack: MediaTrack
     ): Boolean {
         while (isCurrent(sessionGeneration)) {
             val controller = awaitController(sessionGeneration) ?: return false
@@ -1216,9 +1232,6 @@ class RecommendationPreviewManager(
                             afterUri = insertionAnchor,
                             insertBeforeCurrentIfAnchorMissing = true
                         )
-                    } else if (firstTrack && singlePreviewSession) {
-                        val continuation = synchronized(lock) { continuationTracks }
-                        controller.play(listOf(mediaTrack) + continuation)
                     } else if (firstTrack) {
                         controller.playSequential(mediaTrack)
                     } else if (discoverPreview && insertionAnchor != null) {
@@ -1389,18 +1402,15 @@ class RecommendationPreviewManager(
 
     private fun normalPlaybackSupersededPreview(controller: MusicController): Boolean =
         synchronized(lock) {
-            val newerPlayRequest = baselineController === controller &&
-                controller.playRequestRevision.value != baselinePlayRequestRevision
-            val currentNormalTrack = controller.currentTrack.value?.takeUnless { it.isTransient }
-            val waitingForDeferredHandoff = deferredInitialPlayback &&
-                !observedPreviewTrack && currentNormalTrack?.uri == initialNormalTrackUri
-            newerPlayRequest || if (waitingForDeferredHandoff) {
-                false
-            } else if (previewPlaybackStarted) {
-                currentNormalTrack != null
-            } else {
-                currentNormalTrack?.uri != initialNormalTrackUri
-            }
+            isNormalPlaybackSupersedingPreview(
+                newerPlayRequest = baselineController === controller &&
+                    controller.playRequestRevision.value != baselinePlayRequestRevision,
+                currentTrack = controller.currentTrack.value,
+                initialNormalTrackUri = initialNormalTrackUri,
+                deferredInitialPlayback = deferredInitialPlayback,
+                observedPreviewTrack = observedPreviewTrack,
+                previewPlaybackStarted = previewPlaybackStarted
+            )
         }
 
     private suspend fun recoverFromPlaybackError(
@@ -1685,6 +1695,34 @@ class RecommendationPreviewManager(
             preparedKeys: Set<String>,
             recommendations: List<LastfmTrack>
         ): Set<String> = preparedKeys.intersect(recommendations.map(::recommendationKey).toSet())
+
+        /**
+         * True when normal (physical) playback has taken over from a preview
+         * session. A transient recommendation still playing is part of the
+         * session itself and never counts as intervention, so a restarted
+         * preview session is not torn down before its first dispatch.
+         */
+        internal fun isNormalPlaybackSupersedingPreview(
+            newerPlayRequest: Boolean,
+            currentTrack: MediaTrack?,
+            initialNormalTrackUri: String?,
+            deferredInitialPlayback: Boolean,
+            observedPreviewTrack: Boolean,
+            previewPlaybackStarted: Boolean
+        ): Boolean {
+            val currentNormalTrack = currentTrack?.takeUnless { it.isTransient }
+            val waitingForDeferredHandoff = deferredInitialPlayback &&
+                !observedPreviewTrack && currentNormalTrack?.uri == initialNormalTrackUri
+            return newerPlayRequest || if (waitingForDeferredHandoff) {
+                false
+            } else if (previewPlaybackStarted) {
+                currentNormalTrack != null
+            } else if (currentTrack?.isTransient == true) {
+                false
+            } else {
+                currentNormalTrack?.uri != initialNormalTrackUri
+            }
+        }
 
         internal fun shouldDeferDiscoverHandoff(
             requested: Boolean,

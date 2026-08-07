@@ -197,6 +197,57 @@ class RecommendationPreviewManagerTest {
     }
 
     @Test
+    fun restartedPreview_withTransientCurrentTrack_isNotTreatedAsPlaybackIntervention() {
+        val seed = MediaTrack(uri = "file:///library/seed.m4a", isTransient = false)
+        val playingPreview = MediaTrack(
+            uri = "file:///cache/recommendation_previews/preview.m4a",
+            isTransient = true
+        )
+        val otherPhysical = MediaTrack(uri = "file:///library/other.m4a", isTransient = false)
+
+        assertThat(
+            RecommendationPreviewManager.isNormalPlaybackSupersedingPreview(
+                newerPlayRequest = false,
+                currentTrack = playingPreview,
+                initialNormalTrackUri = seed.uri,
+                deferredInitialPlayback = false,
+                observedPreviewTrack = false,
+                previewPlaybackStarted = false
+            )
+        ).isFalse()
+        assertThat(
+            RecommendationPreviewManager.isNormalPlaybackSupersedingPreview(
+                newerPlayRequest = false,
+                currentTrack = seed,
+                initialNormalTrackUri = seed.uri,
+                deferredInitialPlayback = false,
+                observedPreviewTrack = false,
+                previewPlaybackStarted = false
+            )
+        ).isFalse()
+        assertThat(
+            RecommendationPreviewManager.isNormalPlaybackSupersedingPreview(
+                newerPlayRequest = false,
+                currentTrack = otherPhysical,
+                initialNormalTrackUri = seed.uri,
+                deferredInitialPlayback = false,
+                observedPreviewTrack = false,
+                previewPlaybackStarted = false
+            )
+        ).isTrue()
+        assertThat(
+            RecommendationPreviewManager.isNormalPlaybackSupersedingPreview(
+                newerPlayRequest = true,
+                currentTrack = seed,
+                initialNormalTrackUri = seed.uri,
+                deferredInitialPlayback = false,
+                observedPreviewTrack = false,
+                previewPlaybackStarted = false
+            )
+        ).isTrue()
+    }
+
+    @Test
     fun discoverHandoff_defersOnlyForTheCurrentNormalSeed() {
         val normal = MediaTrack(uri = "seed", isTransient = false)
         val transient = normal.copy(isTransient = true)
