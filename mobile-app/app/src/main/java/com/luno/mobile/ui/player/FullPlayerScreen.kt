@@ -1,5 +1,6 @@
 package com.luno.mobile.ui.player
 
+import android.widget.Toast
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -22,10 +23,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
-import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Shuffle
@@ -61,12 +64,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.Player
 import com.luno.mobile.LunoApp
+import com.luno.mobile.data.db.entity.Playlist
 import com.luno.mobile.data.discovery.LastfmResult
 import com.luno.mobile.data.discovery.LastfmTrack
 import com.luno.mobile.playback.MediaTrack
 import com.luno.mobile.playback.MusicController
+import com.luno.mobile.playback.RecommendationPreviewManager
+import com.luno.mobile.playback.RecommendationPreviewState
+import com.luno.mobile.playback.RecommendationSaveOutcome
 import com.luno.mobile.ui.components.ArtworkImage
+import com.luno.mobile.ui.components.PlaylistPickerSheet
 import com.luno.mobile.ui.components.rememberArtworkColors
+import com.luno.mobile.ui.create.CreatePlaylistSheet
 import com.luno.mobile.ui.theme.AccentGreen
 import com.luno.mobile.ui.theme.Dimens
 import com.luno.mobile.ui.theme.MiniPlayerBorder
@@ -75,7 +84,9 @@ import com.luno.mobile.ui.theme.PrimaryText
 import com.luno.mobile.ui.theme.SecondaryText
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val FULL_PLAYER_RECOMMENDATION_LIMIT = 6
 
@@ -87,7 +98,7 @@ private sealed interface FullPlayerRecommendationState {
 }
 
 private fun recommendationKey(track: LastfmTrack): String =
-    "${track.artist.lowercase()}|${track.title.lowercase()}"
+    RecommendationPreviewManager.recommendationKey(track)
 
 /**
  * Full-screen player: large artwork (real embedded artwork with a
@@ -111,6 +122,7 @@ fun FullPlayerScreen(
     val app = context.applicationContext as LunoApp
     val apiKey by app.discoveryRepository.apiKey.collectAsState()
     val allTracks by app.libraryData.tracks.collectAsState()
+    val previewState by app.recommendationPreviewManager.state.collectAsState()
 
     var showQueueSheet by rememberSaveable { mutableStateOf(false) }
     var showActionSheet by rememberSaveable { mutableStateOf(false) }
@@ -120,12 +132,22 @@ fun FullPlayerScreen(
     }
     var fallbackArtwork by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var fallbackArtworkRequested by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var recommendationToSaveKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var recommendationForNewPlaylistKey by rememberSaveable { mutableStateOf<String?>(null) }
     val recommendationScope = rememberCoroutineScope()
 
     val artworkUri = currentTrack?.artworkUri
     val (gradientTop, gradientBottom) = rememberArtworkColors(artworkUri)
 
-    LaunchedEffect(currentTrack?.uri, apiKey, recommendationRefresh) {
+    val recommendationSeedUri = previewState.seedUri ?: currentTrack?.uri
+
+    LaunchedEffect(
+        if (previewState.active) previewState.seedUri else currentTrack?.uri,
+        apiKey,
+        recommendationRefresh,
+        previewState.active
+    ) {
+        if (previewState.active) return@LaunchedEffect
         val track = currentTrack
         if (track == null || apiKey.isNullOrBlank()) {
             recommendationState = FullPlayerRecommendationState.Idle
@@ -157,10 +179,15 @@ fun FullPlayerScreen(
         }
     }
 
-    val readyRecommendations = (recommendationState as? FullPlayerRecommendationState.Ready)
-        ?.takeIf { it.seedUri == currentTrack?.uri }
+    val fetchedRecommendations = (recommendationState as? FullPlayerRecommendationState.Ready)
+        ?.takeIf { it.seedUri == recommendationSeedUri }
         ?.tracks
         .orEmpty()
+    val readyRecommendations = if (previewState.active && previewState.recommendations.isNotEmpty()) {
+        previewState.recommendations
+    } else {
+        fetchedRecommendations
+    }
 
     fun requestFallbackArtwork(track: LastfmTrack) {
         val key = recommendationKey(track)
@@ -179,6 +206,41 @@ fun FullPlayerScreen(
         readyRecommendations
             .filter { it.imageUrl.isNullOrBlank() }
             .forEach(::requestFallbackArtwork)
+    }
+
+    fun saveRecommendation(recommendation: LastfmTrack, playlist: Playlist) {
+        val key = recommendationKey(recommendation)
+        if (key in previewState.savingKeys || key in previewState.queuedKeys ||
+            key in previewState.permanentKeys
+        ) {
+            return
+        }
+        val artwork = fallbackArtwork[key] ?: recommendation.imageUrl
+        app.appScope.launch {
+            val result = app.recommendationPreviewManager.saveToPlaylist(
+                recommendation = recommendation,
+                playlistId = playlist.id,
+                artworkUri = artwork
+            )
+            val message = result.fold(
+                onSuccess = { outcome ->
+                    when (outcome) {
+                        is RecommendationSaveOutcome.Saved ->
+                            "Saved ${recommendation.title} to ${playlist.name}"
+                        is RecommendationSaveOutcome.AddedToPlaylist ->
+                            "Added ${recommendation.title} to ${playlist.name}"
+                        is RecommendationSaveOutcome.Queued ->
+                            "Download queued for ${playlist.name}"
+                    }
+                },
+                onFailure = { error ->
+                    "Could not save ${recommendation.title}: ${error.message ?: "Try again"}"
+                }
+            )
+            withContext(Dispatchers.Main.immediate) {
+                Toast.makeText(context.applicationContext, message, Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     Box(
@@ -214,7 +276,7 @@ fun FullPlayerScreen(
                 Spacer(modifier = Modifier.weight(1f))
                 IconButton(onClick = { showQueueSheet = true }) {
                     Icon(
-                        imageVector = Icons.Filled.QueueMusic,
+                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                         contentDescription = "Queue",
                         tint = PrimaryText,
                         modifier = Modifier.size(Dimens.iconSize)
@@ -272,6 +334,14 @@ fun FullPlayerScreen(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            if (currentTrack?.isTransient == true) {
+                Text(
+                    text = "Temporary preview",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = AccentGreen,
+                    modifier = Modifier.padding(top = Dimens.paddingSmall)
+                )
+            }
 
             Spacer(modifier = Modifier.height(Dimens.paddingLarge))
 
@@ -436,12 +506,31 @@ fun FullPlayerScreen(
             }
             item(key = "recommendations", contentType = "recommendations") {
                 FullPlayerRecommendations(
-                    currentTrack = currentTrack,
+                    seedUri = recommendationSeedUri,
                     apiKeyConfigured = !apiKey.isNullOrBlank(),
                     state = recommendationState,
+                    recommendations = readyRecommendations,
+                    previewState = previewState,
+                    previewPlaying = isPlaying,
                     fallbackArtwork = fallbackArtwork,
                     onRefresh = { recommendationRefresh++ },
-                    onArtworkError = ::requestFallbackArtwork
+                    onArtworkError = ::requestFallbackArtwork,
+                    onPreview = { recommendation ->
+                        val index = readyRecommendations.indexOf(recommendation)
+                        val seedUri = recommendationSeedUri
+                        if (index >= 0 && seedUri != null) {
+                            app.recommendationPreviewManager.startPreview(
+                                seedUri = seedUri,
+                                recommendations = readyRecommendations,
+                                startIndex = index,
+                                artworkByKey = readyRecommendations.associate { item ->
+                                    val key = recommendationKey(item)
+                                    key to (fallbackArtwork[key] ?: item.imageUrl)
+                                }
+                            )
+                        }
+                    },
+                    onSave = { recommendationToSaveKey = recommendationKey(it) }
                 )
             }
         }
@@ -460,26 +549,58 @@ fun FullPlayerScreen(
             onDismiss = { showActionSheet = false }
         )
     }
+    recommendationToSaveKey
+        ?.let { key -> readyRecommendations.firstOrNull { recommendationKey(it) == key } }
+        ?.let { recommendation ->
+            PlaylistPickerSheet(
+                title = "Download to playlist",
+                onPick = { playlist ->
+                    recommendationToSaveKey = null
+                    saveRecommendation(recommendation, playlist)
+                },
+                onDismiss = { recommendationToSaveKey = null },
+                onCreateNew = {
+                    recommendationToSaveKey = null
+                    recommendationForNewPlaylistKey = recommendationKey(recommendation)
+                }
+            )
+        }
+    recommendationForNewPlaylistKey
+        ?.let { key -> readyRecommendations.firstOrNull { recommendationKey(it) == key } }
+        ?.let { recommendation ->
+            CreatePlaylistSheet(
+                onDismiss = { recommendationForNewPlaylistKey = null },
+                onCreated = { playlist ->
+                    recommendationForNewPlaylistKey = null
+                    saveRecommendation(recommendation, playlist)
+                }
+            )
+        }
 }
 
 @Composable
 private fun FullPlayerRecommendations(
-    currentTrack: MediaTrack?,
+    seedUri: String?,
     apiKeyConfigured: Boolean,
     state: FullPlayerRecommendationState,
+    recommendations: List<LastfmTrack>,
+    previewState: RecommendationPreviewState,
+    previewPlaying: Boolean,
     fallbackArtwork: Map<String, String>,
     onRefresh: () -> Unit,
-    onArtworkError: (LastfmTrack) -> Unit
+    onArtworkError: (LastfmTrack) -> Unit,
+    onPreview: (LastfmTrack) -> Unit,
+    onSave: (LastfmTrack) -> Unit
 ) {
-    val matchingState: FullPlayerRecommendationState = currentTrack?.let { track ->
+    val matchingState: FullPlayerRecommendationState = seedUri?.let { currentSeedUri ->
         when (val value = state) {
             FullPlayerRecommendationState.Idle -> value
             is FullPlayerRecommendationState.Loading ->
-                value.takeIf { it.seedUri == track.uri } ?: FullPlayerRecommendationState.Idle
+                value.takeIf { it.seedUri == currentSeedUri } ?: FullPlayerRecommendationState.Idle
             is FullPlayerRecommendationState.Ready ->
-                value.takeIf { it.seedUri == track.uri } ?: FullPlayerRecommendationState.Idle
+                value.takeIf { it.seedUri == currentSeedUri } ?: FullPlayerRecommendationState.Idle
             is FullPlayerRecommendationState.Error ->
-                value.takeIf { it.seedUri == track.uri } ?: FullPlayerRecommendationState.Idle
+                value.takeIf { it.seedUri == currentSeedUri } ?: FullPlayerRecommendationState.Idle
         }
     } ?: FullPlayerRecommendationState.Idle
 
@@ -498,7 +619,7 @@ private fun FullPlayerRecommendations(
                 color = PrimaryText,
                 modifier = Modifier.weight(1f)
             )
-            if (apiKeyConfigured && currentTrack != null) {
+            if (apiKeyConfigured && seedUri != null && !previewState.active) {
                 IconButton(onClick = onRefresh) {
                     Icon(
                         imageVector = Icons.Filled.Refresh,
@@ -510,12 +631,14 @@ private fun FullPlayerRecommendations(
         }
 
         when {
-            currentTrack == null -> RecommendationMessage("Play a song to see recommendations")
+            seedUri == null -> RecommendationMessage("Play a song to see recommendations")
             !apiKeyConfigured -> RecommendationMessage(
                 "Add a Last.fm API key in Settings to see recommendations"
             )
-            matchingState is FullPlayerRecommendationState.Loading ||
-                matchingState is FullPlayerRecommendationState.Idle -> {
+            !previewState.active && (
+                matchingState is FullPlayerRecommendationState.Loading ||
+                    matchingState is FullPlayerRecommendationState.Idle
+                ) -> {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -535,7 +658,7 @@ private fun FullPlayerRecommendations(
                     )
                 }
             }
-            matchingState is FullPlayerRecommendationState.Error -> {
+            !previewState.active && matchingState is FullPlayerRecommendationState.Error -> {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -551,24 +674,40 @@ private fun FullPlayerRecommendations(
                     }
                 }
             }
-            matchingState is FullPlayerRecommendationState.Ready -> {
-                if (matchingState.tracks.isEmpty()) {
+            else -> {
+                if (recommendations.isEmpty()) {
                     RecommendationMessage("No recommendations available for this song")
                 } else {
                     Text(
-                        text = "${matchingState.tracks.size} similar songs",
+                        text = if (previewState.active) {
+                            "Temporary preview queue - tap a song to restart from there"
+                        } else {
+                            "${recommendations.size} similar songs - tap to preview"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = SecondaryText,
                         modifier = Modifier.padding(bottom = Dimens.paddingSmall)
                     )
-                    matchingState.tracks.forEach { recommendation ->
+                    recommendations.forEach { recommendation ->
+                        val key = recommendationKey(recommendation)
                         FullPlayerRecommendationRow(
                             recommendation = recommendation,
                             artworkUri = fallbackArtwork[recommendationKey(recommendation)]
                                 ?: recommendation.imageUrl,
+                            resolving = key in previewState.resolvingKeys,
+                            preparing = key in previewState.preparingKeys,
+                            playing = previewPlaying && key == previewState.currentKey,
+                            ready = key in previewState.readyKeys,
+                            saving = key in previewState.savingKeys,
+                            queued = key in previewState.queuedKeys,
+                            permanent = key in previewState.permanentKeys,
+                            failure = previewState.failures[key],
+                            saveFailure = previewState.saveFailures[key],
                             onArtworkError = {
                                 onArtworkError(recommendation)
-                            }
+                            },
+                            onPreview = { onPreview(recommendation) },
+                            onSave = { onSave(recommendation) }
                         )
                     }
                 }
@@ -581,11 +720,24 @@ private fun FullPlayerRecommendations(
 private fun FullPlayerRecommendationRow(
     recommendation: LastfmTrack,
     artworkUri: String?,
-    onArtworkError: () -> Unit
+    resolving: Boolean,
+    preparing: Boolean,
+    playing: Boolean,
+    ready: Boolean,
+    saving: Boolean,
+    queued: Boolean,
+    permanent: Boolean,
+    failure: String?,
+    saveFailure: String?,
+    onArtworkError: () -> Unit,
+    onPreview: () -> Unit,
+    onSave: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(Dimens.cornerMedium))
+            .clickable(onClick = onPreview)
             .padding(vertical = Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -603,18 +755,64 @@ private fun FullPlayerRecommendationRow(
             Text(
                 text = recommendation.title,
                 style = MaterialTheme.typography.titleSmall,
-                color = PrimaryText,
+                color = if (playing) AccentGreen else PrimaryText,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "${recommendation.artist} - " +
-                    "${(recommendation.match * 100).roundToInt()}% match",
+                text = when {
+                    saving -> "Saving to playlist..."
+                    queued -> "Download queued for playlist"
+                    permanent -> "Saved to library"
+                    saveFailure != null -> "Save failed: $saveFailure"
+                    playing -> "Previewing now"
+                    failure != null -> failure
+                    resolving -> "Finding a playable source..."
+                    preparing -> "Downloading temporary preview..."
+                    ready -> "Ready in temporary queue"
+                    else -> "${recommendation.artist} - " +
+                        "${(recommendation.match * 100).roundToInt()}% match"
+                },
                 style = MaterialTheme.typography.bodySmall,
-                color = SecondaryText,
+                color = if (saveFailure != null ||
+                    (failure != null && !saving && !queued && !permanent)
+                ) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    SecondaryText
+                },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+        if (resolving || preparing) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(Dimens.iconSizeSmall),
+                color = AccentGreen,
+                strokeWidth = 2.dp
+            )
+        }
+        IconButton(
+            onClick = onSave,
+            enabled = !saving && !queued && !permanent
+        ) {
+            if (saving) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(Dimens.iconSizeSmall),
+                    color = AccentGreen,
+                    strokeWidth = 2.dp
+                )
+            } else {
+                Icon(
+                    imageVector = if (permanent) {
+                        Icons.Filled.CheckCircle
+                    } else {
+                        Icons.AutoMirrored.Filled.PlaylistAdd
+                    },
+                    contentDescription = "Download ${recommendation.title} to a playlist",
+                    tint = AccentGreen
+                )
+            }
         }
     }
 }

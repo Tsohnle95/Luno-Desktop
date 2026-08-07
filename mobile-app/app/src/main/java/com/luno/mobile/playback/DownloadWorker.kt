@@ -1,7 +1,10 @@
 package com.luno.mobile.playback
 
 import android.content.Context
+import android.net.Uri
+import android.provider.DocumentsContract
 import android.util.Log
+import androidx.room.withTransaction
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
@@ -19,7 +22,9 @@ import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 
 class DownloadWorker(
     private val context: Context,
@@ -55,6 +60,9 @@ class DownloadWorker(
         val jobDao = db.downloadJobDao()
         val trackDao = db.trackDao()
         val playlistDao = db.playlistDao()
+        var downloadedFile: File? = null
+        var destinationUri: Uri? = null
+        var artworkDestinationUri: Uri? = null
 
         val job = jobDao.getDownload(jobId) ?: run {
             Log.e(TAG, "doWork: job $jobId not found")
@@ -111,10 +119,15 @@ class DownloadWorker(
             val downloadDir = File(context.filesDir, KEY_DOWNLOAD_DIR)
             downloadDir.mkdirs()
 
-            val safeFileName = "${job.artist} - ${job.title}"
+            val safeFileBase = "${job.artist} - ${job.title}"
                 .replace(Regex("[^a-zA-Z0-9_\\- ]"), "")
                 .trim()
-                .ifBlank { "download_$jobId" }
+                .take(120)
+                .ifBlank { "download" }
+            val fileToken = UUID.nameUUIDFromBytes(
+                "$jobId|${job.addedAt}|${job.sourceUrl}".toByteArray()
+            )
+            val safeFileName = "${safeFileBase}_${jobId}_$fileToken"
 
             val contentType = body.contentType()?.toString() ?: ""
             val ext = when {
@@ -125,6 +138,7 @@ class DownloadWorker(
                 else -> ".audio"
             }
             val file = File(downloadDir, "$safeFileName$ext")
+            downloadedFile = file
             Log.d(TAG, "Saving as: $ext (from contentType: $contentType)")
 
             var totalBytes = 0L
@@ -137,7 +151,7 @@ class DownloadWorker(
                         Log.d(TAG, "Cancelled job $jobId")
                         file.delete()
                         response.close()
-                        jobDao.markFailed(jobId, DownloadState.FAILED, "Cancelled")
+                        jobDao.markFailed(jobId, DownloadState.CANCELLED, "Cancelled")
                         return Result.failure()
                     }
                     outputStream.write(buffer, 0, bytesRead)
@@ -152,17 +166,17 @@ class DownloadWorker(
             response.close()
             Log.d(TAG, "Downloaded $totalBytes bytes to ${file.absolutePath}")
 
+            val retriever = android.media.MediaMetadataRetriever()
             val durationMs = try {
-                val retriever = android.media.MediaMetadataRetriever()
                 retriever.setDataSource(file.absolutePath)
-                val dur = retriever.extractMetadata(
+                retriever.extractMetadata(
                     android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
                 )?.toLongOrNull() ?: 0L
-                retriever.release()
-                dur
             } catch (e: Exception) {
                 Log.w(TAG, "Duration extraction failed", e)
                 0L
+            } finally {
+                runCatching { retriever.release() }
             }
 
             // YouTube audio streams carry no embedded album art, so fall
@@ -178,23 +192,27 @@ class DownloadWorker(
                 }
             }
 
-            val destinationUri = MusicFolderRepository(context).copyFileToSelectedFolder(
+            destinationUri = MusicFolderRepository(context).copyFileToSelectedFolder(
                 sourceFile = file,
                 displayName = "$safeFileName$ext",
-                mimeType = contentType.substringBefore(';').ifBlank { mimeTypeForExtension(ext) }
+                mimeType = contentType.substringBefore(';').ifBlank { mimeTypeForExtension(ext) },
+                reuseExisting = false,
+                overwriteExisting = true
             )
             if (destinationUri != null && albumArtPath != null) {
                 val artworkFile = File(albumArtPath)
                 if (artworkFile.isFile) {
-                    runCatching {
+                    artworkDestinationUri = runCatching {
                         MusicFolderRepository(context).copyFileToSelectedFolder(
                             sourceFile = artworkFile,
                             displayName = "$safeFileName.jpg",
-                            mimeType = "image/jpeg"
+                            mimeType = "image/jpeg",
+                            reuseExisting = false,
+                            overwriteExisting = true
                         )
                     }.onFailure { error ->
                         Log.w(TAG, "Could not sync artwork for download $jobId", error)
-                    }
+                    }.getOrNull()
                 }
             }
             val trackUri = destinationUri?.toString() ?: file.toURI().toString()
@@ -207,9 +225,6 @@ class DownloadWorker(
                 albumArtPath = albumArtPath,
                 addedAt = System.currentTimeMillis()
             )
-            trackDao.insertTrack(track)
-            if (destinationUri != null) file.delete()
-
             // Every download belongs to a playlist. Legacy jobs created before
             // Unsorted routing get repaired here before completion.
             val targetPlaylistIds = buildList {
@@ -221,24 +236,65 @@ class DownloadWorker(
             }.ifEmpty {
                 listOf(ensureUnsortedPlaylistId(playlistDao))
             }
-            targetPlaylistIds.forEach { playlistId ->
-                val sortOrder = playlistDao.maxSortOrder(playlistId) + 1
-                playlistDao.addTrackToPlaylist(
-                    com.luno.mobile.data.db.entity.PlaylistTrack(
-                        playlistId = playlistId,
-                        trackUri = track.uri,
-                        sortOrder = sortOrder
+            db.withTransaction {
+                trackDao.insertTrack(track)
+                targetPlaylistIds.forEach { playlistId ->
+                    val sortOrder = playlistDao.maxSortOrder(playlistId) + 1
+                    playlistDao.addTrackToPlaylist(
+                        com.luno.mobile.data.db.entity.PlaylistTrack(
+                            playlistId = playlistId,
+                            trackUri = track.uri,
+                            sortOrder = sortOrder
+                        )
                     )
+                }
+                jobDao.markCompleted(
+                    jobId,
+                    DownloadState.COMPLETED,
+                    track.uri,
+                    System.currentTimeMillis()
                 )
             }
-
-            jobDao.markCompleted(jobId, DownloadState.COMPLETED, track.uri, System.currentTimeMillis())
+            if (destinationUri != null) file.delete()
             Log.d(TAG, "Job $jobId complete")
             return Result.success()
         } catch (e: IOException) {
             Log.e(TAG, "Download failed for job $jobId", e)
-            jobDao.markFailed(jobId, DownloadState.FAILED, "${e::class.simpleName}: ${e.message}")
-            return if (runAttemptCount < 3) Result.retry() else Result.failure()
+            cleanupFailedOutput(downloadedFile, destinationUri, artworkDestinationUri)
+            return if (runAttemptCount < 3) {
+                jobDao.updateProgress(jobId, DownloadState.QUEUED, 0)
+                Result.retry()
+            } else {
+                jobDao.markFailed(
+                    jobId,
+                    DownloadState.FAILED,
+                    "${e::class.simpleName}: ${e.message}"
+                )
+                Result.failure()
+            }
+        } catch (cancelled: CancellationException) {
+            cleanupFailedOutput(downloadedFile, destinationUri, artworkDestinationUri)
+            throw cancelled
+        } catch (error: Exception) {
+            Log.e(TAG, "Download finalization failed for job $jobId", error)
+            cleanupFailedOutput(downloadedFile, destinationUri, artworkDestinationUri)
+            jobDao.markFailed(
+                jobId,
+                DownloadState.FAILED,
+                "${error::class.simpleName}: ${error.message}"
+            )
+            return Result.failure()
+        }
+    }
+
+    private fun cleanupFailedOutput(
+        localFile: File?,
+        audioUri: Uri?,
+        artworkUri: Uri?
+    ) {
+        localFile?.delete()
+        listOfNotNull(artworkUri, audioUri).forEach { uri ->
+            runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
         }
     }
 

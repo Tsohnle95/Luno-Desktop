@@ -137,12 +137,25 @@ object WebSearchService {
         "https://iv.nboeck.de",
     )
 
-    fun getAudioStreamUrl(videoId: String): ExtractionResult<AudioStreamInfo> {
+    fun getAudioStreamUrl(
+        videoId: String,
+        previewMode: Boolean = false
+    ): ExtractionResult<AudioStreamInfo> {
         val newPipeResult = newpipeGetAudioUrl(videoId)
         if (newPipeResult is ExtractionResult.Success) return newPipeResult
 
-        val invidiousResult = invidiousGetAudioUrl(videoId)
+        val invidiousResult = invidiousGetAudioUrl(
+            videoId = videoId,
+            maxInstances = if (previewMode) 1 else INVIDIOUS_PROXIES.size
+        )
         if (invidiousResult is ExtractionResult.Success) return invidiousResult
+
+        if (previewMode) {
+            return ExtractionResult.Error(
+                message = "Could not quickly prepare this song. Tap to retry.",
+                details = "NewPipe and the first preview fallback failed"
+            )
+        }
 
         Log.w(TAG, "Invidious failed for $videoId — trying InnerTube")
 
@@ -154,8 +167,11 @@ object WebSearchService {
         return innertubeGetAudioUrl(videoId)
     }
 
-    private fun invidiousGetAudioUrl(videoId: String): ExtractionResult<AudioStreamInfo> {
-        for (instance in INVIDIOUS_PROXIES) {
+    private fun invidiousGetAudioUrl(
+        videoId: String,
+        maxInstances: Int = INVIDIOUS_PROXIES.size
+    ): ExtractionResult<AudioStreamInfo> {
+        for (instance in INVIDIOUS_PROXIES.take(maxInstances.coerceAtLeast(0))) {
             try {
                 val json = fetchInvidiousJson(instance, videoId)
                     ?: fetchInvidiousJsonFromEmbed(instance, videoId)

@@ -9,7 +9,9 @@ import androidx.work.testing.WorkManagerTestInitHelper
 import com.luno.mobile.data.db.AppDatabase
 import com.luno.mobile.data.db.entity.DownloadJob
 import com.luno.mobile.data.db.entity.DownloadState
+import com.luno.mobile.data.db.entity.Playlist
 import com.luno.mobile.data.db.entity.Track
+import com.luno.mobile.playback.DownloadWorker
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -18,6 +20,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 @Config(manifest = Config.NONE, sdk = [34])
@@ -35,13 +38,18 @@ class DownloadRepositoryTest {
         repository = DownloadRepository(
             downloadJobDao = database.downloadJobDao(),
             context = context,
-            playlistDao = database.playlistDao()
+            playlistDao = database.playlistDao(),
+            trackDao = database.trackDao(),
+            database = database
         )
+        context.getSharedPreferences("music_folder", Context.MODE_PRIVATE).edit().clear().commit()
     }
 
     @After
     fun tearDown() {
         database.close()
+        File(context.cacheDir, DownloadRepository.PREVIEW_DOWNLOAD_DIR).deleteRecursively()
+        File(context.filesDir, DownloadWorker.KEY_DOWNLOAD_DIR).deleteRecursively()
     }
 
     @Test
@@ -168,5 +176,115 @@ class DownloadRepositoryTest {
     fun getDownload_returnsNullForMissing() = runBlocking {
         val job = repository.getDownload(999L)
         assertThat(job).isNull()
+    }
+
+    @Test
+    fun promotePreview_copiesCacheFileIntoChosenPlaylistWithoutUnsorted() = runBlocking {
+        val playlistId = database.playlistDao().insertPlaylist(Playlist(name = "Preview saves"))
+        val previewFile = File(
+            context.cacheDir,
+            "${DownloadRepository.PREVIEW_DOWNLOAD_DIR}/preview.m4a"
+        ).apply {
+            parentFile?.mkdirs()
+            writeBytes(byteArrayOf(1, 2, 3, 4))
+        }
+
+        val track = repository.promotePreview(
+            previewFile = previewFile,
+            sourceUrl = "https://example.com/signed-audio",
+            title = "Temporary Song",
+            artist = "Preview Artist",
+            playlistId = playlistId
+        )
+
+        assertThat(track.uri).startsWith("file:")
+        assertThat(File(java.net.URI(track.uri)).isFile).isTrue()
+        assertThat(database.trackDao().getTrack(track.uri)).isEqualTo(track)
+        assertThat(
+            database.playlistDao().getPlaylistWithTracks(playlistId)!!.tracks.map { it.uri }
+        ).containsExactly(track.uri)
+        assertThat(
+            database.playlistDao().getPlaylistByName(DownloadRepository.UNSORTED_PLAYLIST_NAME)
+        ).isNull()
+        val completed = database.downloadJobDao().getCompletedDownloadsOnce().single()
+        assertThat(completed.localUri).isEqualTo(track.uri)
+        assertThat(completed.playlistId).isEqualTo(playlistId)
+    }
+
+    @Test
+    fun promotePreview_usesDistinctUrisWhenNamesSanitizeToSameValue() = runBlocking {
+        val firstPlaylistId = database.playlistDao().insertPlaylist(Playlist(name = "First"))
+        val secondPlaylistId = database.playlistDao().insertPlaylist(Playlist(name = "Second"))
+        val previewRoot = File(context.cacheDir, DownloadRepository.PREVIEW_DOWNLOAD_DIR)
+            .apply { mkdirs() }
+        val firstPreview = File(previewRoot, "first.m4a").apply {
+            writeBytes(byteArrayOf(1, 2, 3))
+        }
+        val secondPreview = File(previewRoot, "second.m4a").apply {
+            writeBytes(byteArrayOf(4, 5, 6))
+        }
+
+        val first = repository.promotePreview(
+            previewFile = firstPreview,
+            sourceUrl = "https://example.com/first",
+            title = "東京",
+            artist = "音楽",
+            playlistId = firstPlaylistId
+        )
+        val second = repository.promotePreview(
+            previewFile = secondPreview,
+            sourceUrl = "https://example.com/second",
+            title = "中文",
+            artist = "歌曲",
+            playlistId = secondPlaylistId
+        )
+
+        assertThat(first.uri).isNotEqualTo(second.uri)
+        assertThat(
+            database.playlistDao().getPlaylistWithTracks(firstPlaylistId)!!.tracks.map { it.uri }
+        ).containsExactly(first.uri)
+        assertThat(
+            database.playlistDao().getPlaylistWithTracks(secondPlaylistId)!!.tracks.map { it.uri }
+        ).containsExactly(second.uri)
+        Unit
+    }
+
+    @Test
+    fun promotePreview_rollsBackDatabaseAndDurableFileWhenMembershipFails() = runBlocking {
+        val playlistId = database.playlistDao().insertPlaylist(Playlist(name = "Rollback"))
+        database.openHelper.writableDatabase.execSQL(
+            """
+            CREATE TRIGGER fail_preview_membership
+            BEFORE INSERT ON playlist_tracks
+            BEGIN
+                SELECT RAISE(ABORT, 'forced membership failure');
+            END
+            """.trimIndent()
+        )
+        val previewFile = File(
+            context.cacheDir,
+            "${DownloadRepository.PREVIEW_DOWNLOAD_DIR}/rollback.m4a"
+        ).apply {
+            parentFile?.mkdirs()
+            writeBytes(byteArrayOf(1, 2, 3, 4))
+        }
+
+        val result = runCatching {
+            repository.promotePreview(
+                previewFile = previewFile,
+                sourceUrl = "https://example.com/rollback",
+                title = "Rollback Song",
+                artist = "Preview Artist",
+                playlistId = playlistId
+            )
+        }
+
+        assertThat(result.isFailure).isTrue()
+        assertThat(database.trackDao().getAllTracksOnce()).isEmpty()
+        assertThat(database.downloadJobDao().getCompletedDownloadsOnce()).isEmpty()
+        assertThat(
+            File(context.filesDir, DownloadWorker.KEY_DOWNLOAD_DIR).listFiles().orEmpty()
+        ).isEmpty()
+        assertThat(previewFile.isFile).isTrue()
     }
 }

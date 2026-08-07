@@ -27,7 +27,9 @@ class MusicFolderRepository(context: Context) {
     fun copyFileToSelectedFolder(
         sourceFile: File,
         displayName: String,
-        mimeType: String
+        mimeType: String,
+        reuseExisting: Boolean = true,
+        overwriteExisting: Boolean = false
     ): Uri? {
         val savedTreeUri = loadTreeUri()?.takeUnless { it.isBlank() } ?: return null
         val treeUri = Uri.parse(savedTreeUri)
@@ -45,10 +47,23 @@ class MusicFolderRepository(context: Context) {
             throw IOException("The selected music folder is no longer available", e)
         }
 
-        // Do not create a second document when the selected folder already
-        // contains this downloaded filename. Reuse its URI so the library
-        // points at the existing destination file.
-        findChildByName(treeUri, rootDocumentId, displayName)?.let { return it }
+        // Imports reuse matching documents; generated retries replace only
+        // their app-owned destination, while preview promotion rejects collisions.
+        findChildByName(treeUri, rootDocumentId, displayName)?.let { existing ->
+            if (overwriteExisting) {
+                try {
+                    if (!DocumentsContract.deleteDocument(context.contentResolver, existing)) {
+                        throw IOException("Could not replace the existing download")
+                    }
+                } catch (error: Exception) {
+                    if (error is IOException) throw error
+                    throw IOException("Could not replace the existing download", error)
+                }
+            } else {
+                if (reuseExisting) return existing
+                throw IOException("A file named $displayName already exists in the selected folder")
+            }
+        }
 
         var destinationUri: Uri? = null
         try {

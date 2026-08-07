@@ -75,6 +75,31 @@ class MusicControllerTest {
     }
 
     @Test
+    fun `playSequential disables shuffle and repeat for a finite preview`() {
+        val preview = MediaTrack(uri = "file:///cache/preview.m4a", isTransient = true)
+
+        controller.playSequential(preview)
+
+        val request = controller.pendingRequest
+        assertThat(request).isNotNull()
+        assertThat(request!!.items).containsExactly(preview)
+        assertThat(request.shuffle).isFalse()
+        assertThat(request.repeatMode).isEqualTo(Player.REPEAT_MODE_OFF)
+    }
+
+    @Test
+    fun `play request revision tracks newer playback choices before connection`() {
+        assertThat(controller.playRequestRevision.value).isEqualTo(0L)
+
+        controller.playSequential(MediaTrack(uri = "file:///cache/preview.m4a", isTransient = true))
+        controller.play(track("normal-choice"))
+        controller.play(emptyList<MediaTrack>())
+
+        assertThat(controller.playRequestRevision.value).isEqualTo(2L)
+        assertThat(controller.pendingRequest!!.items.single().uri).isEqualTo("normal-choice")
+    }
+
+    @Test
     fun `random current replacement maps every eligible item exactly once`() {
         val mapped = (0 until 4).map { offset ->
             randomIndexExcludingCurrent(
@@ -276,6 +301,21 @@ class MusicControllerTest {
         ).isEqualTo(42L)
     }
 
+    @Test
+    fun `temporary preview marker is carried in MediaItem metadata`() {
+        val item = controller.buildMediaItem(
+            MediaTrack(
+                uri = "file:///cache/recommendation_previews/preview.m4a",
+                title = "Preview",
+                isTransient = true
+            )
+        )
+
+        assertThat(
+            item.mediaMetadata.extras?.getBoolean(MusicController.METADATA_TRANSIENT)
+        ).isTrue()
+    }
+
     // ── State flows ──────────────────────────────────────────────────────
 
     @Test
@@ -328,6 +368,12 @@ class MusicControllerTest {
     @Test
     fun `addToQueue does not throw before connection`() {
         controller.addToQueue(track("append"))
+    }
+
+    @Test
+    fun `temporary context mutations report rejection before connection`() {
+        assertThat(controller.appendToPlaybackContext(track("append"))).isFalse()
+        assertThat(controller.removeCurrentFromPlaybackContext()).isFalse()
     }
 
     @Test

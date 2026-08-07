@@ -66,7 +66,11 @@ class MusicController @JvmOverloads constructor(
     class ConnectionException(message: String) : Exception(message)
 
     /** Carries a playback error message safe for user-facing display. */
-    data class PlaybackError(val message: String)
+    data class PlaybackError(
+        val message: String,
+        val isMediaItemFailure: Boolean = false,
+        val mediaUri: String? = null
+    )
 
     // ── State flows — exposed to UI ───────────────────────────────────────
 
@@ -93,6 +97,9 @@ class MusicController @JvmOverloads constructor(
 
     private val _queueRevision = MutableStateFlow(0L)
     val queueRevision: StateFlow<Long> = _queueRevision.asStateFlow()
+
+    private val _playRequestRevision = MutableStateFlow(0L)
+    internal val playRequestRevision: StateFlow<Long> = _playRequestRevision.asStateFlow()
 
     /** Most recent first (max 100), restored from app-private storage at startup. */
     private val _recentlyPlayed = MutableStateFlow(recentlyPlayedStore.load())
@@ -172,18 +179,21 @@ class MusicController @JvmOverloads constructor(
                         artist = it.artist?.toString() ?: "Unknown",
                         album = it.albumTitle?.toString() ?: "",
                         durationMs = metadataDuration(it, sessionDuration),
-                        artworkUri = it.artworkUri?.toString()
+                        artworkUri = it.artworkUri?.toString(),
+                        isTransient = it.extras?.getBoolean(METADATA_TRANSIENT) == true
                     )
                 }
                 _hasActiveItem.value = mediaItem != null
                 _duration.value = _currentTrack.value?.durationMs ?: 0L
                 _progress.value = 0L
                 _currentTrack.value?.let { track ->
-                    recordRecentlyPlayed(track)
-                    val playlistId = mediaItem?.mediaMetadata?.extras
-                        ?.takeIf { it.containsKey(METADATA_PLAYLIST_ID) }
-                        ?.getLong(METADATA_PLAYLIST_ID)
-                    runCatching { onTrackPlayed(track.uri, playlistId) }
+                    if (!track.isTransient) {
+                        recordRecentlyPlayed(track)
+                        val playlistId = mediaItem?.mediaMetadata?.extras
+                            ?.takeIf { it.containsKey(METADATA_PLAYLIST_ID) }
+                            ?.getLong(METADATA_PLAYLIST_ID)
+                        runCatching { onTrackPlayed(track.uri, playlistId) }
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "listener onMediaItemTransition failed: ${e.message}")
@@ -210,7 +220,11 @@ class MusicController @JvmOverloads constructor(
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
             _playbackError.tryEmit(
-                PlaybackError(sanitizeErrorMessage(error.message ?: "Playback error"))
+                PlaybackError(
+                    message = sanitizeErrorMessage(error.message ?: "Playback error"),
+                    isMediaItemFailure = true,
+                    mediaUri = _currentTrack.value?.uri
+                )
             )
         }
     }
@@ -306,7 +320,21 @@ class MusicController @JvmOverloads constructor(
         return dispatchPlayback(request)
     }
 
+    /** Replaces playback with a finite, ordered context (shuffle/repeat off). */
+    fun playSequential(track: MediaTrack): Boolean {
+        if (released) return true
+        return dispatchPlayback(
+            PlaybackRequest(
+                items = listOf(track),
+                startIndex = 0,
+                shuffle = false,
+                repeatMode = Player.REPEAT_MODE_OFF
+            )
+        )
+    }
+
     private fun dispatchPlayback(request: PlaybackRequest): Boolean {
+        _playRequestRevision.value = _playRequestRevision.value + 1L
         val ctrl = controller
         if (ctrl != null) {
             return playOnController(ctrl, request)
@@ -419,6 +447,21 @@ class MusicController @JvmOverloads constructor(
         }
     }
 
+    /** Sets one repeat mode explicitly; used by finite temporary queues. */
+    fun setRepeatMode(mode: Int) {
+        if (released) return
+        val acceptedMode = when (mode) {
+            Player.REPEAT_MODE_ONE, Player.REPEAT_MODE_ALL -> mode
+            else -> Player.REPEAT_MODE_OFF
+        }
+        safePlayerCommand("repeatMode") {
+            controller?.let { ctrl ->
+                ctrl.repeatMode = acceptedMode
+                _repeatMode.value = acceptedMode
+            }
+        }
+    }
+
     /**
      * Snapshot of the current playback queue (in playback order) derived from
      * the connected player's media items.  Empty before connection — and
@@ -481,6 +524,99 @@ class MusicController @JvmOverloads constructor(
             manualQueueUris.add(track.uri)
             bumpQueueRevision()
         }
+    }
+
+    /**
+     * Appends to the end of the current playback context without marking the
+     * item as a manually queued "Up Next" track. If the previous last item
+     * already ended while this item was downloading, playback resumes here.
+     */
+    fun appendToPlaybackContext(track: MediaTrack): Boolean {
+        if (released) return false
+        val ctrl = controller ?: return false
+        var appended = false
+        safePlayerCommand("appendPlaybackContext") {
+            val resumePlayback = ctrl.mediaItemCount == 0 ||
+                ctrl.playbackState == Player.STATE_ENDED ||
+                ctrl.playbackState == Player.STATE_IDLE
+            ctrl.addMediaItem(buildMediaItem(track, enrichArtwork = true))
+            if (resumePlayback) {
+                ctrl.seekToDefaultPosition(ctrl.mediaItemCount - 1)
+                ctrl.prepare()
+                ctrl.play()
+            }
+            bumpQueueRevision()
+            appended = true
+        }
+        return appended
+    }
+
+    /** Removes a failed current item and resumes the next queued item, if any. */
+    fun removeCurrentFromPlaybackContext(): Boolean {
+        if (released) return false
+        val ctrl = controller ?: return false
+        var removed = false
+        safePlayerCommand("removeCurrentPlaybackItem") {
+            val currentIndex = ctrl.currentMediaItemIndex
+            if (currentIndex == C.INDEX_UNSET || currentIndex !in 0 until ctrl.mediaItemCount) {
+                return@safePlayerCommand
+            }
+            val hasFollowingItem = currentIndex < ctrl.mediaItemCount - 1
+            ctrl.removeMediaItems(0, currentIndex + 1)
+            if (hasFollowingItem && ctrl.mediaItemCount > 0 && !ctrl.isPlaying) {
+                ctrl.prepare()
+                ctrl.play()
+            }
+            bumpQueueRevision()
+            removed = true
+        }
+        return removed
+    }
+
+    /** Removes matching stale temporary items without disturbing the user's normal queue. */
+    fun removeTransientItemsFromPlaybackContext(uris: Set<String>): Boolean {
+        if (released) return false
+        if (uris.isEmpty()) return false
+        val ctrl = controller ?: return false
+        var removed = false
+        safePlayerCommand("removeTransientPlaybackItems") {
+            val transientItems = (ctrl.mediaItemCount - 1 downTo 0).mapNotNull { index ->
+                val item = ctrl.getMediaItemAt(index)
+                if (item.mediaId in uris &&
+                    item.mediaMetadata.extras?.getBoolean(METADATA_TRANSIENT) == true
+                ) {
+                    index to item.mediaId
+                } else {
+                    null
+                }
+            }
+            if (transientItems.isEmpty()) return@safePlayerCommand
+            transientItems.forEach { (index, _) -> ctrl.removeMediaItem(index) }
+            manualQueueUris.removeAll(transientItems.map { it.second }.toSet())
+            bumpQueueRevision()
+            removed = true
+        }
+        return removed
+    }
+
+    /** Stops playback and removes every queued item, including stale temp URIs. */
+    fun clearPlaybackQueue() {
+        if (released) return
+        pendingRequest = null
+        safePlayerCommand("clearPlaybackQueue") {
+            controller?.let { ctrl ->
+                ctrl.stop()
+                ctrl.clearMediaItems()
+            }
+            manualQueueUris.clear()
+            _isPlaying.value = false
+            _hasActiveItem.value = false
+            _currentTrack.value = null
+            _progress.value = 0L
+            _duration.value = 0L
+            bumpQueueRevision()
+        }
+        stopProgressUpdates()
     }
 
     /**
@@ -570,6 +706,7 @@ class MusicController @JvmOverloads constructor(
         manualQueueUris.clear()
         safePlayerCommand("play") {
             request.shuffle?.let { ctrl.shuffleModeEnabled = it }
+            request.repeatMode?.let { ctrl.repeatMode = it }
             // Atomic queue replacement: a single `setMediaItems` call (with
             // position reset) replaces the old stop+clear+add sequence.  A
             // burst of separate timeline commands leaves MediaController's
@@ -581,6 +718,7 @@ class MusicController @JvmOverloads constructor(
             ctrl.seekToDefaultPosition(request.startIndex.coerceIn(0, items.lastIndex))
             ctrl.play()
             _shuffleEnabled.value = ctrl.shuffleModeEnabled
+            _repeatMode.value = ctrl.repeatMode
             bumpQueueRevision()
         }
         startProgressUpdates()
@@ -629,12 +767,23 @@ class MusicController @JvmOverloads constructor(
                 artist = meta.artist?.toString() ?: "Unknown",
                 album = meta.albumTitle?.toString() ?: "",
                 durationMs = hydratedDuration,
-                artworkUri = meta.artworkUri?.toString()
+                artworkUri = meta.artworkUri?.toString(),
+                isTransient = meta.extras?.getBoolean(METADATA_TRANSIENT) == true
             )
             _currentTrack.value = hydrated
             _duration.value = hydratedDuration
             _progress.value = ctrl.currentPosition.coerceAtLeast(0L)
-            recordRecentlyPlayed(hydrated)
+            if (!hydrated.isTransient) recordRecentlyPlayed(hydrated)
+        }
+
+        ctrl.playerError?.let { error ->
+            _playbackError.tryEmit(
+                PlaybackError(
+                    message = sanitizeErrorMessage(error.message ?: "Playback error"),
+                    isMediaItemFailure = true,
+                    mediaUri = currentMediaItem?.mediaId
+                )
+            )
         }
 
         if (ctrl.isPlaying) startProgressUpdates()
@@ -707,6 +856,7 @@ class MusicController @JvmOverloads constructor(
         val extras = Bundle().apply {
             putLong(METADATA_DURATION_MS, track.durationMs)
             playlistId?.let { putLong(METADATA_PLAYLIST_ID, it) }
+            if (track.isTransient) putBoolean(METADATA_TRANSIENT, true)
             // The session's ArtworkEnrichingCallback only loads artworkData
             // for flagged items — keeps notification/lock-screen artwork
             // without reading the whole library into memory per play.
@@ -791,7 +941,8 @@ class MusicController @JvmOverloads constructor(
             artist = metadata.artist?.toString() ?: "Unknown",
             album = metadata.albumTitle?.toString() ?: "",
             durationMs = metadataDuration(metadata, -1L),
-            artworkUri = metadata.artworkUri?.toString()
+            artworkUri = metadata.artworkUri?.toString(),
+            isTransient = metadata.extras?.getBoolean(METADATA_TRANSIENT) == true
         )
     }
 
@@ -838,6 +989,8 @@ class MusicController @JvmOverloads constructor(
             "com.luno.mobile.playback.ENRICH_ARTWORK"
         internal const val METADATA_PLAYLIST_ID =
             "com.luno.mobile.playback.PLAYLIST_ID"
+        internal const val METADATA_TRANSIENT =
+            "com.luno.mobile.playback.TRANSIENT"
         private const val TAG = "MusicController"
     }
 }
@@ -853,7 +1006,8 @@ data class PlaybackRequest(
     val items: List<MediaTrack>,
     val startIndex: Int = 0,
     val shuffle: Boolean? = null,
-    val playlistId: Long? = null
+    val playlistId: Long? = null,
+    val repeatMode: Int? = null
 )
 
 /**
@@ -873,7 +1027,9 @@ data class MediaTrack(
     val artist: String = "Unknown",
     val album: String = "",
     val durationMs: Long = 0L,
-    val artworkUri: String? = null
+    val artworkUri: String? = null,
+    /** Temporary previews are playable but never persisted to history/counts. */
+    val isTransient: Boolean = false
 )
 
 /** Maps a uniform offset in the N-1 eligible items to the original item index. */

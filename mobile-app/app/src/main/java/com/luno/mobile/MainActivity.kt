@@ -32,6 +32,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         )
+        app.recommendationPreviewManager.attach(musicController)
         musicController.initialize()
 
         setContent {
@@ -47,6 +48,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        (application as LunoApp).recommendationPreviewManager.detach(musicController)
         musicController.release()
         super.onDestroy()
     }

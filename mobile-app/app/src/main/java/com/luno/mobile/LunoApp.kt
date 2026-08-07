@@ -16,6 +16,7 @@ import com.luno.mobile.data.repository.MusicFolderRepository
 import com.luno.mobile.data.repository.PlaylistRepository
 import com.luno.mobile.data.discovery.RecommendationArtworkService
 import com.luno.mobile.playback.NewPipeDownloader
+import com.luno.mobile.playback.RecommendationPreviewManager
 import com.luno.mobile.ui.shell.ArtworkFetchManager
 import com.luno.mobile.ui.shell.MusicFolderImportManager
 import kotlinx.coroutines.CoroutineScope
@@ -52,6 +53,8 @@ class LunoApp : Application(), Configuration.Provider {
         private set
     lateinit var artworkFetchManager: ArtworkFetchManager
         private set
+    lateinit var recommendationPreviewManager: RecommendationPreviewManager
+        private set
     lateinit var libraryData: LibraryData
         private set
 
@@ -85,7 +88,8 @@ class LunoApp : Application(), Configuration.Provider {
             downloadJobDao = database.downloadJobDao(),
             context = this,
             playlistDao = database.playlistDao(),
-            trackDao = database.trackDao()
+            trackDao = database.trackDao(),
+            database = database
         )
         libraryTransferRepository = LibraryTransferRepository(database, downloadRepository)
         musicFolderRepository = MusicFolderRepository(this)
@@ -101,6 +105,12 @@ class LunoApp : Application(), Configuration.Provider {
             appScope = appScope,
             libraryRepository = libraryRepository,
             context = this
+        )
+        recommendationPreviewManager = RecommendationPreviewManager(
+            context = this,
+            appScope = appScope,
+            downloadRepository = downloadRepository,
+            playlistRepository = playlistRepository
         )
         // Warm the library data eagerly at startup so every screen renders
         // its full content in the same frame as the navigation transition

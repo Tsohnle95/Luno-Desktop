@@ -1,7 +1,9 @@
 package com.luno.mobile.data.repository
 
 import android.content.Context
+import android.provider.DocumentsContract
 import android.util.Log
+import androidx.room.withTransaction
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.Data
@@ -9,12 +11,16 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import com.luno.mobile.data.artwork.ArtworkStorage
+import com.luno.mobile.data.db.AppDatabase
 import com.luno.mobile.data.db.dao.DownloadJobDao
 import com.luno.mobile.data.db.dao.PlaylistDao
 import com.luno.mobile.data.db.dao.TrackDao
 import com.luno.mobile.data.db.entity.DownloadJob
 import com.luno.mobile.data.db.entity.DownloadState
 import com.luno.mobile.data.db.entity.Playlist
+import com.luno.mobile.data.db.entity.PlaylistTrack
+import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.playback.DownloadWorker
 import com.luno.mobile.playback.PlaylistSyncWorker
 import kotlinx.coroutines.flow.Flow
@@ -24,19 +30,25 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import android.net.Uri
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.NonCancellable
+import okhttp3.OkHttpClient
+import okhttp3.Request
 
 class DownloadRepository(
     private val downloadJobDao: DownloadJobDao,
     private val context: Context,
     private val playlistDao: PlaylistDao? = null,
-    private val trackDao: TrackDao? = null
+    private val trackDao: TrackDao? = null,
+    private val database: AppDatabase? = null
 ) {
     private val unsortedMutex = Mutex()
 
     companion object {
         const val TAG = "DownloadRepository"
         const val UNSORTED_PLAYLIST_NAME = "Unsorted"
+        const val PREVIEW_DOWNLOAD_DIR = "recommendation_previews"
     }
     fun getAllDownloads(): Flow<List<DownloadJob>> = downloadJobDao.getAllDownloads()
 
@@ -144,6 +156,125 @@ class DownloadRepository(
         }
     }
 
+    /**
+     * Promotes a temporary recommendation preview into the durable library
+     * without downloading the audio a second time. The caller must choose an
+     * explicit playlist; preview promotion never falls back to Unsorted.
+     */
+    suspend fun promotePreview(
+        previewFile: File,
+        sourceUrl: String,
+        title: String,
+        artist: String,
+        playlistId: Long,
+        artworkUrl: String = ""
+    ): Track = withContext(Dispatchers.IO + NonCancellable) {
+        val tracks = trackDao ?: throw IllegalStateException("Download library is unavailable")
+        val playlists = playlistDao ?: throw IllegalStateException("Playlist library is unavailable")
+        val appDatabase = database
+            ?: throw IllegalStateException("Transactional download library is unavailable")
+        if (playlists.getPlaylist(playlistId) == null) {
+            throw IllegalArgumentException("The selected playlist no longer exists")
+        }
+
+        val previewRoot = File(context.cacheDir, PREVIEW_DOWNLOAD_DIR).canonicalFile
+        val source = previewFile.canonicalFile
+        if (!source.isFile || !source.toPath().startsWith(previewRoot.toPath())) {
+            throw IllegalArgumentException("The temporary preview is no longer available")
+        }
+
+        val downloadRoot = File(context.filesDir, DownloadWorker.KEY_DOWNLOAD_DIR).apply {
+            mkdirs()
+        }
+        val extension = source.extension.takeIf { it.isNotBlank() } ?: "audio"
+        val uniqueName = "${safeDownloadName(artist, title)}-${UUID.randomUUID()}"
+        val stagedFile = File(downloadRoot, "$uniqueName.$extension")
+        var destinationUri: Uri? = null
+        var artworkDestinationUri: Uri? = null
+        var databaseCommitted = false
+
+        try {
+            source.copyTo(stagedFile, overwrite = false)
+            val durationMs = extractDuration(stagedFile)
+            var albumArtPath = ArtworkStorage.saveEmbeddedArtworkFromPath(
+                context,
+                stagedFile.absolutePath
+            )
+            if (albumArtPath == null && artworkUrl.isNotBlank()) {
+                albumArtPath = fetchArtwork(artworkUrl)
+            }
+
+            val mimeType = mimeTypeForExtension(extension)
+            destinationUri = MusicFolderRepository(context).copyFileToSelectedFolder(
+                sourceFile = stagedFile,
+                displayName = stagedFile.name,
+                mimeType = mimeType,
+                reuseExisting = false
+            )
+            if (destinationUri != null && albumArtPath != null) {
+                File(albumArtPath).takeIf { it.isFile }?.let { artworkFile ->
+                    artworkDestinationUri = runCatching {
+                        MusicFolderRepository(context).copyFileToSelectedFolder(
+                            sourceFile = artworkFile,
+                            displayName = "${stagedFile.nameWithoutExtension}.jpg",
+                            mimeType = "image/jpeg",
+                            reuseExisting = false
+                        )
+                    }.getOrNull()
+                }
+            }
+
+            val trackUri = destinationUri?.toString() ?: stagedFile.toURI().toString()
+            val now = System.currentTimeMillis()
+            val track = Track(
+                uri = trackUri,
+                title = title,
+                artist = artist,
+                durationMs = durationMs,
+                albumArtPath = albumArtPath,
+                addedAt = now
+            )
+            appDatabase.withTransaction {
+                tracks.insertTrack(track)
+                playlists.addTrackToPlaylist(
+                    PlaylistTrack(
+                        playlistId = playlistId,
+                        trackUri = trackUri,
+                        sortOrder = playlists.maxSortOrder(playlistId) + 1
+                    )
+                )
+                downloadJobDao.insertDownload(
+                    DownloadJob(
+                        sourceUrl = sourceUrl,
+                        title = title,
+                        artist = artist,
+                        state = DownloadState.COMPLETED,
+                        progress = 100,
+                        localUri = trackUri,
+                        addedAt = now,
+                        completedAt = now,
+                        playlistId = playlistId,
+                        thumbnailUrl = artworkUrl,
+                        playlistIdsCsv = playlistId.toString()
+                    )
+                )
+            }
+            databaseCommitted = true
+            if (destinationUri != null) stagedFile.delete()
+            track
+        } catch (error: Throwable) {
+            stagedFile.delete()
+            if (!databaseCommitted) {
+                listOfNotNull(artworkDestinationUri, destinationUri).forEach { uri ->
+                    runCatching {
+                        DocumentsContract.deleteDocument(context.contentResolver, uri)
+                    }
+                }
+            }
+            throw error
+        }
+    }
+
     /** Copies app-private downloaded songs into the selected Music folder. */
     suspend fun syncAppSongsToMusicFolder(): SyncSongsResult = withContext(Dispatchers.IO) {
         val trackDao = trackDao ?: return@withContext SyncSongsResult(
@@ -214,12 +345,49 @@ class DownloadRepository(
         SyncSongsResult(synced = synced, skipped = skipped, failed = failed)
     }
 
-    private fun mimeTypeForExtension(extension: String): String = when (extension.lowercase()) {
+    private fun mimeTypeForExtension(extension: String): String = when (extension.lowercase().removePrefix(".")) {
         "mp3" -> "audio/mpeg"
         "m4a" -> "audio/mp4"
         "opus" -> "audio/opus"
         "ogg" -> "audio/ogg"
         else -> "application/octet-stream"
+    }
+
+    private fun safeDownloadName(artist: String, title: String): String = "$artist - $title"
+        .replace(Regex("[^a-zA-Z0-9_\\- ]"), "")
+        .trim()
+        .take(120)
+        .ifBlank { "recommendation" }
+
+    private fun extractDuration(file: File): Long {
+        val retriever = android.media.MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(file.absolutePath)
+            retriever.extractMetadata(
+                android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
+            )?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+        } catch (_: Exception) {
+            0L
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }
+
+    private fun fetchArtwork(url: String): String? {
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Luno/1.0 (Android)")
+                .build()
+            OkHttpClient().newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                response.body?.bytes()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { ArtworkStorage.saveImageBytes(context, it) }
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     suspend fun retryDownload(id: Long) {
