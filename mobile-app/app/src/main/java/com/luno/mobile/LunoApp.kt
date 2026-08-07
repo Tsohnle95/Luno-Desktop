@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.work.Configuration
 import com.luno.mobile.data.db.AppDatabase
 import com.luno.mobile.data.db.entity.Track
+import com.luno.mobile.data.discovery.LastfmResult
 import com.luno.mobile.data.repository.DiscoveryRepository
 import com.luno.mobile.data.repository.DownloadRepository
 import com.luno.mobile.data.repository.LibraryData
@@ -150,7 +151,20 @@ class LunoApp : Application(), Configuration.Provider {
             context = this,
             appScope = appScope,
             downloadRepository = downloadRepository,
-            playlistRepository = playlistRepository
+            playlistRepository = playlistRepository,
+            discoverRecommendations = { track ->
+                when (val result = discoveryRepository.getSimilar(
+                    artist = track.artist,
+                    title = track.title,
+                    limit = 1_000,
+                    libraryTracks = database.trackDao().getAllTracksOnce()
+                )) {
+                    is LastfmResult.Success -> Result.success(result.tracks)
+                    is LastfmResult.Failure -> Result.failure(
+                        IllegalStateException(result.message)
+                    )
+                }
+            }
         )
         // Warm the library data eagerly at startup so every screen renders
         // its full content in the same frame as the navigation transition

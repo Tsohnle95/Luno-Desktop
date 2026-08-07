@@ -60,6 +60,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.luno.mobile.LunoApp
 import com.luno.mobile.data.db.dao.PlaylistWithTracks
+import com.luno.mobile.data.db.entity.DownloadJob
+import com.luno.mobile.data.db.entity.DownloadState
 import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.playback.MediaTrack
 import com.luno.mobile.playback.MusicController
@@ -82,6 +84,7 @@ import kotlinx.coroutines.launch
 private data class HomeContentSnapshot(
     val tracks: List<Track>,
     val playlists: List<PlaylistWithTracks>,
+    val downloads: List<DownloadJob>,
     val recentlyPlayed: List<MediaTrack>,
     val hasCurrentTrack: Boolean
 )
@@ -94,6 +97,24 @@ private data class HomeScrollAnchor(
 /** Catalogue identity must not change when mutable playback metadata changes. */
 internal fun homeCatalogueKey(tracks: List<Track>): List<String> =
     tracks.asSequence().map { it.uri }.sorted().toList()
+
+/** Returns the newest completed downloads that still exist in the library. */
+internal fun recentlyDownloadedTracks(
+    downloads: List<DownloadJob>,
+    tracksByUri: Map<String, Track>,
+    limit: Int = 50
+): List<Track> = downloads
+    .asSequence()
+    .filter { it.state == DownloadState.COMPLETED && it.localUri.isNotBlank() }
+    .sortedWith(
+        compareByDescending<DownloadJob> {
+            it.completedAt.takeIf { time -> time > 0L } ?: it.addedAt
+        }.thenByDescending { it.id }
+    )
+    .mapNotNull { tracksByUri[it.localUri] }
+    .distinctBy { it.uri }
+    .take(limit.coerceAtLeast(0))
+    .toList()
 
 /**
  * Spotify-inspired Home: greeting, edge-clipped "Recently played" and
@@ -118,6 +139,7 @@ fun HomeScreen(
     val libraryData = app.libraryData
     val allTracks by libraryData.tracks.collectAsState()
     val playlistsWithTracks by libraryData.playlists.collectAsState()
+    val downloads by libraryData.downloads.collectAsState()
     val libraryLoaded by libraryData.loaded.collectAsState()
 
     // All-or-nothing first render (same as the other tabs): normally the
@@ -147,6 +169,7 @@ fun HomeScreen(
     // swaps content (e.g. EmptyStateCard <-> carousel while the library
     // changes) — with per-item remembers the state could reset or jump.
     val recentlyPlayedListState = rememberLazyListState()
+    val recentlyDownloadedListState = rememberLazyListState()
     val madeForYouListState = rememberLazyListState()
     val favoritesListState = rememberLazyListState()
     val popularTracksListState = rememberLazyListState()
@@ -160,6 +183,7 @@ fun HomeScreen(
         HomeContentSnapshot(
             tracks = allTracks,
             playlists = playlistsWithTracks,
+            downloads = downloads,
             recentlyPlayed = recentlyPlayed,
             hasCurrentTrack = currentTrack != null
         )
@@ -169,6 +193,7 @@ fun HomeScreen(
     fun isHomeScrolling(): Boolean =
         homeListState.isScrollInProgress ||
             recentlyPlayedListState.isScrollInProgress ||
+            recentlyDownloadedListState.isScrollInProgress ||
             madeForYouListState.isScrollInProgress ||
             favoritesListState.isScrollInProgress ||
             popularTracksListState.isScrollInProgress ||
@@ -188,12 +213,13 @@ fun HomeScreen(
         renderedContent = nextContent
     }
 
-    LaunchedEffect(allTracks, playlistsWithTracks, recentlyPlayed, currentTrack != null) {
+    LaunchedEffect(allTracks, playlistsWithTracks, downloads, recentlyPlayed, currentTrack != null) {
         applyLatestContent()
     }
     LaunchedEffect(
         homeListState,
         recentlyPlayedListState,
+        recentlyDownloadedListState,
         madeForYouListState,
         favoritesListState,
         popularTracksListState,
@@ -231,6 +257,7 @@ fun HomeScreen(
 
     val homeTracks = renderedContent.tracks
     val homePlaylists = renderedContent.playlists
+    val homeDownloads = renderedContent.downloads
     val homeRecentlyPlayed = renderedContent.recentlyPlayed
     val homeHasCurrentTrack = renderedContent.hasCurrentTrack
 
@@ -241,6 +268,21 @@ fun HomeScreen(
         catalogueUris.shuffled().take(50)
     }
     val tracksByUri = remember(homeTracks) { homeTracks.associateBy { it.uri } }
+    val recentlyDownloaded = remember(homeDownloads, tracksByUri) {
+        recentlyDownloadedTracks(homeDownloads, tracksByUri)
+    }
+    val recentlyDownloadedMedia = remember(recentlyDownloaded) {
+        recentlyDownloaded.map {
+            MediaTrack(
+                uri = it.uri,
+                title = it.title,
+                artist = it.artist,
+                album = it.album,
+                durationMs = it.durationMs,
+                artworkUri = it.albumArtUri()
+            )
+        }
+    }
     val madeForYou = remember(madeForYouUris, homeTracks) {
         madeForYouUris.mapNotNull { tracksByUri[it] }
     }
@@ -318,6 +360,7 @@ fun HomeScreen(
     }
     val selectableKeys = remember(
         homeRecentlyPlayed,
+        recentlyDownloaded,
         madeForYou,
         favoriteTracks,
         popularTracks,
@@ -325,6 +368,7 @@ fun HomeScreen(
     ) {
         buildSet {
             addAll(homeRecentlyPlayed.map { it.uri })
+            addAll(recentlyDownloaded.map { it.uri })
             addAll(madeForYou.map { it.uri })
             addAll(favoriteTracks.map { it.uri })
             addAll(popularTracks.map { it.uri })
@@ -465,6 +509,55 @@ fun HomeScreen(
                                 if (selectionMode) toggleSelection(track.uri) else {
                                     val index = history.indexOfFirst { it.uri == track.uri }
                                     onPlay(history, index.coerceAtLeast(0), false)
+                                }
+                            },
+                            onLongClick = { beginSelection(track.uri) }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Recently downloaded — completed downloads in completion order,
+        // capped at the latest 50 songs and kept edge-clipped like the other
+        // Home carousels.
+        item(key = "downloaded-header", contentType = "section-header") {
+            SectionHeader(
+                title = "Recently downloaded",
+                supportingText = "Your latest 50 downloads"
+            )
+        }
+        if (recentlyDownloaded.isEmpty()) {
+            item(key = "downloaded-empty", contentType = "empty-state") {
+                EmptyStateCard(
+                    title = "No downloads yet",
+                    subtitle = "Downloaded songs will appear here",
+                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                )
+            }
+        } else {
+            item(key = "downloaded-carousel", contentType = "track-carousel") {
+                LazyRow(
+                    state = recentlyDownloadedListState,
+                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+                    contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
+                ) {
+                    items(
+                        recentlyDownloaded,
+                        key = { it.uri },
+                        contentType = { "track-card" }
+                    ) { track ->
+                        TrackCard(
+                            title = track.title,
+                            artist = track.artist,
+                            artworkUri = track.albumArtUri(),
+                            selected = if (selectionMode) track.uri in selectedKeys else null,
+                            onClick = {
+                                if (selectionMode) {
+                                    toggleSelection(track.uri)
+                                } else {
+                                    val index = recentlyDownloaded.indexOfFirst { it.uri == track.uri }
+                                    onPlay(recentlyDownloadedMedia, index.coerceAtLeast(0), false)
                                 }
                             },
                             onLongClick = { beginSelection(track.uri) }

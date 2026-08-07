@@ -58,6 +58,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -108,6 +109,34 @@ private val DownloadTabs = listOf(
     DownloadTabDirect to "Direct URL"
 )
 
+private val webSearchResultsSaver = listSaver<List<WebSearchResult>, String>(
+    save = { results ->
+        results.flatMap { result ->
+            listOf(
+                result.title,
+                result.artist,
+                result.duration.toString(),
+                result.thumbnailUrl,
+                result.videoId,
+                result.source
+            )
+        }
+    },
+    restore = { values ->
+        values.chunked(6).mapNotNull { fields ->
+            if (fields.size != 6) return@mapNotNull null
+            WebSearchResult(
+                title = fields[0],
+                artist = fields[1],
+                duration = fields[2].toLongOrNull() ?: return@mapNotNull null,
+                thumbnailUrl = fields[3],
+                videoId = fields[4],
+                source = fields[5]
+            )
+        }
+    }
+)
+
 /**
  * The download hub. It helps the user bring audio into the local library,
  * inspect completed downloads, assign them to playlists, and manage the
@@ -140,7 +169,9 @@ fun SearchScreen(
     }
 
     var searchQuery by rememberSaveable { mutableStateOf("") }
-    var webResults by remember { mutableStateOf<List<WebSearchResult>>(emptyList()) }
+    var webResults by rememberSaveable(stateSaver = webSearchResultsSaver) {
+        mutableStateOf<List<WebSearchResult>>(emptyList())
+    }
     var isSearching by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
     var urlInput by rememberSaveable { mutableStateOf("") }
@@ -673,7 +704,8 @@ fun SearchScreen(
     actionsTrack?.let { track ->
         TrackActionsSheet(
             track = track,
-            onDismiss = { actionsTrack = null }
+            onDismiss = { actionsTrack = null },
+            onDeleted = { actionsTrack = null }
         )
     }
 

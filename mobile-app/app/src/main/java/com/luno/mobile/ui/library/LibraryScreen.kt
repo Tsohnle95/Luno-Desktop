@@ -647,7 +647,8 @@ fun LibraryScreen(
     actionsTrack?.let { track ->
         TrackActionsSheet(
             track = track,
-            onDismiss = { actionsTrack = null }
+            onDismiss = { actionsTrack = null },
+            onDeleted = { actionsTrack = null }
         )
     }
 

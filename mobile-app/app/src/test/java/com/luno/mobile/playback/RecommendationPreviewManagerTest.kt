@@ -138,6 +138,25 @@ class RecommendationPreviewManagerTest {
     }
 
     @Test
+    fun discoverMode_toggleIsProcessState() {
+        val manager = RecommendationPreviewManager(
+            context = context,
+            appScope = appScope,
+            downloadRepository = downloadRepository,
+            playlistRepository = PlaylistRepository(
+                database.playlistDao(),
+                database.trackDao()
+            )
+        )
+
+        manager.setDiscoverMode(true)
+        assertThat(manager.state.value.discoverMode).isTrue()
+
+        manager.setDiscoverMode(false)
+        assertThat(manager.state.value.discoverMode).isFalse()
+    }
+
+    @Test
     fun continuationAfterCurrent_keepsOnlyLaterNonPreviewQueueItems() {
         val queue = listOf(
             MediaTrack(uri = "current"),

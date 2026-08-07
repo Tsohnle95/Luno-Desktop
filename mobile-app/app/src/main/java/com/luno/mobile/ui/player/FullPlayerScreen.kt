@@ -130,6 +130,7 @@ fun FullPlayerScreen(
     val apiKey by app.discoveryRepository.apiKey.collectAsState()
     val allTracks by app.libraryData.tracks.collectAsState()
     val previewState by app.recommendationPreviewManager.state.collectAsState()
+    val discoverMode = previewState.discoverMode
 
     var showQueueSheet by rememberSaveable { mutableStateOf(false) }
     var showActionSheet by rememberSaveable { mutableStateOf(false) }
@@ -562,22 +563,42 @@ fun FullPlayerScreen(
                         }
                     }
                 }
-             }
+                }
 
-             Spacer(modifier = Modifier.height(Dimens.paddingXLarge))
-             if (recommendationSeedUri != null) {
-                 RecommendationScrollCue(
-                     onClick = {
-                         recommendationScope.launch {
-                             playerListState.animateScrollToItem(
-                                 RECOMMENDATIONS_HEADER_INDEX
-                             )
-                         }
-                     }
-                 )
-                 Spacer(modifier = Modifier.height(recommendationGap))
-             }
-              }
+                if (currentTrack != null) {
+                    TextButton(
+                        onClick = {
+                            app.recommendationPreviewManager.setDiscoverMode(!discoverMode)
+                        },
+                        enabled = discoverMode || (
+                            currentTrack?.isTransient == false && !apiKey.isNullOrBlank()
+                        )
+                    ) {
+                        Text(
+                            text = if (discoverMode) {
+                                "Discover mode: On"
+                            } else {
+                                "Start discover mode"
+                            },
+                            color = if (discoverMode) AccentGreen else SecondaryText
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(Dimens.paddingXLarge))
+                if (recommendationSeedUri != null) {
+                    RecommendationScrollCue(
+                        onClick = {
+                            recommendationScope.launch {
+                                playerListState.animateScrollToItem(
+                                    RECOMMENDATIONS_HEADER_INDEX
+                                )
+                            }
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(recommendationGap))
+                }
+            }
             fullPlayerRecommendations(
                 seedUri = recommendationSeedUri,
                 apiKeyConfigured = !apiKey.isNullOrBlank(),
@@ -607,7 +628,7 @@ fun FullPlayerScreen(
             )
         }
     }
-    }
+}
 
     if (showQueueSheet) {
         QueueSheet(

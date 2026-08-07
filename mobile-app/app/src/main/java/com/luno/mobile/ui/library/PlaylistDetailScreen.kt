@@ -423,6 +423,7 @@ fun PlaylistDetailScreen(
         TrackActionsSheet(
             track = track,
             onDismiss = { actionsTrack = null },
+            onDeleted = { actionsTrack = null },
             onRemoveFromPlaylist = if (virtualTracks == null) {
                 {
                     scope.launch {

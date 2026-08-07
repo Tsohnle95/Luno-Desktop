@@ -45,6 +45,7 @@ data class RecommendationPreviewState(
     val active: Boolean = false,
     val seedUri: String? = null,
     val recommendations: List<LastfmTrack> = emptyList(),
+    val discoverMode: Boolean = false,
     val waitingKeys: Set<String> = emptySet(),
     val resolvingKeys: Set<String> = emptySet(),
     val preparingKeys: Set<String> = emptySet(),
@@ -99,6 +100,8 @@ class RecommendationPreviewManager(
         { recommendation -> resolveRecommendation(recommendation, previewMode = true) },
     private val durableResolver: suspend (LastfmTrack) -> Result<ResolvedRecommendation> =
         { recommendation -> resolveRecommendation(recommendation, previewMode = false) },
+    private val discoverRecommendations: suspend (MediaTrack) -> Result<List<LastfmTrack>> =
+        { Result.success(emptyList()) },
     private val previewDownloader: suspend (
         ResolvedRecommendation,
         LastfmTrack,
@@ -145,6 +148,9 @@ class RecommendationPreviewManager(
     private var prefetchJob: Job? = null
     private var prefetchGeneration = 0L
     private var prefetchSeedUri: String? = null
+    private var discoverRequestJob: Job? = null
+    private var discoverRequestGeneration = 0L
+    private var discoverStartedUri: String? = null
 
     private val startupCleanup: Deferred<Unit> = appScope.async(Dispatchers.IO) {
         previewDirectory.deleteRecursively()
@@ -198,7 +204,14 @@ class RecommendationPreviewManager(
                         if (shouldFinish) generation else null
                     }
                     if (transitionGeneration != null && isCurrent(transitionGeneration)) {
+                        val discoverTrack = track?.takeUnless { it.isTransient }
+                        val discoverMode = synchronized(lock) { _state.value.discoverMode }
                         finishForPlaybackIntervention()
+                        if (discoverMode && discoverTrack != null) {
+                            requestDiscoverRecommendations(discoverTrack)
+                        }
+                    } else if (track != null && !track.isTransient) {
+                        requestDiscoverRecommendations(track)
                     }
                 }
             }
@@ -228,6 +241,84 @@ class RecommendationPreviewManager(
         }
         monitorJob?.cancel()
         monitorJob = null
+    }
+
+    /** Enables or disables automatic recommendation playback around normal tracks. */
+    fun setDiscoverMode(enabled: Boolean) {
+        val currentTrack: MediaTrack?
+        val stopActivePreview: Boolean
+        synchronized(lock) {
+            if (_state.value.discoverMode == enabled) return
+            discoverRequestGeneration++
+            discoverRequestJob?.cancel()
+            discoverRequestJob = null
+            discoverStartedUri = if (enabled) null else discoverStartedUri
+            _state.value = withSaveState(_state.value.copy(discoverMode = enabled))
+            stopActivePreview = !enabled && _state.value.active
+            currentTrack = musicController?.currentTrack?.value
+        }
+
+        if (stopActivePreview) {
+            finishForPlaybackIntervention(restoreNormalQueue = true)
+        } else if (enabled) {
+            currentTrack?.takeUnless { it.isTransient }?.let(::requestDiscoverRecommendations)
+        }
+    }
+
+    private fun requestDiscoverRecommendations(track: MediaTrack) {
+        val requestGeneration: Long
+        synchronized(lock) {
+            if (!_state.value.discoverMode || _state.value.active ||
+                discoverStartedUri == track.uri || discoverRequestJob != null
+            ) {
+                return
+            }
+            discoverStartedUri = track.uri
+            discoverRequestGeneration++
+            requestGeneration = discoverRequestGeneration
+        }
+
+        val job = appScope.launch(start = CoroutineStart.LAZY) {
+            val result = try {
+                discoverRecommendations(track)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Result.failure(error)
+            }
+
+            val recommendations = result.getOrNull()
+                ?.distinctBy(::recommendationKey)
+                .orEmpty()
+            synchronized(lock) {
+                if (discoverRequestGeneration != requestGeneration) return@launch
+                discoverRequestJob = null
+                if (!_state.value.discoverMode || _state.value.active ||
+                    musicController?.currentTrack?.value?.uri != track.uri
+                ) {
+                    return@launch
+                }
+            }
+            if (recommendations.isNotEmpty()) {
+                startPreview(
+                    seedUri = track.uri,
+                    recommendations = recommendations,
+                    startIndex = 0,
+                    artworkByKey = emptyMap()
+                )
+            }
+        }
+        synchronized(lock) {
+            if (discoverRequestGeneration == requestGeneration &&
+                _state.value.discoverMode
+            ) {
+                discoverRequestJob = job
+            } else {
+                job.cancel()
+                return
+            }
+        }
+        job.start()
     }
 
     /**
@@ -370,6 +461,7 @@ class RecommendationPreviewManager(
                     RecommendationPreviewState(
                         seedUri = seedUri,
                         recommendations = recommendations,
+                        discoverMode = _state.value.discoverMode,
                         failures = mapOf(
                             recommendationKey(
                                 recommendations[startIndex.coerceIn(0, recommendations.lastIndex)]
@@ -437,6 +529,7 @@ class RecommendationPreviewManager(
                     active = true,
                     seedUri = seedUri,
                     recommendations = recommendations.toList(),
+                    discoverMode = _state.value.discoverMode,
                     readyKeys = retainedPrefetch?.let { setOf(firstKey) }.orEmpty()
                 )
             )
@@ -730,15 +823,17 @@ class RecommendationPreviewManager(
         )
     }
 
-    private fun finishForPlaybackIntervention() {
+    private fun finishForPlaybackIntervention(restoreNormalQueue: Boolean = false) {
         val files: List<File>
         val previewUris: Set<String>
+        val normalQueue: List<MediaTrack>
         val controller: MusicController?
         synchronized(lock) {
             generation++
             sessionJob?.cancel()
             sessionJob = null
             controller = musicController
+            normalQueue = if (restoreNormalQueue) continuationTracks else emptyList()
             files = assetsByKey.values.map { it.file }
                 .filterNot(filesBeingPromoted::contains)
             previewUris = keyByUri.keys.toSet()
@@ -753,10 +848,17 @@ class RecommendationPreviewManager(
             continuationTracks = emptyList()
             forcedAdvanceUri = null
             forcedAdvanceInProgress = false
-            _state.value = withSaveState(RecommendationPreviewState())
+            _state.value = withSaveState(
+                RecommendationPreviewState(
+                    discoverMode = _state.value.discoverMode
+                )
+            )
         }
         appScope.launch(Dispatchers.Main.immediate) {
             controller?.removeTransientItemsFromPlaybackContext(previewUris)
+            if (restoreNormalQueue && normalQueue.isNotEmpty()) {
+                controller?.play(normalQueue)
+            }
             withContext(Dispatchers.IO) { files.forEach { it.delete() } }
         }
     }

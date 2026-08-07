@@ -13,8 +13,12 @@ import com.luno.mobile.ui.shell.MainShell
 import com.luno.mobile.ui.theme.LunoTheme
 import com.luno.mobile.ui.theme.PrimaryBackground
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
+
+    private val notificationOpenRequest = MutableStateFlow(0L)
+    private var notificationOpenRequestId = 0L
 
     @VisibleForTesting
     internal lateinit var musicController: MusicController
@@ -22,6 +26,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        handleNotificationIntent(intent)
 
         val app = application as LunoApp
         musicController = MusicController(
@@ -41,10 +46,25 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = PrimaryBackground
                 ) {
-                    MainShell(musicController = musicController)
+                    MainShell(
+                        musicController = musicController,
+                        notificationOpenRequests = notificationOpenRequest
+                    )
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationIntent(intent)
+    }
+
+    private fun handleNotificationIntent(intent: android.content.Intent?) {
+        if (intent?.action != com.luno.mobile.playback.MusicService.ACTION_OPEN_PLAYER) return
+        notificationOpenRequestId++
+        notificationOpenRequest.value = notificationOpenRequestId
     }
 
     override fun onDestroy() {

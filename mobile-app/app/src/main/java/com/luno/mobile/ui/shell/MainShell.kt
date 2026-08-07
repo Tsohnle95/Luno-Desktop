@@ -119,6 +119,8 @@ import com.luno.mobile.ui.theme.SurfaceDark
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -152,7 +154,10 @@ private sealed interface UpdateDialogState {
 }
 
 @Composable
-fun MainShell(musicController: MusicController) {
+fun MainShell(
+    musicController: MusicController,
+    notificationOpenRequests: StateFlow<Long> = MutableStateFlow(0L)
+) {
     val context = LocalContext.current
     val navController = rememberNavController()
     var showCreateSheet by rememberSaveable { mutableStateOf(false) }
@@ -253,6 +258,17 @@ fun MainShell(musicController: MusicController) {
     }
     val libraryLoadedState = app.libraryData.loaded.collectAsState()
     val discoverLoadingState = remember { mutableStateOf(false) }
+    LaunchedEffect(notificationOpenRequests) {
+        var handledRequest = 0L
+        notificationOpenRequests.collect { requestId ->
+            if (requestId == 0L || requestId == handledRequest) return@collect
+            handledRequest = requestId
+            transitionMask = true
+            navController.navigate(Routes.FULL_PLAYER) {
+                launchSingleTop = true
+            }
+        }
+    }
     LaunchedEffect(transitionMask) {
         if (!transitionMask) return@LaunchedEffect
         val startedAt = SystemClock.elapsedRealtime()
