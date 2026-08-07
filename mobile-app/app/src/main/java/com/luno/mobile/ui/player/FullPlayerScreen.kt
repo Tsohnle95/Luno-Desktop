@@ -160,6 +160,7 @@ fun FullPlayerScreen(
     LaunchedEffect(
         if (previewState.active) previewState.seedUri else currentTrack?.uri,
         apiKey,
+        allTracks,
         recommendationRefresh,
         previewState.active
     ) {

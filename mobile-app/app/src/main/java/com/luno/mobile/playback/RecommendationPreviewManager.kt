@@ -848,9 +848,11 @@ class RecommendationPreviewManager(
                         return false
                     }
                 }
-                observedPreviousTrack && currentTrack == null -> {
-                    finishForPlaybackIntervention()
-                    return false
+                shouldContinueAfterPlaybackGap(observedPreviousTrack, currentTrack) -> {
+                    // The previous item can end while the next preview is
+                    // still downloading. Let appendToPlaybackContext resume
+                    // the player once that preview is ready.
+                    return true
                 }
                 observedPreviousTrack && currentTrack?.isTransient == true -> return true
             }
@@ -1181,6 +1183,11 @@ class RecommendationPreviewManager(
 
         internal fun shouldWaitForNextPreview(preparedTrackCount: Int): Boolean =
             preparedTrackCount > IMMEDIATE_PREVIEW_AHEAD_COUNT
+
+        internal fun shouldContinueAfterPlaybackGap(
+            observedPreviousTrack: Boolean,
+            currentTrack: MediaTrack?
+        ): Boolean = observedPreviousTrack && currentTrack == null
 
         internal fun continuationAfterCurrent(
             queue: List<MediaTrack>,

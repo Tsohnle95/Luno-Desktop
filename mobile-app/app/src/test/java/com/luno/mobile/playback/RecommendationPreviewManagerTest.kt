@@ -116,6 +116,28 @@ class RecommendationPreviewManagerTest {
     }
 
     @Test
+    fun emptyPlaybackContext_afterObservedPreview_keepsPreparationAlive() {
+        assertThat(
+            RecommendationPreviewManager.shouldContinueAfterPlaybackGap(
+                observedPreviousTrack = true,
+                currentTrack = null
+            )
+        ).isTrue()
+        assertThat(
+            RecommendationPreviewManager.shouldContinueAfterPlaybackGap(
+                observedPreviousTrack = false,
+                currentTrack = null
+            )
+        ).isFalse()
+        assertThat(
+            RecommendationPreviewManager.shouldContinueAfterPlaybackGap(
+                observedPreviousTrack = true,
+                currentTrack = MediaTrack(uri = "preview")
+            )
+        ).isFalse()
+    }
+
+    @Test
     fun continuationAfterCurrent_keepsOnlyLaterNonPreviewQueueItems() {
         val queue = listOf(
             MediaTrack(uri = "current"),
