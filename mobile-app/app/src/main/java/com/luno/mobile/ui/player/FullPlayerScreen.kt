@@ -29,7 +29,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
@@ -64,7 +63,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -144,9 +142,6 @@ fun FullPlayerScreen(
     var recommendationForNewPlaylistKey by rememberSaveable { mutableStateOf<String?>(null) }
     val recommendationScope = rememberCoroutineScope()
     val playerListState = rememberLazyListState()
-    val recommendationGap = (LocalConfiguration.current.screenHeightDp * 0.2f)
-        .dp
-        .coerceIn(96.dp, 192.dp)
     val currentLibraryTrack = remember(allTracks, currentTrack?.uri) {
         currentTrack?.uri?.let { uri -> allTracks.firstOrNull { it.uri == uri } }
     }
@@ -154,18 +149,21 @@ fun FullPlayerScreen(
     val canFavorite = currentLibraryTrack != null && currentTrack?.isTransient != true
 
     val artworkUri = currentTrack?.artworkUri ?: currentLibraryTrack?.albumArtUri()
-    val (gradientTop, gradientBottom) = rememberArtworkColors(artworkUri)
 
-    val recommendationSeedUri = previewState.seedUri ?: currentTrack?.uri
+    val recommendationSeedUri = if (previewState.active || currentTrack?.isTransient == true) {
+        previewState.seedUri
+    } else {
+        currentTrack?.uri
+    }
 
     LaunchedEffect(
-        if (previewState.active) previewState.seedUri else currentTrack?.uri,
+        recommendationSeedUri,
         apiKey,
         allTracks,
         recommendationRefresh,
         previewState.active
     ) {
-        if (previewState.active) return@LaunchedEffect
+        if (previewState.active || currentTrack?.isTransient == true) return@LaunchedEffect
         val track = currentTrack
         if (track == null || apiKey.isNullOrBlank()) {
             recommendationState = FullPlayerRecommendationState.Idle
@@ -201,11 +199,57 @@ fun FullPlayerScreen(
         ?.takeIf { it.seedUri == recommendationSeedUri }
         ?.tracks
         .orEmpty()
-    val readyRecommendations = if (previewState.active && previewState.recommendations.isNotEmpty()) {
-        previewState.recommendations
-    } else {
-        fetchedRecommendations
+    val managedRecommendations = previewState.recommendations.takeIf {
+        it.isNotEmpty() && previewState.seedUri == recommendationSeedUri
     }
+    val readyRecommendations = managedRecommendations ?: fetchedRecommendations
+    val selectedRecommendation = previewState.selectedKey?.let { selectedKey ->
+        readyRecommendations.firstOrNull { recommendationKey(it) == selectedKey }
+    }
+    val previewIsLoading = previewState.active &&
+        previewState.currentKey == null &&
+        selectedRecommendation != null
+    val displayedCurrentTrack = currentTrack
+    val currentMetadataMissing = displayedCurrentTrack == null ||
+        displayedCurrentTrack.title.equals("Unknown", ignoreCase = true) ||
+        displayedCurrentTrack.artist.equals("Unknown", ignoreCase = true)
+    val useRecommendationMetadata = selectedRecommendation != null &&
+        (previewIsLoading || (displayedCurrentTrack?.isTransient == true && currentMetadataMissing))
+    val displayTitle = if (useRecommendationMetadata) {
+        selectedRecommendation?.title
+    } else {
+        currentTrack?.title
+    } ?: "Unknown Track"
+    val displayArtist = if (useRecommendationMetadata) {
+        selectedRecommendation?.artist
+    } else {
+        currentTrack?.artist
+    } ?: "Unknown Artist"
+    val pendingArtworkUri = selectedRecommendation?.let { recommendation ->
+        fallbackArtwork[recommendationKey(recommendation)] ?: recommendation.imageUrl
+    }
+    val displayArtworkUri = if (selectedRecommendation != null && (
+            currentTrack == null ||
+                (currentMetadataMissing && artworkUri.isNullOrBlank()) ||
+                (displayedCurrentTrack?.isTransient == true && artworkUri.isNullOrBlank())
+            )
+    ) {
+        pendingArtworkUri
+    } else {
+        artworkUri
+    }
+    val previewStatus = if (previewIsLoading) {
+        val selectedKey = previewState.selectedKey
+        when {
+            selectedKey in previewState.resolvingKeys -> "Retrieving song data..."
+            selectedKey in previewState.preparingKeys -> "Downloading song..."
+            selectedKey in previewState.waitingKeys -> "Preparing recommended song..."
+            else -> "Preparing recommended song..."
+        }
+    } else {
+        null
+    }
+    val (gradientTop, gradientBottom) = rememberArtworkColors(displayArtworkUri)
 
     fun requestFallbackArtwork(track: LastfmTrack) {
         val key = recommendationKey(track)
@@ -227,25 +271,20 @@ fun FullPlayerScreen(
             .forEach(::requestFallbackArtwork)
     }
 
-    LaunchedEffect(currentTrack?.uri, previewState.seedUri) {
-        playerListState.scrollToItem(0)
-    }
-
     LaunchedEffect(
         recommendationSeedUri,
-        fetchedRecommendations,
+        readyRecommendations,
         previewState.active,
-        discoverMode
     ) {
-        if (!discoverMode && !previewState.active && recommendationSeedUri != null) {
-            fetchedRecommendations.firstOrNull()?.let { firstRecommendation ->
-                val key = recommendationKey(firstRecommendation)
-                app.recommendationPreviewManager.prefetchFirstRecommendation(
-                    seedUri = recommendationSeedUri,
-                    recommendation = firstRecommendation,
-                    artworkUri = fallbackArtwork[key] ?: firstRecommendation.imageUrl
-                )
-            }
+        if (!previewState.active && recommendationSeedUri != null) {
+            app.recommendationPreviewManager.prefetchRecommendations(
+                seedUri = recommendationSeedUri,
+                recommendations = readyRecommendations,
+                artworkByKey = readyRecommendations.associate { recommendation ->
+                    val key = recommendationKey(recommendation)
+                    key to (fallbackArtwork[key] ?: recommendation.imageUrl)
+                }
+            )
         }
     }
 
@@ -371,7 +410,7 @@ fun FullPlayerScreen(
                 item(key = "player-controls", contentType = "player-controls") {
             // Artwork: real embedded artwork, gradient placeholder fallback
             ArtworkImage(
-                artworkUri = artworkUri,
+                artworkUri = displayArtworkUri,
                 modifier = Modifier
                     .size(Dimens.albumArtLarge)
                     .clip(RoundedCornerShape(Dimens.cornerMedium)),
@@ -382,7 +421,7 @@ fun FullPlayerScreen(
 
             // Title / artist
             Text(
-                text = currentTrack?.title ?: "Unknown Track",
+                text = displayTitle,
                 style = MaterialTheme.typography.headlineMedium,
                 color = PrimaryText,
                 textAlign = TextAlign.Center,
@@ -391,20 +430,29 @@ fun FullPlayerScreen(
             )
             Spacer(modifier = Modifier.height(Dimens.paddingMedium))
             Text(
-                text = currentTrack?.artist ?: "Unknown Artist",
+                text = displayArtist,
                 style = MaterialTheme.typography.bodyMedium,
                 color = SecondaryText,
                 textAlign = TextAlign.Center,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            if (currentTrack?.isTransient == true) {
-                Text(
-                    text = "Temporary preview",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = AccentGreen,
-                    modifier = Modifier.padding(top = Dimens.paddingSmall)
-                )
+            Box(
+                modifier = Modifier.height(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                val status = when {
+                    currentTrack?.isTransient == true -> "Temporary preview"
+                    previewStatus != null -> previewStatus
+                    else -> null
+                }
+                status?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = AccentGreen
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(Dimens.paddingLarge))
@@ -496,7 +544,11 @@ fun FullPlayerScreen(
                     }
                 }
                 IconButton(
-                    onClick = { musicController.skipToPrevious() },
+                    onClick = {
+                        if (!discoverMode || !app.recommendationPreviewManager.skipToPrevious()) {
+                            musicController.skipToPrevious()
+                        }
+                    },
                     modifier = Modifier.size(Dimens.touchTargetMin)
                 ) {
                     Icon(
@@ -526,7 +578,7 @@ fun FullPlayerScreen(
                 }
                 IconButton(
                     onClick = {
-                        if (!app.recommendationPreviewManager.skipToNext()) {
+                        if (!discoverMode || !app.recommendationPreviewManager.skipToNext()) {
                             musicController.skipToNext()
                         }
                     },
@@ -573,11 +625,16 @@ fun FullPlayerScreen(
                 if (currentTrack != null) {
                     TextButton(
                         onClick = {
-                            app.recommendationPreviewManager.setDiscoverMode(!discoverMode)
+                            app.recommendationPreviewManager.setDiscoverMode(
+                                enabled = !discoverMode,
+                                recommendations = if (discoverMode) {
+                                    emptyList()
+                                } else {
+                                    readyRecommendations
+                                }
+                            )
                         },
-                        enabled = discoverMode || (
-                            currentTrack?.isTransient == false && !apiKey.isNullOrBlank()
-                        )
+                        enabled = discoverMode || !apiKey.isNullOrBlank()
                     ) {
                         Text(
                             text = if (discoverMode) {
@@ -590,19 +647,6 @@ fun FullPlayerScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(Dimens.paddingXLarge))
-                if (recommendationSeedUri != null) {
-                    RecommendationScrollCue(
-                        onClick = {
-                            recommendationScope.launch {
-                                playerListState.animateScrollToItem(
-                                    RECOMMENDATIONS_HEADER_INDEX
-                                )
-                            }
-                        }
-                    )
-                    Spacer(modifier = Modifier.height(recommendationGap))
-                }
             }
             fullPlayerRecommendations(
                 seedUri = recommendationSeedUri,
@@ -778,8 +822,10 @@ private fun LazyListScope.fullPlayerRecommendations(
                 }
                 else -> {
                     Text(
-                        text = if (previewState.active) {
+                        text = if (previewState.active && previewState.discoverMode) {
                             "Temporary preview queue - tap a song to restart from there"
+                        } else if (previewState.active) {
+                            "Temporary preview - Next returns to your library"
                         } else {
                             "${recommendations.size} similar songs - tap to preview"
                         },
@@ -937,33 +983,7 @@ private fun RecommendationMessage(message: String) {
     )
 }
 
-@Composable
-private fun RecommendationScrollCue(onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(Dimens.cornerMedium))
-            .clickable(onClick = onClick)
-            .padding(vertical = Dimens.paddingMedium),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = "Scroll down for recommended songs",
-            style = MaterialTheme.typography.labelLarge,
-            color = AccentGreen
-        )
-        Icon(
-            imageVector = Icons.Filled.KeyboardArrowDown,
-            contentDescription = "Scroll down for recommended songs",
-            tint = AccentGreen,
-            modifier = Modifier.padding(start = Dimens.paddingSmall)
-        )
-    }
-}
-
 private const val PROGRESS_SAMPLE_INTERVAL_MS = 250
-private const val RECOMMENDATIONS_HEADER_INDEX = 1
 
 /**
  * Formats milliseconds as `m:ss`, matching the desktop `utils.py format_time`

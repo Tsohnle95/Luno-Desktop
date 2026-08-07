@@ -125,6 +125,58 @@ class RecommendationPreviewManagerTest {
     }
 
     @Test
+    fun nonDiscoverPreview_preparesSelectedAndFirstFiveRecommendations() {
+        val recommendations = listOf(
+            LastfmTrack("Artist 1", "Song 1", 0.9),
+            LastfmTrack("Artist 2", "Song 2", 0.8),
+            LastfmTrack("Artist 3", "Song 3", 0.7)
+        )
+
+        assertThat(
+            RecommendationPreviewManager.recommendationsForSession(
+                recommendations = recommendations,
+                startIndex = 1,
+                discoverMode = false
+            )
+        ).containsExactly(recommendations[1], recommendations[2]).inOrder()
+    }
+
+    @Test
+    fun discoverPreview_queuesTheSelectedRecommendationAndItsFollowingItems() {
+        val recommendations = listOf(
+            LastfmTrack("Artist 1", "Song 1", 0.9),
+            LastfmTrack("Artist 2", "Song 2", 0.8),
+            LastfmTrack("Artist 3", "Song 3", 0.7)
+        )
+
+        assertThat(
+            RecommendationPreviewManager.recommendationsForSession(
+                recommendations = recommendations,
+                startIndex = 1,
+                discoverMode = true
+            )
+        ).containsExactly(recommendations[1], recommendations[2]).inOrder()
+    }
+
+    @Test
+    fun nonDiscoverPreview_keepsTheSelectedRecommendationAheadOfTheFirstFive() {
+        val recommendations = (0..11).map { index ->
+            LastfmTrack("Artist $index", "Song $index", 0.9 - index / 10.0)
+        }
+
+        val prepared = RecommendationPreviewManager.recommendationsForSession(
+            recommendations = recommendations,
+            startIndex = 6,
+            discoverMode = false
+        )
+
+        assertThat(prepared).hasSize(6)
+        assertThat(prepared.first()).isEqualTo(recommendations[6])
+        assertThat(prepared.drop(1))
+            .containsExactlyElementsIn(recommendations.subList(7, 12))
+    }
+
+    @Test
     fun discoverHandoff_defersOnlyForTheCurrentNormalSeed() {
         val normal = MediaTrack(uri = "seed", isTransient = false)
         val transient = normal.copy(isTransient = true)

@@ -251,9 +251,19 @@ fun MainShell(
     // through this state so its page is not revealed with a second loader.
     var transitionMask by remember { mutableStateOf(false) }
     val app = context.applicationContext as com.luno.mobile.LunoApp
+    val recommendationPreviewState by app.recommendationPreviewManager.state.collectAsState()
     fun skipToNext() {
-        if (!app.recommendationPreviewManager.skipToNext()) {
+        if (!recommendationPreviewState.discoverMode ||
+            !app.recommendationPreviewManager.skipToNext()
+        ) {
             musicController.skipToNext()
+        }
+    }
+    fun skipToPrevious() {
+        if (!recommendationPreviewState.discoverMode ||
+            !app.recommendationPreviewManager.skipToPrevious()
+        ) {
+            musicController.skipToPrevious()
         }
     }
     val libraryLoadedState = app.libraryData.loaded.collectAsState()
@@ -761,6 +771,7 @@ fun MainShell(
                                     MiniPlayer(
                                         musicController = musicController,
                                         onNext = ::skipToNext,
+                                        onPrevious = ::skipToPrevious,
                                         onMiniPlayerTap = {
                                             transitionMask = true
                                             navController.navigate(Routes.FULL_PLAYER)
@@ -918,6 +929,7 @@ fun MainShell(
                                 visible = hasActiveItem,
                                 musicController = musicController,
                                 onNext = ::skipToNext,
+                                onPrevious = ::skipToPrevious,
                                 onMiniPlayerTap = {
                                     transitionMask = true
                                     navController.navigate(Routes.FULL_PLAYER)
@@ -1107,6 +1119,7 @@ private fun HomeMiniPlayerOverlay(
     visible: Boolean,
     musicController: MusicController,
     onNext: () -> Unit,
+    onPrevious: () -> Unit,
     onMiniPlayerTap: () -> Unit
 ) {
     // Keep the player in the content layer rather than the Scaffold bottom
@@ -1124,6 +1137,7 @@ private fun HomeMiniPlayerOverlay(
             MiniPlayer(
                 musicController = musicController,
                 onNext = onNext,
+                onPrevious = onPrevious,
                 onMiniPlayerTap = onMiniPlayerTap
             )
         }
