@@ -167,7 +167,8 @@ class DownloadRepository(
         title: String,
         artist: String,
         playlistId: Long,
-        artworkUrl: String = ""
+        artworkUrl: String = "",
+        artworkPath: String? = null
     ): Track = withContext(Dispatchers.IO + NonCancellable) {
         val tracks = trackDao ?: throw IllegalStateException("Download library is unavailable")
         val playlists = playlistDao ?: throw IllegalStateException("Playlist library is unavailable")
@@ -200,8 +201,10 @@ class DownloadRepository(
                 context,
                 stagedFile.absolutePath
             )
-            if (albumArtPath == null && artworkUrl.isNotBlank()) {
-                albumArtPath = fetchArtwork(artworkUrl)
+            if (albumArtPath == null) {
+                albumArtPath = artworkPath
+                    ?.let(::usableArtworkPath)
+                    ?: artworkUrl.takeIf { it.isNotBlank() }?.let(::fetchArtwork)
             }
 
             val mimeType = mimeTypeForExtension(extension)
@@ -376,7 +379,7 @@ class DownloadRepository(
     private fun fetchArtwork(url: String): String? {
         return try {
             val request = Request.Builder()
-                .url(url)
+                .url(url.replaceFirst("http://", "https://"))
                 .header("User-Agent", "Luno/1.0 (Android)")
                 .build()
             OkHttpClient().newCall(request).execute().use { response ->
@@ -388,6 +391,16 @@ class DownloadRepository(
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun usableArtworkPath(value: String): String? {
+        val uri = Uri.parse(value)
+        val path = when {
+            uri.scheme.equals("file", ignoreCase = true) -> uri.path
+            uri.scheme.isNullOrBlank() -> value
+            else -> null
+        } ?: return null
+        return path.takeIf(ArtworkStorage::hasUsableArtwork)
     }
 
     suspend fun retryDownload(id: Long) {

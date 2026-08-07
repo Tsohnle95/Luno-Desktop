@@ -100,6 +100,22 @@ class RecommendationPreviewManagerTest {
     }
 
     @Test
+    fun nextFivePreviews_prepareImmediatelyBeforeTheSeventyFivePercentGate() {
+        assertThat(RecommendationPreviewManager.shouldWaitForNextPreview(0)).isFalse()
+        assertThat(RecommendationPreviewManager.shouldWaitForNextPreview(1)).isFalse()
+        assertThat(
+            RecommendationPreviewManager.shouldWaitForNextPreview(
+                RecommendationPreviewManager.IMMEDIATE_PREVIEW_AHEAD_COUNT
+            )
+        ).isFalse()
+        assertThat(
+            RecommendationPreviewManager.shouldWaitForNextPreview(
+                RecommendationPreviewManager.IMMEDIATE_PREVIEW_AHEAD_COUNT + 1
+            )
+        ).isTrue()
+    }
+
+    @Test
     fun continuationAfterCurrent_keepsOnlyLaterNonPreviewQueueItems() {
         val queue = listOf(
             MediaTrack(uri = "current"),

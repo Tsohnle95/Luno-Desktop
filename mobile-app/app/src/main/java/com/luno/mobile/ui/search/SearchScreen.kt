@@ -71,6 +71,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.luno.mobile.LunoApp
+import com.luno.mobile.data.artwork.ArtworkStorage
 import com.luno.mobile.data.db.entity.DownloadJob
 import com.luno.mobile.data.db.entity.DownloadState
 import com.luno.mobile.data.db.entity.Playlist
@@ -583,6 +584,13 @@ fun SearchScreen(
                             }
                         },
                         onMenuClick = { actionsTrack = track },
+                        artworkUri = track.albumArtPath
+                            ?.takeIf(ArtworkStorage::hasUsableArtwork)
+                            ?.let { track.albumArtUri() }
+                            ?: downloads
+                                .firstOrNull { it.localUri == track.uri }
+                                ?.thumbnailUrl
+                                ?.takeIf { it.isNotBlank() },
                         onLongClick = {
                             downloadedSelectionMode = true
                             selectedDownloadedUris = selectedDownloadedUris + track.uri

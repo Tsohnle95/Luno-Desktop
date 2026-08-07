@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -28,11 +29,14 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -60,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -137,6 +142,15 @@ fun FullPlayerScreen(
     var recommendationToSaveKey by rememberSaveable { mutableStateOf<String?>(null) }
     var recommendationForNewPlaylistKey by rememberSaveable { mutableStateOf<String?>(null) }
     val recommendationScope = rememberCoroutineScope()
+    val playerListState = rememberLazyListState()
+    val recommendationGap = (LocalConfiguration.current.screenHeightDp * 0.2f)
+        .dp
+        .coerceIn(96.dp, 192.dp)
+    val currentLibraryTrack = remember(allTracks, currentTrack?.uri) {
+        currentTrack?.uri?.let { uri -> allTracks.firstOrNull { it.uri == uri } }
+    }
+    val isFavorite = currentLibraryTrack?.isFavorite == true
+    val canFavorite = currentLibraryTrack != null && currentTrack?.isTransient != true
 
     val artworkUri = currentTrack?.artworkUri
     val (gradientTop, gradientBottom) = rememberArtworkColors(artworkUri)
@@ -205,6 +219,27 @@ fun FullPlayerScreen(
     LaunchedEffect(readyRecommendations) {
         fallbackArtwork = emptyMap()
         fallbackArtworkRequested = emptySet()
+        readyRecommendations
+            .filter { it.imageUrl.isNullOrBlank() }
+            .take(20)
+            .forEach(::requestFallbackArtwork)
+    }
+
+    LaunchedEffect(currentTrack?.uri, previewState.seedUri) {
+        playerListState.scrollToItem(0)
+    }
+
+    LaunchedEffect(recommendationSeedUri, fetchedRecommendations, previewState.active) {
+        if (!previewState.active && recommendationSeedUri != null) {
+            fetchedRecommendations.firstOrNull()?.let { firstRecommendation ->
+                val key = recommendationKey(firstRecommendation)
+                app.recommendationPreviewManager.prefetchFirstRecommendation(
+                    seedUri = recommendationSeedUri,
+                    recommendation = firstRecommendation,
+                    artworkUri = fallbackArtwork[key] ?: firstRecommendation.imageUrl
+                )
+            }
+        }
     }
 
     fun saveRecommendation(recommendation: LastfmTrack, playlist: Playlist) {
@@ -223,6 +258,7 @@ fun FullPlayerScreen(
             )
             val message = result.fold(
                 onSuccess = { outcome ->
+                    app.rememberRecentlySavedPlaylist(playlist.id)
                     when (outcome) {
                         is RecommendationSaveOutcome.Saved ->
                             "Saved ${recommendation.title} to ${playlist.name}"
@@ -257,7 +293,7 @@ fun FullPlayerScreen(
                 .padding(horizontal = Dimens.paddingLarge),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top bar: back arrow, queue, action sheet
+            // Top bar: back arrow, queue, favorite, action sheet
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -281,6 +317,27 @@ fun FullPlayerScreen(
                         modifier = Modifier.size(Dimens.iconSize)
                     )
                 }
+                IconButton(
+                    onClick = {
+                        val track = currentLibraryTrack ?: return@IconButton
+                        val updatedFavorite = !track.isFavorite
+                        app.appScope.launch {
+                            app.libraryRepository.setFavorite(track.uri, updatedFavorite)
+                        }
+                    },
+                    enabled = canFavorite
+                ) {
+                    Icon(
+                        imageVector = if (isFavorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                        contentDescription = if (isFavorite) {
+                            "Remove from favorites"
+                        } else {
+                            "Add to favorites"
+                        },
+                        tint = if (isFavorite) AccentGreen else PrimaryText,
+                        modifier = Modifier.size(Dimens.iconSize)
+                    )
+                }
                 IconButton(onClick = { showActionSheet = true }) {
                     Icon(
                         imageVector = Icons.Filled.MoreVert,
@@ -294,6 +351,7 @@ fun FullPlayerScreen(
             // Keep the artwork gradient on the viewport while this content
             // list moves over it.
             LazyColumn(
+                state = playerListState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
@@ -503,10 +561,22 @@ fun FullPlayerScreen(
                         }
                     }
                 }
-            }
+             }
 
-            Spacer(modifier = Modifier.height(Dimens.paddingXLarge))
-            }
+             Spacer(modifier = Modifier.height(Dimens.paddingXLarge))
+             if (recommendationSeedUri != null) {
+                 RecommendationScrollCue(
+                     onClick = {
+                         recommendationScope.launch {
+                             playerListState.animateScrollToItem(
+                                 RECOMMENDATIONS_HEADER_INDEX
+                             )
+                         }
+                     }
+                 )
+                 Spacer(modifier = Modifier.height(recommendationGap))
+             }
+              }
             fullPlayerRecommendations(
                 seedUri = recommendationSeedUri,
                 apiKeyConfigured = !apiKey.isNullOrBlank(),
@@ -555,6 +625,7 @@ fun FullPlayerScreen(
         ?.let { recommendation ->
             PlaylistPickerSheet(
                 title = "Download to playlist",
+                showRecentlySaved = true,
                 onPick = { playlist ->
                     recommendationToSaveKey = null
                     saveRecommendation(recommendation, playlist)
@@ -708,9 +779,11 @@ private fun LazyListScope.fullPlayerRecommendations(
                 artworkUri = fallbackArtwork[key] ?: recommendation.imageUrl,
                 waiting = key in previewState.waitingKeys,
                 resolving = key in previewState.resolvingKeys,
-                preparing = key in previewState.preparingKeys,
+                preparing = key in previewState.preparingKeys ||
+                    key in previewState.prefetchingKeys,
                 playing = previewPlaying && key == previewState.currentKey,
-                ready = key in previewState.readyKeys,
+                ready = key in previewState.readyKeys ||
+                    key in previewState.prefetchedKeys,
                 saving = key in previewState.savingKeys,
                 queued = key in previewState.queuedKeys,
                 permanent = key in previewState.permanentKeys,
@@ -837,7 +910,33 @@ private fun RecommendationMessage(message: String) {
     )
 }
 
+@Composable
+private fun RecommendationScrollCue(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Dimens.cornerMedium))
+            .clickable(onClick = onClick)
+            .padding(vertical = Dimens.paddingMedium),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "Scroll down for recommended songs",
+            style = MaterialTheme.typography.labelLarge,
+            color = AccentGreen
+        )
+        Icon(
+            imageVector = Icons.Filled.KeyboardArrowDown,
+            contentDescription = "Scroll down for recommended songs",
+            tint = AccentGreen,
+            modifier = Modifier.padding(start = Dimens.paddingSmall)
+        )
+    }
+}
+
 private const val PROGRESS_SAMPLE_INTERVAL_MS = 250
+private const val RECOMMENDATIONS_HEADER_INDEX = 1
 
 /**
  * Formats milliseconds as `m:ss`, matching the desktop `utils.py format_time`

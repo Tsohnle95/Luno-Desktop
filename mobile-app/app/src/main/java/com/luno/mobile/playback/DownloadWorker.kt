@@ -320,7 +320,7 @@ class DownloadWorker(
     private fun fetchThumbnail(url: String): String? {
         return try {
             val request = Request.Builder()
-                .url(url)
+                .url(url.replaceFirst("http://", "https://"))
                 .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
                 .build()
             client.newCall(request).execute().use { response ->

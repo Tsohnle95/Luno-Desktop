@@ -25,6 +25,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.schabi.newpipe.extractor.NewPipe
 import java.io.File
 import java.net.CookieManager
@@ -32,6 +33,12 @@ import java.net.CookiePolicy
 import java.net.CookieHandler
 
 class LunoApp : Application(), Configuration.Provider {
+
+    companion object {
+        private const val RECENT_PLAYLIST_PREFS = "playlist_picker"
+        private const val RECENT_PLAYLIST_IDS = "recently_saved_ids"
+        private const val RECENT_PLAYLIST_LIMIT = 3
+    }
 
     lateinit var database: AppDatabase
         private set
@@ -62,6 +69,16 @@ class LunoApp : Application(), Configuration.Provider {
     private val madeForYouTracksState = MutableStateFlow<List<Track>>(emptyList())
     val madeForYouTracks: StateFlow<List<Track>> = madeForYouTracksState
 
+    private val recentlySavedPlaylistPreferences by lazy {
+        getSharedPreferences(RECENT_PLAYLIST_PREFS, MODE_PRIVATE)
+    }
+    private val recentlySavedPlaylistLock = Any()
+    private val recentlySavedPlaylistIdsState by lazy {
+        MutableStateFlow(loadRecentlySavedPlaylistIds())
+    }
+    val recentlySavedPlaylistIds: StateFlow<List<Long>>
+        get() = recentlySavedPlaylistIdsState.asStateFlow()
+
     /**
      * Process-lifetime scope for long-running work (library imports) that
      * must survive navigation away from the launching screen — a
@@ -73,6 +90,29 @@ class LunoApp : Application(), Configuration.Provider {
     fun setMadeForYouTracks(tracks: List<Track>) {
         madeForYouTracksState.value = tracks
     }
+
+    /** Records a successful playlist destination, newest first, capped at three. */
+    fun rememberRecentlySavedPlaylist(playlistId: Long) {
+        if (playlistId <= 0L) return
+        synchronized(recentlySavedPlaylistLock) {
+            val updated = (listOf(playlistId) + recentlySavedPlaylistIdsState.value
+                .filterNot { it == playlistId })
+                .take(RECENT_PLAYLIST_LIMIT)
+            recentlySavedPlaylistIdsState.value = updated
+            recentlySavedPlaylistPreferences.edit()
+                .putString(RECENT_PLAYLIST_IDS, updated.joinToString(","))
+                .apply()
+        }
+    }
+
+    private fun loadRecentlySavedPlaylistIds(): List<Long> =
+        getSharedPreferences(RECENT_PLAYLIST_PREFS, MODE_PRIVATE)
+            .getString(RECENT_PLAYLIST_IDS, "")
+            .orEmpty()
+            .split(',')
+            .mapNotNull { it.toLongOrNull() }
+            .distinct()
+            .take(RECENT_PLAYLIST_LIMIT)
 
     override fun onCreate() {
         super.onCreate()

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
@@ -33,12 +34,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.luno.mobile.LunoApp
+import com.luno.mobile.data.artwork.ArtworkStorage
 import com.luno.mobile.data.db.entity.DownloadJob
 import com.luno.mobile.data.db.entity.DownloadState
+import com.luno.mobile.ui.components.ArtworkImage
 import com.luno.mobile.ui.theme.AccentGreen
 import com.luno.mobile.ui.theme.Dimens
 import com.luno.mobile.ui.theme.PrimaryText
@@ -54,6 +58,7 @@ fun DownloadsScreen() {
     // list are present in the same frame as the transition.
     val libraryData = app.libraryData
     val downloads by libraryData.downloads.collectAsState()
+    val tracks by libraryData.tracks.collectAsState()
     val playlistsWithUrls by libraryData.playlistsWithUrls.collectAsState()
     val libraryLoaded by libraryData.loaded.collectAsState()
 
@@ -225,6 +230,11 @@ fun DownloadsScreen() {
             ) { job ->
                 DownloadJobRow(
                     job = job,
+                    artworkUri = tracks.firstOrNull { it.uri == job.localUri }?.let { track ->
+                        track.albumArtPath
+                            ?.takeIf(ArtworkStorage::hasUsableArtwork)
+                            ?.let { track.albumArtUri() }
+                    } ?: job.thumbnailUrl.takeIf { it.isNotBlank() },
                     onCancel = { scope.launch { app.downloadRepository.cancelDownload(job.id) } },
                     onRetry = { scope.launch { app.downloadRepository.retryDownload(job.id) } },
                     onDelete = { scope.launch { app.downloadRepository.deleteDownload(job.id) } }
@@ -237,6 +247,7 @@ fun DownloadsScreen() {
 @Composable
 private fun DownloadJobRow(
     job: DownloadJob,
+    artworkUri: String?,
     onCancel: () -> Unit,
     onRetry: () -> Unit,
     onDelete: () -> Unit
@@ -263,6 +274,15 @@ private fun DownloadJobRow(
             .padding(vertical = Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        ArtworkImage(
+            artworkUri = artworkUri,
+            modifier = Modifier
+                .size(Dimens.albumArtSmall)
+                .clip(RoundedCornerShape(Dimens.cornerSmall)),
+            placeholderIconSize = 20.dp,
+            decodeSizePx = 192
+        )
+        Spacer(modifier = Modifier.width(Dimens.paddingSmall))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = job.title,

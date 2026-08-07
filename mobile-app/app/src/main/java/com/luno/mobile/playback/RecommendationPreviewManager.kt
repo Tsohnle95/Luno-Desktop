@@ -3,6 +3,7 @@ package com.luno.mobile.playback
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import com.luno.mobile.data.artwork.ArtworkStorage
 import com.luno.mobile.data.db.entity.DownloadState
 import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.data.discovery.LastfmTrack
@@ -47,7 +48,9 @@ data class RecommendationPreviewState(
     val waitingKeys: Set<String> = emptySet(),
     val resolvingKeys: Set<String> = emptySet(),
     val preparingKeys: Set<String> = emptySet(),
+    val prefetchingKeys: Set<String> = emptySet(),
     val readyKeys: Set<String> = emptySet(),
+    val prefetchedKeys: Set<String> = emptySet(),
     val failures: Map<String, String> = emptyMap(),
     val currentKey: String? = null,
     val permanentKeys: Set<String> = emptySet(),
@@ -102,7 +105,7 @@ class RecommendationPreviewManager(
         String?,
         File
     ) -> Result<MediaTrack> = { resolved, recommendation, artworkUri, target ->
-        downloadPreview(resolved, recommendation, artworkUri, target)
+        downloadPreview(context, resolved, recommendation, artworkUri, target)
     },
     private val resolveTimeoutMs: Long = PREVIEW_RESOLVE_TIMEOUT_MS,
     private val downloadTimeoutMs: Long = PREVIEW_DOWNLOAD_TIMEOUT_MS
@@ -114,6 +117,7 @@ class RecommendationPreviewManager(
     )
     private val lock = Any()
     private val assetsByKey = linkedMapOf<String, PreviewAsset>()
+    private val prefetchedAssetsByKey = linkedMapOf<String, PreviewAsset>()
     private val keyByUri = mutableMapOf<String, String>()
     private val savedTrackUris = mutableMapOf<String, String>()
     private val savingKeys = mutableSetOf<String>()
@@ -138,6 +142,9 @@ class RecommendationPreviewManager(
     private var continuationTracks: List<MediaTrack> = emptyList()
     private var forcedAdvanceUri: String? = null
     private var forcedAdvanceInProgress = false
+    private var prefetchJob: Job? = null
+    private var prefetchGeneration = 0L
+    private var prefetchSeedUri: String? = null
 
     private val startupCleanup: Deferred<Unit> = appScope.async(Dispatchers.IO) {
         previewDirectory.deleteRecursively()
@@ -156,6 +163,12 @@ class RecommendationPreviewManager(
         monitorJob = appScope.launch(start = CoroutineStart.UNDISPATCHED) {
             launch(start = CoroutineStart.UNDISPATCHED) {
                 controller.currentTrack.collect { track ->
+                    val stalePrefetch = synchronized(lock) {
+                        prefetchSeedUri != null &&
+                            (track?.uri != prefetchSeedUri || track?.isTransient == true)
+                    }
+                    if (stalePrefetch) cancelPrefetch()
+
                     val transitionGeneration = synchronized(lock) {
                         if (!_state.value.active || musicController !== controller ||
                             !controller.isConnected.value
@@ -217,6 +230,133 @@ class RecommendationPreviewManager(
         monitorJob = null
     }
 
+    /**
+     * Passively prepares the first recommendation for the currently playing
+     * normal track.  This never changes the Media3 queue or starts playback;
+     * [startPreview] adopts the cached asset when the user taps that row.
+     */
+    fun prefetchFirstRecommendation(
+        seedUri: String,
+        recommendation: LastfmTrack,
+        artworkUri: String?
+    ) {
+        val controller = musicController ?: return
+        val key = recommendationKey(recommendation)
+        val oldFiles: List<File>
+        val requestGeneration: Long
+        synchronized(lock) {
+            val current = controller.currentTrack.value
+            if (_state.value.active || current?.uri != seedUri || current?.isTransient == true) return
+            if (prefetchSeedUri == seedUri &&
+                (key in _state.value.prefetchingKeys ||
+                    (key in _state.value.prefetchedKeys &&
+                        prefetchedAssetsByKey[key]?.file?.isFile == true))
+            ) {
+                return
+            }
+
+            prefetchGeneration++
+            requestGeneration = prefetchGeneration
+            prefetchJob?.cancel()
+            prefetchJob = null
+            oldFiles = prefetchedAssetsByKey.values.map { it.file }
+                .filterNot(filesBeingPromoted::contains)
+            prefetchedAssetsByKey.clear()
+            prefetchSeedUri = seedUri
+            _state.value = withSaveState(
+                _state.value.copy(
+                    seedUri = seedUri,
+                    prefetchingKeys = setOf(key),
+                    prefetchedKeys = emptySet(),
+                    failures = _state.value.failures - key
+                )
+            )
+        }
+        deleteFiles(oldFiles)
+
+        val job = appScope.launch {
+            startupCleanup.await()
+            val resolved = runTimedResult(
+                timeoutMs = resolveTimeoutMs,
+                timeoutMessage = "Finding a playable source timed out. Tap to retry."
+            ) {
+                resolver(recommendation)
+            }
+            if (!isCurrentPrefetch(requestGeneration)) return@launch
+            if (resolved.isFailure) {
+                markPrefetchFailure(
+                    requestGeneration,
+                    key,
+                    resolved.errorMessage()
+                )
+                return@launch
+            }
+
+            val stream = resolved.getOrThrow()
+            val extension = extensionForMimeType(stream.mimeType)
+            val target = File(
+                previewDirectory,
+                "prefetch-$requestGeneration-${safeName(recommendation)}.$extension"
+            )
+            val downloaded = runTimedResult(
+                timeoutMs = downloadTimeoutMs,
+                timeoutMessage = "Preview download timed out. Tap to retry."
+            ) {
+                previewDownloader(
+                    stream,
+                    recommendation,
+                    artworkUri?.takeUnless { it.isNullOrBlank() }
+                        ?: stream.thumbnailUrl.takeUnless { it.isBlank() },
+                    target
+                )
+            }
+            if (!isCurrentPrefetch(requestGeneration)) {
+                target.delete()
+                return@launch
+            }
+            if (downloaded.isFailure) {
+                markPrefetchFailure(
+                    requestGeneration,
+                    key,
+                    downloaded.errorMessage()
+                )
+                return@launch
+            }
+
+            val asset = PreviewAsset(
+                recommendation = recommendation,
+                file = target,
+                sourceUrl = stream.sourceUrl,
+                thumbnailUrl = stream.thumbnailUrl.ifBlank {
+                    artworkUri.orEmpty()
+                },
+                mediaTrack = downloaded.getOrThrow()
+            )
+            synchronized(lock) {
+                if (!isCurrentPrefetchLocked(requestGeneration)) {
+                    target.delete()
+                    return@launch
+                }
+                prefetchedAssetsByKey[key] = asset
+                prefetchJob = null
+                _state.value = withSaveState(
+                    _state.value.copy(
+                        prefetchingKeys = _state.value.prefetchingKeys - key,
+                        prefetchedKeys = _state.value.prefetchedKeys + key,
+                        failures = _state.value.failures - key
+                    )
+                )
+            }
+        }
+        synchronized(lock) {
+            if (isCurrentPrefetchLocked(requestGeneration)) {
+                prefetchJob = job
+            } else {
+                job.cancel()
+            }
+        }
+    }
+
     fun startPreview(
         seedUri: String,
         recommendations: List<LastfmTrack>,
@@ -241,10 +381,13 @@ class RecommendationPreviewManager(
             return
         }
 
+        val firstIndex = startIndex.coerceIn(0, recommendations.lastIndex)
+        val firstKey = recommendationKey(recommendations[firstIndex])
         val oldFiles: List<File>
         val clearOldPlayback: Boolean
         val sessionGeneration: Long
         val restoreOriginalQueue: Boolean
+        val retainedPrefetch: PreviewAsset?
         val currentUri = controller.currentTrack.value?.uri
         val currentIsPreview = synchronized(lock) { currentUri in keyByUri }
         val nextQueueTracks = if (currentIsPreview) {
@@ -255,13 +398,28 @@ class RecommendationPreviewManager(
         synchronized(lock) {
             clearOldPlayback = controller.currentTrack.value?.uri in keyByUri
             restoreOriginalQueue = currentIsPreview
+            retainedPrefetch = if (!currentIsPreview &&
+                prefetchSeedUri == seedUri &&
+                firstKey in prefetchedAssetsByKey
+            ) {
+                prefetchedAssetsByKey.remove(firstKey)
+                    ?.takeIf { it.file.isFile }
+            } else {
+                null
+            }
             generation++
             sessionGeneration = generation
             sessionJob?.cancel()
-            oldFiles = assetsByKey.values.map { it.file }
+            prefetchGeneration++
+            prefetchJob?.cancel()
+            prefetchJob = null
+            oldFiles = (assetsByKey.values.map { it.file } +
+                prefetchedAssetsByKey.values.map { it.file })
                 .filterNot(filesBeingPromoted::contains)
             assetsByKey.clear()
+            prefetchedAssetsByKey.clear()
             keyByUri.clear()
+            prefetchSeedUri = null
             observedPreviewTrack = false
             previewPlaybackStarted = false
             preparationComplete = false
@@ -278,18 +436,22 @@ class RecommendationPreviewManager(
                 RecommendationPreviewState(
                     active = true,
                     seedUri = seedUri,
-                    recommendations = recommendations.toList()
+                    recommendations = recommendations.toList(),
+                    readyKeys = retainedPrefetch?.let { setOf(firstKey) }.orEmpty()
                 )
             )
+            retainedPrefetch?.let { asset ->
+                assetsByKey[firstKey] = asset
+            }
         }
 
         if (clearOldPlayback) controller.clearPlaybackQueue()
         deleteFiles(oldFiles)
 
-        val firstIndex = startIndex.coerceIn(0, recommendations.lastIndex)
         sessionJob = appScope.launch {
             startupCleanup.await()
             var previousPlayableTrack: MediaTrack? = null
+            var preparedTrackCount = 0
             for ((offset, recommendation) in recommendations.drop(firstIndex).withIndex()) {
                 if (!isCurrent(sessionGeneration)) return@launch
                 val key = recommendationKey(recommendation)
@@ -297,7 +459,9 @@ class RecommendationPreviewManager(
                     updateState(sessionGeneration) { state ->
                         state.copy(waitingKeys = state.waitingKeys + key)
                     }
-                    if (!awaitPrefetchThreshold(sessionGeneration, previous.uri)) {
+                    if (shouldWaitForNextPreview(preparedTrackCount) &&
+                        !awaitPrefetchThreshold(sessionGeneration, previous.uri)
+                    ) {
                         return@launch
                     }
                     updateState(sessionGeneration) { state ->
@@ -311,70 +475,91 @@ class RecommendationPreviewManager(
                     )
                 }
 
-                val resolved = runTimedResult(
-                    timeoutMs = resolveTimeoutMs,
-                    timeoutMessage = "Finding a playable source timed out. Tap to retry."
-                ) {
-                    resolver(recommendation)
+                val prefetched = synchronized(lock) {
+                    assetsByKey[key]?.takeIf { it.file.isFile }
                 }
-                if (!isCurrent(sessionGeneration)) return@launch
-                if (resolved.isFailure) {
-                    markFailure(sessionGeneration, key, resolved.errorMessage())
-                    continue
-                }
-                val stream = resolved.getOrThrow()
-                updateState(sessionGeneration) { state ->
-                    state.copy(
-                        resolvingKeys = state.resolvingKeys - key,
-                        preparingKeys = state.preparingKeys + key
+                val mediaTrack: MediaTrack
+                if (prefetched != null) {
+                    mediaTrack = prefetched.mediaTrack
+                    updateState(sessionGeneration) { state ->
+                        state.copy(
+                            resolvingKeys = state.resolvingKeys - key,
+                            preparingKeys = state.preparingKeys - key,
+                            readyKeys = state.readyKeys + key
+                        )
+                    }
+                } else {
+                    val resolved = runTimedResult(
+                        timeoutMs = resolveTimeoutMs,
+                        timeoutMessage = "Finding a playable source timed out. Tap to retry."
+                    ) {
+                        resolver(recommendation)
+                    }
+                    if (!isCurrent(sessionGeneration)) return@launch
+                    if (resolved.isFailure) {
+                        markFailure(sessionGeneration, key, resolved.errorMessage())
+                        continue
+                    }
+                    val stream = resolved.getOrThrow()
+                    updateState(sessionGeneration) { state ->
+                        state.copy(
+                            resolvingKeys = state.resolvingKeys - key,
+                            preparingKeys = state.preparingKeys + key
+                        )
+                    }
+                    val extension = extensionForMimeType(stream.mimeType)
+                    val target = File(
+                        previewDirectory,
+                        "$sessionGeneration-${firstIndex + offset}-${safeName(recommendation)}.$extension"
                     )
-                }
-                val extension = extensionForMimeType(stream.mimeType)
-                val target = File(
-                    previewDirectory,
-                    "$sessionGeneration-${firstIndex + offset}-${safeName(recommendation)}.$extension"
-                )
-                val artworkUri = artworkByKey[key]?.takeUnless { it.isNullOrBlank() }
-                    ?: stream.thumbnailUrl.takeUnless { it.isBlank() }
-                val downloaded = runTimedResult(
-                    timeoutMs = downloadTimeoutMs,
-                    timeoutMessage = "Preview download timed out. Tap to retry."
-                ) {
-                    previewDownloader(
-                        stream,
-                        recommendation,
-                        artworkUri,
-                        target
-                    )
-                }
-                if (!isCurrent(sessionGeneration)) {
-                    target.delete()
-                    return@launch
-                }
-                if (downloaded.isFailure) {
-                    markFailure(sessionGeneration, key, downloaded.errorMessage())
-                    continue
-                }
-
-                val mediaTrack = downloaded.getOrThrow()
-                val asset = PreviewAsset(
-                    recommendation = recommendation,
-                    file = target,
-                    sourceUrl = stream.sourceUrl,
-                    thumbnailUrl = stream.thumbnailUrl.ifBlank { artworkUri.orEmpty() },
-                    mediaTrack = mediaTrack
-                )
-                synchronized(lock) {
-                    if (generation != sessionGeneration) {
+                    val artworkUri = artworkByKey[key]?.takeUnless { it.isNullOrBlank() }
+                        ?: stream.thumbnailUrl.takeUnless { it.isBlank() }
+                    val downloaded = runTimedResult(
+                        timeoutMs = downloadTimeoutMs,
+                        timeoutMessage = "Preview download timed out. Tap to retry."
+                    ) {
+                        previewDownloader(
+                            stream,
+                            recommendation,
+                            artworkUri,
+                            target
+                        )
+                    }
+                    if (!isCurrent(sessionGeneration)) {
                         target.delete()
                         return@launch
                     }
-                    assetsByKey[key] = asset
-                    keyByUri[mediaTrack.uri] = key
-                    _state.value = _state.value.copy(
-                        preparingKeys = _state.value.preparingKeys - key,
-                        readyKeys = _state.value.readyKeys + key
+                    if (downloaded.isFailure) {
+                        markFailure(sessionGeneration, key, downloaded.errorMessage())
+                        continue
+                    }
+
+                    mediaTrack = downloaded.getOrThrow()
+                    val asset = PreviewAsset(
+                        recommendation = recommendation,
+                        file = target,
+                        sourceUrl = stream.sourceUrl,
+                        thumbnailUrl = stream.thumbnailUrl.ifBlank { artworkUri.orEmpty() },
+                        mediaTrack = mediaTrack
                     )
+                    synchronized(lock) {
+                        if (generation != sessionGeneration) {
+                            target.delete()
+                            return@launch
+                        }
+                        assetsByKey[key] = asset
+                        keyByUri[mediaTrack.uri] = key
+                        _state.value = _state.value.copy(
+                            preparingKeys = _state.value.preparingKeys - key,
+                            readyKeys = _state.value.readyKeys + key
+                        )
+                    }
+                }
+
+                synchronized(lock) {
+                    if (generation == sessionGeneration) {
+                        keyByUri[mediaTrack.uri] = key
+                    }
                 }
 
                 if (!enqueuePreparedTrack(sessionGeneration, mediaTrack)) {
@@ -384,6 +569,7 @@ class RecommendationPreviewManager(
                     return@launch
                 }
                 previousPlayableTrack = mediaTrack
+                preparedTrackCount++
             }
 
             synchronized(lock) {
@@ -484,7 +670,8 @@ class RecommendationPreviewManager(
                     title = recommendation.title,
                     artist = recommendation.artist,
                     playlistId = playlistId,
-                    artworkUrl = asset.thumbnailUrl.ifBlank { artworkUri.orEmpty() }
+                    artworkUrl = asset.thumbnailUrl.ifBlank { artworkUri.orEmpty() },
+                    artworkPath = asset.mediaTrack.artworkUri
                 )
                 synchronized(lock) {
                     savedTrackUris[key] = track.uri
@@ -891,6 +1078,60 @@ class RecommendationPreviewManager(
         }
     }
 
+    private fun markPrefetchFailure(
+        requestGeneration: Long,
+        key: String,
+        message: String
+    ) {
+        synchronized(lock) {
+            if (!isCurrentPrefetchLocked(requestGeneration)) return
+            prefetchJob = null
+            _state.value = withSaveState(
+                _state.value.copy(
+                    prefetchingKeys = _state.value.prefetchingKeys - key,
+                    prefetchedKeys = _state.value.prefetchedKeys - key,
+                    failures = _state.value.failures + (key to message)
+                )
+            )
+        }
+    }
+
+    private fun isCurrentPrefetch(requestGeneration: Long): Boolean = synchronized(lock) {
+        isCurrentPrefetchLocked(requestGeneration)
+    }
+
+    private fun isCurrentPrefetchLocked(requestGeneration: Long): Boolean =
+        prefetchGeneration == requestGeneration && prefetchSeedUri != null
+
+    private fun cancelPrefetch() {
+        val files: List<File>
+        synchronized(lock) {
+            if (prefetchSeedUri == null && prefetchJob == null &&
+                prefetchedAssetsByKey.isEmpty()
+            ) {
+                return
+            }
+            prefetchGeneration++
+            prefetchJob?.cancel()
+            prefetchJob = null
+            files = prefetchedAssetsByKey.values.map { it.file }
+                .filterNot(filesBeingPromoted::contains)
+            prefetchedAssetsByKey.clear()
+            prefetchSeedUri = null
+            if (!_state.value.active) {
+                _state.value = withSaveState(
+                    _state.value.copy(
+                        seedUri = null,
+                        recommendations = emptyList(),
+                        prefetchingKeys = emptySet(),
+                        prefetchedKeys = emptySet()
+                    )
+                )
+            }
+        }
+        deleteFiles(files)
+    }
+
     private fun isCurrent(sessionGeneration: Long): Boolean = synchronized(lock) {
         generation == sessionGeneration
     }
@@ -919,6 +1160,7 @@ class RecommendationPreviewManager(
         private const val METADATA_TIMEOUT_MS = 5_000L
         private const val MAX_PREVIEW_SOURCE_DURATION_SECONDS = 30 * 60L
         private const val MAX_PREVIEW_BYTES = 24L * 1024L * 1024L
+        internal const val IMMEDIATE_PREVIEW_AHEAD_COUNT = 5
         private val TERMINAL_DOWNLOAD_STATES = setOf(
             DownloadState.COMPLETED,
             DownloadState.FAILED,
@@ -936,6 +1178,9 @@ class RecommendationPreviewManager(
             val thresholdMs = durationMs - durationMs / 4L
             return progressMs.coerceAtLeast(0L) >= thresholdMs
         }
+
+        internal fun shouldWaitForNextPreview(preparedTrackCount: Int): Boolean =
+            preparedTrackCount > IMMEDIATE_PREVIEW_AHEAD_COUNT
 
         internal fun continuationAfterCurrent(
             queue: List<MediaTrack>,
@@ -1018,6 +1263,7 @@ class RecommendationPreviewManager(
         }
 
         private suspend fun downloadPreview(
+            context: Context,
             resolved: ResolvedRecommendation,
             recommendation: LastfmTrack,
             artworkUri: String?,
@@ -1077,13 +1323,18 @@ class RecommendationPreviewManager(
                 if (durationMs <= 0L) {
                     throw IOException("Downloaded audio could not be played")
                 }
+                val localArtworkUri = resolveArtworkUri(
+                    context = context,
+                    preferredUri = artworkUri,
+                    fallbackUri = resolved.thumbnailUrl
+                )
                 Result.success(
                     MediaTrack(
                         uri = Uri.fromFile(target).toString(),
                         title = recommendation.title,
                         artist = recommendation.artist,
                         durationMs = durationMs,
-                        artworkUri = artworkUri,
+                        artworkUri = localArtworkUri,
                         isTransient = true
                     )
                 )
@@ -1096,6 +1347,52 @@ class RecommendationPreviewManager(
                 target.delete()
                 Result.failure(error)
             }
+        }
+
+        private fun resolveArtworkUri(
+            context: Context,
+            preferredUri: String?,
+            fallbackUri: String?
+        ): String? {
+            listOf(preferredUri, fallbackUri)
+                .mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }
+                .distinct()
+                .forEach { candidate ->
+                    val parsed = Uri.parse(candidate)
+                    if (parsed.scheme == null) {
+                        val path = File(candidate)
+                        if (ArtworkStorage.hasUsableArtwork(path.absolutePath)) {
+                            return Uri.fromFile(path).toString()
+                        }
+                    } else if (parsed.scheme.equals("file", ignoreCase = true) &&
+                        ArtworkStorage.hasUsableArtwork(parsed.path)
+                    ) {
+                        return candidate
+                    } else if (parsed.scheme.equals("content", ignoreCase = true)) {
+                        return candidate
+                    }
+
+                    if (parsed.scheme.equals("http", ignoreCase = true) ||
+                        parsed.scheme.equals("https", ignoreCase = true)
+                    ) {
+                        val request = Request.Builder()
+                            .url(candidate.replaceFirst("http://", "https://"))
+                            .header("User-Agent", "Luno/1.0 (Android)")
+                            .build()
+                        val cachedPath = runCatching {
+                            client.newCall(request).execute().use { response ->
+                                if (!response.isSuccessful) return@use null
+                                response.body?.bytes()
+                                    ?.takeIf { it.isNotEmpty() }
+                                    ?.let { ArtworkStorage.saveImageBytes(context, it) }
+                            }
+                        }.getOrNull()
+                        if (!cachedPath.isNullOrBlank()) {
+                            return Uri.fromFile(File(cachedPath)).toString()
+                        }
+                    }
+                }
+            return null
         }
 
         private fun extractDuration(file: File): Long {

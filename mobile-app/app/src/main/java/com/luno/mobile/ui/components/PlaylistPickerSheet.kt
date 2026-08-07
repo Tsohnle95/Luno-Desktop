@@ -53,13 +53,23 @@ fun PlaylistPickerSheet(
     title: String = "Add to playlist",
     onPick: (Playlist) -> Unit,
     onDismiss: () -> Unit,
-    onCreateNew: (() -> Unit)? = null
+    onCreateNew: (() -> Unit)? = null,
+    showRecentlySaved: Boolean = false
 ) {
     val app = LocalContext.current.applicationContext as LunoApp
     val playlists by app.playlistRepository.getAllPlaylists().collectAsState(initial = emptyList())
+    val recentlySavedIds by app.recentlySavedPlaylistIds.collectAsState()
     var searchQuery by rememberSaveable { mutableStateOf("") }
     val filteredPlaylists = playlists.filter { playlist ->
         playlist.name.contains(searchQuery.trim(), ignoreCase = true)
+    }
+    val recentlySavedPlaylists = if (showRecentlySaved && searchQuery.isBlank()) {
+        recentlySavedIds.mapNotNull { id -> playlists.firstOrNull { it.id == id } }
+    } else {
+        emptyList()
+    }
+    val remainingPlaylists = filteredPlaylists.filterNot { playlist ->
+        playlist.id in recentlySavedPlaylists.map { it.id }
     }
 
     ModalBottomSheet(
@@ -171,36 +181,78 @@ fun PlaylistPickerSheet(
                         )
                     }
                 } else {
-                    items(
-                        items = filteredPlaylists,
-                        key = { it.id }
-                    ) { playlist ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(Dimens.cornerMedium))
-                                .clickable { onPick(playlist) }
-                                .padding(vertical = Dimens.paddingMedium, horizontal = Dimens.paddingSmall),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
-                                contentDescription = null,
-                                tint = PrimaryText,
-                                modifier = Modifier.size(Dimens.iconSize)
-                            )
-                            Spacer(modifier = Modifier.width(Dimens.paddingLarge))
-                            Text(
-                                text = playlist.name,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = PrimaryText
-                            )
+                    if (recentlySavedPlaylists.isNotEmpty()) {
+                        item(key = "recently-saved-heading") {
+                            PlaylistPickerSectionHeading("Recently saved")
                         }
+                        items(
+                            items = recentlySavedPlaylists,
+                            key = { "recent-${it.id}" }
+                        ) { playlist ->
+                            PlaylistPickerRow(playlist = playlist, onPick = onPick)
+                        }
+                        if (remainingPlaylists.isNotEmpty()) {
+                            item(key = "all-playlists-heading") {
+                                PlaylistPickerSectionHeading("All playlists")
+                            }
+                        }
+                    }
+                    items(
+                        items = if (recentlySavedPlaylists.isEmpty()) {
+                            filteredPlaylists
+                        } else {
+                            remainingPlaylists
+                        },
+                        key = { "playlist-${it.id}" }
+                    ) { playlist ->
+                        PlaylistPickerRow(playlist = playlist, onPick = onPick)
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(Dimens.paddingSmall))
         }
+    }
+}
+
+@Composable
+private fun PlaylistPickerSectionHeading(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelLarge,
+        color = AccentGreen,
+        modifier = Modifier.padding(
+            top = Dimens.paddingMedium,
+            bottom = Dimens.paddingSmall,
+            start = Dimens.paddingSmall
+        )
+    )
+}
+
+@Composable
+private fun PlaylistPickerRow(
+    playlist: Playlist,
+    onPick: (Playlist) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Dimens.cornerMedium))
+            .clickable { onPick(playlist) }
+            .padding(vertical = Dimens.paddingMedium, horizontal = Dimens.paddingSmall),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+            contentDescription = null,
+            tint = PrimaryText,
+            modifier = Modifier.size(Dimens.iconSize)
+        )
+        Spacer(modifier = Modifier.width(Dimens.paddingLarge))
+        Text(
+            text = playlist.name,
+            style = MaterialTheme.typography.bodyLarge,
+            color = PrimaryText
+        )
     }
 }

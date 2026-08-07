@@ -47,6 +47,7 @@ fun TrackRowCard(
     onClick: () -> Unit,
     onMenuClick: () -> Unit,
     modifier: Modifier = Modifier,
+    artworkUri: String? = track.albumArtUri(),
     selected: Boolean? = null,
     onLongClick: (() -> Unit)? = null
 ) {
@@ -87,7 +88,7 @@ fun TrackRowCard(
         }
 
         ArtworkImage(
-            artworkUri = track.albumArtUri(),
+            artworkUri = artworkUri,
             modifier = Modifier
                 .size(Dimens.albumArtSmall)
                 .clip(RoundedCornerShape(Dimens.cornerSmall)),
