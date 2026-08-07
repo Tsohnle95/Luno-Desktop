@@ -199,7 +199,12 @@ fun DiscoverScreen(
                     title = title,
                     artist = artist,
                     playlistId = playlistId,
-                    thumbnailUrl = firstResult.thumbnailUrl.ifBlank { fallbackImage.orEmpty() }
+                    thumbnailUrl = firstResult.thumbnailUrl
+                        .ifBlank {
+                            fallbackImage.orEmpty().ifBlank {
+                                WebSearchService.thumbnailUrlForVideoId(firstResult.videoId)
+                            }
+                        }
                 )
                 true
             }

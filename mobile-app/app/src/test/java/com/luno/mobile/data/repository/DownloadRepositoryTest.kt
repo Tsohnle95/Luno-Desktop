@@ -12,6 +12,7 @@ import com.luno.mobile.data.db.entity.DownloadState
 import com.luno.mobile.data.db.entity.Playlist
 import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.playback.DownloadWorker
+import com.luno.mobile.playback.WebSearchService
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -84,6 +85,13 @@ class DownloadRepositoryTest {
         assertThat(job).isNotNull()
         assertThat(job!!.thumbnailUrl)
             .isEqualTo("https://i.ytimg.com/vi/abc123/mqdefault.jpg")
+    }
+
+    @Test
+    fun youtubeThumbnailFallback_usesCanonicalVideoThumbnail() {
+        assertThat(WebSearchService.thumbnailUrlForVideoId("abc123"))
+            .isEqualTo("https://i.ytimg.com/vi/abc123/hqdefault.jpg")
+        assertThat(WebSearchService.thumbnailUrlForVideoId("  ")).isEmpty()
     }
 
     @Test

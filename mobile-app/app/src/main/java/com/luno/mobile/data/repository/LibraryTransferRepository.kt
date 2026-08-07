@@ -314,7 +314,8 @@ class LibraryTransferRepository(
             return when (val result = withContext(Dispatchers.IO) {
                 WebSearchService.getAudioStreamUrl(source.id)
             }) {
-                is ExtractionResult.Success -> result.data.url to "https://i.ytimg.com/vi/${source.id}/hqdefault.jpg"
+                is ExtractionResult.Success -> result.data.url to
+                    WebSearchService.thumbnailUrlForVideoId(source.id)
                 is ExtractionResult.Error -> null
             }
         }
@@ -327,7 +328,9 @@ class LibraryTransferRepository(
                 when (val audio = withContext(Dispatchers.IO) {
                     WebSearchService.getAudioStreamUrl(found.videoId)
                 }) {
-                    is ExtractionResult.Success -> audio.data.url to found.thumbnailUrl
+                    is ExtractionResult.Success -> audio.data.url to found.thumbnailUrl.ifBlank {
+                        WebSearchService.thumbnailUrlForVideoId(found.videoId)
+                    }
                     is ExtractionResult.Error -> null
                 }
             }

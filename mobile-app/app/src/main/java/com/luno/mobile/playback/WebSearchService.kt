@@ -57,12 +57,15 @@ object WebSearchService {
                 .filterIsInstance<org.schabi.newpipe.extractor.stream.StreamInfoItem>()
                 .take(limit)
                 .map { item ->
+                    val videoId = extractVideoId(item.url)
                     WebSearchResult(
                         title = item.name,
                         artist = item.uploaderName ?: "Unknown",
                         duration = item.duration,
-                        thumbnailUrl = item.thumbnails?.lastOrNull()?.url ?: "",
-                        videoId = extractVideoId(item.url),
+                        thumbnailUrl = item.thumbnails?.lastOrNull()?.url
+                            ?.takeIf { it.isNotBlank() }
+                            ?: thumbnailUrlForVideoId(videoId),
+                        videoId = videoId,
                         source = "YouTube"
                     )
                 }
@@ -106,7 +109,9 @@ object WebSearchService {
                     title = item.name,
                     artist = item.uploaderName ?: "",
                     duration = item.duration,
-                    thumbnailUrl = item.thumbnails?.lastOrNull()?.url ?: ""
+                    thumbnailUrl = item.thumbnails?.lastOrNull()?.url
+                        ?.takeIf { it.isNotBlank() }
+                        ?: thumbnailUrlForVideoId(vidId)
                 )
             }
 
@@ -128,6 +133,16 @@ object WebSearchService {
     }
 
     private var cachedPlayerJsUrl: String? = null
+
+    /** Stable YouTube thumbnail fallback when the extractor returns no images. */
+    fun thumbnailUrlForVideoId(videoId: String): String {
+        val cleanId = videoId.trim()
+        return if (cleanId.isBlank()) {
+            ""
+        } else {
+            "https://i.ytimg.com/vi/$cleanId/hqdefault.jpg"
+        }
+    }
 
     private val INVIDIOUS_PROXIES = listOf(
         "https://invidious.drgns.space",

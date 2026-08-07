@@ -164,6 +164,9 @@ class LunoApp : Application(), Configuration.Provider {
         appScope.launch {
             downloadRepository.repairUnsortedMemberships(database.trackDao())
         }
+        appScope.launch {
+            downloadRepository.repairMissingDownloadedArtwork()
+        }
 
         createDownloadNotificationChannel()
         CookieHandler.setDefault(CookieManager(null, CookiePolicy.ACCEPT_ALL))

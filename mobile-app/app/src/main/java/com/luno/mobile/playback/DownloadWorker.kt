@@ -9,6 +9,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.luno.mobile.R
+import com.luno.mobile.data.artwork.ArtworkFetchService
 import com.luno.mobile.data.artwork.ArtworkStorage
 import com.luno.mobile.data.db.AppDatabase
 import com.luno.mobile.data.db.entity.DownloadState
@@ -48,6 +49,7 @@ class DownloadWorker(
         .followSslRedirects(true)
         .connectionSpecs(listOf(ConnectionSpec.MODERN_TLS, ConnectionSpec.COMPATIBLE_TLS))
         .build()
+    private val artworkFetchService = ArtworkFetchService()
 
     override suspend fun doWork(): Result {
         val jobId = inputData.getLong(KEY_DOWNLOAD_JOB_ID, -1L)
@@ -186,10 +188,26 @@ class DownloadWorker(
                 context, file.absolutePath
             )
             if (albumArtPath == null) {
-                val thumbnailUrl = inputData.getString(KEY_THUMBNAIL_URL)
-                if (!thumbnailUrl.isNullOrBlank()) {
-                    albumArtPath = fetchThumbnail(thumbnailUrl)
+                // The Room job is durable across retries/restarts; inputData
+                // is only a compatibility fallback for older work requests.
+                val thumbnailUrl = job.thumbnailUrl.ifBlank {
+                    inputData.getString(KEY_THUMBNAIL_URL).orEmpty()
                 }
+                if (!thumbnailUrl.isNullOrBlank()) {
+                    albumArtPath = artworkFetchService.fetchAndSaveImage(
+                        context,
+                        thumbnailUrl
+                    )
+                }
+            }
+            if (albumArtPath == null) {
+                // Direct audio URLs have no YouTube thumbnail. Use the saved
+                // metadata as a final cover-art lookup before completing.
+                albumArtPath = artworkFetchService.fetchAndSave(
+                    context,
+                    job.artist,
+                    job.title
+                )
             }
 
             destinationUri = MusicFolderRepository(context).copyFileToSelectedFolder(
@@ -214,6 +232,13 @@ class DownloadWorker(
                         Log.w(TAG, "Could not sync artwork for download $jobId", error)
                     }.getOrNull()
                 }
+            } else if (destinationUri == null && albumArtPath != null) {
+                // Keep a sidecar beside app-private audio as well as the
+                // shared artwork cache used by Luno's UI.
+                File(albumArtPath).takeIf { it.isFile }?.copyTo(
+                    File(downloadDir, "$safeFileName.jpg"),
+                    overwrite = true
+                )
             }
             val trackUri = destinationUri?.toString() ?: file.toURI().toString()
 
@@ -311,34 +336,6 @@ class DownloadWorker(
         ".opus" -> "audio/opus"
         ".ogg" -> "audio/ogg"
         else -> "application/octet-stream"
-    }
-
-    /**
-     * Downloads a thumbnail image (YouTube i.ytimg.com) and caches it via
-     * [ArtworkStorage].  Returns the artwork file path or `null` on failure.
-     */
-    private fun fetchThumbnail(url: String): String? {
-        return try {
-            val request = Request.Builder()
-                .url(url.replaceFirst("http://", "https://"))
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
-                .build()
-            client.newCall(request).execute().use { response ->
-                if (response.code != 200) {
-                    null
-                } else {
-                    val bytes = response.body?.bytes()
-                    if (bytes == null || bytes.isEmpty()) {
-                        null
-                    } else {
-                        ArtworkStorage.saveImageBytes(context, bytes)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Thumbnail fetch failed for $url", e)
-            null
-        }
     }
 
     private fun downloadErrorForCode(code: Int): String = when (code) {

@@ -152,7 +152,7 @@ fun FullPlayerScreen(
     val isFavorite = currentLibraryTrack?.isFavorite == true
     val canFavorite = currentLibraryTrack != null && currentTrack?.isTransient != true
 
-    val artworkUri = currentTrack?.artworkUri
+    val artworkUri = currentTrack?.artworkUri ?: currentLibraryTrack?.albumArtUri()
     val (gradientTop, gradientBottom) = rememberArtworkColors(artworkUri)
 
     val recommendationSeedUri = previewState.seedUri ?: currentTrack?.uri

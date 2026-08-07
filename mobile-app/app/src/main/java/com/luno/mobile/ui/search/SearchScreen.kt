@@ -207,7 +207,9 @@ fun SearchScreen(
                             title = title,
                             artist = artist,
                             playlistId = playlistId,
-                            thumbnailUrl = result.thumbnailUrl
+                            thumbnailUrl = result.thumbnailUrl.ifBlank {
+                                WebSearchService.thumbnailUrlForVideoId(videoId)
+                            }
                         )
                         jobIdByVideoId = jobIdByVideoId + (videoId to jobId)
                         Toast.makeText(
@@ -291,7 +293,9 @@ fun SearchScreen(
                             sourceUrl = audioResult.data.url,
                             title = title,
                             artist = artist,
-                            thumbnailUrl = result.thumbnailUrl
+                            thumbnailUrl = result.thumbnailUrl.ifBlank {
+                                WebSearchService.thumbnailUrlForVideoId(result.videoId)
+                            }
                         )
                         queued++
                     } else {

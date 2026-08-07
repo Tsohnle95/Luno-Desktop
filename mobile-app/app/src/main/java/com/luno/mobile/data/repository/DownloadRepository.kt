@@ -12,6 +12,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.luno.mobile.data.artwork.ArtworkStorage
+import com.luno.mobile.data.artwork.ArtworkFetchService
 import com.luno.mobile.data.db.AppDatabase
 import com.luno.mobile.data.db.dao.DownloadJobDao
 import com.luno.mobile.data.db.dao.PlaylistDao
@@ -44,6 +45,7 @@ class DownloadRepository(
     private val database: AppDatabase? = null
 ) {
     private val unsortedMutex = Mutex()
+    private val artworkFetchService = ArtworkFetchService()
 
     companion object {
         const val TAG = "DownloadRepository"
@@ -153,6 +155,33 @@ class DownloadRepository(
                     sortOrder = nextOrder++
                 )
             )
+        }
+    }
+
+    /** Refills artwork for completed downloads created before thumbnail caching. */
+    suspend fun repairMissingDownloadedArtwork() = withContext(Dispatchers.IO) {
+        val tracks = trackDao ?: return@withContext
+        val jobsByUri = downloadJobDao.getCompletedDownloadsOnce()
+            .filter { it.localUri.isNotBlank() }
+            .associateBy { it.localUri }
+
+        jobsByUri.forEach { (uri, job) ->
+            val track = tracks.getTrack(uri) ?: return@forEach
+            if (ArtworkStorage.hasUsableArtwork(track.albumArtPath)) return@forEach
+            val artworkPath = job.thumbnailUrl
+                .takeIf { it.isNotBlank() }
+                ?.let { thumbnailUrl ->
+                    artworkFetchService.fetchAndSaveImage(context, thumbnailUrl)
+                }
+                ?: artworkFetchService.fetchAndSave(
+                    context,
+                    track.artist.ifBlank { job.artist },
+                    track.title.ifBlank { job.title }
+                )
+                ?: return@forEach
+            if (ArtworkStorage.hasUsableArtwork(artworkPath)) {
+                tracks.updateTrack(track.copy(albumArtPath = artworkPath))
+            }
         }
     }
 

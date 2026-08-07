@@ -1257,7 +1257,9 @@ class RecommendationPreviewManager(
                 )
             ResolvedRecommendation(
                 sourceUrl = stream.url,
-                thumbnailUrl = result.thumbnailUrl,
+                thumbnailUrl = result.thumbnailUrl.ifBlank {
+                    WebSearchService.thumbnailUrlForVideoId(result.videoId)
+                },
                 mimeType = stream.mimeType
             )
         }

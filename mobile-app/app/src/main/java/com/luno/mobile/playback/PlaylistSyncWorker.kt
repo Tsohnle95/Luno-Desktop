@@ -100,20 +100,23 @@ class PlaylistSyncWorker(
                             val artist = if (trackTitleParts.size > 1) trackTitleParts[0].trim() else video.artist
                             val trackTitle = if (trackTitleParts.size > 1) trackTitleParts[1].trim() else video.title
 
+                            val thumbnailUrl = video.thumbnailUrl.ifBlank {
+                                WebSearchService.thumbnailUrlForVideoId(video.videoId)
+                            }
                             val job = com.luno.mobile.data.db.entity.DownloadJob(
                                 sourceUrl = audioResult.data.url,
                                 title = trackTitle,
                                 artist = artist,
                                 state = DownloadState.QUEUED,
                                 playlistId = playlistId,
-                                thumbnailUrl = video.thumbnailUrl,
+                                thumbnailUrl = thumbnailUrl,
                                 addedAt = System.currentTimeMillis()
                             )
                             val jobId = jobDao.insertDownload(job)
 
                             val inputData = Data.Builder()
                                 .putLong(DownloadWorker.KEY_DOWNLOAD_JOB_ID, jobId)
-                                .putString(DownloadWorker.KEY_THUMBNAIL_URL, video.thumbnailUrl)
+                                .putString(DownloadWorker.KEY_THUMBNAIL_URL, thumbnailUrl)
                                 .build()
 
                             val workRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
