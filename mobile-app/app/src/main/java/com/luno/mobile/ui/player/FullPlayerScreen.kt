@@ -59,6 +59,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -102,6 +103,11 @@ private sealed interface FullPlayerRecommendationState {
     data class Error(val seedUri: String, val message: String) : FullPlayerRecommendationState
 }
 
+private data class FullPlayerScrollPosition(
+    val index: Int,
+    val offset: Int
+)
+
 private fun recommendationKey(track: LastfmTrack): String =
     RecommendationPreviewManager.recommendationKey(track)
 
@@ -142,6 +148,7 @@ fun FullPlayerScreen(
     var recommendationForNewPlaylistKey by rememberSaveable { mutableStateOf<String?>(null) }
     val recommendationScope = rememberCoroutineScope()
     val playerListState = rememberLazyListState()
+    var scrollRestorePosition by remember { mutableStateOf<FullPlayerScrollPosition?>(null) }
     val currentLibraryTrack = remember(allTracks, currentTrack?.uri) {
         currentTrack?.uri?.let { uri -> allTracks.firstOrNull { it.uri == uri } }
     }
@@ -203,6 +210,8 @@ fun FullPlayerScreen(
         it.isNotEmpty() && previewState.seedUri == recommendationSeedUri
     }
     val readyRecommendations = managedRecommendations ?: fetchedRecommendations
+    val recommendationLoading = !previewState.active &&
+        recommendationState is FullPlayerRecommendationState.Loading
     val selectedRecommendation = previewState.selectedKey?.let { selectedKey ->
         readyRecommendations.firstOrNull { recommendationKey(it) == selectedKey }
     }
@@ -272,6 +281,30 @@ fun FullPlayerScreen(
     }
 
     LaunchedEffect(
+        previewState.active,
+        previewState.selectedKey,
+        previewState.discoverMode,
+        recommendationSeedUri,
+        readyRecommendations,
+        recommendationState
+    ) {
+        val position = scrollRestorePosition ?: return@LaunchedEffect
+        if (!previewState.active && (currentTrack == null ||
+                currentTrack?.isTransient == true || recommendationLoading)
+        ) {
+            return@LaunchedEffect
+        }
+        withFrameNanos { }
+        val itemCount = playerListState.layoutInfo.totalItemsCount
+        if (itemCount == 0) return@LaunchedEffect
+        playerListState.scrollToItem(
+            index = position.index.coerceIn(0, itemCount - 1),
+            scrollOffset = position.offset
+        )
+        scrollRestorePosition = null
+    }
+
+    LaunchedEffect(
         recommendationSeedUri,
         readyRecommendations,
         previewState.active,
@@ -322,6 +355,14 @@ fun FullPlayerScreen(
                 Toast.makeText(context.applicationContext, message, Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    fun preservePlayerScrollPosition() {
+        if (playerListState.layoutInfo.visibleItemsInfo.isEmpty()) return
+        scrollRestorePosition = FullPlayerScrollPosition(
+            index = playerListState.firstVisibleItemIndex,
+            offset = playerListState.firstVisibleItemScrollOffset
+        )
     }
 
     Box(
@@ -545,7 +586,7 @@ fun FullPlayerScreen(
                 }
                 IconButton(
                     onClick = {
-                        if (!discoverMode || !app.recommendationPreviewManager.skipToPrevious()) {
+                        if (!app.recommendationPreviewManager.skipToPrevious()) {
                             musicController.skipToPrevious()
                         }
                     },
@@ -578,7 +619,7 @@ fun FullPlayerScreen(
                 }
                 IconButton(
                     onClick = {
-                        if (!discoverMode || !app.recommendationPreviewManager.skipToNext()) {
+                        if (!app.recommendationPreviewManager.skipToNext()) {
                             musicController.skipToNext()
                         }
                     },
@@ -625,6 +666,7 @@ fun FullPlayerScreen(
                 if (currentTrack != null) {
                     TextButton(
                         onClick = {
+                            preservePlayerScrollPosition()
                             app.recommendationPreviewManager.setDiscoverMode(
                                 enabled = !discoverMode,
                                 recommendations = if (discoverMode) {
@@ -662,6 +704,7 @@ fun FullPlayerScreen(
                     val index = readyRecommendations.indexOf(recommendation)
                     val seedUri = recommendationSeedUri
                     if (index >= 0 && seedUri != null) {
+                        preservePlayerScrollPosition()
                         app.recommendationPreviewManager.startPreview(
                             seedUri = seedUri,
                             recommendations = readyRecommendations,
@@ -850,10 +893,11 @@ private fun LazyListScope.fullPlayerRecommendations(
             FullPlayerRecommendationRow(
                 recommendation = recommendation,
                 artworkUri = fallbackArtwork[key] ?: recommendation.imageUrl,
-                waiting = key in previewState.waitingKeys,
                 resolving = key in previewState.resolvingKeys,
                 preparing = key in previewState.preparingKeys ||
                     key in previewState.prefetchingKeys,
+                queuedPreview = key in previewState.waitingKeys ||
+                    key in previewState.prefetchQueuedKeys,
                 playing = previewPlaying && key == previewState.currentKey,
                 ready = key in previewState.readyKeys ||
                     key in previewState.prefetchedKeys,
@@ -874,9 +918,9 @@ private fun LazyListScope.fullPlayerRecommendations(
 private fun FullPlayerRecommendationRow(
     recommendation: LastfmTrack,
     artworkUri: String?,
-    waiting: Boolean,
     resolving: Boolean,
     preparing: Boolean,
+    queuedPreview: Boolean,
     playing: Boolean,
     ready: Boolean,
     saving: Boolean,
@@ -922,7 +966,7 @@ private fun FullPlayerRecommendationRow(
                     saveFailure != null -> "Save failed: $saveFailure"
                     playing -> "Previewing now"
                     failure != null -> failure
-                    waiting -> "Preparing the next five recommendations"
+                    queuedPreview -> "Queued for temporary preview"
                     resolving -> "Finding a playable source..."
                     preparing -> "Downloading temporary preview..."
                     ready -> "Ready in temporary queue"
@@ -941,12 +985,23 @@ private fun FullPlayerRecommendationRow(
                 overflow = TextOverflow.Ellipsis
             )
         }
-        if (resolving || preparing) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(Dimens.iconSizeSmall),
-                color = AccentGreen,
-                strokeWidth = 2.dp
-            )
+        Box(
+            modifier = Modifier.size(Dimens.touchTargetMin),
+            contentAlignment = Alignment.Center
+        ) {
+            when {
+                resolving || preparing -> CircularProgressIndicator(
+                    modifier = Modifier.size(Dimens.iconSizeSmall),
+                    color = AccentGreen,
+                    strokeWidth = 2.dp
+                )
+                ready && !permanent -> Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = "Ready to play",
+                    tint = AccentGreen,
+                    modifier = Modifier.size(Dimens.iconSizeSmall)
+                )
+            }
         }
         IconButton(
             onClick = onSave,

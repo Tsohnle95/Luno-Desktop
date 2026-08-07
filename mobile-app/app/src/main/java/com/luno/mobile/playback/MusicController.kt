@@ -401,6 +401,44 @@ class MusicController @JvmOverloads constructor(
         safePlayerCommand("previous") { controller?.seekToPreviousMediaItem() }
     }
 
+    /** Moves to the previous item in the current playback order immediately. */
+    fun skipToPreviousPlaybackItem(): Boolean {
+        if (released) return false
+        var moved = false
+        safePlayerCommand("previousPlaybackItem") {
+            val ctrl = controller ?: return@safePlayerCommand
+            val playbackIndices = playbackOrderIndices(ctrl)
+            val targetIndex = playbackNeighborIndex(
+                playbackIndices,
+                ctrl.currentMediaItemIndex,
+                direction = -1
+            )
+                ?: return@safePlayerCommand
+            ctrl.seekToDefaultPosition(targetIndex)
+            moved = true
+        }
+        return moved
+    }
+
+    /** Moves to the next item in the current playback order immediately. */
+    fun skipToNextPlaybackItem(): Boolean {
+        if (released) return false
+        var moved = false
+        safePlayerCommand("nextPlaybackItem") {
+            val ctrl = controller ?: return@safePlayerCommand
+            val playbackIndices = playbackOrderIndices(ctrl)
+            val targetIndex = playbackNeighborIndex(
+                playbackIndices,
+                ctrl.currentMediaItemIndex,
+                direction = 1
+            )
+                ?: return@safePlayerCommand
+            ctrl.seekToDefaultPosition(targetIndex)
+            moved = true
+        }
+        return moved
+    }
+
     /**
      * Cycles repeat mode OFF → ALL → ONE → OFF on the connected player.
      * No-op before connection.
@@ -779,9 +817,9 @@ class MusicController @JvmOverloads constructor(
             // cached timeline/position transiently inconsistent with the
             // session (the crash class of androidx/media#86), and shuffle
             // toggles right after the burst widen that window.
-            ctrl.setMediaItems(items)
+            val startIndex = request.startIndex.coerceIn(0, items.lastIndex)
+            ctrl.setMediaItems(items, startIndex, C.TIME_UNSET)
             ctrl.prepare()
-            ctrl.seekToDefaultPosition(request.startIndex.coerceIn(0, items.lastIndex))
             ctrl.play()
             _shuffleEnabled.value = ctrl.shuffleModeEnabled
             _repeatMode.value = ctrl.repeatMode
@@ -1108,4 +1146,14 @@ internal fun randomIndexExcludingCurrent(
     require(currentIndex in 0 until itemCount) { "Current index is out of range" }
     require(randomOffset in 0 until (itemCount - 1)) { "Random offset is out of range" }
     return if (randomOffset >= currentIndex) randomOffset + 1 else randomOffset
+}
+
+internal fun playbackNeighborIndex(
+    playbackIndices: List<Int>,
+    currentRawIndex: Int,
+    direction: Int
+): Int? {
+    require(direction == -1 || direction == 1) { "Direction must be -1 or 1" }
+    val currentPosition = playbackIndices.indexOf(currentRawIndex)
+    return playbackIndices.getOrNull(currentPosition + direction)
 }

@@ -177,6 +177,26 @@ class RecommendationPreviewManagerTest {
     }
 
     @Test
+    fun restartingFromAnotherRecommendation_retainsAllPreparedRecommendationsForBackNavigation() {
+        val recommendations = (0..6).map { index ->
+            LastfmTrack("Artist $index", "Song $index", 0.9 - index / 10.0)
+        }
+        val preparedKeys = recommendations
+            .take(5)
+            .map(RecommendationPreviewManager::recommendationKey)
+            .toSet()
+
+        val retainedKeys = RecommendationPreviewManager.retainPreparedRecommendationKeys(
+            preparedKeys = preparedKeys,
+            recommendations = recommendations
+        )
+
+        assertThat(retainedKeys).containsExactlyElementsIn(
+            recommendations.take(5).map(RecommendationPreviewManager::recommendationKey)
+        )
+    }
+
+    @Test
     fun discoverHandoff_defersOnlyForTheCurrentNormalSeed() {
         val normal = MediaTrack(uri = "seed", isTransient = false)
         val transient = normal.copy(isTransient = true)

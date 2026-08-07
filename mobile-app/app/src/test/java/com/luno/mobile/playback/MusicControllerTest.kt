@@ -113,6 +113,20 @@ class MusicControllerTest {
     }
 
     @Test
+    fun `playback neighbor follows playback order and stops at its edges`() {
+        val playbackOrder = listOf(2, 0, 1)
+
+        assertThat(playbackNeighborIndex(playbackOrder, currentRawIndex = 0, direction = -1))
+            .isEqualTo(2)
+        assertThat(playbackNeighborIndex(playbackOrder, currentRawIndex = 0, direction = 1))
+            .isEqualTo(1)
+        assertThat(playbackNeighborIndex(playbackOrder, currentRawIndex = 2, direction = -1))
+            .isNull()
+        assertThat(playbackNeighborIndex(playbackOrder, currentRawIndex = 1, direction = 1))
+            .isNull()
+    }
+
+    @Test
     fun `play with empty list returns true before connection`() {
         assertThat(controller.play(emptyList<String>())).isTrue()
     }

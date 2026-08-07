@@ -251,18 +251,13 @@ fun MainShell(
     // through this state so its page is not revealed with a second loader.
     var transitionMask by remember { mutableStateOf(false) }
     val app = context.applicationContext as com.luno.mobile.LunoApp
-    val recommendationPreviewState by app.recommendationPreviewManager.state.collectAsState()
     fun skipToNext() {
-        if (!recommendationPreviewState.discoverMode ||
-            !app.recommendationPreviewManager.skipToNext()
-        ) {
+        if (!app.recommendationPreviewManager.skipToNext()) {
             musicController.skipToNext()
         }
     }
     fun skipToPrevious() {
-        if (!recommendationPreviewState.discoverMode ||
-            !app.recommendationPreviewManager.skipToPrevious()
-        ) {
+        if (!app.recommendationPreviewManager.skipToPrevious()) {
             musicController.skipToPrevious()
         }
     }
