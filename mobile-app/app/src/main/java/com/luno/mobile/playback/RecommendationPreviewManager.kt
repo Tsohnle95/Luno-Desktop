@@ -7,12 +7,12 @@ import com.luno.mobile.data.artwork.ArtworkStorage
 import com.luno.mobile.data.db.entity.DownloadState
 import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.data.discovery.LastfmTrack
+import com.luno.mobile.data.discovery.normalizedRecommendationKey
 import com.luno.mobile.data.repository.DownloadRepository
 import com.luno.mobile.data.repository.PlaylistRepository
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
@@ -145,6 +145,9 @@ class RecommendationPreviewManager(
     private var continuationTracks: List<MediaTrack> = emptyList()
     private var forcedAdvanceUri: String? = null
     private var forcedAdvanceInProgress = false
+    private var deferredInitialPlayback = false
+    private var queuedPreviewTailUri: String? = null
+    private var advanceToDeferredRecommendation = false
     private var prefetchJob: Job? = null
     private var prefetchGeneration = 0L
     private var prefetchSeedUri: String? = null
@@ -185,6 +188,12 @@ class RecommendationPreviewManager(
                         val recoveryTransition = recoveringPlaybackError
                         if (recoveryTransition) recoveringPlaybackError = false
                         val forcedTransition = forcedAdvanceInProgress
+                        val newerNormalPlaybackRequest = baselineController === controller &&
+                            controller.playRequestRevision.value != baselinePlayRequestRevision
+                        val normalPlaybackIntervention = track != null && !track.isTransient &&
+                            (newerNormalPlaybackRequest ||
+                                (initialNormalTrackUri != null &&
+                                    track.uri != initialNormalTrackUri))
                         val shouldFinish = when {
                             key != null -> {
                                 observedPreviewTrack = true
@@ -196,8 +205,9 @@ class RecommendationPreviewManager(
                                 false
                             }
                             forcedTransition -> false
-                            observedPreviewTrack && track != null -> true
                             recoveryTransition -> false
+                            normalPlaybackIntervention -> true
+                            observedPreviewTrack && track != null -> true
                             observedPreviewTrack -> true
                             else -> false
                         }
@@ -261,6 +271,7 @@ class RecommendationPreviewManager(
         if (stopActivePreview) {
             finishForPlaybackIntervention(restoreNormalQueue = true)
         } else if (enabled) {
+            cancelPrefetch()
             currentTrack?.takeUnless { it.isTransient }?.let(::requestDiscoverRecommendations)
         }
     }
@@ -272,6 +283,9 @@ class RecommendationPreviewManager(
                 discoverStartedUri == track.uri || discoverRequestJob != null
             ) {
                 return
+            }
+            if (discoverStartedUri != track.uri) {
+                advanceToDeferredRecommendation = false
             }
             discoverStartedUri = track.uri
             discoverRequestGeneration++
@@ -293,18 +307,26 @@ class RecommendationPreviewManager(
             synchronized(lock) {
                 if (discoverRequestGeneration != requestGeneration) return@launch
                 discoverRequestJob = null
-                if (!_state.value.discoverMode || _state.value.active ||
-                    musicController?.currentTrack?.value?.uri != track.uri
-                ) {
+                if (recommendations.isEmpty()) {
+                    advanceToDeferredRecommendation = false
                     return@launch
                 }
             }
-            if (recommendations.isNotEmpty()) {
+            withContext(Dispatchers.Main.immediate) {
+                synchronized(lock) {
+                    if (discoverRequestGeneration != requestGeneration ||
+                        !_state.value.discoverMode || _state.value.active ||
+                        musicController?.currentTrack?.value?.uri != track.uri
+                    ) {
+                        return@withContext
+                    }
+                }
                 startPreview(
                     seedUri = track.uri,
                     recommendations = recommendations,
                     startIndex = 0,
-                    artworkByKey = emptyMap()
+                    artworkByKey = emptyMap(),
+                    deferUntilCurrentEnds = true
                 )
             }
         }
@@ -452,7 +474,8 @@ class RecommendationPreviewManager(
         seedUri: String,
         recommendations: List<LastfmTrack>,
         startIndex: Int,
-        artworkByKey: Map<String, String?>
+        artworkByKey: Map<String, String?>,
+        deferUntilCurrentEnds: Boolean = false
     ) {
         if (recommendations.isEmpty()) return
         val controller = musicController ?: run {
@@ -482,6 +505,12 @@ class RecommendationPreviewManager(
         val retainedPrefetch: PreviewAsset?
         val currentUri = controller.currentTrack.value?.uri
         val currentIsPreview = synchronized(lock) { currentUri in keyByUri }
+        val deferPlayback = shouldDeferDiscoverHandoff(
+            requested = deferUntilCurrentEnds,
+            currentTrack = controller.currentTrack.value,
+            seedUri = seedUri
+        )
+        if (deferUntilCurrentEnds && !deferPlayback) return
         val nextQueueTracks = if (currentIsPreview) {
             synchronized(lock) { continuationTracks }
         } else {
@@ -518,6 +547,9 @@ class RecommendationPreviewManager(
             recoveringPlaybackError = false
             forcedAdvanceUri = null
             forcedAdvanceInProgress = false
+            deferredInitialPlayback = deferPlayback
+            queuedPreviewTailUri = if (deferPlayback) seedUri else null
+            if (!deferPlayback) advanceToDeferredRecommendation = false
             initialNormalTrackUri = controller.currentTrack.value
                 ?.takeUnless { it.isTransient }
                 ?.uri
@@ -553,7 +585,11 @@ class RecommendationPreviewManager(
                         state.copy(waitingKeys = state.waitingKeys + key)
                     }
                     if (shouldWaitForNextPreview(preparedTrackCount) &&
-                        !awaitPrefetchThreshold(sessionGeneration, previous.uri)
+                        !awaitRecommendationWindow(
+                            sessionGeneration = sessionGeneration,
+                            recommendations = recommendations,
+                            nextRecommendationIndex = firstIndex + offset
+                        )
                     ) {
                         return@launch
                     }
@@ -670,7 +706,7 @@ class RecommendationPreviewManager(
             }
             if (restoreOriginalQueue && !synchronized(lock) { previewPlaybackStarted }) {
                 restoreQueueContinuation(sessionGeneration)
-            } else {
+            } else if (!synchronized(lock) { deferredInitialPlayback }) {
                 appendQueueContinuation(sessionGeneration)
             }
             finishEmptyPreviewSession(sessionGeneration)
@@ -681,17 +717,45 @@ class RecommendationPreviewManager(
      * Handles Next while a recommendation preview is active. If the next
      * preview is already queued, normal Media3 skipping is sufficient. If it
      * is not, stop the current preview and wake the preparation loop so the
-     * next recommendation is resolved immediately instead of waiting for 75%.
+     * next recommendation is resolved immediately instead of waiting for the
+     * rolling five-item window.
      */
     fun skipToNext(): Boolean {
         val controller = musicController ?: return false
         val currentTrack = controller.currentTrack.value ?: return false
         val currentKey = synchronized(lock) {
             if (!_state.value.active) null else keyByUri[currentTrack.uri]
-        } ?: return false
+        }
+        if (currentKey == null) {
+            val waitingForDiscoverHandoff = synchronized(lock) {
+                isDiscoverHandoffPending(
+                    discoverMode = _state.value.discoverMode,
+                    currentTrack = currentTrack,
+                    deferredInitialPlayback = deferredInitialPlayback,
+                    initialNormalTrackUri = initialNormalTrackUri,
+                    discoverRequestPending = discoverRequestJob != null,
+                    discoverStartedUri = discoverStartedUri
+                )
+            }
+            if (!waitingForDiscoverHandoff) return false
 
-        val queueAfterCurrent = controller.getQueueAfterCurrent()
-        if (!queueAfterCurrent.isNullOrEmpty()) {
+            val queueAfterCurrent = controller.getQueueAfterCurrent().orEmpty()
+            val nextIsQueuedPreview = queueAfterCurrent.firstOrNull()?.let { next ->
+                synchronized(lock) { keyByUri.containsKey(next.uri) }
+            } == true
+            if (nextIsQueuedPreview) {
+                controller.skipToNext()
+            } else {
+                synchronized(lock) { advanceToDeferredRecommendation = true }
+            }
+            return true
+        }
+
+        val queueAfterCurrent = controller.getQueueAfterCurrent().orEmpty()
+        val nextIsQueuedPreview = queueAfterCurrent.firstOrNull()?.let { next ->
+            synchronized(lock) { keyByUri.containsKey(next.uri) }
+        } == true
+        if (nextIsQueuedPreview) {
             controller.skipToNext()
             return true
         }
@@ -833,7 +897,14 @@ class RecommendationPreviewManager(
             sessionJob?.cancel()
             sessionJob = null
             controller = musicController
-            normalQueue = if (restoreNormalQueue) continuationTracks else emptyList()
+            val keepDeferredNormalPlayback = restoreNormalQueue &&
+                deferredInitialPlayback &&
+                controller?.currentTrack?.value?.uri == initialNormalTrackUri
+            normalQueue = if (restoreNormalQueue && !keepDeferredNormalPlayback) {
+                continuationTracks
+            } else {
+                emptyList()
+            }
             files = assetsByKey.values.map { it.file }
                 .filterNot(filesBeingPromoted::contains)
             previewUris = keyByUri.keys.toSet()
@@ -848,6 +919,9 @@ class RecommendationPreviewManager(
             continuationTracks = emptyList()
             forcedAdvanceUri = null
             forcedAdvanceInProgress = false
+            deferredInitialPlayback = false
+            queuedPreviewTailUri = null
+            advanceToDeferredRecommendation = false
             _state.value = withSaveState(
                 RecommendationPreviewState(
                     discoverMode = _state.value.discoverMode
@@ -870,6 +944,8 @@ class RecommendationPreviewManager(
         while (isCurrent(sessionGeneration)) {
             val controller = awaitController(sessionGeneration) ?: return false
             val firstTrack = synchronized(lock) { !previewPlaybackStarted }
+            val deferPlayback = synchronized(lock) { deferredInitialPlayback }
+            val insertionAnchor = synchronized(lock) { queuedPreviewTailUri }
             val dispatchResult = withContext(Dispatchers.Main.immediate) {
                 if (!isCurrent(sessionGeneration) || musicController !== controller ||
                     !controller.isConnected.value
@@ -879,7 +955,13 @@ class RecommendationPreviewManager(
                     PreviewDispatchResult.INTERVENED
                 } else {
                     val revisionBefore = controller.queueRevision.value
-                    val accepted = if (firstTrack) {
+                    val accepted = if (deferPlayback) {
+                        controller.insertIntoPlaybackContext(
+                            track = mediaTrack,
+                            afterUri = insertionAnchor,
+                            insertBeforeCurrentIfAnchorMissing = true
+                        )
+                    } else if (firstTrack) {
                         controller.playSequential(mediaTrack)
                     } else {
                         controller.appendToPlaybackContext(mediaTrack)
@@ -891,6 +973,15 @@ class RecommendationPreviewManager(
                         }
                     }
                     if (accepted && controller.queueRevision.value != revisionBefore) {
+                        val advanceNow = synchronized(lock) {
+                            deferPlayback && firstTrack && advanceToDeferredRecommendation
+                        }
+                        if (advanceNow) {
+                            controller.skipToNext()
+                            synchronized(lock) {
+                                advanceToDeferredRecommendation = false
+                            }
+                        }
                         PreviewDispatchResult.SUCCESS
                     } else {
                         PreviewDispatchResult.RETRY
@@ -902,6 +993,7 @@ class RecommendationPreviewManager(
                     synchronized(lock) {
                         if (generation != sessionGeneration) return false
                         if (firstTrack) previewPlaybackStarted = true
+                        if (deferredInitialPlayback) queuedPreviewTailUri = mediaTrack.uri
                     }
                     return true
                 }
@@ -915,48 +1007,42 @@ class RecommendationPreviewManager(
         return false
     }
 
-    private suspend fun awaitPrefetchThreshold(
+    private suspend fun awaitRecommendationWindow(
         sessionGeneration: Long,
-        previousTrackUri: String
+        recommendations: List<LastfmTrack>,
+        nextRecommendationIndex: Int
     ): Boolean {
-        var observedPreviousTrack = false
+        val minimumCurrentIndex = minimumCurrentIndexForRecommendation(nextRecommendationIndex)
         while (isCurrent(sessionGeneration)) {
             val forcedAdvance = synchronized(lock) {
-                forcedAdvanceInProgress &&
-                    (forcedAdvanceUri == null || forcedAdvanceUri == previousTrackUri)
+                forcedAdvanceInProgress
             }
             if (forcedAdvance) return true
             val controller = awaitController(sessionGeneration) ?: return false
             val currentTrack = controller.currentTrack.value
+            val currentKey = currentTrack?.uri?.let { uri ->
+                synchronized(lock) { keyByUri[uri] }
+            }
+            val currentIndex = currentKey?.let { key ->
+                recommendations.indexOfFirst { recommendationKey(it) == key }
+            } ?: -1
+            if (currentIndex >= minimumCurrentIndex) return true
+            if (currentTrack == null && synchronized(lock) { previewPlaybackStarted }) {
+                // The current preview can end while the next item is still
+                // being prepared; inserting it will resume the player.
+                return true
+            }
+
             when {
-                currentTrack?.uri == previousTrackUri -> {
-                    observedPreviousTrack = true
-                    val durationMs = currentTrack.durationMs.takeIf { it > 0L }
-                        ?: controller.duration.value
-                    if (hasReachedPrefetchThreshold(controller.progress.value, durationMs)) {
-                        return true
-                    }
-                }
-                !synchronized(lock) { keyByUri.containsKey(previousTrackUri) } -> {
-                    // Playback validation failed and removed this preview.
-                    return true
-                }
                 currentTrack != null && !currentTrack.isTransient -> {
-                    val staleInitialTrack = !observedPreviousTrack &&
+                    val expectedInitialTrack =
                         currentTrack.uri == initialNormalTrackUri &&
                         controller.playRequestRevision.value == baselinePlayRequestRevision
-                    if (!staleInitialTrack) {
+                    if (!expectedInitialTrack) {
                         finishForPlaybackIntervention()
                         return false
                     }
                 }
-                shouldContinueAfterPlaybackGap(observedPreviousTrack, currentTrack) -> {
-                    // The previous item can end while the next preview is
-                    // still downloading. Let appendToPlaybackContext resume
-                    // the player once that preview is ready.
-                    return true
-                }
-                observedPreviousTrack && currentTrack?.isTransient == true -> return true
             }
             delay(PREFETCH_POLL_INTERVAL_MS)
         }
@@ -1023,7 +1109,11 @@ class RecommendationPreviewManager(
             val newerPlayRequest = baselineController === controller &&
                 controller.playRequestRevision.value != baselinePlayRequestRevision
             val currentNormalTrack = controller.currentTrack.value?.takeUnless { it.isTransient }
-            newerPlayRequest || if (previewPlaybackStarted) {
+            val waitingForDeferredHandoff = deferredInitialPlayback &&
+                !observedPreviewTrack && currentNormalTrack?.uri == initialNormalTrackUri
+            newerPlayRequest || if (waitingForDeferredHandoff) {
+                false
+            } else if (previewPlaybackStarted) {
                 currentNormalTrack != null
             } else {
                 currentNormalTrack?.uri != initialNormalTrackUri
@@ -1084,6 +1174,9 @@ class RecommendationPreviewManager(
             previewPlaybackStarted = false
             observedPreviewTrack = false
             recoveringPlaybackError = false
+            deferredInitialPlayback = false
+            queuedPreviewTailUri = null
+            advanceToDeferredRecommendation = false
             _state.value = _state.value.copy(
                 active = false,
                 seedUri = null,
@@ -1271,8 +1364,7 @@ class RecommendationPreviewManager(
             DownloadState.CANCELLED
         )
         fun recommendationKey(track: LastfmTrack): String =
-            "${track.artist.trim().lowercase(Locale.ROOT)}|" +
-                track.title.trim().lowercase(Locale.ROOT)
+            normalizedRecommendationKey(track)
 
         internal fun hasReachedPrefetchThreshold(
             progressMs: Long,
@@ -1285,6 +1377,32 @@ class RecommendationPreviewManager(
 
         internal fun shouldWaitForNextPreview(preparedTrackCount: Int): Boolean =
             preparedTrackCount > IMMEDIATE_PREVIEW_AHEAD_COUNT
+
+        internal fun shouldDeferDiscoverHandoff(
+            requested: Boolean,
+            currentTrack: MediaTrack?,
+            seedUri: String
+        ): Boolean = requested && currentTrack?.let {
+            it.uri == seedUri && !it.isTransient
+        } == true
+
+        internal fun isDiscoverHandoffPending(
+            discoverMode: Boolean,
+            currentTrack: MediaTrack?,
+            deferredInitialPlayback: Boolean,
+            initialNormalTrackUri: String?,
+            discoverRequestPending: Boolean,
+            discoverStartedUri: String?
+        ): Boolean = discoverMode && currentTrack?.let { track ->
+            !track.isTransient &&
+                ((deferredInitialPlayback && track.uri == initialNormalTrackUri) ||
+                    (discoverRequestPending && discoverStartedUri == track.uri))
+        } == true
+
+        /** The current item must advance before a sixth item beyond it is prepared. */
+        internal fun minimumCurrentIndexForRecommendation(
+            nextRecommendationIndex: Int
+        ): Int = (nextRecommendationIndex - IMMEDIATE_PREVIEW_AHEAD_COUNT).coerceAtLeast(0)
 
         internal fun shouldContinueAfterPlaybackGap(
             observedPreviousTrack: Boolean,

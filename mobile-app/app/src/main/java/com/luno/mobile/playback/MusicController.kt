@@ -572,6 +572,51 @@ class MusicController @JvmOverloads constructor(
         return appended
     }
 
+    /**
+     * Inserts a temporary context item immediately after [afterUri]. When the
+     * anchor is unavailable, the item is inserted after the current item, or
+     * before it when [insertBeforeCurrentIfAnchorMissing] is set. The
+     * insertion does not replace playback or mark the item as user-queued.
+     */
+    fun insertIntoPlaybackContext(
+        track: MediaTrack,
+        afterUri: String? = null,
+        insertBeforeCurrentIfAnchorMissing: Boolean = false
+    ): Boolean {
+        if (released) return false
+        val ctrl = controller ?: return false
+        var inserted = false
+        safePlayerCommand("insertPlaybackContext") {
+            val playbackIndices = playbackOrderIndices(ctrl)
+            val anchorRawIndex = afterUri
+                ?.let { uri ->
+                    playbackIndices.firstOrNull { index ->
+                        ctrl.getMediaItemAt(index).mediaId == uri
+                    }
+                }
+            val currentRawIndex = ctrl.currentMediaItemIndex
+            val insertAt = when {
+                anchorRawIndex != null -> anchorRawIndex + 1
+                insertBeforeCurrentIfAnchorMissing &&
+                    currentRawIndex in 0 until ctrl.mediaItemCount -> currentRawIndex
+                currentRawIndex in 0 until ctrl.mediaItemCount -> currentRawIndex + 1
+                else -> ctrl.mediaItemCount
+            }.coerceIn(0, ctrl.mediaItemCount)
+            val resumePlayback = ctrl.mediaItemCount == 0 ||
+                ctrl.playbackState == Player.STATE_ENDED ||
+                ctrl.playbackState == Player.STATE_IDLE
+            ctrl.addMediaItem(insertAt, buildMediaItem(track, enrichArtwork = true))
+            if (resumePlayback) {
+                ctrl.seekToDefaultPosition(insertAt.coerceAtMost(ctrl.mediaItemCount - 1))
+                ctrl.prepare()
+                ctrl.play()
+            }
+            bumpQueueRevision()
+            inserted = true
+        }
+        return inserted
+    }
+
     /** Removes a failed current item and resumes the next queued item, if any. */
     fun removeCurrentFromPlaybackContext(): Boolean {
         if (released) return false

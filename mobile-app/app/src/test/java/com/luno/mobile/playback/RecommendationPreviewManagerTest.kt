@@ -68,6 +68,15 @@ class RecommendationPreviewManagerTest {
     }
 
     @Test
+    fun recommendationKey_collapsesPunctuationAccentsAndUnicodeSpacing() {
+        val first = LastfmTrack("Taco", "Puttin' on the Ritz", 0.9)
+        val duplicate = LastfmTrack("  tacó ", "Puttin\u00a0on the Ritz", 0.8)
+
+        assertThat(RecommendationPreviewManager.recommendationKey(first))
+            .isEqualTo(RecommendationPreviewManager.recommendationKey(duplicate))
+    }
+
+    @Test
     fun extensionForMimeType_mapsPlayableAudioFormats() {
         assertThat(RecommendationPreviewManager.extensionForMimeType("audio/mp4; codecs=mp4a"))
             .isEqualTo("m4a")
@@ -100,7 +109,7 @@ class RecommendationPreviewManagerTest {
     }
 
     @Test
-    fun nextFivePreviews_prepareImmediatelyBeforeTheSeventyFivePercentGate() {
+    fun nextFivePreviews_prepareImmediatelyBeforeTheRollingWindowGate() {
         assertThat(RecommendationPreviewManager.shouldWaitForNextPreview(0)).isFalse()
         assertThat(RecommendationPreviewManager.shouldWaitForNextPreview(1)).isFalse()
         assertThat(
@@ -113,6 +122,83 @@ class RecommendationPreviewManagerTest {
                 RecommendationPreviewManager.IMMEDIATE_PREVIEW_AHEAD_COUNT + 1
             )
         ).isTrue()
+    }
+
+    @Test
+    fun discoverHandoff_defersOnlyForTheCurrentNormalSeed() {
+        val normal = MediaTrack(uri = "seed", isTransient = false)
+        val transient = normal.copy(isTransient = true)
+
+        assertThat(
+            RecommendationPreviewManager.shouldDeferDiscoverHandoff(
+                requested = true,
+                currentTrack = normal,
+                seedUri = "seed"
+            )
+        ).isTrue()
+        assertThat(
+            RecommendationPreviewManager.shouldDeferDiscoverHandoff(
+                requested = true,
+                currentTrack = transient,
+                seedUri = "seed"
+            )
+        ).isFalse()
+        assertThat(
+            RecommendationPreviewManager.shouldDeferDiscoverHandoff(
+                requested = true,
+                currentTrack = normal,
+                seedUri = "other"
+            )
+        ).isFalse()
+    }
+
+    @Test
+    fun nextDuringDiscoverHandoff_isInterceptedBeforeTheFirstPreviewStarts() {
+        val normal = MediaTrack(uri = "seed")
+
+        assertThat(
+            RecommendationPreviewManager.isDiscoverHandoffPending(
+                discoverMode = true,
+                currentTrack = normal,
+                deferredInitialPlayback = true,
+                initialNormalTrackUri = "seed",
+                discoverRequestPending = false,
+                discoverStartedUri = null
+            )
+        ).isTrue()
+        assertThat(
+            RecommendationPreviewManager.isDiscoverHandoffPending(
+                discoverMode = true,
+                currentTrack = normal,
+                deferredInitialPlayback = false,
+                initialNormalTrackUri = null,
+                discoverRequestPending = true,
+                discoverStartedUri = "seed"
+            )
+        ).isTrue()
+        assertThat(
+            RecommendationPreviewManager.isDiscoverHandoffPending(
+                discoverMode = true,
+                currentTrack = normal.copy(isTransient = true),
+                deferredInitialPlayback = true,
+                initialNormalTrackUri = "seed",
+                discoverRequestPending = false,
+                discoverStartedUri = null
+            )
+        ).isFalse()
+    }
+
+    @Test
+    fun recommendationWindow_keepsFiveItemsAheadOfCurrentRecommendation() {
+        assertThat(
+            RecommendationPreviewManager.minimumCurrentIndexForRecommendation(6)
+        ).isEqualTo(1)
+        assertThat(
+            RecommendationPreviewManager.minimumCurrentIndexForRecommendation(10)
+        ).isEqualTo(5)
+        assertThat(
+            RecommendationPreviewManager.minimumCurrentIndexForRecommendation(3)
+        ).isEqualTo(0)
     }
 
     @Test

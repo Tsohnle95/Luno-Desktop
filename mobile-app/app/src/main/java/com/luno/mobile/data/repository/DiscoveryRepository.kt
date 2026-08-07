@@ -5,8 +5,7 @@ import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.data.discovery.LastfmKeyStore
 import com.luno.mobile.data.discovery.LastfmResult
 import com.luno.mobile.data.discovery.LastfmService
-import java.text.Normalizer
-import java.util.Locale
+import com.luno.mobile.data.discovery.normalizedRecommendationKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -52,9 +51,9 @@ class DiscoveryRepository(
 
     /**
      * Fetches recommendations for the seed (artist, title) and filters out
-     * anything the user already owns.  Matching follows the desktop rule:
-     * the normalized `"artist - title"` string (lowercased, trimmed) must
-     * not appear in the library.
+     * anything the user already owns. Matching uses normalized artist/title
+     * identity so accents, punctuation, and Unicode spacing do not create
+     * duplicate recommendations.
      */
     suspend fun getSimilar(
         artist: String,
@@ -63,33 +62,19 @@ class DiscoveryRepository(
         libraryTracks: List<Track> = emptyList()
     ): LastfmResult {
         val result = lastfm.getSimilar(artist, title, limit)
-        if (result !is LastfmResult.Success || libraryTracks.isEmpty()) return result
+        if (result !is LastfmResult.Success) return result
+        val distinctTracks = result.tracks.distinctBy(::normalizedRecommendationKey)
+        if (libraryTracks.isEmpty()) return LastfmResult.Success(distinctTracks)
 
         val filtered = withContext(Dispatchers.Default) {
-            val libraryKeys = libraryTracks.mapNotNull { track ->
-                discoveryKey(track.artist, track.title)
+            val libraryKeys = libraryTracks.map { track ->
+                normalizedRecommendationKey(track.artist, track.title)
             }.toSet()
 
-            result.tracks.filter { recommendation ->
-                discoveryKey(recommendation.artist, recommendation.title) !in libraryKeys
+            distinctTracks.filter { recommendation ->
+                normalizedRecommendationKey(recommendation) !in libraryKeys
             }
         }
         return LastfmResult.Success(filtered)
     }
-
-    /** Matches equivalent metadata despite punctuation, accents, or spacing. */
-    private fun discoveryKey(artist: String, title: String): String? {
-        val normalizedArtist = normalizePart(artist)
-        val normalizedTitle = normalizePart(title)
-        if (normalizedArtist.isEmpty() || normalizedTitle.isEmpty()) return null
-        return "$normalizedArtist|$normalizedTitle"
-    }
-
-    private fun normalizePart(value: String): String = Normalizer
-        .normalize(value, Normalizer.Form.NFKD)
-        .replace("\\p{M}+".toRegex(), "")
-        .lowercase(Locale.ROOT)
-        .replace("[^\\p{L}\\p{N}]+".toRegex(), " ")
-        .trim()
-        .replace("\\s+".toRegex(), " ")
 }

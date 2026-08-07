@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import com.luno.mobile.LunoApp
 import com.luno.mobile.data.discovery.LastfmResult
 import com.luno.mobile.data.discovery.LastfmTrack
+import com.luno.mobile.data.discovery.normalizedRecommendationKey
 import com.luno.mobile.playback.ExtractionResult
 import com.luno.mobile.playback.MusicController
 import com.luno.mobile.playback.WebSearchService
@@ -407,7 +408,7 @@ fun DiscoverScreen(
     }
 }
 
-private fun recKey(rec: LastfmTrack): String = "${rec.artist.lowercase()}|${rec.title.lowercase()}"
+private fun recKey(rec: LastfmTrack): String = normalizedRecommendationKey(rec)
 
 @Composable
 private fun KeySetupState(onSetKey: () -> Unit) {

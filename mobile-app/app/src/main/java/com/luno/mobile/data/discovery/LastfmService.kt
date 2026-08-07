@@ -5,6 +5,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.Normalizer
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,6 +21,21 @@ data class LastfmTrack(
     val match: Double,
     val imageUrl: String? = null
 )
+
+/** Stable artist/title identity used to remove duplicate recommendations. */
+fun normalizedRecommendationKey(artist: String, title: String): String =
+    "${normalizeRecommendationPart(artist)}|${normalizeRecommendationPart(title)}"
+
+fun normalizedRecommendationKey(track: LastfmTrack): String =
+    normalizedRecommendationKey(track.artist, track.title)
+
+private fun normalizeRecommendationPart(value: String): String = Normalizer
+    .normalize(value, Normalizer.Form.NFKD)
+    .replace("\\p{M}+".toRegex(), "")
+    .lowercase(Locale.ROOT)
+    .replace("[^\\p{L}\\p{N}]+".toRegex(), " ")
+    .trim()
+    .replace("\\s+".toRegex(), " ")
 
 /**
  * Outcome of a Last.fm fetch: [Success] with the parsed tracks, or
@@ -90,8 +107,9 @@ open class LastfmService(
 
         val similar = fetchSimilar(seedArtist, seedTitle, apiKey, limit)
         if (similar is LastfmResult.Success) {
-            storeCache(cacheKey, similar.tracks)
-            if (similar.tracks.isNotEmpty()) return similar
+            val distinct = similar.copy(tracks = deduplicate(similar.tracks))
+            storeCache(cacheKey, distinct.tracks)
+            if (distinct.tracks.isNotEmpty()) return distinct
         } else {
             return similar
         }
@@ -100,7 +118,9 @@ open class LastfmService(
         // tracks by the artist, all scored 0.8.
         val topTracks = fetchTopTracks(seedArtist, apiKey, limit)
         if (topTracks is LastfmResult.Success) {
-            val fallbackTracks = topTracks.tracks.map { it.copy(match = FALLBACK_MATCH) }
+            val fallbackTracks = deduplicate(
+                topTracks.tracks.map { it.copy(match = FALLBACK_MATCH) }
+            )
             storeCache(cacheKey, fallbackTracks)
             return LastfmResult.Success(fallbackTracks)
         }
@@ -110,6 +130,9 @@ open class LastfmService(
     fun clearCache() {
         synchronized(cache) { cache.clear() }
     }
+
+    private fun deduplicate(tracks: List<LastfmTrack>): List<LastfmTrack> =
+        tracks.distinctBy(::normalizedRecommendationKey)
 
     private sealed interface ApiOutcome {
         data class Ok(val json: JSONObject) : ApiOutcome

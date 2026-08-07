@@ -231,8 +231,13 @@ fun FullPlayerScreen(
         playerListState.scrollToItem(0)
     }
 
-    LaunchedEffect(recommendationSeedUri, fetchedRecommendations, previewState.active) {
-        if (!previewState.active && recommendationSeedUri != null) {
+    LaunchedEffect(
+        recommendationSeedUri,
+        fetchedRecommendations,
+        previewState.active,
+        discoverMode
+    ) {
+        if (!discoverMode && !previewState.active && recommendationSeedUri != null) {
             fetchedRecommendations.firstOrNull()?.let { firstRecommendation ->
                 val key = recommendationKey(firstRecommendation)
                 app.recommendationPreviewManager.prefetchFirstRecommendation(
@@ -871,7 +876,7 @@ private fun FullPlayerRecommendationRow(
                     saveFailure != null -> "Save failed: $saveFailure"
                     playing -> "Previewing now"
                     failure != null -> failure
-                    waiting -> "Waiting for 75% of current preview"
+                    waiting -> "Preparing the next five recommendations"
                     resolving -> "Finding a playable source..."
                     preparing -> "Downloading temporary preview..."
                     ready -> "Ready in temporary queue"

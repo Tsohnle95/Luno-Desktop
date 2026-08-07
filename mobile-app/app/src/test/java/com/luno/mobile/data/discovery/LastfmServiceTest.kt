@@ -102,6 +102,23 @@ class LastfmServiceTest {
     }
 
     @Test
+    fun similarTracks_deduplicatePunctuationAccentAndSpacingVariants() = runBlocking {
+        server.enqueue(
+            similarResponse(
+                """[{"name":"Puttin' on the Ritz","match":0.9,"artist":{"name":"Taco"}},
+                    {"name":"Puttin\u00a0on the Ritz","match":0.8,"artist":{"name":"tacó"}},
+                    {"name":"Another Song","match":0.7,"artist":{"name":"Another Artist"}}]"""
+            )
+        )
+
+        val result = service.getSimilar("Artist", "Title") as LastfmResult.Success
+
+        assertThat(result.tracks.map { it.title })
+            .containsExactly("Puttin' on the Ritz", "Another Song")
+            .inOrder()
+    }
+
+    @Test
     fun legacyHttpArtworkUrl_isUpgradedToHttps() = runBlocking {
         server.enqueue(
             similarResponse(

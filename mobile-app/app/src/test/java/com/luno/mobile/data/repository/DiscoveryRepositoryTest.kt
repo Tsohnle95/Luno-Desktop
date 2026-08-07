@@ -119,6 +119,23 @@ class DiscoveryRepositoryTest {
     }
 
     @Test
+    fun getSimilar_deduplicatesEquivalentRecommendationMetadata() = runBlocking {
+        fakeService.result = LastfmResult.Success(
+            listOf(
+                LastfmTrack(artist = "Taco", title = "Puttin' on the Ritz", match = 0.9),
+                LastfmTrack(artist = " tacó ", title = "Puttin\u00a0on the Ritz", match = 0.8),
+                LastfmTrack(artist = "Another Artist", title = "Another Song", match = 0.7)
+            )
+        )
+
+        val result = repository.getSimilar("Artist", "Title") as LastfmResult.Success
+
+        assertThat(result.tracks.map { it.title })
+            .containsExactly("Puttin' on the Ritz", "Another Song")
+            .inOrder()
+    }
+
+    @Test
     fun getSimilar_noLibrary_returnsEverything() = runBlocking {
         fakeService.result = LastfmResult.Success(
             listOf(LastfmTrack(artist = "Artist A", title = "Song A", match = 0.9))

@@ -373,6 +373,12 @@ class MusicControllerTest {
     @Test
     fun `temporary context mutations report rejection before connection`() {
         assertThat(controller.appendToPlaybackContext(track("append"))).isFalse()
+        assertThat(
+            controller.insertIntoPlaybackContext(
+                track("insert"),
+                afterUri = "current"
+            )
+        ).isFalse()
         assertThat(controller.removeCurrentFromPlaybackContext()).isFalse()
     }
 
