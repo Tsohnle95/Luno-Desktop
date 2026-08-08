@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -18,9 +19,16 @@ import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.ui.theme.Dimens
 import com.luno.mobile.ui.theme.SurfaceDark
 
+/** Keeps a missing-art track from consuming a collage quadrant. */
+internal fun collageArtworkTracks(tracks: List<Track>, limit: Int = 4): List<Track> =
+    tracks.asSequence()
+        .filter { !it.albumArtPath.isNullOrBlank() }
+        .take(limit.coerceAtLeast(0))
+        .toList()
+
 /**
- * Spotify/desktop-home-style square: the first four track artworks each
- * occupy one quadrant of the square (2x2 collage).  Missing cells render
+ * Spotify/desktop-home-style square: the first four available track artworks
+ * each occupy one quadrant of the square (2x2 collage).  Missing cells render
  * the standard artwork placeholder.  Callers supply the width/size via
  * [modifier] (e.g. `fillMaxWidth()` or `size(48.dp)`); the collage always
  * stays square.
@@ -33,6 +41,7 @@ fun ArtworkCollage(
     decodeSizePx: Int = 512,
     shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(Dimens.cornerSmall)
 ) {
+    val artworkTracks = remember(tracks) { collageArtworkTracks(tracks) }
     Column(
         modifier = modifier
             .aspectRatio(1f)
@@ -43,7 +52,7 @@ fun ArtworkCollage(
             Row(modifier = Modifier.weight(1f)) {
                 for (col in 0 until 2) {
                     val index = row * 2 + col
-                    val track = tracks.getOrNull(index)
+                    val track = artworkTracks.getOrNull(index)
                     Box(
                         modifier = Modifier
                             .weight(1f)

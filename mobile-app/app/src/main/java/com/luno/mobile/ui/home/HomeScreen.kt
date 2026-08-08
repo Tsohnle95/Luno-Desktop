@@ -469,104 +469,6 @@ fun HomeScreen(
             }
         }
 
-        // Recently played — swipeable horizontal carousel of the full
-        // persisted history, edge-clipped like "Made for you"
-        item(key = "recently-header", contentType = "section-header") {
-            SectionHeader(title = "Recently played")
-        }
-        if (homeRecentlyPlayed.isEmpty() && !homeHasCurrentTrack) {
-            item(key = "recently-empty", contentType = "empty-state") {
-                EmptyStateCard(
-                    title = "No tracks yet",
-                    subtitle = "Use Download to find music and get started",
-                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
-                )
-            }
-        } else {
-            item(key = "recently-carousel", contentType = "track-carousel") {
-                // distinctBy: a track may legitimately appear twice in
-                // history (non-consecutive plays); duplicate keys would
-                // make the LazyRow jump or throw.
-                val history = homeRecentlyPlayed.distinctBy { it.uri }.take(20)
-                LazyRow(
-                    state = recentlyPlayedListState,
-                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
-                    contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
-                ) {
-                    items(
-                        history,
-                        key = { it.uri },
-                        contentType = { "track-card" }
-                    ) { track ->
-                        TrackCard(
-                            title = track.title,
-                            artist = track.artist,
-                            artworkUri = track.artworkUri,
-                            // Next/prev walk the recent history (desktop
-                            // "Recently Played" context).
-                            selected = if (selectionMode) track.uri in selectedKeys else null,
-                            onClick = {
-                                if (selectionMode) toggleSelection(track.uri) else {
-                                    val index = history.indexOfFirst { it.uri == track.uri }
-                                    onPlay(history, index.coerceAtLeast(0), false)
-                                }
-                            },
-                            onLongClick = { beginSelection(track.uri) }
-                        )
-                    }
-                }
-            }
-        }
-
-        // Recently downloaded — completed downloads in completion order,
-        // capped at the latest 50 songs and kept edge-clipped like the other
-        // Home carousels.
-        item(key = "downloaded-header", contentType = "section-header") {
-            SectionHeader(
-                title = "Recently downloaded",
-                supportingText = "Your latest 50 downloads"
-            )
-        }
-        if (recentlyDownloaded.isEmpty()) {
-            item(key = "downloaded-empty", contentType = "empty-state") {
-                EmptyStateCard(
-                    title = "No downloads yet",
-                    subtitle = "Downloaded songs will appear here",
-                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
-                )
-            }
-        } else {
-            item(key = "downloaded-carousel", contentType = "track-carousel") {
-                LazyRow(
-                    state = recentlyDownloadedListState,
-                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
-                    contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
-                ) {
-                    items(
-                        recentlyDownloaded,
-                        key = { it.uri },
-                        contentType = { "track-card" }
-                    ) { track ->
-                        TrackCard(
-                            title = track.title,
-                            artist = track.artist,
-                            artworkUri = track.albumArtUri(),
-                            selected = if (selectionMode) track.uri in selectedKeys else null,
-                            onClick = {
-                                if (selectionMode) {
-                                    toggleSelection(track.uri)
-                                } else {
-                                    val index = recentlyDownloaded.indexOfFirst { it.uri == track.uri }
-                                    onPlay(recentlyDownloadedMedia, index.coerceAtLeast(0), false)
-                                }
-                            },
-                            onLongClick = { beginSelection(track.uri) }
-                        )
-                    }
-                }
-            }
-        }
-
         // Made for you — a random mix from the entire catalogue.
         item(key = "made-header", contentType = "section-header") {
             SectionHeader(
@@ -659,6 +561,55 @@ fun HomeScreen(
             }
         }
 
+        // Recently played — swipeable horizontal carousel of the full
+        // persisted history, edge-clipped like "Made for you"
+        item(key = "recently-header", contentType = "section-header") {
+            SectionHeader(title = "Recently played")
+        }
+        if (homeRecentlyPlayed.isEmpty() && !homeHasCurrentTrack) {
+            item(key = "recently-empty", contentType = "empty-state") {
+                EmptyStateCard(
+                    title = "No tracks yet",
+                    subtitle = "Use Download to find music and get started",
+                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                )
+            }
+        } else {
+            item(key = "recently-carousel", contentType = "track-carousel") {
+                // distinctBy: a track may legitimately appear twice in
+                // history (non-consecutive plays); duplicate keys would
+                // make the LazyRow jump or throw.
+                val history = homeRecentlyPlayed.distinctBy { it.uri }.take(20)
+                LazyRow(
+                    state = recentlyPlayedListState,
+                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+                    contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
+                ) {
+                    items(
+                        history,
+                        key = { it.uri },
+                        contentType = { "track-card" }
+                    ) { track ->
+                        TrackCard(
+                            title = track.title,
+                            artist = track.artist,
+                            artworkUri = track.artworkUri,
+                            // Next/prev walk the recent history (desktop
+                            // "Recently Played" context).
+                            selected = if (selectionMode) track.uri in selectedKeys else null,
+                            onClick = {
+                                if (selectionMode) toggleSelection(track.uri) else {
+                                    val index = history.indexOfFirst { it.uri == track.uri }
+                                    onPlay(history, index.coerceAtLeast(0), false)
+                                }
+                            },
+                            onLongClick = { beginSelection(track.uri) }
+                        )
+                    }
+                }
+            }
+        }
+
         // Most popular — local play counts are persisted in Room. Songs and
         // playlists are kept in separate edge-clipped carousels.
         item(key = "popular-header", contentType = "section-header") {
@@ -740,6 +691,54 @@ fun HomeScreen(
                             onLongClick = {
                                 beginSelection("p${playlistWithTracks.playlist.id}")
                             }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Recently downloaded is the final Home category: completed downloads
+        // in completion order, capped at the latest 50 songs.
+        item(key = "downloaded-header", contentType = "section-header") {
+            SectionHeader(
+                title = "Recently downloaded",
+                supportingText = "Your latest 50 downloads"
+            )
+        }
+        if (recentlyDownloaded.isEmpty()) {
+            item(key = "downloaded-empty", contentType = "empty-state") {
+                EmptyStateCard(
+                    title = "No downloads yet",
+                    subtitle = "Downloaded songs will appear here",
+                    modifier = Modifier.padding(horizontal = Dimens.paddingLarge)
+                )
+            }
+        } else {
+            item(key = "downloaded-carousel", contentType = "track-carousel") {
+                LazyRow(
+                    state = recentlyDownloadedListState,
+                    horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
+                    contentPadding = PaddingValues(horizontal = Dimens.paddingLarge)
+                ) {
+                    items(
+                        recentlyDownloaded,
+                        key = { it.uri },
+                        contentType = { "track-card" }
+                    ) { track ->
+                        TrackCard(
+                            title = track.title,
+                            artist = track.artist,
+                            artworkUri = track.albumArtUri(),
+                            selected = if (selectionMode) track.uri in selectedKeys else null,
+                            onClick = {
+                                if (selectionMode) {
+                                    toggleSelection(track.uri)
+                                } else {
+                                    val index = recentlyDownloaded.indexOfFirst { it.uri == track.uri }
+                                    onPlay(recentlyDownloadedMedia, index.coerceAtLeast(0), false)
+                                }
+                            },
+                            onLongClick = { beginSelection(track.uri) }
                         )
                     }
                 }
