@@ -412,12 +412,7 @@ class MusicController @JvmOverloads constructor(
         var moved = false
         safePlayerCommand("previousPlaybackItem") {
             val ctrl = controller ?: return@safePlayerCommand
-            val playbackIndices = playbackOrderIndices(ctrl)
-            val targetIndex = playbackNeighborIndex(
-                playbackIndices,
-                ctrl.currentMediaItemIndex,
-                direction = -1
-            )
+            val targetIndex = playbackNeighborIndex(ctrl, direction = -1)
                 ?: return@safePlayerCommand
             ctrl.seekToDefaultPosition(targetIndex)
             moved = true
@@ -431,12 +426,7 @@ class MusicController @JvmOverloads constructor(
         var moved = false
         safePlayerCommand("nextPlaybackItem") {
             val ctrl = controller ?: return@safePlayerCommand
-            val playbackIndices = playbackOrderIndices(ctrl)
-            val targetIndex = playbackNeighborIndex(
-                playbackIndices,
-                ctrl.currentMediaItemIndex,
-                direction = 1
-            )
+            val targetIndex = playbackNeighborIndex(ctrl, direction = 1)
                 ?: return@safePlayerCommand
             ctrl.seekToDefaultPosition(targetIndex)
             moved = true
@@ -543,6 +533,12 @@ class MusicController @JvmOverloads constructor(
             null
         }
     }
+
+    /** Returns the adjacent item without materializing the complete queue. */
+    fun getNextPlaybackItem(): MediaTrack? = getPlaybackNeighbor(direction = 1)
+
+    /** Returns the adjacent item without materializing the complete queue. */
+    fun getPreviousPlaybackItem(): MediaTrack? = getPlaybackNeighbor(direction = -1)
 
     /**
      * Inserts the track immediately after the currently playing item
@@ -1047,6 +1043,34 @@ class MusicController @JvmOverloads constructor(
             )
         }
         return indices
+    }
+
+    private fun playbackNeighborIndex(ctrl: MediaController, direction: Int): Int? {
+        val timeline = ctrl.currentTimeline
+        val currentIndex = ctrl.currentMediaItemIndex
+        if (timeline.isEmpty || currentIndex == C.INDEX_UNSET) return null
+        return if (direction < 0) {
+            timeline.getPreviousWindowIndex(
+                currentIndex,
+                Player.REPEAT_MODE_OFF,
+                ctrl.shuffleModeEnabled
+            )
+        } else {
+            timeline.getNextWindowIndex(
+                currentIndex,
+                Player.REPEAT_MODE_OFF,
+                ctrl.shuffleModeEnabled
+            )
+        }.takeUnless { it == C.INDEX_UNSET }
+    }
+
+    private fun getPlaybackNeighbor(direction: Int): MediaTrack? {
+        val ctrl = controller ?: return null
+        return runCatching {
+            playbackNeighborIndex(ctrl, direction)
+                ?.let(ctrl::getMediaItemAt)
+                ?.let(::mediaTrackFromItem)
+        }.getOrNull()
     }
 
     private fun mediaTrackFromItem(item: MediaItem): MediaTrack {

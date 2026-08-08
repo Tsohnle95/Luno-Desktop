@@ -96,11 +96,22 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val FULL_PLAYER_RECOMMENDATION_LIMIT = 1_000
+private const val FULL_PLAYER_RECOMMENDATION_PAGE_SIZE =
+    RecommendationPreviewManager.RECOMMENDATION_PAGE_SIZE
 
 private sealed interface FullPlayerRecommendationState {
     data object Idle : FullPlayerRecommendationState
     data class Loading(val seedUri: String) : FullPlayerRecommendationState
-    data class Ready(val seedUri: String, val tracks: List<LastfmTrack>) : FullPlayerRecommendationState
+    data class Ready(
+        val seedUri: String,
+        val seedArtist: String,
+        val seedTitle: String,
+        val tracks: List<LastfmTrack>,
+        val requestedLimit: Int = FULL_PLAYER_RECOMMENDATION_PAGE_SIZE,
+        val loadingMore: Boolean = false,
+        val exhausted: Boolean = false,
+        val loadMoreError: String? = null
+    ) : FullPlayerRecommendationState
     data class Error(val seedUri: String, val message: String) : FullPlayerRecommendationState
 }
 
@@ -196,7 +207,7 @@ fun FullPlayerScreen(
             app.discoveryRepository.getSimilar(
                 artist = track.artist,
                 title = track.title,
-                limit = FULL_PLAYER_RECOMMENDATION_LIMIT,
+                limit = FULL_PLAYER_RECOMMENDATION_PAGE_SIZE,
                 libraryTracks = allTracks
             )
         } catch (cancelled: CancellationException) {
@@ -207,6 +218,8 @@ fun FullPlayerScreen(
         recommendationState = when (result) {
             is LastfmResult.Success -> FullPlayerRecommendationState.Ready(
                 seedUri = track.uri,
+                seedArtist = track.artist,
+                seedTitle = track.title,
                 tracks = result.tracks.distinctBy(::recommendationKey)
             )
             is LastfmResult.Failure -> FullPlayerRecommendationState.Error(
@@ -232,6 +245,8 @@ fun FullPlayerScreen(
     val readyRecommendations = managedRecommendations ?: fetchedRecommendations
     val recommendationLoading = !previewState.active &&
         recommendationState is FullPlayerRecommendationState.Loading
+    val loadedRecommendationState = recommendationState
+        as? FullPlayerRecommendationState.Ready
     val selectedRecommendation = previewState.selectedKey?.let { selectedKey ->
         readyRecommendations.firstOrNull { recommendationKey(it) == selectedKey }
     }
@@ -291,6 +306,82 @@ fun FullPlayerScreen(
         }
     }
 
+    fun loadMoreRecommendations() {
+        val currentReady = recommendationState as? FullPlayerRecommendationState.Ready
+            ?: return
+        if (currentReady.loadingMore || currentReady.exhausted ||
+            currentReady.requestedLimit >= FULL_PLAYER_RECOMMENDATION_LIMIT
+        ) {
+            return
+        }
+
+        val nextLimit = (currentReady.requestedLimit + FULL_PLAYER_RECOMMENDATION_PAGE_SIZE)
+            .coerceAtMost(FULL_PLAYER_RECOMMENDATION_LIMIT)
+        val seedUri = currentReady.seedUri
+        val holdsDiscoverPlayback = previewState.active && previewState.discoverMode
+        if (holdsDiscoverPlayback) {
+            app.recommendationPreviewManager.setDiscoverExtensionPending(true)
+        }
+        recommendationState = currentReady.copy(
+            loadingMore = true,
+            loadMoreError = null
+        )
+
+        recommendationScope.launch {
+            val result = try {
+                app.discoveryRepository.getSimilar(
+                    artist = currentReady.seedArtist,
+                    title = currentReady.seedTitle,
+                    limit = nextLimit,
+                    libraryTracks = allTracks
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                LastfmResult.Failure(error.message ?: "Could not load more recommendations")
+            }
+
+            val stillCurrent = (recommendationState as? FullPlayerRecommendationState.Ready)
+                ?.takeIf { it.seedUri == seedUri }
+            if (stillCurrent == null) {
+                if (holdsDiscoverPlayback) {
+                    app.recommendationPreviewManager.setDiscoverExtensionPending(false)
+                }
+                return@launch
+            }
+
+            when (result) {
+                is LastfmResult.Success -> {
+                    val existingKeys = currentReady.tracks.mapTo(mutableSetOf(), ::recommendationKey)
+                    val additions = result.tracks
+                        .distinctBy(::recommendationKey)
+                        .filter { recommendationKey(it) !in existingKeys }
+                    val updated = stillCurrent.copy(
+                        tracks = stillCurrent.tracks + additions,
+                        requestedLimit = nextLimit,
+                        loadingMore = false,
+                        exhausted = additions.isEmpty(),
+                        loadMoreError = null
+                    )
+                    recommendationState = updated
+                    app.recommendationPreviewManager.appendRecommendations(seedUri, additions)
+                    if (holdsDiscoverPlayback) {
+                        app.recommendationPreviewManager.setDiscoverExtensionPending(false)
+                    }
+                }
+                is LastfmResult.Failure -> {
+                    recommendationState = stillCurrent.copy(
+                        loadingMore = false,
+                        loadMoreError = result.message
+                    )
+                    if (holdsDiscoverPlayback) {
+                        app.recommendationPreviewManager.setDiscoverExtensionPending(false)
+                    }
+                }
+            }
+        }
+    }
+
     LaunchedEffect(readyRecommendations) {
         fallbackArtwork = emptyMap()
         fallbackArtworkRequested = emptySet()
@@ -298,6 +389,28 @@ fun FullPlayerScreen(
             .filter { it.imageUrl.isNullOrBlank() }
             .take(20)
             .forEach(::requestFallbackArtwork)
+    }
+
+    LaunchedEffect(
+        previewState.active,
+        previewState.discoverMode,
+        previewState.currentKey,
+        readyRecommendations.size,
+        loadedRecommendationState?.loadingMore,
+        loadedRecommendationState?.loadMoreError,
+        loadedRecommendationState?.exhausted
+    ) {
+        val lastRecommendation = readyRecommendations.lastOrNull()
+        if (previewState.active && previewState.discoverMode &&
+            currentTrack?.isTransient == true &&
+            lastRecommendation != null &&
+            previewState.currentKey == recommendationKey(lastRecommendation) &&
+            loadedRecommendationState?.let {
+                !it.loadingMore && it.loadMoreError == null && !it.exhausted
+            } == true
+        ) {
+            loadMoreRecommendations()
+        }
     }
 
     LaunchedEffect(
@@ -755,6 +868,7 @@ fun FullPlayerScreen(
                 previewPlaying = isPlaying,
                 fallbackArtwork = fallbackArtwork,
                 onRefresh = { recommendationRefresh++ },
+                onLoadMore = ::loadMoreRecommendations,
                 onArtworkError = ::requestFallbackArtwork,
                 onPreview = { recommendation ->
                     val index = readyRecommendations.indexOf(recommendation)
@@ -829,6 +943,7 @@ private fun LazyListScope.fullPlayerRecommendations(
     previewPlaying: Boolean,
     fallbackArtwork: Map<String, String>,
     onRefresh: () -> Unit,
+    onLoadMore: () -> Unit,
     onArtworkError: (LastfmTrack) -> Unit,
     onPreview: (LastfmTrack) -> Unit,
     onSave: (LastfmTrack) -> Unit
@@ -968,6 +1083,50 @@ private fun LazyListScope.fullPlayerRecommendations(
                 onPreview = { onPreview(recommendation) },
                 onSave = { onSave(recommendation) }
             )
+        }
+
+        val readyState = matchingState as? FullPlayerRecommendationState.Ready
+        if (readyState != null && !readyState.exhausted &&
+            readyState.requestedLimit < FULL_PLAYER_RECOMMENDATION_LIMIT
+        ) {
+            item(key = "recommendations-load-more", contentType = "recommendations-load-more") {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = Dimens.paddingMedium),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    readyState.loadMoreError?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                    TextButton(
+                        onClick = onLoadMore,
+                        enabled = !readyState.loadingMore
+                    ) {
+                        if (readyState.loadingMore) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(Dimens.iconSizeSmall),
+                                color = AccentGreen,
+                                strokeWidth = 2.dp
+                            )
+                        }
+                        Text(
+                            text = if (readyState.loadingMore) {
+                                "Loading more..."
+                            } else {
+                                "Load 25 more"
+                            },
+                            color = AccentGreen,
+                            modifier = Modifier.padding(start = Dimens.paddingSmall)
+                        )
+                    }
+                }
+            }
         }
     }
 }

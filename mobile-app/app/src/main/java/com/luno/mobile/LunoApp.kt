@@ -156,7 +156,7 @@ class LunoApp : Application(), Configuration.Provider {
                 when (val result = discoveryRepository.getSimilar(
                     artist = track.artist,
                     title = track.title,
-                    limit = 1_000,
+                    limit = RecommendationPreviewManager.RECOMMENDATION_PAGE_SIZE,
                     libraryTracks = database.trackDao().getAllTracksOnce()
                 )) {
                     is LastfmResult.Success -> Result.success(result.tracks)
