@@ -219,8 +219,13 @@ fun FullPlayerScreen(
         ?.takeIf { it.seedUri == recommendationSeedUri }
         ?.tracks
         .orEmpty()
+    // The managed list is only authoritative while a preview session is
+    // actually running. Once a session ends (intervention, natural handoff)
+    // the manager retains the previous seed's list, so honoring it while
+    // inactive would keep showing the first song's recommendations over the
+    // freshly fetched ones for every song after that.
     val managedRecommendations = previewState.recommendations.takeIf {
-        it.isNotEmpty() && previewState.seedUri == recommendationSeedUri
+        previewState.active && it.isNotEmpty() && previewState.seedUri == recommendationSeedUri
     }
     val readyRecommendations = managedRecommendations ?: fetchedRecommendations
     val recommendationLoading = !previewState.active &&

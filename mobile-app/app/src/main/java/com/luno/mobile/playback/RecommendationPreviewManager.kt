@@ -514,6 +514,11 @@ class RecommendationPreviewManager(
             _state.value = withSaveState(
                 _state.value.copy(
                     seedUri = seedUri,
+                    // Keep the state's recommendations paired with its seed:
+                    // after a preview session ends, `seedUri` alone must not
+                    // re-point the retained list of a previous song at the
+                    // currently playing one.
+                    recommendations = recommendations.toList(),
                     prefetchingKeys = targets.firstOrNull()
                         ?.let { setOf(recommendationKey(it)) }
                         .orEmpty(),
