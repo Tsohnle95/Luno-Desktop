@@ -108,6 +108,10 @@ class MusicController @JvmOverloads constructor(
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
+    /** Media3 playback state (IDLE/READY/ENDED…), kept in sync with the player. */
+    private val _playbackState = MutableStateFlow(Player.STATE_IDLE)
+    val playbackState: StateFlow<Int> = _playbackState.asStateFlow()
+
     /** Emits once on permanent connection failure. */
     private val _connectionError = MutableSharedFlow<ConnectionException>(extraBufferCapacity = 1)
     val connectionError: SharedFlow<ConnectionException> = _connectionError.asSharedFlow()
@@ -202,6 +206,7 @@ class MusicController @JvmOverloads constructor(
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             try {
+                _playbackState.value = playbackState
                 if (playbackState == Player.STATE_READY) {
                     _duration.value = controller?.duration?.coerceAtLeast(0L) ?: 0L
                 }
@@ -862,6 +867,7 @@ class MusicController @JvmOverloads constructor(
     private fun hydrateState(ctrl: MediaController) {
         _isConnected.value = true
         _isPlaying.value = ctrl.isPlaying
+        _playbackState.value = ctrl.playbackState
         _hasActiveItem.value = ctrl.mediaItemCount > 0
         _repeatMode.value = ctrl.repeatMode
         _shuffleEnabled.value = ctrl.shuffleModeEnabled

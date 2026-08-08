@@ -3,6 +3,7 @@ package com.luno.mobile.playback
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import androidx.media3.common.Player
 import com.luno.mobile.data.artwork.ArtworkStorage
 import com.luno.mobile.data.db.entity.DownloadState
 import com.luno.mobile.data.db.entity.Track
@@ -183,10 +184,23 @@ class RecommendationPreviewManager(
             launch(start = CoroutineStart.UNDISPATCHED) {
                 controller.currentTrack.collect { track ->
                     val stalePrefetch = synchronized(lock) {
-                        prefetchSeedUri != null &&
+                        prefetchSeedUri != null && !_state.value.active &&
                             (track?.uri != prefetchSeedUri || track?.isTransient == true)
                     }
-                    if (stalePrefetch) cancelPrefetch()
+                    if (stalePrefetch) {
+                        // The current track moved away from the prefetch seed:
+                        // stop any in-flight prefetch work, but keep the
+                        // already-downloaded assets and their state — they may
+                        // still match the recommendations the UI shows, and
+                        // wiping them here is what made toggling sessions
+                        // "re-download the same songs". A prefetch for a
+                        // genuinely different seed replaces them itself.
+                        synchronized(lock) {
+                            prefetchGeneration++
+                            prefetchJob?.cancel()
+                            prefetchJob = null
+                        }
+                    }
 
                     val transition = synchronized(lock) {
                         if (!_state.value.active || musicController !== controller ||
@@ -267,6 +281,25 @@ class RecommendationPreviewManager(
                     }
                     if (failedKey != null) {
                         recoverFromPlaybackError(controller, failedKey, error.message)
+                    }
+                }
+            }
+            launch(start = CoroutineStart.UNDISPATCHED) {
+                controller.playbackState.collect { state ->
+                    if (state != Player.STATE_ENDED) return@collect
+                    val resumeLibrary = synchronized(lock) {
+                        if (!_state.value.active || musicController !== controller) {
+                            false
+                        } else {
+                            // The queue ran out while a session was active
+                            // (e.g. the Discover block was exhausted with
+                            // nothing queued behind it): resume the captured
+                            // physical playlist.
+                            controller.getQueueAfterCurrent().orEmpty().isEmpty()
+                        }
+                    }
+                    if (resumeLibrary) {
+                        finishForPlaybackIntervention(restoreNormalQueue = true)
                     }
                 }
             }
@@ -452,7 +485,7 @@ class RecommendationPreviewManager(
         synchronized(lock) {
             val current = controller.currentTrack.value
             if (_state.value.active || current?.uri != seedUri || current?.isTransient == true) return
-            if (prefetchSeedUri == seedUri && keys.all { key ->
+            if (prefetchJob?.isActive == true && keys.all { key ->
                     key in _state.value.prefetchingKeys ||
                         key in _state.value.prefetchQueuedKeys ||
                         (key in _state.value.prefetchedKeys &&
@@ -466,9 +499,17 @@ class RecommendationPreviewManager(
             requestGeneration = prefetchGeneration
             prefetchJob?.cancel()
             prefetchJob = null
+            // Reuse already-downloaded assets that are still targets of this
+            // window (recommendation lists overlap between adjacent tracks);
+            // only genuinely stale files are deleted and re-downloaded.
+            val stillUseful = prefetchedAssetsByKey
+                .filterKeys { it in keys }
+                .filterValues { it.file.isFile }
             oldFiles = prefetchedAssetsByKey.values.map { it.file }
                 .filterNot(filesBeingPromoted::contains)
+                .filterNot { file -> stillUseful.values.any { it.file == file } }
             prefetchedAssetsByKey.clear()
+            prefetchedAssetsByKey.putAll(stillUseful)
             prefetchSeedUri = seedUri
             _state.value = withSaveState(
                 _state.value.copy(
@@ -477,7 +518,7 @@ class RecommendationPreviewManager(
                         ?.let { setOf(recommendationKey(it)) }
                         .orEmpty(),
                     prefetchQueuedKeys = targets.drop(1).map(::recommendationKey).toSet(),
-                    prefetchedKeys = emptySet(),
+                    prefetchedKeys = stillUseful.keys.toSet(),
                     failures = _state.value.failures - keys
                 )
             )
@@ -489,6 +530,10 @@ class RecommendationPreviewManager(
             for ((index, recommendation) in targets.withIndex()) {
                 if (!isCurrentPrefetch(requestGeneration)) return@launch
                 val key = recommendationKey(recommendation)
+                val alreadyCached = synchronized(lock) {
+                    prefetchedAssetsByKey[key]?.takeIf { it.file.isFile }
+                }
+                if (alreadyCached != null) continue
                 synchronized(lock) {
                     if (!isCurrentPrefetchLocked(requestGeneration)) return@launch
                     _state.value = withSaveState(
@@ -701,9 +746,16 @@ class RecommendationPreviewManager(
             generation++
             sessionGeneration = generation
             sessionJob?.cancel()
-            prefetchGeneration++
-            prefetchJob?.cancel()
-            prefetchJob = null
+            // Keep a still-running prefetch for this seed alive: its
+            // in-flight download must not be cancelled and restarted — the
+            // session loop adopts completed prefetch assets and waits for
+            // the in-flight one. Only a prefetch for a different seed is
+            // cancelled here.
+            if (!retainPrefetchedAssets) {
+                prefetchGeneration++
+                prefetchJob?.cancel()
+                prefetchJob = null
+            }
             val retainedFiles = retainedAssets.values.map { it.file }
                 .plus(retainedCurrentPreview?.file)
                 .toSet()
@@ -712,9 +764,7 @@ class RecommendationPreviewManager(
                 .filterNot(filesBeingPromoted::contains)
                 .filterNot(retainedFiles::contains)
             assetsByKey.clear()
-            prefetchedAssetsByKey.clear()
             keyByUri.clear()
-            prefetchSeedUri = null
             observedPreviewTrack = false
             previewPlaybackStarted = false
             preparationComplete = false
@@ -788,12 +838,17 @@ class RecommendationPreviewManager(
                         state.copy(waitingKeys = state.waitingKeys - key)
                     }
                 }
-                val prefetched = synchronized(lock) {
+                val adopted = synchronized(lock) {
                     assetsByKey[key]?.takeIf { it.file.isFile }
+                        ?: prefetchedAssetsByKey[key]?.takeIf { it.file.isFile }?.also { asset ->
+                            prefetchedAssetsByKey.remove(key)
+                            assetsByKey[key] = asset
+                            keyByUri[asset.mediaTrack.uri] = key
+                        }
                 }
                 val mediaTrack: MediaTrack
-                if (prefetched != null) {
-                    mediaTrack = prefetched.mediaTrack
+                if (adopted != null) {
+                    mediaTrack = adopted.mediaTrack
                     updateState(sessionGeneration) { state ->
                         state.copy(
                             resolvingKeys = state.resolvingKeys - key,
@@ -802,76 +857,96 @@ class RecommendationPreviewManager(
                         )
                     }
                 } else {
-                    updateState(sessionGeneration) { state ->
-                        state.copy(
-                            resolvingKeys = state.resolvingKeys + key,
-                            failures = state.failures - key
+                    val prefetchInFlight = synchronized(lock) {
+                        key in _state.value.prefetchingKeys ||
+                            key in _state.value.prefetchQueuedKeys
+                    }
+                    val adoptedFromPrefetch = if (prefetchInFlight) {
+                        awaitPrefetchAdoption(sessionGeneration, key)
+                    } else {
+                        null
+                    }
+                    if (adoptedFromPrefetch != null) {
+                        mediaTrack = adoptedFromPrefetch.mediaTrack
+                        updateState(sessionGeneration) { state ->
+                            state.copy(
+                                resolvingKeys = state.resolvingKeys - key,
+                                preparingKeys = state.preparingKeys - key,
+                                readyKeys = state.readyKeys + key
+                            )
+                        }
+                    } else {
+                        updateState(sessionGeneration) { state ->
+                            state.copy(
+                                resolvingKeys = state.resolvingKeys + key,
+                                failures = state.failures - key
+                            )
+                        }
+                        val resolved = runTimedResult(
+                            timeoutMs = resolveTimeoutMs,
+                            timeoutMessage = "Finding a playable source timed out. Tap to retry."
+                        ) {
+                            resolver(recommendation)
+                        }
+                        if (!isCurrent(sessionGeneration)) return@launch
+                        if (resolved.isFailure) {
+                            markFailure(sessionGeneration, key, resolved.errorMessage())
+                            continue
+                        }
+                        val stream = resolved.getOrThrow()
+                        updateState(sessionGeneration) { state ->
+                            state.copy(
+                                resolvingKeys = state.resolvingKeys - key,
+                                preparingKeys = state.preparingKeys + key
+                            )
+                        }
+                        val extension = extensionForMimeType(stream.mimeType)
+                        val target = File(
+                            previewDirectory,
+                            "$sessionGeneration-${firstIndex + offset}-${safeName(recommendation)}.$extension"
                         )
-                    }
-                    val resolved = runTimedResult(
-                        timeoutMs = resolveTimeoutMs,
-                        timeoutMessage = "Finding a playable source timed out. Tap to retry."
-                    ) {
-                        resolver(recommendation)
-                    }
-                    if (!isCurrent(sessionGeneration)) return@launch
-                    if (resolved.isFailure) {
-                        markFailure(sessionGeneration, key, resolved.errorMessage())
-                        continue
-                    }
-                    val stream = resolved.getOrThrow()
-                    updateState(sessionGeneration) { state ->
-                        state.copy(
-                            resolvingKeys = state.resolvingKeys - key,
-                            preparingKeys = state.preparingKeys + key
-                        )
-                    }
-                    val extension = extensionForMimeType(stream.mimeType)
-                    val target = File(
-                        previewDirectory,
-                        "$sessionGeneration-${firstIndex + offset}-${safeName(recommendation)}.$extension"
-                    )
-                    val artworkUri = artworkByKey[key]?.takeUnless { it.isNullOrBlank() }
-                        ?: stream.thumbnailUrl.takeUnless { it.isBlank() }
-                    val downloaded = runTimedResult(
-                        timeoutMs = downloadTimeoutMs,
-                        timeoutMessage = "Preview download timed out. Tap to retry."
-                    ) {
-                        previewDownloader(
-                            stream,
-                            recommendation,
-                            artworkUri,
-                            target
-                        )
-                    }
-                    if (!isCurrent(sessionGeneration)) {
-                        target.delete()
-                        return@launch
-                    }
-                    if (downloaded.isFailure) {
-                        markFailure(sessionGeneration, key, downloaded.errorMessage())
-                        continue
-                    }
-
-                    mediaTrack = downloaded.getOrThrow()
-                    val asset = PreviewAsset(
-                        recommendation = recommendation,
-                        file = target,
-                        sourceUrl = stream.sourceUrl,
-                        thumbnailUrl = stream.thumbnailUrl.ifBlank { artworkUri.orEmpty() },
-                        mediaTrack = mediaTrack
-                    )
-                    synchronized(lock) {
-                        if (generation != sessionGeneration) {
+                        val artworkUri = artworkByKey[key]?.takeUnless { it.isNullOrBlank() }
+                            ?: stream.thumbnailUrl.takeUnless { it.isBlank() }
+                        val downloaded = runTimedResult(
+                            timeoutMs = downloadTimeoutMs,
+                            timeoutMessage = "Preview download timed out. Tap to retry."
+                        ) {
+                            previewDownloader(
+                                stream,
+                                recommendation,
+                                artworkUri,
+                                target
+                            )
+                        }
+                        if (!isCurrent(sessionGeneration)) {
                             target.delete()
                             return@launch
                         }
-                        assetsByKey[key] = asset
-                        keyByUri[mediaTrack.uri] = key
-                        _state.value = _state.value.copy(
-                            preparingKeys = _state.value.preparingKeys - key,
-                            readyKeys = _state.value.readyKeys + key
+                        if (downloaded.isFailure) {
+                            markFailure(sessionGeneration, key, downloaded.errorMessage())
+                            continue
+                        }
+
+                        mediaTrack = downloaded.getOrThrow()
+                        val asset = PreviewAsset(
+                            recommendation = recommendation,
+                            file = target,
+                            sourceUrl = stream.sourceUrl,
+                            thumbnailUrl = stream.thumbnailUrl.ifBlank { artworkUri.orEmpty() },
+                            mediaTrack = mediaTrack
                         )
+                        synchronized(lock) {
+                            if (generation != sessionGeneration) {
+                                target.delete()
+                                return@launch
+                            }
+                            assetsByKey[key] = asset
+                            keyByUri[mediaTrack.uri] = key
+                            _state.value = _state.value.copy(
+                                preparingKeys = _state.value.preparingKeys - key,
+                                readyKeys = _state.value.readyKeys + key
+                            )
+                        }
                     }
                 }
 
@@ -1367,6 +1442,39 @@ class RecommendationPreviewManager(
         return false
     }
 
+    /**
+     * Waits (bounded) for the passive prefetch to finish the currently
+     * in-flight/queued item and adopts it, so toggling a session on never
+     * cancels and restarts the download. Returns null when the prefetch
+     * failed or abandoned the item or the deadline passed — the caller then
+     * resolves it itself.
+     */
+    private suspend fun awaitPrefetchAdoption(
+        sessionGeneration: Long,
+        key: String
+    ): PreviewAsset? {
+        val deadline = System.currentTimeMillis() + PREFETCH_ADOPT_TIMEOUT_MS
+        while (isCurrent(sessionGeneration) && System.currentTimeMillis() < deadline) {
+            val adopted = synchronized(lock) {
+                val asset = prefetchedAssetsByKey[key]?.takeIf { it.file.isFile }
+                if (asset != null) {
+                    prefetchedAssetsByKey.remove(key)
+                    assetsByKey[key] = asset
+                    keyByUri[asset.mediaTrack.uri] = key
+                }
+                asset
+            }
+            if (adopted != null) return adopted
+            val stillPending = synchronized(lock) {
+                key in _state.value.prefetchingKeys ||
+                    key in _state.value.prefetchQueuedKeys
+            }
+            if (!stillPending) return null
+            delay(PREFETCH_POLL_INTERVAL_MS)
+        }
+        return null
+    }
+
     private suspend fun awaitRecommendationWindow(
         sessionGeneration: Long,
         recommendations: List<LastfmTrack>,
@@ -1748,6 +1856,7 @@ class RecommendationPreviewManager(
         internal const val IMMEDIATE_PREVIEW_AHEAD_COUNT = 5
         internal const val PREFETCH_RECOMMENDATION_COUNT = 5
         private const val CONTINUATION_APPEND_WINDOW = 3
+        private const val PREFETCH_ADOPT_TIMEOUT_MS = 60_000L
         private val TERMINAL_DOWNLOAD_STATES = setOf(
             DownloadState.COMPLETED,
             DownloadState.FAILED,
