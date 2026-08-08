@@ -615,11 +615,15 @@ class MusicController @JvmOverloads constructor(
      * anchor is unavailable, the item is inserted after the current item, or
      * before it when [insertBeforeCurrentIfAnchorMissing] is set. The
      * insertion does not replace playback or mark the item as user-queued.
+     * With [resumeWhenIdle] = false (the deferred Discover handoff), an
+     * ended/idle player is left alone — the inserted block never starts
+     * playback by itself.
      */
     fun insertIntoPlaybackContext(
         track: MediaTrack,
         afterUri: String? = null,
-        insertBeforeCurrentIfAnchorMissing: Boolean = false
+        insertBeforeCurrentIfAnchorMissing: Boolean = false,
+        resumeWhenIdle: Boolean = true
     ): Boolean {
         if (released) return false
         val ctrl = controller ?: return false
@@ -640,9 +644,11 @@ class MusicController @JvmOverloads constructor(
                 currentRawIndex in 0 until ctrl.mediaItemCount -> currentRawIndex + 1
                 else -> ctrl.mediaItemCount
             }.coerceIn(0, ctrl.mediaItemCount)
-            val resumePlayback = ctrl.mediaItemCount == 0 ||
-                ctrl.playbackState == Player.STATE_ENDED ||
-                ctrl.playbackState == Player.STATE_IDLE
+            val resumePlayback = resumeWhenIdle && (
+                ctrl.mediaItemCount == 0 ||
+                    ctrl.playbackState == Player.STATE_ENDED ||
+                    ctrl.playbackState == Player.STATE_IDLE
+                )
             ctrl.addMediaItem(insertAt, buildMediaItem(track, enrichArtwork = true))
             if (resumePlayback) {
                 ctrl.seekToDefaultPosition(insertAt.coerceAtMost(ctrl.mediaItemCount - 1))

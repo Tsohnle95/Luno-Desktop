@@ -139,6 +139,7 @@ fun FullPlayerScreen(
     var showQueueSheet by rememberSaveable { mutableStateOf(false) }
     var showActionSheet by rememberSaveable { mutableStateOf(false) }
     var recommendationRefresh by rememberSaveable { mutableIntStateOf(0) }
+    var lastLoadedRecommendationRefresh by remember { mutableIntStateOf(-1) }
     var recommendationState by remember {
         mutableStateOf<FullPlayerRecommendationState>(FullPlayerRecommendationState.Idle)
     }
@@ -176,6 +177,17 @@ fun FullPlayerScreen(
             recommendationState = FullPlayerRecommendationState.Idle
             return@LaunchedEffect
         }
+        // A session boundary (Discover toggled on/off, preview started or
+        // ended) re-runs this effect for the same seed — never reload the
+        // section then; only a new seed, a manual refresh, or an API-key/
+        // library change does.
+        val currentReady = recommendationState
+        if (currentReady is FullPlayerRecommendationState.Ready &&
+            currentReady.seedUri == track.uri &&
+            recommendationRefresh == lastLoadedRecommendationRefresh
+        ) {
+            return@LaunchedEffect
+        }
 
         recommendationState = FullPlayerRecommendationState.Loading(track.uri)
         val result = try {
@@ -200,6 +212,7 @@ fun FullPlayerScreen(
                 message = result.message
             )
         }
+        lastLoadedRecommendationRefresh = recommendationRefresh
     }
 
     val fetchedRecommendations = (recommendationState as? FullPlayerRecommendationState.Ready)
@@ -865,9 +878,11 @@ private fun LazyListScope.fullPlayerRecommendations(
                 }
                 else -> {
                     Text(
-                        text = if (previewState.active && previewState.discoverMode) {
+                        text = if (previewState.active && previewState.discoverMode &&
+                            previewState.currentKey != null
+                        ) {
                             "Temporary preview queue - tap a song to restart from there"
-                        } else if (previewState.active) {
+                        } else if (previewState.active && previewState.currentKey != null) {
                             "Temporary preview - Next returns to your library"
                         } else {
                             "${recommendations.size} similar songs - tap to preview"
