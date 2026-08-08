@@ -250,15 +250,13 @@ fun FullPlayerScreen(
     val selectedRecommendation = previewState.selectedKey?.let { selectedKey ->
         readyRecommendations.firstOrNull { recommendationKey(it) == selectedKey }
     }
-    val previewIsLoading = previewState.active &&
-        previewState.currentKey == null &&
-        selectedRecommendation != null
     val displayedCurrentTrack = currentTrack
     val currentMetadataMissing = displayedCurrentTrack == null ||
         displayedCurrentTrack.title.equals("Unknown", ignoreCase = true) ||
         displayedCurrentTrack.artist.equals("Unknown", ignoreCase = true)
     val useRecommendationMetadata = selectedRecommendation != null &&
-        (previewIsLoading || (displayedCurrentTrack?.isTransient == true && currentMetadataMissing))
+        (currentTrack == null ||
+            (displayedCurrentTrack?.isTransient == true && currentMetadataMissing))
     val displayTitle = if (useRecommendationMetadata) {
         selectedRecommendation?.title
     } else {
@@ -274,24 +272,12 @@ fun FullPlayerScreen(
     }
     val displayArtworkUri = if (selectedRecommendation != null && (
             currentTrack == null ||
-                (currentMetadataMissing && artworkUri.isNullOrBlank()) ||
                 (displayedCurrentTrack?.isTransient == true && artworkUri.isNullOrBlank())
             )
     ) {
         pendingArtworkUri
     } else {
         artworkUri
-    }
-    val previewStatus = if (previewIsLoading) {
-        val selectedKey = previewState.selectedKey
-        when {
-            selectedKey in previewState.resolvingKeys -> "Retrieving song data..."
-            selectedKey in previewState.preparingKeys -> "Downloading song..."
-            selectedKey in previewState.waitingKeys -> "Preparing recommended song..."
-            else -> "Preparing recommended song..."
-        }
-    } else {
-        null
     }
     val (gradientTop, gradientBottom) = rememberArtworkColors(displayArtworkUri)
 
@@ -615,14 +601,9 @@ fun FullPlayerScreen(
                 modifier = Modifier.height(24.dp),
                 contentAlignment = Alignment.Center
             ) {
-                val status = when {
-                    currentTrack?.isTransient == true -> "Temporary preview"
-                    previewStatus != null -> previewStatus
-                    else -> null
-                }
-                status?.let {
+                if (currentTrack?.isTransient == true) {
                     Text(
-                        text = it,
+                        text = "Temporary preview",
                         style = MaterialTheme.typography.labelMedium,
                         color = AccentGreen
                     )
@@ -976,8 +957,8 @@ private fun LazyListScope.fullPlayerRecommendations(
                     color = PrimaryText,
                     modifier = Modifier.weight(1f)
                 )
-                if (apiKeyConfigured && seedUri != null && !previewState.active) {
-                    IconButton(onClick = onRefresh) {
+                if (apiKeyConfigured && seedUri != null) {
+                    IconButton(onClick = { if (!previewState.active) onRefresh() }) {
                         Icon(
                             imageVector = Icons.Filled.Refresh,
                             contentDescription = "Refresh recommendations",
@@ -992,14 +973,14 @@ private fun LazyListScope.fullPlayerRecommendations(
                 !apiKeyConfigured -> RecommendationMessage(
                     "Add a Last.fm API key in Settings to see recommendations"
                 )
-                !previewState.active && (
+                recommendations.isEmpty() && (
                     matchingState is FullPlayerRecommendationState.Loading ||
                         matchingState is FullPlayerRecommendationState.Idle
                     ) -> {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = Dimens.paddingLarge),
+                            .padding(vertical = Dimens.paddingSmall),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         CircularProgressIndicator(
@@ -1015,11 +996,11 @@ private fun LazyListScope.fullPlayerRecommendations(
                         )
                     }
                 }
-                !previewState.active && matchingState is FullPlayerRecommendationState.Error -> {
+                recommendations.isEmpty() && matchingState is FullPlayerRecommendationState.Error -> {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = Dimens.paddingMedium)
+                            .padding(vertical = Dimens.paddingSmall)
                     ) {
                         Text(
                             text = matchingState.message,
@@ -1047,7 +1028,7 @@ private fun LazyListScope.fullPlayerRecommendations(
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = SecondaryText,
-                        modifier = Modifier.padding(bottom = Dimens.paddingSmall)
+                        modifier = Modifier.padding(vertical = Dimens.paddingSmall)
                     )
                 }
             }
