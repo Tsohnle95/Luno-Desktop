@@ -1052,10 +1052,23 @@ class RecommendationPreviewManager(
             } == true
             if (nextIsQueuedPreview) {
                 controller.skipToNextPlaybackItem()
-            } else {
-                synchronized(lock) { advanceToDeferredRecommendation = true }
+                return true
             }
-            return true
+            // The deferred block is still being prepared (Last.fm fetch or
+            // the first preview download can take tens of seconds): arm the
+            // auto-advance on the first press, but never swallow repeated
+            // presses — they fall through to the player's own skip so the
+            // media keys move as soon as the block is enqueued instead of
+            // feeling dead while downloads are pending.
+            val alreadyArmed = synchronized(lock) {
+                if (advanceToDeferredRecommendation) {
+                    true
+                } else {
+                    advanceToDeferredRecommendation = true
+                    false
+                }
+            }
+            return !alreadyArmed
         }
 
         val queueAfterCurrent = controller.getQueueAfterCurrent().orEmpty()

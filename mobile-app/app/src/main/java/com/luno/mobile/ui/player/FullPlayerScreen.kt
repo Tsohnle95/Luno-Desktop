@@ -29,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
@@ -163,6 +164,7 @@ fun FullPlayerScreen(
     } else {
         currentTrack?.uri
     }
+    val showRecommendationScrollHint = recommendationSeedUri != null && !apiKey.isNullOrBlank()
 
     LaunchedEffect(
         recommendationSeedUri,
@@ -604,7 +606,13 @@ fun FullPlayerScreen(
                 }
                 IconButton(
                     onClick = {
-                        if (!app.recommendationPreviewManager.skipToPrevious()) {
+                        // Only a transient preview playing needs the manager's
+                        // skip routing; for any normal track the player's own
+                        // skip always advances the queue (into a queued
+                        // recommendation block or past it).
+                        if (currentTrack?.isTransient != true ||
+                            !app.recommendationPreviewManager.skipToPrevious()
+                        ) {
                             musicController.skipToPrevious()
                         }
                     },
@@ -637,7 +645,13 @@ fun FullPlayerScreen(
                 }
                 IconButton(
                     onClick = {
-                        if (!app.recommendationPreviewManager.skipToNext()) {
+                        // Only a transient preview playing needs the manager's
+                        // skip routing; for any normal track the player's own
+                        // skip always advances the queue (into a queued
+                        // recommendation block or past it).
+                        if (currentTrack?.isTransient != true ||
+                            !app.recommendationPreviewManager.skipToNext()
+                        ) {
                             musicController.skipToNext()
                         }
                     },
@@ -703,6 +717,30 @@ fun FullPlayerScreen(
                                 "Start discover mode"
                             },
                             color = if (discoverMode) AccentGreen else SecondaryText
+                        )
+                    }
+                }
+
+                if (showRecommendationScrollHint) {
+                    // Cue, then the recommendation section starts ~1-2 rem
+                    // below it — no viewport-filling gap.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = Dimens.paddingLarge)
+                            .padding(bottom = Dimens.paddingLarge),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowDown,
+                            contentDescription = "Scroll down for recommendations",
+                            tint = AccentGreen,
+                            modifier = Modifier.size(Dimens.iconSizeMedium)
+                        )
+                        Text(
+                            text = "Scroll for recommendations",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = SecondaryText
                         )
                     }
                 }

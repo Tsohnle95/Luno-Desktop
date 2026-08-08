@@ -251,13 +251,22 @@ fun MainShell(
     // through this state so its page is not revealed with a second loader.
     var transitionMask by remember { mutableStateOf(false) }
     val app = context.applicationContext as com.luno.mobile.LunoApp
+    // The preview manager's skip routing only applies while a transient
+    // preview is actually playing; any normal track goes straight to the
+    // player so the media keys always advance the queue.
     fun skipToNext() {
-        if (!app.recommendationPreviewManager.skipToNext()) {
+        val currentTrack = musicController.currentTrack.value
+        if (currentTrack?.isTransient != true ||
+            !app.recommendationPreviewManager.skipToNext()
+        ) {
             musicController.skipToNext()
         }
     }
     fun skipToPrevious() {
-        if (!app.recommendationPreviewManager.skipToPrevious()) {
+        val currentTrack = musicController.currentTrack.value
+        if (currentTrack?.isTransient != true ||
+            !app.recommendationPreviewManager.skipToPrevious()
+        ) {
             musicController.skipToPrevious()
         }
     }
