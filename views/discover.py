@@ -109,8 +109,8 @@ class DiscoverView(tk.Frame):
                        fg=BG, bg=TEXT2, padx=12, pady=6, cursor="hand2", width=16)
         btn.pack(side="right")
         
-        def do_add(art=r.get("artist", ""), tit=r.get("title", ""), b=btn):
-            self.controller._download_track(art, tit)
+        def do_add(art=r.get("artist", ""), tit=r.get("title", ""), url=r.get("url"), b=btn):
+            self.controller._download_track(art, tit, url=url)
             b.config(text="✓ Queued", bg=GREEN, state="disabled")
             b.unbind("<Button-1>")
 

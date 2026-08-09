@@ -123,12 +123,17 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 ## 🔀 Data Flow
 
 ### Library Scan → UI
-1. `_refresh_library()` spawns a thread calling standalone `scan_library(roots)` (imported from `engine.py`)
+1. `_refresh_library()` spawns a generation-tagged thread calling standalone `scan_library(roots)` (imported from `engine.py`); stale overlapping scan results are ignored
 2. Returns `dict[playlist_name → list[file_paths]]`; root-level tracks represented by `Unsorted` are ordered newest-first by filesystem modification time, with filename tie-breaking
 3. `_finalize_library_update(new_lib)` hashes the result, stores it in `self._library`
 4. Calls `_populate_sidebar()` → rebuilds sidebar cards
 5. Calls `_populate_track_list("")` → rebuilds track list
 6. Broadcasts `on_library_updated()` to all views
+
+### Track Name Editing
+1. Library and Recently Played context menus call `LunoMusicPlayer._ctx_edit_track_info()` for one selected local file
+2. The dialog collects an optional artist and required track name, sanitizes them, and renames the audio file to `Artist - Title.ext` (or `Title.ext` when artist is blank)
+3. Live queue/history/favorite path references are updated, then the generation-tagged library scan refreshes search, ordering, and the Unsorted view
 
 ### Playback
 1. User clicks track → `engine.play_with_context(path, context_list)`
@@ -150,11 +155,12 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 4. Track context menus, the queue menu, the player bar, and Song Page toggle favorite state. Library rows show an outlined or green filled star immediately before the playlist name, and the library action row can stably move favorites ahead of other tracks.
 
 ### Download Pipeline
-1. `DownloadView._download_selected()` / `_queue_direct_url()` → `Downloader.download_single()`, `_download_all()` → `Downloader.download_sync_tracks()`, `_start_csv_dl()` → `Downloader.download_csv_tracks()`, and URL Queue / Sync All actions → `Downloader.download_playlist_sync()`
+1. `DiscoverView`'s Add to Library action → `LunoMusicPlayer._download_track()` → `Downloader.download_sync_tracks()`; `DownloadView._download_selected()` / `_queue_direct_url()` → `Downloader.download_single()`, `_download_all()` → `Downloader.download_sync_tracks()`, `_start_csv_dl()` → `Downloader.download_csv_tracks()`, and URL Queue / Sync All actions → `Downloader.download_playlist_sync()`
 2. `Downloader._create_opts()` → yt-dlp options: 44.1kHz, 192k MP3, loudnorm, EmbedThumbnail
-3. Progress hook → `controller.after(0, ...)` → UI update
-4. On complete → `_refresh_library()` → library scan
-5. Playlist sync compares candidates against the whole local music library root, not only the destination playlist folder, so Sync All avoids duplicating tracks that already exist in another playlist. It tracks successful/matched YouTube IDs in `.downloaded_vids` and permanent failures in `.sync_failed_vids` inside the playlist folder.
+3. Discovery download status, logs, and completion callbacks are marshalled through `controller.after(0, ...)`; the sync-track path creates the destination folder and treats a missing audio output as a failure instead of reporting a false success. A completed discovery download requests a fresh scan and resets the library track list to its first row.
+4. Progress hook → `controller.after(0, ...)` → UI update
+5. On complete → `_refresh_library()` → library scan
+6. Playlist sync compares candidates against the whole local music library root, not only the destination playlist folder, so Sync All avoids duplicating tracks that already exist in another playlist. It tracks successful/matched YouTube IDs in `.downloaded_vids` and permanent failures in `.sync_failed_vids` inside the playlist folder.
 
 ### Artwork Fetching
 1. `PlaylistArt` or `SongPageView` requests art → `ArtCache.get(path, size, callback)`
@@ -183,12 +189,12 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
   - `probe_soundcloud(query)`, `parse_exportify_csv(filepath)`: Supporting utilities.
 - **`library_transfer.py`**: Portable transfer contract. Provides `build_manifest()`, `validate_manifest()`, `load_manifest()`, `write_manifest()`, `plan_import()`, and `apply_import_plan()` for the path-free v1 JSON format used by Android.
 - **`downloader.py`** (root `downloader.py` — not the view): The `Downloader` class — wraps `yt-dlp` for downloading audio. Static methods: `download_single()`, `download_youtube_url()`, `download_csv_tracks()`, `download_sync_tracks()`. Forces 44.1kHz, 192k MP3, EBU R 128 loudnorm. Uses `EmbedThumbnail` postprocessor. All methods spawn daemon threads. *Note: `views/downloader.py` is the UI view that calls this module.*
-- **`utils.py`**: Helpers: `resource_path` (PyInstaller asset resolution), `format_time`, `split_track_name`, `hex_to_rgb`, `rgb_to_hex`, `draw_gradient_rect`, and cross-platform mouse/trackpad scroll binding with precise Tk 9 delta normalization.
+- **`utils.py`**: Helpers: `resource_path` (PyInstaller asset resolution), `format_time`, `split_track_name`, `hex_to_rgb`, `rgb_to_hex`, `draw_gradient_rect`, and cross-platform mouse/trackpad scroll binding with precise Tk 9 delta normalization. Track-name editing uses the same filename parser after sanitizing user-entered names.
 
 ### 🖼 View Modules (`views/`)
 - **`library.py`**: Virtual scrolling canvas (56px rows). Header displays playlist title, dynamic album art (via `PlaylistArt`), and a playlist-settings cog that opens playlist URL, sync, duplicate, and transfer actions. Includes an **in-playlist search bar** (`Filter tracks…`) using a `tk.Label` overlay with `rely=0.5` vertical centering and a trailing clear-X, plus a compact mobile-parity `Sort ▾` control at the far right whose menu offers (`A-Z`, `Z-A`, `Recently added`, `Duration`) shared by All Music and individual playlists. Get Similar Tracks sits immediately to its left. Unsorted defaults to newest-first. The five action-row controls use equal flexible spacer columns equivalent to `justify-content: space-between`; Shuffle, Favorites first, sort, and Get Similar Tracks use the accent green, and active shuffle is shown with a bold underline. Track text is strictly truncated dynamically (`char_w = 0.85`) to ensure long titles never overflow (`w - 340` boundary). Each row has an outlined/filled favorite star about 16 px before its playlist name; clicking it toggles the track without changing selection, while track context menus retain favorite actions. The Library sidebar header returns to All Music, Unsorted navigation resets the virtual list to its first row, and Unsorted shows the subtitle `songs yet to find a home`. The reserved virtual Favorites playlist supports normal play/shuffle context and favorite-first ordering. The Get Similar Tracks action opens Discover after starting discovery for the current or selected track. Playlist actions export/import the portable manifest.
 - **`downloader.py`**: **Scrollable canvas download workspace** following the native mobile download layout: a compact header/status row, source tabs, dark input/action rows, artwork-backed YouTube/SoundCloud search cards, a Direct URL form, and an expandable Downloaded songs section. The desktop-only Sync, URL Queue, Duplicates, and Allowed Dups workflows remain available as additional tabs; their existing tree selection, batch actions, and portable duplicate backups are preserved. Uses a dynamic `_search_limit` state to enable **Load More** functionality in YouTube/SoundCloud search. The **⚠ Duplicates** tab features **Playlist** and **Filename** columns. Action buttons support **bulk-exclusion** of entire duplicate sets; **double-clicking a group header** plays the first track. The **✓ Allowed Dups** tab includes **💾 Export** and **📂 Import** buttons for portable JSON backups of exclusions.
-- **`recent.py`**: Recently Played view. Gradient header with "Recently Played" title. Displays `controller._recently_played` (max 100) in a virtual scrolling canvas (56px rows). Multi-selection via Shift+Click / Cmd+Click, context menu integration including selected JSON export, "Play All", and "Clear History" actions.
+- **`recent.py`**: Recently Played view. Gradient header with "Recently Played" title. Displays `controller._recently_played` (max 100) in a virtual scrolling canvas (56px rows). Multi-selection via Shift+Click / Cmd+Click, context menu integration including selected JSON export, Edit Track Info, "Play All", and "Clear History" actions.
 - **`settings.py`**: Premium Spotify-style UI with clean section headers, borderless inputs, and consistent padding. Includes step-by-step instructions for Last.fm API setup, manages storage paths, playback options, and Discovery keys, and exposes full-library JSON export/import.
 - **`discover.py`**: Discovery Hub view. Displays recommended tracks from Last.fm based on current listening; features one-click "Add to Library" download integration. Logic includes **Context-Aware Shuffle**: Shuffling now respects the user's current view (All Music, Recently Played) instead of being limited to physical disk folders. The controller passes a flattened `context_list` to the engine, allowing global randomization.
 - **`song_page.py`**: Premium Song Detail view. Displayed when clicking the player bar track info. Mimics Spotify's "Now Playing" aesthetic with a glassmorphism background (blurred album art overlay) and integrated controls. Implements a unified, centered, stacked layout across all screen sizes with a large centerpiece artwork (up to 800x800) that dynamically scales based on available window dimensions.
@@ -207,7 +213,7 @@ For **duplicate detection**, the stronger `_normalize_for_dupe()` function is us
 - Lowercases everything for case-insensitive comparison
 
 ### 2. Title Splitting
-When parsing YouTube names or filenames, the app looks for `" - "` to separate Artist from Title.
+When parsing YouTube names or filenames, the app looks for `" - "` to separate Artist from Title. The Edit Track Info dialog writes entered values back into that filename shape, so existing search, playback labels, discovery lookup, duplicate detection, and export fallback all use the new names without a separate metadata database.
 
 ### 3. The Library Dict (`_library`)
 Stores aggregated and folder-specific track paths. Now includes empty directories to support new playlist creation.

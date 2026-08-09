@@ -39,6 +39,7 @@ class LibraryView(tk.Frame):
         self.ctx_menu.add_command(label="  +   Add to Queue",      command=self.controller._ctx_add_queue)
         self.ctx_menu.add_separator()
         self.ctx_menu.add_command(label="  ♫   Add to Playlist…",  command=self.controller._ctx_add_playlist)
+        self.ctx_menu.add_command(label="  ✎   Edit Track Info…",    command=self.controller._ctx_edit_track_info)
         self.ctx_menu.add_command(label="  ⇧   Export Selected JSON", command=self.controller._export_selected_json)
         self.ctx_menu.add_separator()
         self._favorite_menu_index = self.ctx_menu.index("end") + 1

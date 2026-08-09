@@ -334,6 +334,213 @@ class LunoMusicPlayer(tk.Tk):
         if paths:
             self._show_add_to_playlist_dialog(paths, f"Add {len(paths)} songs to...")
 
+    @staticmethod
+    def _track_filename(artist, title, extension):
+        """Build the searchable filename used by the library's title parser."""
+        def clean(value):
+            value = re.sub(r'[\x00-\x1f\x7f<>:"/\\|?*]', " ", str(value or ""))
+            return re.sub(r"\s+", " ", value).strip().rstrip(".")
+
+        clean_artist = clean(artist)
+        clean_title = clean(title)
+        if not clean_title:
+            return ""
+
+        stem = f"{clean_artist} - {clean_title}" if clean_artist else clean_title
+        # Keep the complete path comfortably below common filesystem limits.
+        max_stem_length = max(1, 240 - len(extension))
+        return f"{stem[:max_stem_length].rstrip(' .')}{extension}"
+
+    def _ctx_edit_track_info(self):
+        """Open the metadata editor for one selected local audio file."""
+        paths = self._get_sel_paths()
+        if len(paths) != 1:
+            if paths:
+                messagebox.showwarning(
+                    "Edit Track Info",
+                    "Select one song at a time to edit its artist and track name.",
+                    parent=self,
+                )
+            return
+        self._show_edit_track_info_dialog(paths[0])
+
+    def _show_edit_track_info_dialog(self, path):
+        """Collect artist/title values and rename the file for library search."""
+        if not os.path.isfile(path):
+            messagebox.showerror("Edit Track Info", "This song is no longer available.", parent=self)
+            return
+
+        current_title, current_artist = split_track_name(path)
+        dlg = tk.Toplevel(self)
+        dlg.title("Edit Track Info")
+        dlg.configure(bg=BG2)
+        dlg.geometry("440x315")
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        tk.Label(
+            dlg,
+            text="Edit Track Info",
+            font=("Helvetica Neue", 15, "bold"),
+            fg=TEXT,
+            bg=BG2,
+        ).pack(pady=(24, 4))
+        tk.Label(
+            dlg,
+            text="Names are used for library search and display.",
+            font=("Helvetica Neue", 10),
+            fg=TEXT3,
+            bg=BG2,
+        ).pack(pady=(0, 18))
+
+        artist_var = tk.StringVar(value=current_artist)
+        title_var = tk.StringVar(value=current_title)
+
+        def add_field(label, variable):
+            row = tk.Frame(dlg, bg=BG2)
+            row.pack(fill="x", padx=36, pady=6)
+            tk.Label(
+                row,
+                text=label,
+                width=12,
+                anchor="w",
+                font=("Helvetica Neue", 10, "bold"),
+                fg=TEXT2,
+                bg=BG2,
+            ).pack(side="left")
+            entry = tk.Entry(
+                row,
+                textvariable=variable,
+                bg=BG3,
+                fg=TEXT,
+                insertbackground=TEXT,
+                relief="flat",
+                font=("Helvetica Neue", 11),
+                bd=0,
+                highlightthickness=0,
+            )
+            entry.pack(side="left", fill="x", expand=True, ipady=7, padx=(8, 0))
+            return entry
+
+        artist_entry = add_field("Artist", artist_var)
+        title_entry = add_field("Track name", title_var)
+
+        def save():
+            extension = os.path.splitext(path)[1]
+            filename = self._track_filename(artist_var.get(), title_var.get(), extension)
+            if not filename:
+                messagebox.showwarning(
+                    "Track name required",
+                    "Enter a track name before saving.",
+                    parent=dlg,
+                )
+                title_entry.focus_set()
+                return
+
+            old_path = os.path.abspath(os.path.normpath(path))
+            new_path = os.path.abspath(os.path.join(os.path.dirname(old_path), filename))
+            if new_path.casefold() == old_path.casefold():
+                dlg.destroy()
+                return
+            if os.path.exists(new_path):
+                messagebox.showerror(
+                    "File already exists",
+                    f"A song named '{filename}' already exists in this folder.",
+                    parent=dlg,
+                )
+                return
+
+            try:
+                os.rename(old_path, new_path)
+            except OSError as exc:
+                messagebox.showerror("Could not update track", str(exc), parent=dlg)
+                return
+
+            dlg.destroy()
+            self._replace_track_path_references(old_path, new_path)
+            self._save_config()
+            self._refresh_library(reset_track_scroll=True)
+            self.status_var.set(f"Updated: {os.path.splitext(filename)[0]}")
+            if not self._closing:
+                self.after(2200, lambda: self.status_var.set("") if not self._closing else None)
+
+        buttons = tk.Frame(dlg, bg=BG2)
+        buttons.pack(fill="x", padx=36, pady=(22, 0))
+        cancel = tk.Label(
+            buttons,
+            text="Cancel",
+            font=("Helvetica Neue", 10, "bold"),
+            fg=TEXT2,
+            bg=BG4,
+            padx=18,
+            pady=9,
+            cursor="hand2",
+        )
+        cancel.pack(side="right", padx=(8, 0))
+        cancel.bind("<Button-1>", lambda _event: dlg.destroy())
+        save_button = tk.Label(
+            buttons,
+            text="Save",
+            font=("Helvetica Neue", 10, "bold"),
+            fg=SIDEBAR,
+            bg=GREEN,
+            padx=24,
+            pady=9,
+            cursor="hand2",
+        )
+        save_button.pack(side="right")
+        save_button.bind("<Button-1>", lambda _event: save())
+        save_button.bind("<Enter>", lambda _event: save_button.config(bg=GREEN_HOVER))
+        save_button.bind("<Leave>", lambda _event: save_button.config(bg=GREEN))
+
+        dlg.bind("<Return>", lambda _event: save())
+        dlg.bind("<Escape>", lambda _event: dlg.destroy())
+        dlg.after(0, title_entry.focus_set)
+
+    def _replace_track_path_references(self, old_path, new_path):
+        """Keep live queues, history, and favorites valid after a file rename."""
+        old_key = os.path.abspath(os.path.normpath(old_path)).casefold()
+
+        def replace_in(paths):
+            return [
+                new_path
+                if isinstance(item, str)
+                and os.path.abspath(os.path.normpath(item)).casefold() == old_key
+                else item
+                for item in paths
+            ]
+
+        for owner, attr in (
+            (self, "_recently_played"),
+            (self, "_queue_playlist_paths"),
+            (getattr(self, "engine", None), "queue"),
+            (getattr(self, "engine", None), "_original_queue"),
+        ):
+            if owner is not None and hasattr(owner, attr):
+                setattr(owner, attr, replace_in(getattr(owner, attr)))
+
+        favorite_old = self._favorite_key(old_path)
+        if favorite_old in self._favorite_paths:
+            self._favorite_paths.remove(favorite_old)
+            self._favorite_paths.add(self._favorite_key(new_path))
+
+        engine = getattr(self, "engine", None)
+        if engine and 0 <= engine.queue_idx < len(engine.queue):
+            current_path = engine.queue[engine.queue_idx]
+            title, artist = split_track_name(current_path)
+            if "now_title" in self.__dict__:
+                self.now_title.config(text=title[:48])
+            if "now_artist" in self.__dict__:
+                self.now_artist.config(text=artist)
+            self._update_now_playing_info(title, artist, engine.duration)
+
+        if "_frames" in self.__dict__:
+            self._update_queue()
+            recent = self._frames.get("recent")
+            if recent:
+                recent.redraw()
+
     def _create_playlist_dialog(self, set_dest=False):
         """Creates a new playlist folder and refreshes the library."""
         name = simpledialog.askstring("New Playlist", "Enter playlist name:", parent=self)
@@ -374,8 +581,10 @@ class LunoMusicPlayer(tk.Tk):
         self._watch_roots          = [MUSIC_ROOT]
         self._library              = {}
         self._last_lib_hash        = 0
+        self._library_scan_generation = 0
         self._dl_playlists         = []
         self._is_dl                = False
+        self._discovery_downloads  = 0
         self._dl_done              = 0
         self._search_results       = []
         self._search_offset        = 0
@@ -1495,42 +1704,96 @@ class LunoMusicPlayer(tk.Tk):
 
     def _download_track(self, artist, title, url=None):
         """Standardized interface to bridge Discovery with the Downloader."""
-        dest = self.dl_dest_var.get()
+        dest = (self.dl_dest_var.get() or "").strip()
         if not dest or dest == "— choose playlist —":
-            dest = MUSIC_ROOT
+            dest = self.MUSIC_ROOT
+
+        try:
+            os.makedirs(dest, exist_ok=True)
+        except OSError as exc:
+            self._log_error("Download", f"Could not create download folder '{dest}': {exc}")
+            self.status_var.set("Discovery download failed — invalid destination")
+            return
+
+        def dispatch_ui(callback):
+            """Run a callback on Tk's main thread; downloads run in a worker."""
+            if self._closing:
+                return
+            try:
+                self.after(0, callback)
+            except (RuntimeError, tk.TclError):
+                # The window may have been closed while yt-dlp was finishing.
+                pass
             
         track = {"artist": artist, "title": title, "url": url}
+        result = {"success": False}
         
         def on_log(t, success, msg):
-            area = "Download"
+            result["success"] = bool(success)
             m = f"{t}: {'✓' if success else '✕'} {msg if msg else ''}"
-            self._log_error(area, m)
+            dispatch_ui(lambda m=m: self._log_error("Download", m))
+
+        def on_progress(done, total, query):
+            message = f"Downloading {query}..." if query else ""
+            dispatch_ui(lambda message=message: self.status_var.set(message))
+
+        def on_complete():
+            def finish():
+                self._discovery_downloads = max(0, self._discovery_downloads - 1)
+                self._refresh_library(reset_track_scroll=True)
+                self.status_var.set(
+                    "Discovery download complete"
+                    if result["success"]
+                    else "Discovery download failed — see Download log"
+                )
+            dispatch_ui(finish)
             
         from downloader import Downloader
+        self._discovery_downloads += 1
         Downloader.download_sync_tracks(
             [track],
             dest,
             self.skip_var.get(),
             self.sc_var.get(),
-            on_progress=lambda d, tot, q: self.status_var.set(f"Downloading {q}..." if q else ""),
+            on_progress=on_progress,
             on_log=on_log,
-            on_complete=lambda: [self._refresh_library(), self.status_var.set("Discovery download complete")],
+            on_complete=on_complete,
             check_cancel=lambda: False
         )
 
-    def _refresh_library(self):
+    def _refresh_library(self, reset_track_scroll=False):
         """Manual refresh triggered by the user or startup."""
-        threading.Thread(target=self._run_library_scan_bg, daemon=True).start()
+        self._library_scan_generation += 1
+        generation = self._library_scan_generation
+        threading.Thread(
+            target=self._run_library_scan_bg,
+            args=(generation, reset_track_scroll),
+            daemon=True,
+        ).start()
 
-    def _run_library_scan_bg(self):
+    def _run_library_scan_bg(self, generation=None, reset_track_scroll=False):
         """The heavy lifting happens here on a background thread."""
         new_lib = scan_library(self._watch_roots)
-        self.after(0, lambda: self._finalize_library_update(new_lib))
+        self.after(
+            0,
+            lambda: self._finalize_library_update(
+                new_lib, generation, reset_track_scroll
+            ),
+        )
 
-    def _finalize_library_update(self, new_lib):
+    def _finalize_library_update(self, new_lib, generation=None, reset_track_scroll=False):
+        # Multiple refreshes can overlap while a download is finishing. Ignore
+        # an older scan so it cannot overwrite a newer library snapshot.
+        if generation is not None and generation != self._library_scan_generation:
+            return
+
         # Only refresh UI if contents actually changed to prevent stuttering
         current_hash = hash(str(new_lib))
         if current_hash == self._last_lib_hash:
+            if reset_track_scroll:
+                lib_view = self._frames.get("library")
+                if lib_view:
+                    lib_view.reset_track_scroll()
             return
             
         self._last_lib_hash = current_hash
@@ -1555,11 +1818,14 @@ class LunoMusicPlayer(tk.Tk):
         # 2. Get the current search query so we don't lose our place
         search_q = self.lib_search_entry.get() if self.lib_search_entry.get() != self._lib_ph else ""
         
+        lib_view = self._frames.get("library")
+
         # 3. Redraw the track list
         self._populate_track_list("")
+        if reset_track_scroll and lib_view:
+            lib_view.reset_track_scroll()
         
         # 3b. Refresh the header art with current playlist paths
-        lib_view = self._frames.get("library")
         if lib_view:
             name = self._selected_playlist or "All Music"
             total = sum(len(v) for v in self._library.values())
@@ -2688,7 +2954,7 @@ class LunoMusicPlayer(tk.Tk):
     def _init_watchdog(self):
         """Starts the automatic background refresh loop."""
         # Only refresh if we aren't currently in the middle of a download
-        if not self._is_dl and not self._transfer_running:
+        if not self._is_dl and not self._transfer_running and not self._discovery_downloads:
             self._refresh_library()
         
         # Schedule the next run in 30 seconds

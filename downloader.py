@@ -419,10 +419,22 @@ class Downloader:
     @staticmethod
     def download_sync_tracks(tracks, out_folder, skip_existing, try_sc, on_progress, on_log, on_complete, check_cancel):
         if not yt_dlp:
+            if on_log:
+                on_log("", False, "yt-dlp not available")
             on_complete()
             return
             
         def run():
+            try:
+                os.makedirs(out_folder, exist_ok=True)
+            except OSError as exc:
+                if on_log:
+                    on_log("", False, f"Could not create download folder '{out_folder}': {exc}")
+                on_complete()
+                return
+
+            audio_exts = (".mp3", ".m4a", ".wav", ".flac", ".webm")
+            total = len(tracks)
             for i, t in enumerate(tracks):
                 if check_cancel(): break
                 
@@ -432,7 +444,7 @@ class Downloader:
                 safe_name = re.sub(r'[<>:"/\\|?*]', '', f"{artist} - {title}").strip()
                 if not safe_name: safe_name = "Unknown"
                 
-                on_progress(i, len(tracks), title)
+                on_progress(i, total, title)
                 
                 use_url = t.get("url")
                 if try_sc and not use_url:
@@ -441,12 +453,24 @@ class Downloader:
                 if not use_url:
                     use_url = f"ytsearch1:{q}"
 
-                opts = Downloader._create_opts(out_folder, skip_existing, f"{safe_name}.%(ext)s", error_callback=lambda msg: on_log(title, False, msg))
+                expected_paths = {
+                    os.path.join(out_folder, f"{safe_name}{ext}")
+                    for ext in audio_exts
+                }
+                opts = Downloader._create_opts(
+                    out_folder,
+                    skip_existing,
+                    f"{safe_name}.%(ext)s",
+                    error_callback=lambda msg, title=title: on_log(title, False, msg),
+                    ignoreerrors=False,
+                )
                 try:
                     with yt_dlp.YoutubeDL(opts) as ydl:
                         ydl.download([use_url])
+                    if not any(os.path.isfile(path) for path in expected_paths):
+                        raise FileNotFoundError("download completed but no audio file was created")
                     on_log(title, True, None)
-                    on_progress(i + 1, len(tracks), None) # update tick count
+                    on_progress(i + 1, total, None) # update tick count
                 except Exception as e:
                     on_log(title, False, repr(e))
                     
