@@ -1233,7 +1233,7 @@ private fun FullPlayerRecommendationRow(
                 } else {
                     SecondaryText
                 },
-                maxLines = if (statusIsError) 4 else 1,
+                maxLines = if (statusIsError) Int.MAX_VALUE else 1,
                 overflow = if (statusIsError) TextOverflow.Clip else TextOverflow.Ellipsis,
                 softWrap = statusIsError
             )

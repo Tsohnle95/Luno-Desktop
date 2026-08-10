@@ -1976,10 +1976,10 @@ class RecommendationPreviewManager(
         private const val CONTROLLER_WAIT_INTERVAL_MS = 100L
         private const val PREFETCH_POLL_INTERVAL_MS = 250L
         internal const val PREVIEW_RESOLVE_TIMEOUT_MS = 15_000L
-        internal const val PREVIEW_DOWNLOAD_TIMEOUT_MS = 30_000L
+        internal const val PREVIEW_DOWNLOAD_TIMEOUT_MS = 5 * 60_000L
         private const val METADATA_TIMEOUT_MS = 5_000L
-        private const val MAX_PREVIEW_SOURCE_DURATION_SECONDS = 30 * 60L
-        private const val MAX_PREVIEW_BYTES = 24L * 1024L * 1024L
+        private const val MAX_PREVIEW_SOURCE_DURATION_SECONDS = 3 * 60 * 60L
+        private const val MAX_PREVIEW_BYTES = 512L * 1024L * 1024L
         internal const val IMMEDIATE_PREVIEW_AHEAD_COUNT = 5
         internal const val PREFETCH_RECOMMENDATION_COUNT = 5
         private const val CONTINUATION_APPEND_WINDOW = 3
