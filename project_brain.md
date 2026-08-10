@@ -49,6 +49,9 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── test_engine_playback.py   # Deterministic mocked unit tests for playback engine
 ├── test_library_transfer.py   # Manifest validation, export, matching, and additive merge tests
 ├── test_media_keys.py        # Deterministic mocked unit tests for media key logic
+├── test_downloader_sync.py   # Deterministic mocked tests for playlist synchronization
+├── test_tkvideo.py            # Ad-hoc Tk/video experiment (not part of the app)
+├── pytest.ini                 # Default pytest collection excludes dependency-bound ad-hoc scripts
 ├── test_audio_flet.py        # Ad-hoc test scripts (not part of the app)
 ├── test_audio_flet2.py
 ├── test_dl.py
@@ -197,7 +200,7 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 - **`recent.py`**: Recently Played view. Gradient header with "Recently Played" title. Displays `controller._recently_played` (max 100) in a virtual scrolling canvas (56px rows). Multi-selection via Shift+Click / Cmd+Click, context menu integration including selected JSON export, Edit Track Info, "Play All", and "Clear History" actions.
 - **`settings.py`**: Premium Spotify-style UI with clean section headers, borderless inputs, and consistent padding. Includes step-by-step instructions for Last.fm API setup, manages storage paths, playback options, and Discovery keys, and exposes full-library JSON export/import.
 - **`discover.py`**: Discovery Hub view. Displays recommended tracks from Last.fm based on current listening; features one-click "Add to Library" download integration. Logic includes **Context-Aware Shuffle**: Shuffling now respects the user's current view (All Music, Recently Played) instead of being limited to physical disk folders. The controller passes a flattened `context_list` to the engine, allowing global randomization.
-- **`song_page.py`**: Premium Song Detail view. Displayed when clicking the player bar track info. Mimics Spotify's "Now Playing" aesthetic with a glassmorphism background (blurred album art overlay) and integrated controls. Implements a unified, centered, stacked layout across all screen sizes with a large centerpiece artwork (up to 800x800) that dynamically scales based on available window dimensions.
+- **`song_page.py`**: Premium Song Detail view. Displayed when clicking the player bar track info. Mimics Spotify's "Now Playing" aesthetic with a glassmorphism background (blurred album art overlay) and integrated controls. Implements a unified, centered, stacked layout across all screen sizes with a large centerpiece artwork (up to 800x800) that dynamically scales based on available window dimensions. Blur generation uses a single-worker executor with generation checks so resize/path changes cannot apply stale artwork or accumulate workers.
 - **`error_log.py`**: Debug log viewer. Displays `controller._error_logs` (list of strings) in a read-only `tk.Text` widget with `ModernScrollbar`. "Clear Logs" button resets the list.
 
 ---
@@ -289,5 +292,3 @@ The transfer format is `luno.library.export` with `manifest_version: 1` and scop
 ---
 
 ## ⚠️ Known Code Smells
-- **`music_player.py` orphaned inline sidebar rebuild** (`_finalize_library_update`, lines 1397–1449): After calling `_populate_sidebar()`, the function has a second block of orphaned code that destroys and rebuilds the sidebar cards again. The first `_populate_sidebar()` call is effectively overwritten. Should be removed.
-- **`views/song_page.py` thread leak**: `_load_blur_bg` spawns a new thread on every `update_view()` call (e.g., during window resize) with no cancellation mechanism for previous threads.

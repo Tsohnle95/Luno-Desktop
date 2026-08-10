@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
@@ -68,8 +69,34 @@ fun TrackActionsSheet(
     var showPlaylistPicker by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showNewPlaylistDialog by remember { mutableStateOf(false) }
+    var showMetadataDialog by remember { mutableStateOf(false) }
 
-    if (showNewPlaylistDialog) {
+    if (showMetadataDialog) {
+        EditTrackMetadataDialog(
+            track = track,
+            onDismiss = { showMetadataDialog = false },
+            onSave = { title, artist ->
+                scope.launch {
+                    app.libraryRepository.updateTrackMetadata(track.uri, title, artist)
+                        .onSuccess {
+                            Toast.makeText(
+                                context,
+                                "Song details updated",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            showMetadataDialog = false
+                        }
+                        .onFailure { error ->
+                            Toast.makeText(
+                                context,
+                                "Could not update song: ${error.message ?: "Try again"}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                }
+            }
+        )
+    } else if (showNewPlaylistDialog) {
         NewPlaylistForTrackDialog(
             trackTitle = track.title,
             onDismiss = { showNewPlaylistDialog = false },
@@ -179,6 +206,11 @@ fun TrackActionsSheet(
                         ).show()
                         onDismiss()
                     }
+                )
+                TrackActionRow(
+                    icon = Icons.Filled.Edit,
+                    label = "Edit title and artist",
+                    onClick = { showMetadataDialog = true }
                 )
                 TrackActionRow(
                     icon = Icons.AutoMirrored.Filled.PlaylistAdd,

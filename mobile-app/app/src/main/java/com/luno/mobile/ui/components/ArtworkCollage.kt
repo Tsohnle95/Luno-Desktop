@@ -59,7 +59,9 @@ fun ArtworkCollage(
                             .fillMaxSize(),
                         contentAlignment = Alignment.Center
                     ) {
-                        ArtworkImage(
+                        RecommendationArtworkImage(
+                            artist = track?.artist.orEmpty(),
+                            title = track?.title.orEmpty(),
                             artworkUri = track?.albumArtUri(),
                             modifier = Modifier.fillMaxSize(),
                             placeholderIconSize = placeholderIconSize,

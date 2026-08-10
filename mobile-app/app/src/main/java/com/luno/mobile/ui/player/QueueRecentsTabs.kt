@@ -48,9 +48,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.luno.mobile.playback.MediaTrack
 import com.luno.mobile.playback.MusicController
-import com.luno.mobile.ui.components.ArtworkImage
+import com.luno.mobile.playback.PlaybackSource
 import com.luno.mobile.LunoApp
 import com.luno.mobile.ui.components.BulkSelectionToolbar
+import com.luno.mobile.ui.components.RecommendationArtworkImage
 import com.luno.mobile.ui.theme.AccentGreen
 import com.luno.mobile.ui.theme.Dimens
 import com.luno.mobile.ui.theme.PrimaryText
@@ -188,6 +189,9 @@ fun RecentlyPlayedTab(
     modifier: Modifier = Modifier
 ) {
     val history by musicController.recentlyPlayed.collectAsState()
+    val historyPlaybackContext = remember(history) {
+        history.map { it.copy(playbackSource = PlaybackSource("Player", "Recently played")) }
+    }
     val context = LocalContext.current
     val app = context.applicationContext as LunoApp
     val allTracks by app.libraryData.tracks.collectAsState()
@@ -282,7 +286,7 @@ fun RecentlyPlayedTab(
                     selected = if (selectionMode) track.uri in selectedUris else null,
                     onClick = {
                         if (selectionMode) toggleSelection(track.uri)
-                        else musicController.play(history, index)
+                        else musicController.play(historyPlaybackContext, index)
                     },
                     onLongPress = {
                         selectionMode = true
@@ -324,14 +328,7 @@ private fun RecentRow(
             )
             Spacer(modifier = Modifier.width(Dimens.paddingSmall))
         }
-        ArtworkImage(
-            artworkUri = track.artworkUri,
-            modifier = Modifier
-                .size(Dimens.albumArtSmall)
-                .padding(end = Dimens.paddingMedium),
-            placeholderIconSize = 20.dp,
-            decodeSizePx = 192
-        )
+        TrackArtwork(track)
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = track.title,
@@ -349,6 +346,21 @@ private fun RecentRow(
             )
         }
     }
+}
+
+@Composable
+private fun TrackArtwork(track: MediaTrack) {
+    val modifier = Modifier
+        .size(Dimens.albumArtSmall)
+        .padding(end = Dimens.paddingMedium)
+    RecommendationArtworkImage(
+        artist = track.artist,
+        title = track.title,
+        artworkUri = track.artworkUri,
+        modifier = modifier,
+        placeholderIconSize = 20.dp,
+        decodeSizePx = 192
+    )
 }
 
 @Composable
@@ -386,14 +398,7 @@ private fun QueueRow(
             .padding(vertical = Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ArtworkImage(
-            artworkUri = track.artworkUri,
-            modifier = Modifier
-                .size(Dimens.albumArtSmall)
-                .padding(end = Dimens.paddingMedium),
-            placeholderIconSize = 20.dp,
-            decodeSizePx = 192
-        )
+        TrackArtwork(track)
         Column(
             modifier = Modifier.weight(1f)
         ) {

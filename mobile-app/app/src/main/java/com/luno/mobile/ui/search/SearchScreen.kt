@@ -80,9 +80,9 @@ import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.playback.ExtractionResult
 import com.luno.mobile.playback.WebSearchResult
 import com.luno.mobile.playback.WebSearchService
-import com.luno.mobile.ui.components.ArtworkImage
 import com.luno.mobile.ui.components.BulkSelectionToolbar
 import com.luno.mobile.ui.components.PlaylistPickerSheet
+import com.luno.mobile.ui.components.RecommendationArtworkImage
 import com.luno.mobile.ui.components.TrackActionsSheet
 import com.luno.mobile.ui.components.TrackRowCard
 import com.luno.mobile.ui.create.CreatePlaylistSheet
@@ -1453,7 +1453,9 @@ private fun WebResultRow(
                 .padding(vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            ArtworkImage(
+            RecommendationArtworkImage(
+                artist = result.artist,
+                title = result.title,
                 artworkUri = result.thumbnailUrl,
                 modifier = Modifier
                     .size(60.dp)

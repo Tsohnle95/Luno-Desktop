@@ -1985,6 +1985,8 @@ class RecommendationPreviewManager(
         private const val CONTINUATION_APPEND_WINDOW = 3
         private const val PREFETCH_ADOPT_TIMEOUT_MS = 60_000L
         internal const val RECOMMENDATION_PAGE_SIZE = 25
+        internal const val PREVIEW_TOO_LARGE_MESSAGE =
+            "This source is too large for a quick preview. Use Download to playlist to save the full song."
         private val TERMINAL_DOWNLOAD_STATES = setOf(
             DownloadState.COMPLETED,
             DownloadState.FAILED,
@@ -2196,7 +2198,7 @@ class RecommendationPreviewManager(
                     val body = response.body ?: throw IOException("Preview response was empty")
                     val contentLength = body.contentLength()
                     if (contentLength > MAX_PREVIEW_BYTES) {
-                        throw IOException("This source is too large for a quick preview")
+                        throw IOException(PREVIEW_TOO_LARGE_MESSAGE)
                     }
                     FileOutputStream(partial).use { output ->
                         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -2208,7 +2210,7 @@ class RecommendationPreviewManager(
                                 if (read == -1) break
                                 totalBytes += read
                                 if (totalBytes > MAX_PREVIEW_BYTES) {
-                                    throw IOException("This source is too large for a quick preview")
+                                    throw IOException(PREVIEW_TOO_LARGE_MESSAGE)
                                 }
                                 output.write(buffer, 0, read)
                             }
@@ -2240,6 +2242,10 @@ class RecommendationPreviewManager(
                         artist = recommendation.artist,
                         durationMs = durationMs,
                         artworkUri = localArtworkUri,
+                        playbackSource = PlaybackSource(
+                            category = "Recommendations",
+                            name = "Recommended for this song"
+                        ),
                         isTransient = true
                     )
                 )

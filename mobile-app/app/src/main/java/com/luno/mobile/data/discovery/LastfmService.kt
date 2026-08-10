@@ -68,6 +68,10 @@ open class LastfmService(
     companion object {
         private const val TIMEOUT_SECONDS = 8L
         private const val MAX_CACHE_ENTRIES = 10
+        // Last.fm uses this same image for tracks that have no real artwork.
+        // Treating it as a normal URL makes the UI skip every artwork fallback.
+        private const val LASTFM_DEFAULT_ARTWORK_ID =
+            "2a96cbd8b46e442fc41c2b86b821562f"
 
         /** Match score given to `artist.getTopTracks` fallback tracks (desktop parity). */
         const val FALLBACK_MATCH = 0.8
@@ -252,11 +256,26 @@ open class LastfmService(
     /** Android blocks cleartext image requests; older Last.fm responses use http URLs. */
     private fun normalizeImageUrl(rawUrl: String): String? {
         val url = rawUrl.trim()
-        return when {
+        val normalized = when {
             url.startsWith("https://", ignoreCase = true) -> url
             url.startsWith("http://", ignoreCase = true) -> "https://${url.substring(7)}"
             else -> null
         }
+        return normalized?.takeUnless(::isKnownPlaceholderArtwork)
+    }
+
+    private fun isKnownPlaceholderArtwork(url: String): Boolean {
+        val normalized = url.lowercase(Locale.ROOT)
+        if (normalized.contains(LASTFM_DEFAULT_ARTWORK_ID)) return true
+
+        // Keep this conservative: only reject generic default/no-image names
+        // when they come from Last.fm, so a legitimate CDN URL is unaffected.
+        val isLastFmHost = normalized.contains("last.fm") ||
+            normalized.contains("lastfm.freetls.fastly.net")
+        return isLastFmHost &&
+            (normalized.contains("/default") ||
+                normalized.contains("noimage") ||
+                normalized.contains("no_image"))
     }
 
     private fun storeCache(key: Triple<String, String, Int>, tracks: List<LastfmTrack>) {

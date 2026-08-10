@@ -134,6 +134,20 @@ class LastfmServiceTest {
     }
 
     @Test
+    fun lastFmDefaultArtwork_isTreatedAsMissing() = runBlocking {
+        server.enqueue(
+            similarResponse(
+                """[{"name":"Song A","match":0.5,"artist":"Artist A",
+                    "image":[{"#text":"https://lastfm.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png","size":"large"}]}]"""
+            )
+        )
+
+        val result = service.getSimilar("Artist", "Title") as LastfmResult.Success
+
+        assertThat(result.tracks.single().imageUrl).isNull()
+    }
+
+    @Test
     fun emptySimilar_fallsBackToArtistTopTracks_withMatch080() = runBlocking {
         server.enqueue(similarResponse("[]"))
         server.enqueue(

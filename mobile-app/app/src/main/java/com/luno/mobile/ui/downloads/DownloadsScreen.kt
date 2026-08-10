@@ -42,7 +42,7 @@ import com.luno.mobile.LunoApp
 import com.luno.mobile.data.artwork.ArtworkStorage
 import com.luno.mobile.data.db.entity.DownloadJob
 import com.luno.mobile.data.db.entity.DownloadState
-import com.luno.mobile.ui.components.ArtworkImage
+import com.luno.mobile.ui.components.RecommendationArtworkImage
 import com.luno.mobile.ui.theme.AccentGreen
 import com.luno.mobile.ui.theme.Dimens
 import com.luno.mobile.ui.theme.PrimaryText
@@ -274,7 +274,9 @@ private fun DownloadJobRow(
             .padding(vertical = Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ArtworkImage(
+        RecommendationArtworkImage(
+            artist = job.artist,
+            title = job.title,
             artworkUri = artworkUri,
             modifier = Modifier
                 .size(Dimens.albumArtSmall)

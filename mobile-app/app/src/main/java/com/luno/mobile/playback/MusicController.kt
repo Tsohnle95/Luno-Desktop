@@ -184,6 +184,7 @@ class MusicController @JvmOverloads constructor(
                         album = it.albumTitle?.toString() ?: "",
                         durationMs = metadataDuration(it, sessionDuration),
                         artworkUri = it.artworkUri?.toString(),
+                        playbackSource = playbackSourceFromExtras(it.extras),
                         isTransient = it.extras?.getBoolean(METADATA_TRANSIENT) == true
                     )
                 }
@@ -355,7 +356,57 @@ class MusicController @JvmOverloads constructor(
      * @return `true` — dispatched, queued, or (after [release]) silently ignored.
      */
     fun playUri(uri: String): Boolean {
-        return play(MediaTrack(uri = uri))
+        return play(
+            MediaTrack(
+                uri = uri,
+                playbackSource = PlaybackSource("Player", "Direct URI")
+            )
+        )
+    }
+
+    /**
+     * Updates title/artist metadata for every matching queue item and the
+     * current state snapshot. The library database remains the source of
+     * truth; this keeps the open player in sync immediately after the user
+     * edits missing metadata.
+     */
+    fun updateTrackMetadata(uri: String, title: String, artist: String): Boolean {
+        val cleanTitle = title.trim()
+        val cleanArtist = artist.trim()
+        if (uri.isBlank() || cleanTitle.isBlank()) return false
+
+        var updated = false
+        safePlayerCommand("updateTrackMetadata") {
+            controller?.let { ctrl ->
+                for (index in 0 until ctrl.mediaItemCount) {
+                    val item = ctrl.getMediaItemAt(index)
+                    if (item.mediaId != uri) continue
+                    val existing = mediaTrackFromItem(item)
+                    val extras = item.mediaMetadata.extras
+                    ctrl.replaceMediaItem(
+                        index,
+                        buildMediaItem(
+                            track = existing.copy(title = cleanTitle, artist = cleanArtist),
+                            enrichArtwork = extras?.getBoolean(METADATA_ENRICH_ARTWORK) == true,
+                            playlistId = extras
+                                ?.takeIf { it.containsKey(METADATA_PLAYLIST_ID) }
+                                ?.getLong(METADATA_PLAYLIST_ID)
+                        )
+                    )
+                    updated = true
+                }
+            }
+
+            if (_currentTrack.value?.uri == uri) {
+                _currentTrack.value = _currentTrack.value!!.copy(
+                    title = cleanTitle,
+                    artist = cleanArtist
+                )
+                updated = true
+            }
+            if (updated) bumpQueueRevision()
+        }
+        return updated
     }
 
     /**
@@ -365,7 +416,12 @@ class MusicController @JvmOverloads constructor(
      */
     @JvmName("playUris")
     fun play(uris: List<String>, startIndex: Int = 0): Boolean {
-        val tracks = uris.map { MediaTrack(uri = it) }
+        val tracks = uris.map {
+            MediaTrack(
+                uri = it,
+                playbackSource = PlaybackSource("Player", "URI list")
+            )
+        }
         return play(tracks, startIndex)
     }
 
@@ -880,6 +936,7 @@ class MusicController @JvmOverloads constructor(
                 album = meta.albumTitle?.toString() ?: "",
                 durationMs = hydratedDuration,
                 artworkUri = meta.artworkUri?.toString(),
+                playbackSource = playbackSourceFromExtras(meta.extras),
                 isTransient = meta.extras?.getBoolean(METADATA_TRANSIENT) == true
             )
             _currentTrack.value = hydrated
@@ -967,7 +1024,12 @@ class MusicController @JvmOverloads constructor(
     ): MediaItem {
         val extras = Bundle().apply {
             putLong(METADATA_DURATION_MS, track.durationMs)
-            playlistId?.let { putLong(METADATA_PLAYLIST_ID, it) }
+            val effectivePlaylistId = playlistId ?: track.playbackSource?.playlistId
+            effectivePlaylistId?.let { putLong(METADATA_PLAYLIST_ID, it) }
+            track.playbackSource?.let { source ->
+                putString(METADATA_SOURCE_CATEGORY, source.category)
+                source.name?.let { putString(METADATA_SOURCE_NAME, it) }
+            }
             if (track.isTransient) putBoolean(METADATA_TRANSIENT, true)
             // The session's ArtworkEnrichingCallback only loads artworkData
             // for flagged items — keeps notification/lock-screen artwork
@@ -1082,8 +1144,24 @@ class MusicController @JvmOverloads constructor(
             album = metadata.albumTitle?.toString() ?: "",
             durationMs = metadataDuration(metadata, -1L),
             artworkUri = metadata.artworkUri?.toString(),
+            playbackSource = playbackSourceFromExtras(metadata.extras),
             isTransient = metadata.extras?.getBoolean(METADATA_TRANSIENT) == true
         )
+    }
+
+    private fun playbackSourceFromExtras(extras: Bundle?): PlaybackSource? {
+        val category = extras?.getString(METADATA_SOURCE_CATEGORY)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: return null
+        val name = extras?.getString(METADATA_SOURCE_NAME)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        val playlistId = extras?.takeIf {
+            it.containsKey(METADATA_PLAYLIST_ID)
+        }
+            ?.getLong(METADATA_PLAYLIST_ID)
+        return PlaybackSource(category = category, name = name, playlistId = playlistId)
     }
 
     private fun bumpQueueRevision() {
@@ -1129,6 +1207,10 @@ class MusicController @JvmOverloads constructor(
             "com.luno.mobile.playback.ENRICH_ARTWORK"
         internal const val METADATA_PLAYLIST_ID =
             "com.luno.mobile.playback.PLAYLIST_ID"
+        internal const val METADATA_SOURCE_CATEGORY =
+            "com.luno.mobile.playback.SOURCE_CATEGORY"
+        internal const val METADATA_SOURCE_NAME =
+            "com.luno.mobile.playback.SOURCE_NAME"
         internal const val METADATA_TRANSIENT =
             "com.luno.mobile.playback.TRANSIENT"
         private const val TAG = "MusicController"
@@ -1168,6 +1250,7 @@ data class MediaTrack(
     val album: String = "",
     val durationMs: Long = 0L,
     val artworkUri: String? = null,
+    val playbackSource: PlaybackSource? = null,
     /** Temporary previews are playable but never persisted to history/counts. */
     val isTransient: Boolean = false
 )

@@ -66,6 +66,7 @@ import com.luno.mobile.data.db.entity.SystemPlaylists
 import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.playback.MediaTrack
 import com.luno.mobile.playback.MusicController
+import com.luno.mobile.playback.PlaybackSource
 import com.luno.mobile.ui.components.PlaylistCard
 import com.luno.mobile.ui.components.BulkSelectionToolbar
 import com.luno.mobile.ui.components.SortChip
@@ -893,5 +894,6 @@ private fun Track.toMediaTrack(): MediaTrack = MediaTrack(
     artist = artist,
     album = album,
     durationMs = durationMs,
-    artworkUri = albumArtUri()
+    artworkUri = albumArtUri(),
+    playbackSource = PlaybackSource("Library", "All songs")
 )

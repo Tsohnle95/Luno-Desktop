@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.luno.mobile.data.db.AppDatabase
+import com.luno.mobile.playback.MediaTrack
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -115,5 +116,24 @@ class PlaylistRepositoryTest {
         assertThat(repository.getPlaylistWithTracks(playlist.id)!!.tracks.map { it.uri })
             .containsExactly("content://test/1", "content://test/2", "content://test/3")
             .inOrder()
+    }
+
+    @Test
+    fun addMediaTrackToPlaylist_materializesPlayerMetadataForSearch(): Unit = runBlocking {
+        val playlist = repository.createPlaylist("Synth Wave").getOrThrow()
+        val playerTrack = MediaTrack(
+            uri = "https://youtu.be/lost-ship-full-album",
+            title = "The Lost Ship - Full Album",
+            artist = "The Lost Ship"
+        )
+
+        val result = repository.addMediaTrackToPlaylist(playlist.id, playerTrack)
+
+        assertThat(result.isSuccess).isTrue()
+        assertThat(database.trackDao().getTrack(playerTrack.uri)).isNotNull()
+        assertThat(database.trackDao().searchTracks("Lost Ship").first().map { it.title })
+            .containsExactly("The Lost Ship - Full Album")
+        assertThat(repository.getPlaylistWithTracks(playlist.id)!!.tracks.map { it.uri })
+            .containsExactly(playerTrack.uri)
     }
 }

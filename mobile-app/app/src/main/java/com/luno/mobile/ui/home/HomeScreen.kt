@@ -65,9 +65,10 @@ import com.luno.mobile.data.db.entity.DownloadState
 import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.playback.MediaTrack
 import com.luno.mobile.playback.MusicController
-import com.luno.mobile.ui.components.ArtworkImage
+import com.luno.mobile.playback.PlaybackSource
 import com.luno.mobile.ui.components.BulkSelectionToolbar
 import com.luno.mobile.ui.components.MiniPlayerOverlayHeight
+import com.luno.mobile.ui.components.RecommendationArtworkImage
 import com.luno.mobile.ui.components.TrackActionsSheet
 import com.luno.mobile.ui.theme.AccentGreen
 import com.luno.mobile.ui.theme.Dimens
@@ -279,7 +280,8 @@ fun HomeScreen(
                 artist = it.artist,
                 album = it.album,
                 durationMs = it.durationMs,
-                artworkUri = it.albumArtUri()
+                artworkUri = it.albumArtUri(),
+                playbackSource = PlaybackSource("Home", "Recently downloaded")
             )
         }
     }
@@ -294,7 +296,8 @@ fun HomeScreen(
                 artist = it.artist,
                 album = it.album,
                 durationMs = it.durationMs,
-                artworkUri = it.albumArtUri()
+                artworkUri = it.albumArtUri(),
+                playbackSource = PlaybackSource("Home", "Made for you")
             )
         }
     }
@@ -325,7 +328,8 @@ fun HomeScreen(
                 artist = it.artist,
                 album = it.album,
                 durationMs = it.durationMs,
-                artworkUri = it.albumArtUri()
+                artworkUri = it.albumArtUri(),
+                playbackSource = PlaybackSource("Home", "Favorites")
             )
         }
     }
@@ -337,7 +341,8 @@ fun HomeScreen(
                 artist = it.artist,
                 album = it.album,
                 durationMs = it.durationMs,
-                artworkUri = it.albumArtUri()
+                artworkUri = it.albumArtUri(),
+                playbackSource = PlaybackSource("Home", "Most popular songs")
             )
         }
     }
@@ -579,7 +584,10 @@ fun HomeScreen(
                 // distinctBy: a track may legitimately appear twice in
                 // history (non-consecutive plays); duplicate keys would
                 // make the LazyRow jump or throw.
-                val history = homeRecentlyPlayed.distinctBy { it.uri }.take(20)
+                val history = homeRecentlyPlayed
+                    .distinctBy { it.uri }
+                    .take(20)
+                    .map { it.copy(playbackSource = PlaybackSource("Home", "Recently played")) }
                 LazyRow(
                     state = recentlyPlayedListState,
                     horizontalArrangement = Arrangement.spacedBy(Dimens.paddingMedium),
@@ -780,7 +788,9 @@ private fun HomePlaylistCard(
             )
     ) {
         Box {
-            ArtworkImage(
+            RecommendationArtworkImage(
+                artist = tracks.firstOrNull()?.artist ?: name,
+                title = tracks.firstOrNull()?.title ?: name,
                 artworkUri = tracks.firstOrNull()?.albumArtUri(),
                 modifier = Modifier
                     .size(Dimens.albumArtMedium)
@@ -1007,7 +1017,9 @@ fun TrackCard(
             )
     ) {
         Box {
-            ArtworkImage(
+            RecommendationArtworkImage(
+                artist = artist,
+                title = title,
                 artworkUri = artworkUri,
                 modifier = Modifier
                     .size(Dimens.albumArtMedium)

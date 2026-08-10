@@ -3,7 +3,7 @@ from theme import BG, BG2, BG3, BG4, TEXT, TEXT2, TEXT3, GREEN, GREEN_HOVER, PLA
 from utils import draw_gradient_rect, split_track_name, hex_to_rgb, rgb_to_hex
 from theme import playlist_gradient
 import os
-import threading
+from concurrent.futures import ThreadPoolExecutor
 
 class SongPageView(tk.Frame):
     def __init__(self, parent, controller):
@@ -11,6 +11,10 @@ class SongPageView(tk.Frame):
         self.controller = controller
         self._bg_photo = None
         self._bg_loading = False
+        self._bg_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="song-page-art")
+        self._bg_future = None
+        self._bg_generation = 0
+        self._bg_signature = None
         
         self._build_ui()
         
@@ -115,6 +119,11 @@ class SongPageView(tk.Frame):
             path = self.controller.engine.queue[self.controller.engine.queue_idx]
         
         if not path:
+            self._bg_generation += 1
+            self._bg_signature = None
+            if self._bg_future and not self._bg_future.done():
+                self._bg_future.cancel()
+            self._bg_loading = False
             self.title_lbl.config(text="Nothing playing")
             self.artist_lbl.config(text="")
             self._sync_favorite_button(None)
@@ -133,20 +142,28 @@ class SongPageView(tk.Frame):
         else:
             self.art_lbl.config(image="", text="♫", bg=BG2)
             
-        # Glassmorphism background
-        if path:
-            if not self._bg_loading:
-                self._bg_loading = True
-                threading.Thread(target=self._load_blur_bg, args=(path,), daemon=True).start()
-        else:
-            self._draw_background(None)
+        # Glassmorphism background. Only one worker is allowed; a newer
+        # request supersedes an older result instead of spawning another thread.
+        signature = (path, w, h)
+        if signature != self._bg_signature:
+            self._bg_signature = signature
+            self._bg_generation += 1
+            generation = self._bg_generation
+            if self._bg_future and not self._bg_future.done():
+                self._bg_future.cancel()
+            self._bg_loading = True
+            self._bg_future = self._bg_executor.submit(self._load_blur_bg, path, w, h)
+            self._bg_future.add_done_callback(
+                lambda future, generation=generation, signature=signature:
+                    self._on_blur_ready(future, generation, signature)
+            )
 
-    def _load_blur_bg(self, path):
+    def _load_blur_bg(self, path, width, height):
         """Load and blur album art for the glass background (in thread)."""
         try:
             from mutagen.mp3 import MP3
             from mutagen.id3 import ID3
-            from PIL import Image, ImageTk, ImageFilter
+            from PIL import Image, ImageFilter
             import io
             audio = MP3(path, ID3=ID3)
             img_data = None
@@ -156,32 +173,49 @@ class SongPageView(tk.Frame):
                         img_data = tag.data
                         break
             if not img_data:
-                self.controller.after(0, lambda: self._draw_background(None))
-                return
+                return None
 
             img = Image.open(io.BytesIO(img_data)).convert("RGB")
-            w, h = self.winfo_width(), self.winfo_height()
-            if w < 10 or h < 10:
-                w, h = 1200, 800
             # Resize to fill the window
-            img = img.resize((w, h), Image.Resampling.LANCZOS)
+            img = img.resize((width, height), Image.Resampling.LANCZOS)
             # Apply strong blur for glassmorphism effect
             blurred = img.filter(ImageFilter.GaussianBlur(radius=40))
             dimmed = blurred.point(lambda p: int(p * 0.45))
 
             # Darken edges with a gradient
-            from PIL import ImageDraw
-            overlay = Image.new("RGB", (w, h), (0, 0, 0))
-            for y in range(h):
-                t = y / h
-                alpha = int(0.65 * 255)  # constant darkening
-                overlay.putpixel((0, y), (0, 0, 0))
+            overlay = Image.new("RGB", (width, height), (0, 0, 0))
             dimmed = Image.blend(dimmed, overlay, 0.35)
-
-            pi = ImageTk.PhotoImage(dimmed)
-            self.controller.after(0, lambda: [self._draw_background(pi), setattr(self, '_bg_loading', False)])
+            return dimmed
         except Exception:
-            self.controller.after(0, lambda: [self._draw_background(None), setattr(self, '_bg_loading', False)])
+            return None
+
+    def _on_blur_ready(self, future, generation, signature):
+        try:
+            image = future.result()
+        except Exception:
+            image = None
+
+        def apply_result():
+            if generation != self._bg_generation or signature != self._bg_signature:
+                return
+            self._bg_loading = False
+            if image is None:
+                self._draw_background(None)
+                return
+            from PIL import ImageTk
+            self._draw_background(ImageTk.PhotoImage(image))
+
+        try:
+            self.controller.after(0, apply_result)
+        except (RuntimeError, tk.TclError):
+            pass
+
+    def destroy(self):
+        self._bg_generation += 1
+        if self._bg_future and not self._bg_future.done():
+            self._bg_future.cancel()
+        self._bg_executor.shutdown(wait=False, cancel_futures=True)
+        super().destroy()
 
     def _sync_favorite_button(self, path="__current__"):
         if path == "__current__":

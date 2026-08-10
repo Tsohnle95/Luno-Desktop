@@ -12,6 +12,9 @@ env/
 # Build outputs
 build/
 dist/
+**/.gradle/
+*.apk
+*.apk.zip
 
 # Android signing material
 *.jks

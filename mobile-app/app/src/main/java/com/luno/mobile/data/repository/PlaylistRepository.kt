@@ -1,10 +1,14 @@
 package com.luno.mobile.data.repository
 
+import android.net.Uri
 import com.luno.mobile.data.db.dao.PlaylistDao
 import com.luno.mobile.data.db.dao.TrackDao
 import com.luno.mobile.data.db.entity.Playlist
 import com.luno.mobile.data.db.entity.PlaylistTrack
+import com.luno.mobile.data.db.entity.Track
+import com.luno.mobile.playback.MediaTrack
 import kotlinx.coroutines.flow.Flow
+import java.io.File
 
 class PlaylistRepository(
     private val playlistDao: PlaylistDao,
@@ -40,6 +44,13 @@ class PlaylistRepository(
     suspend fun deletePlaylist(id: Long) = playlistDao.deletePlaylistById(id)
 
     suspend fun addTrackToPlaylist(playlistId: Long, trackUri: String) {
+        require(playlistId > 0L) { "Playlist does not exist" }
+        require(playlistDao.getPlaylist(playlistId) != null) {
+            "The selected playlist no longer exists"
+        }
+        require(trackUri.isNotBlank() && trackDao.exists(trackUri)) {
+            "This song is not in the library yet"
+        }
         val maxOrder = playlistDao.maxSortOrder(playlistId) ?: -1
         playlistDao.addTrackToPlaylist(
             PlaylistTrack(
@@ -49,6 +60,39 @@ class PlaylistRepository(
             )
         )
     }
+
+    /**
+     * Adds the item currently represented by the player. Normal library
+     * tracks already exist in Room; a non-transient queue item may not (for
+     * example, a direct URI). Materialize its metadata first so the junction
+     * insert cannot fail its Track foreign key and the song is searchable in
+     * the destination playlist immediately.
+     */
+    suspend fun addMediaTrackToPlaylist(playlistId: Long, track: MediaTrack): Result<Unit> =
+        runCatching {
+            require(playlistId > 0L) { "Playlist does not exist" }
+            require(playlistDao.getPlaylist(playlistId) != null) {
+                "The selected playlist no longer exists"
+            }
+            if (trackDao.getTrack(track.uri) == null) {
+                require(track.uri.isNotBlank()) { "This song has no playable source" }
+                val artworkPath = track.artworkUri?.let { artworkUri ->
+                    runCatching { Uri.parse(artworkUri).path }.getOrNull()
+                        ?.takeIf { File(it).isFile }
+                }
+                trackDao.insertTrack(
+                    Track(
+                        uri = track.uri,
+                        title = track.title.trim().ifBlank { "Unknown Track" },
+                        artist = track.artist.trim(),
+                        album = track.album.trim(),
+                        durationMs = track.durationMs.coerceAtLeast(0L),
+                        albumArtPath = artworkPath
+                    )
+                )
+            }
+            addTrackToPlaylist(playlistId, track.uri)
+        }
 
     /** Adds a batch in one Room transaction and ignores duplicate membership. */
     suspend fun addTracksToPlaylist(playlistId: Long, trackUris: Collection<String>) {

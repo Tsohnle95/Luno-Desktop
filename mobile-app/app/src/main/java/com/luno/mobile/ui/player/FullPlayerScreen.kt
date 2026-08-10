@@ -79,8 +79,8 @@ import com.luno.mobile.playback.MusicController
 import com.luno.mobile.playback.RecommendationPreviewManager
 import com.luno.mobile.playback.RecommendationPreviewState
 import com.luno.mobile.playback.RecommendationSaveOutcome
-import com.luno.mobile.ui.components.ArtworkImage
 import com.luno.mobile.ui.components.PlaylistPickerSheet
+import com.luno.mobile.ui.components.RecommendationArtworkImage
 import com.luno.mobile.ui.components.rememberArtworkColors
 import com.luno.mobile.ui.create.CreatePlaylistSheet
 import com.luno.mobile.ui.theme.AccentGreen
@@ -168,6 +168,23 @@ fun FullPlayerScreen(
     val isFavorite = currentLibraryTrack?.isFavorite == true
     val canFavorite = currentLibraryTrack != null && currentTrack?.isTransient != true
 
+    fun usableMetadata(value: String?): String? = value
+        ?.trim()
+        ?.takeIf {
+            it.isNotEmpty() &&
+                !it.equals("Unknown", ignoreCase = true) &&
+                !it.equals("Unknown Track", ignoreCase = true) &&
+                !it.equals("Unknown Artist", ignoreCase = true)
+        }
+
+    // Imported files can have no embedded title/artist. Use the editable Room
+    // metadata for the recommendation seed and the player labels as soon as
+    // it is saved, without requiring a stop/restart of playback.
+    val effectiveTitle = usableMetadata(currentTrack?.title)
+        ?: usableMetadata(currentLibraryTrack?.title)
+    val effectiveArtist = usableMetadata(currentTrack?.artist)
+        ?: usableMetadata(currentLibraryTrack?.artist)
+
     val artworkUri = currentTrack?.artworkUri ?: currentLibraryTrack?.albumArtUri()
 
     val recommendationSeedUri = if (previewState.active || currentTrack?.isTransient == true) {
@@ -197,6 +214,8 @@ fun FullPlayerScreen(
         val currentReady = recommendationState
         if (currentReady is FullPlayerRecommendationState.Ready &&
             currentReady.seedUri == track.uri &&
+            currentReady.seedArtist == effectiveArtist.orEmpty() &&
+            currentReady.seedTitle == effectiveTitle.orEmpty() &&
             recommendationRefresh == lastLoadedRecommendationRefresh
         ) {
             return@LaunchedEffect
@@ -205,8 +224,8 @@ fun FullPlayerScreen(
         recommendationState = FullPlayerRecommendationState.Loading(track.uri)
         val result = try {
             app.discoveryRepository.getSimilar(
-                artist = track.artist,
-                title = track.title,
+                artist = effectiveArtist.orEmpty(),
+                title = effectiveTitle.orEmpty(),
                 limit = FULL_PLAYER_RECOMMENDATION_PAGE_SIZE,
                 libraryTracks = allTracks
             )
@@ -218,8 +237,8 @@ fun FullPlayerScreen(
         recommendationState = when (result) {
             is LastfmResult.Success -> FullPlayerRecommendationState.Ready(
                 seedUri = track.uri,
-                seedArtist = track.artist,
-                seedTitle = track.title,
+                seedArtist = effectiveArtist.orEmpty(),
+                seedTitle = effectiveTitle.orEmpty(),
                 tracks = result.tracks.distinctBy(::recommendationKey)
             )
             is LastfmResult.Failure -> FullPlayerRecommendationState.Error(
@@ -260,13 +279,14 @@ fun FullPlayerScreen(
     val displayTitle = if (useRecommendationMetadata) {
         selectedRecommendation?.title
     } else {
-        currentTrack?.title
+        effectiveTitle
     } ?: "Unknown Track"
     val displayArtist = if (useRecommendationMetadata) {
         selectedRecommendation?.artist
     } else {
-        currentTrack?.artist
+        effectiveArtist
     } ?: "Unknown Artist"
+    val sourceLabel = currentTrack?.playbackSource?.displayLabel()
     val pendingArtworkUri = selectedRecommendation?.let { recommendation ->
         fallbackArtwork[recommendationKey(recommendation)] ?: recommendation.imageUrl
     }
@@ -373,7 +393,7 @@ fun FullPlayerScreen(
         fallbackArtworkRequested = emptySet()
         readyRecommendations
             .filter { it.imageUrl.isNullOrBlank() }
-            .take(20)
+            .take(FULL_PLAYER_RECOMMENDATION_PAGE_SIZE)
             .forEach(::requestFallbackArtwork)
     }
 
@@ -569,13 +589,27 @@ fun FullPlayerScreen(
             ) {
                 item(key = "player-controls", contentType = "player-controls") {
             // Artwork: real embedded artwork, gradient placeholder fallback
-            ArtworkImage(
-                artworkUri = displayArtworkUri,
-                modifier = Modifier
-                    .size(Dimens.albumArtLarge)
-                    .clip(RoundedCornerShape(Dimens.cornerMedium)),
-                placeholderIconSize = 96.dp
-            )
+            if (selectedRecommendation != null) {
+                RecommendationArtworkImage(
+                    recommendation = selectedRecommendation,
+                    artworkUri = displayArtworkUri,
+                    modifier = Modifier
+                        .size(Dimens.albumArtLarge)
+                        .clip(RoundedCornerShape(Dimens.cornerMedium)),
+                    placeholderIconSize = 96.dp,
+                    decodeSizePx = 512
+                )
+            } else {
+                RecommendationArtworkImage(
+                    artist = displayArtist,
+                    title = displayTitle,
+                    artworkUri = displayArtworkUri,
+                    modifier = Modifier
+                        .size(Dimens.albumArtLarge)
+                        .clip(RoundedCornerShape(Dimens.cornerMedium)),
+                    placeholderIconSize = 96.dp
+                )
+            }
 
             Spacer(modifier = Modifier.height(Dimens.paddingXLarge))
 
@@ -598,14 +632,32 @@ fun FullPlayerScreen(
                 overflow = TextOverflow.Ellipsis
             )
             Box(
-                modifier = Modifier.height(24.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(32.dp),
                 contentAlignment = Alignment.Center
             ) {
-                if (currentTrack?.isTransient == true) {
-                    Text(
+                when {
+                    currentTrack?.isTransient == true && sourceLabel != null -> Text(
+                        text = "Temporary preview · $sourceLabel",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = AccentGreen,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center
+                    )
+                    currentTrack?.isTransient == true -> Text(
                         text = "Temporary preview",
                         style = MaterialTheme.typography.labelMedium,
                         color = AccentGreen
+                    )
+                    sourceLabel != null -> Text(
+                        text = "From $sourceLabel",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = AccentGreen,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center
                     )
                 }
             }
@@ -1138,7 +1190,8 @@ private fun FullPlayerRecommendationRow(
             .padding(vertical = Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ArtworkImage(
+        RecommendationArtworkImage(
+            recommendation = recommendation,
             artworkUri = artworkUri,
             modifier = Modifier
                 .size(Dimens.albumArtSmall)
@@ -1156,8 +1209,7 @@ private fun FullPlayerRecommendationRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(
-                text = when {
+            val statusText = when {
                     saving -> "Saving to playlist..."
                     queued -> "Download queued for playlist"
                     permanent -> "Saved to library"
@@ -1170,17 +1222,20 @@ private fun FullPlayerRecommendationRow(
                     ready -> "Ready in temporary queue"
                     else -> "${recommendation.artist} - " +
                         "${(recommendation.match * 100).roundToInt()}% match"
-                },
+                }
+            val statusIsError = saveFailure != null ||
+                (failure != null && !saving && !queued && !permanent)
+            Text(
+                text = statusText,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (saveFailure != null ||
-                    (failure != null && !saving && !queued && !permanent)
-                ) {
+                color = if (statusIsError) {
                     MaterialTheme.colorScheme.error
                 } else {
                     SecondaryText
                 },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                maxLines = if (statusIsError) 4 else 1,
+                overflow = if (statusIsError) TextOverflow.Clip else TextOverflow.Ellipsis,
+                softWrap = statusIsError
             )
         }
         Box(

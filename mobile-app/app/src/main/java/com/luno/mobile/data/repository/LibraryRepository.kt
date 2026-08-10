@@ -926,6 +926,28 @@ class LibraryRepository(
 
     suspend fun getTrack(uri: String) = trackDao.getTrack(uri)
 
+    /** Persists user-supplied title/artist metadata for later library search. */
+    suspend fun updateTrackMetadata(
+        uri: String,
+        title: String,
+        artist: String
+    ): Result<Track> = withContext(Dispatchers.IO) {
+        val cleanTitle = title.trim()
+        val cleanArtist = artist.trim()
+        if (cleanTitle.isBlank()) {
+            return@withContext Result.failure(
+                IllegalArgumentException("Track name cannot be empty")
+            )
+        }
+        val existing = trackDao.getTrack(uri)
+            ?: return@withContext Result.failure(
+                IllegalArgumentException("This song is no longer in the library")
+            )
+        val updated = existing.copy(title = cleanTitle, artist = cleanArtist)
+        trackDao.updateTrack(updated)
+        Result.success(updated)
+    }
+
     suspend fun setFavorite(uri: String, isFavorite: Boolean) {
         trackDao.setFavorite(uri, isFavorite)
     }

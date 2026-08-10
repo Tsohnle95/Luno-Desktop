@@ -112,7 +112,9 @@ fun MiniPlayer(
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Artwork thumbnail
-            ArtworkImage(
+            RecommendationArtworkImage(
+                artist = currentTrack?.artist.orEmpty(),
+                title = currentTrack?.title.orEmpty(),
                 artworkUri = currentTrack?.artworkUri,
                 modifier = Modifier
                     .size(Dimens.albumArtSmall)

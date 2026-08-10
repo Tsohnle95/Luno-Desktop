@@ -87,7 +87,9 @@ fun TrackRowCard(
             Spacer(modifier = Modifier.width(Dimens.paddingSmall))
         }
 
-        ArtworkImage(
+        RecommendationArtworkImage(
+            artist = track.artist,
+            title = track.title,
             artworkUri = artworkUri,
             modifier = Modifier
                 .size(Dimens.albumArtSmall)

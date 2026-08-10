@@ -57,10 +57,17 @@ fun ArtworkImage(
     shape: Shape = androidx.compose.foundation.shape.RoundedCornerShape(Dimens.cornerMedium),
     placeholderIconSize: Dp = 40.dp,
     decodeSizePx: Int = 512,
-    onError: (() -> Unit)? = null
+    onError: (() -> Unit)? = null,
+    placeholderContent: (@Composable () -> Unit)? = null
 ) {
     if (artworkUri.isNullOrBlank()) {
-        ArtworkPlaceholder(modifier = modifier.clip(shape), iconSize = placeholderIconSize)
+        if (placeholderContent != null) {
+            Box(modifier = modifier.clip(shape)) {
+                placeholderContent()
+            }
+        } else {
+            ArtworkPlaceholder(modifier = modifier.clip(shape), iconSize = placeholderIconSize)
+        }
         return
     }
     val context = LocalContext.current
@@ -88,10 +95,14 @@ fun ArtworkImage(
                 contentScale = ContentScale.Crop
             )
         } else {
-            ArtworkPlaceholder(
-                modifier = Modifier.fillMaxSize(),
-                iconSize = placeholderIconSize
-            )
+            if (placeholderContent != null) {
+                placeholderContent()
+            } else {
+                ArtworkPlaceholder(
+                    modifier = Modifier.fillMaxSize(),
+                    iconSize = placeholderIconSize
+                )
+            }
         }
     }
 }

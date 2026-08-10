@@ -316,6 +316,24 @@ class MusicControllerTest {
     }
 
     @Test
+    fun `playback source is carried in MediaItem metadata`() {
+        val item = controller.buildMediaItem(
+            track("home-song").copy(
+                playbackSource = PlaybackSource(
+                    category = "Home",
+                    name = "Made for you"
+                )
+            )
+        )
+
+        val extras = item.mediaMetadata.extras
+        assertThat(extras?.getString(MusicController.METADATA_SOURCE_CATEGORY))
+            .isEqualTo("Home")
+        assertThat(extras?.getString(MusicController.METADATA_SOURCE_NAME))
+            .isEqualTo("Made for you")
+    }
+
+    @Test
     fun `temporary preview marker is carried in MediaItem metadata`() {
         val item = controller.buildMediaItem(
             MediaTrack(

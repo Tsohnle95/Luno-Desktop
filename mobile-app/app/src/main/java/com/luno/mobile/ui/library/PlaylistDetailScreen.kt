@@ -65,9 +65,10 @@ import com.luno.mobile.data.db.entity.SystemPlaylists
 import com.luno.mobile.data.db.entity.Track
 import com.luno.mobile.playback.MediaTrack
 import com.luno.mobile.playback.MusicController
+import com.luno.mobile.playback.PlaybackSource
 import com.luno.mobile.ui.components.ArtworkCollage
-import com.luno.mobile.ui.components.ArtworkImage
 import com.luno.mobile.ui.components.BulkSelectionToolbar
+import com.luno.mobile.ui.components.RecommendationArtworkImage
 import com.luno.mobile.ui.components.SortChip
 import com.luno.mobile.ui.components.TrackActionsSheet
 import com.luno.mobile.ui.components.TrackSortMode
@@ -151,6 +152,18 @@ fun PlaylistDetailScreen(
         else -> playlist?.name.orEmpty()
     }
     val playlistDescription = virtualDescription.ifBlank { playlist?.description.orEmpty() }
+    val playbackSource = if (virtualTracks != null) {
+        PlaybackSource(
+            category = if (playlistId == SystemPlaylists.FAVORITES_ID) "Library" else "Home",
+            name = playlistName
+        )
+    } else {
+        PlaybackSource(
+            category = "Playlist",
+            name = playlistName,
+            playlistId = playbackPlaylistId
+        )
+    }
 
     // In-playlist search: filter the membership by title/artist/album
     // (case-insensitive), then sort the filtered set — the list rows AND
@@ -311,14 +324,14 @@ fun PlaylistDetailScreen(
                     totalDurationMs = tracks.sumOf { it.durationMs },
                     onPlayAll = {
                         musicController.play(
-                            displayedTracks.map { it.toMediaTrack() },
+                            displayedTracks.map { it.toMediaTrack(playbackSource) },
                             0,
                             playbackPlaylistId
                         )
                     },
                     onShuffleAll = {
                         musicController.playShuffled(
-                            displayedTracks.map { it.toMediaTrack() },
+                            displayedTracks.map { it.toMediaTrack(playbackSource) },
                             playbackPlaylistId
                         )
                     },
@@ -404,7 +417,7 @@ fun PlaylistDetailScreen(
                             } else {
                                 val index = displayedTracks.indexOfFirst { it.uri == track.uri }
                                 musicController.play(
-                                    displayedTracks.map { it.toMediaTrack() },
+                                    displayedTracks.map { it.toMediaTrack(playbackSource) },
                                     index.coerceAtLeast(0),
                                     playbackPlaylistId
                                 )
@@ -622,7 +635,9 @@ private fun PlaylistTrackRow(
             )
             Spacer(modifier = Modifier.width(Dimens.paddingSmall))
         }
-        ArtworkImage(
+        RecommendationArtworkImage(
+            artist = track.artist,
+            title = track.title,
             artworkUri = track.albumArtUri(),
             modifier = Modifier
                 .size(Dimens.albumArtSmall)
@@ -668,11 +683,12 @@ private fun PlaylistTrackRow(
     }
 }
 
-private fun Track.toMediaTrack(): MediaTrack = MediaTrack(
+private fun Track.toMediaTrack(source: PlaybackSource? = null): MediaTrack = MediaTrack(
     uri = uri,
     title = title,
     artist = artist,
     album = album,
     durationMs = durationMs,
-    artworkUri = albumArtUri()
+    artworkUri = albumArtUri(),
+    playbackSource = source
 )

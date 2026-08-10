@@ -38,7 +38,18 @@ internal class SharedPreferencesRecentlyPlayedStore(
                             artist = entry.optString(FIELD_ARTIST, "Unknown"),
                             album = entry.optString(FIELD_ALBUM),
                             durationMs = entry.optLong(FIELD_DURATION_MS, 0L).coerceAtLeast(0L),
-                            artworkUri = entry.optString(FIELD_ARTWORK_URI).takeUnless { it.isBlank() }
+                            artworkUri = entry.optString(FIELD_ARTWORK_URI).takeUnless { it.isBlank() },
+                            playbackSource = entry.optString(FIELD_SOURCE_CATEGORY)
+                                .takeUnless { it.isBlank() }
+                                ?.let { category ->
+                                    PlaybackSource(
+                                        category = category,
+                                        name = entry.optString(FIELD_SOURCE_NAME)
+                                            .takeUnless { it.isBlank() },
+                                        playlistId = entry.optLong(FIELD_SOURCE_PLAYLIST_ID, 0L)
+                                            .takeIf { it != 0L }
+                                    )
+                                }
                         )
                     )
                 }
@@ -57,6 +68,11 @@ internal class SharedPreferencesRecentlyPlayedStore(
                     put(FIELD_ALBUM, track.album)
                     put(FIELD_DURATION_MS, track.durationMs.coerceAtLeast(0L))
                     track.artworkUri?.let { put(FIELD_ARTWORK_URI, it) }
+                    track.playbackSource?.let { source ->
+                        put(FIELD_SOURCE_CATEGORY, source.category)
+                        source.name?.let { put(FIELD_SOURCE_NAME, it) }
+                        source.playlistId?.let { put(FIELD_SOURCE_PLAYLIST_ID, it) }
+                    }
                 }
             )
         }
@@ -76,6 +92,9 @@ internal class SharedPreferencesRecentlyPlayedStore(
         const val FIELD_ALBUM = "album"
         const val FIELD_DURATION_MS = "durationMs"
         const val FIELD_ARTWORK_URI = "artworkUri"
+        const val FIELD_SOURCE_CATEGORY = "sourceCategory"
+        const val FIELD_SOURCE_NAME = "sourceName"
+        const val FIELD_SOURCE_PLAYLIST_ID = "sourcePlaylistId"
         const val MAX_ENTRIES = 100
     }
 }

@@ -27,6 +27,9 @@ class MusicService : MediaSessionService() {
         private const val KEY_ALBUM = "album"
         private const val KEY_DURATION_MS = "duration_ms"
         private const val KEY_ARTWORK_URI = "artwork_uri"
+        private const val KEY_SOURCE_CATEGORY = "source_category"
+        private const val KEY_SOURCE_NAME = "source_name"
+        private const val KEY_SOURCE_PLAYLIST_ID = "source_playlist_id"
         private const val KEY_POSITION_MS = "position_ms"
         private const val KEY_PLAY_WHEN_READY = "play_when_ready"
     }
@@ -184,6 +187,21 @@ class MusicService : MediaSessionService() {
                 metadata.extras?.getLong(MusicController.METADATA_DURATION_MS) ?: 0L
             )
             .putString(KEY_ARTWORK_URI, metadata.artworkUri?.toString())
+            .putString(
+                KEY_SOURCE_CATEGORY,
+                metadata.extras?.getString(MusicController.METADATA_SOURCE_CATEGORY)
+            )
+            .putString(
+                KEY_SOURCE_NAME,
+                metadata.extras?.getString(MusicController.METADATA_SOURCE_NAME)
+            )
+            .putLong(
+                KEY_SOURCE_PLAYLIST_ID,
+                metadata.extras
+                    ?.takeIf { it.containsKey(MusicController.METADATA_PLAYLIST_ID) }
+                    ?.getLong(MusicController.METADATA_PLAYLIST_ID)
+                    ?: 0L
+            )
             .putLong(KEY_POSITION_MS, currentPlayer.currentPosition.coerceAtLeast(0L))
             .putBoolean(
                 KEY_PLAY_WHEN_READY,
@@ -201,11 +219,26 @@ class MusicService : MediaSessionService() {
             artist = preferences.getString(KEY_ARTIST, null).orEmpty().ifBlank { "Unknown" },
             album = preferences.getString(KEY_ALBUM, null).orEmpty(),
             durationMs = preferences.getLong(KEY_DURATION_MS, 0L),
-            artworkUri = preferences.getString(KEY_ARTWORK_URI, null)
+            artworkUri = preferences.getString(KEY_ARTWORK_URI, null),
+            playbackSource = preferences.getString(KEY_SOURCE_CATEGORY, null)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { category ->
+                    PlaybackSource(
+                        category = category,
+                        name = preferences.getString(KEY_SOURCE_NAME, null),
+                        playlistId = preferences.getLong(KEY_SOURCE_PLAYLIST_ID, 0L)
+                            .takeIf { it != 0L }
+                    )
+                }
         )
         val extras = Bundle().apply {
             putLong(MusicController.METADATA_DURATION_MS, track.durationMs)
             putBoolean(MusicController.METADATA_ENRICH_ARTWORK, true)
+            track.playbackSource?.let { source ->
+                putString(MusicController.METADATA_SOURCE_CATEGORY, source.category)
+                source.name?.let { putString(MusicController.METADATA_SOURCE_NAME, it) }
+                source.playlistId?.let { putLong(MusicController.METADATA_PLAYLIST_ID, it) }
+            }
         }
         val metadata = MediaMetadata.Builder()
             .setTitle(track.title)

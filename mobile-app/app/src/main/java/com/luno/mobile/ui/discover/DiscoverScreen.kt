@@ -52,8 +52,8 @@ import com.luno.mobile.data.discovery.normalizedRecommendationKey
 import com.luno.mobile.playback.ExtractionResult
 import com.luno.mobile.playback.MusicController
 import com.luno.mobile.playback.WebSearchService
-import com.luno.mobile.ui.components.ArtworkImage
 import com.luno.mobile.ui.components.PlaylistPickerSheet
+import com.luno.mobile.ui.components.RecommendationArtworkImage
 import com.luno.mobile.ui.theme.AccentGreen
 import com.luno.mobile.ui.theme.Dimens
 import com.luno.mobile.ui.theme.PrimaryText
@@ -578,7 +578,8 @@ private fun RecommendationRow(
             .padding(horizontal = Dimens.paddingLarge, vertical = Dimens.paddingSmall),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ArtworkImage(
+        RecommendationArtworkImage(
+            recommendation = rec,
             artworkUri = artworkUri,
             modifier = Modifier
                 .size(Dimens.albumArtSmall)

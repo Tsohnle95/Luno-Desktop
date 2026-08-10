@@ -12,6 +12,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.luno.mobile.data.db.AppDatabase
+import com.luno.mobile.data.db.entity.Track
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -77,6 +78,26 @@ class LibraryRepositoryTest {
 
     private suspend fun trackTitles(): List<String> =
         database.trackDao().getAllTracks().first().map { it.title }
+
+    @Test
+    fun updateTrackMetadata_persistsSearchableTitleAndArtist(): Unit = runBlocking {
+        val uri = "content://metadata/missing-song"
+        database.trackDao().insertTrack(
+            Track(uri = uri, title = "", artist = "")
+        )
+
+        val result = repository.updateTrackMetadata(
+            uri = uri,
+            title = "The Lost Ship - Full Album",
+            artist = "The Lost Ship"
+        )
+
+        assertThat(result.isSuccess).isTrue()
+        assertThat(database.trackDao().getTrack(uri)?.title)
+            .isEqualTo("The Lost Ship - Full Album")
+        assertThat(database.trackDao().searchTracks("The Lost Ship").first())
+            .hasSize(1)
+    }
 
     @Test
     fun importLibraryTree_importsNestedFolderContentsIntoPlaylists() = runBlocking<Unit> {
