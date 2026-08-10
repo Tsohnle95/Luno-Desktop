@@ -1281,20 +1281,20 @@ private fun SmoothProgressBar(
 private fun Modifier.appBackgroundWash(): Modifier = drawWithCache {
     val headerGradient = Brush.linearGradient(
         colorStops = arrayOf(
-            0.0f to AccentGreen.copy(alpha = 0.08f),
-            0.26f to AppBackgroundGreen.copy(alpha = 0.48f),
-            0.68f to AppBackgroundGreen.copy(alpha = 0.18f),
+            0.0f to AccentGreen.copy(alpha = 0.10f),
+            0.26f to AppBackgroundGreen.copy(alpha = 0.62f),
+            0.68f to AppBackgroundGreen.copy(alpha = 0.23f),
             1.0f to Color.Transparent
         ),
         start = Offset(size.width * 0.42f, 0f),
         end = Offset(size.width * 0.42f, size.height * 0.27f)
     )
 
-    fun blob(center: Offset, radius: Float, centerAlpha: Float, bodyAlpha: Float): Brush =
+    fun blob(center: Offset, radius: Float, bodyAlpha: Float): Brush =
         Brush.radialGradient(
             colorStops = arrayOf(
-                0.0f to AccentGreen.copy(alpha = centerAlpha),
-                0.28f to AppBackgroundGreen.copy(alpha = bodyAlpha),
+                0.0f to AppBackgroundGreen.copy(alpha = bodyAlpha * 0.55f),
+                0.30f to AppBackgroundGreen.copy(alpha = bodyAlpha),
                 0.70f to AppBackgroundGreen.copy(alpha = bodyAlpha * 0.42f),
                 1.0f to Color.Transparent
             ),
@@ -1306,26 +1306,37 @@ private fun Modifier.appBackgroundWash(): Modifier = drawWithCache {
         blob(
             center = Offset(size.width * -0.12f, size.height * 0.36f),
             radius = size.minDimension * 0.44f,
-            centerAlpha = 0.08f,
-            bodyAlpha = 0.43f
+            bodyAlpha = 0.73f
         ),
         blob(
             center = Offset(size.width * 1.12f, size.height * 0.36f),
             radius = size.minDimension * 0.41f,
-            centerAlpha = 0.11f,
-            bodyAlpha = 0.47f
+            bodyAlpha = 0.79f
         ),
         blob(
             center = Offset(size.width * -0.08f, size.height * 0.82f),
             radius = size.minDimension * 0.46f,
-            centerAlpha = 0.09f,
-            bodyAlpha = 0.46f
+            bodyAlpha = 0.78f
         ),
         blob(
             center = Offset(size.width * 1.08f, size.height * 0.82f),
             radius = size.minDimension * 0.44f,
-            centerAlpha = 0.10f,
-            bodyAlpha = 0.45f
+            bodyAlpha = 0.77f
+        ),
+        blob(
+            center = Offset(size.width * 0.18f, size.height * 0.52f),
+            radius = size.minDimension * 0.53f,
+            bodyAlpha = 0.66f
+        ),
+        blob(
+            center = Offset(size.width * 0.82f, size.height * 0.52f),
+            radius = size.minDimension * 0.53f,
+            bodyAlpha = 0.66f
+        ),
+        blob(
+            center = Offset(size.width * 0.50f, size.height * 0.70f),
+            radius = size.minDimension * 0.48f,
+            bodyAlpha = 0.58f
         )
     )
 
