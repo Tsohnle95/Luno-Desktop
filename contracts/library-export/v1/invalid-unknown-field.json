@@ -1,0 +1,10 @@
+{
+  "format": "luno.library.export",
+  "manifest_version": 1,
+  "scope": "library",
+  "created_at": "2026-08-10T00:00:00Z",
+  "tracks": [],
+  "playlists": [],
+  "unassigned_track_refs": [],
+  "secret": "must be rejected"
+}

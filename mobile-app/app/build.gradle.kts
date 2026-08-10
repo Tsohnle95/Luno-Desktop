@@ -73,6 +73,9 @@ android {
         compose = true
         buildConfig = true
     }
+
+    // Exercise the same language-neutral transfer fixtures as the desktop.
+    sourceSets.getByName("test").resources.srcDir(rootProject.file("../contracts/library-export/v1"))
 }
 
 // Room schema export location via KSP

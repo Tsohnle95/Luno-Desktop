@@ -19,6 +19,7 @@ This document is a high-level architectural map for the **Luno**. It provides th
 
 ```
 ├── music_player.py           # Main entry point — Controller (LunoMusicPlayer)
+├── README.md                 # Repository orientation, commands, and boundaries
 ├── engine.py                 # Audio engine + Discovery + Library scanning
 ├── downloader.py             # yt-dlp download wrapper (Downloader class)
 ├── theme.py                  # Color palette + playlist gradient system
@@ -32,7 +33,10 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── build-mobile.command      # Executable macOS helper; builds the Android debug APK and installs/launches it when a device is connected
 ├── Luno.spec             # PyInstaller spec for macOS build
 ├── .gitignore                # Ignores local envs, Python caches, build/dist artifacts, and OS metadata
+├── .github/workflows/desktop.yml # Desktop pytest verification on pushes and pull requests
 ├── project_brain.md          # This document
+├── contracts/library-export/v1/ # Language-neutral manifest schema and compatibility fixtures
+├── docs/                     # Current architecture, decisions, and product roadmap
 ├── mobile-app/               # Native Android app; see mobile-app/project_brain.md for its full architecture/context
 │   └── project_brain.md      # Mobile brain (source of truth for Android work)
 │
@@ -47,6 +51,7 @@ This document is a high-level architectural map for the **Luno**. It provides th
 │   └── error_log.py          # Debug log viewer
 │
 ├── test_engine_playback.py   # Deterministic mocked unit tests for playback engine
+├── test_contract_fixtures.py  # Shared library-export compatibility fixture tests
 ├── test_library_transfer.py   # Manifest validation, export, matching, and additive merge tests
 ├── test_media_keys.py        # Deterministic mocked unit tests for media key logic
 ├── test_downloader_sync.py   # Deterministic mocked tests for playlist synchronization

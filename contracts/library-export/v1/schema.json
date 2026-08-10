@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://luno.app/contracts/library-export/v1/schema.json",
+  "title": "Luno Library Export v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "manifest_version", "scope", "created_at", "tracks", "playlists", "unassigned_track_refs"],
+  "properties": {
+    "format": {"const": "luno.library.export"},
+    "manifest_version": {"const": 1},
+    "scope": {"enum": ["selected_tracks", "playlists", "library"]},
+    "created_at": {"type": "string", "pattern": "Z$", "maxLength": 2000},
+    "tracks": {"type": "array", "maxItems": 50000, "items": {"$ref": "#/$defs/track"}},
+    "playlists": {"type": "array", "maxItems": 5000, "items": {"$ref": "#/$defs/playlist"}},
+    "unassigned_track_refs": {"type": "array", "maxItems": 50000, "items": {"$ref": "#/$defs/ref"}}
+  },
+  "$defs": {
+    "ref": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$", "maxLength": 128},
+    "track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "title", "artist", "album", "duration_ms", "ambiguity_confirmation_required"],
+      "properties": {
+        "ref": {"$ref": "#/$defs/ref"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "artist": {"type": "string", "maxLength": 2000},
+        "album": {"type": "string", "maxLength": 2000},
+        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 86400000},
+        "source": {"oneOf": [{"$ref": "#/$defs/source"}, {"type": "null"}]},
+        "ambiguity_confirmation_required": {"type": "boolean"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "id"],
+      "properties": {
+        "provider": {"enum": ["youtube", "soundcloud", "deezer", "musicbrainz"]},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9._~:-]{1,256}$", "maxLength": 256}
+      }
+    },
+    "playlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "track_refs"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "description": {"type": "string", "maxLength": 2000},
+        "track_refs": {"type": "array", "maxItems": 50000, "items": {"$ref": "#/$defs/ref"}}
+      }
+    }
+  }
+}

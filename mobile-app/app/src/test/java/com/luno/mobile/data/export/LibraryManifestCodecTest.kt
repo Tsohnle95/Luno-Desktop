@@ -5,10 +5,16 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.nio.charset.StandardCharsets
 
 @RunWith(AndroidJUnit4::class)
 @Config(manifest = Config.NONE, sdk = [34])
 class LibraryManifestCodecTest {
+    private fun fixture(name: String): String =
+        javaClass.getResourceAsStream("/$name")!!.use {
+            it.readBytes().toString(StandardCharsets.UTF_8)
+        }
+
     private fun manifest(
         source: ManifestSource? = ManifestSource("youtube", "abc12345678")
     ) = LibraryManifest(
@@ -66,5 +72,21 @@ class LibraryManifestCodecTest {
         val invalidVersion = LibraryManifestCodec.encode(manifest())
             .replace("\"manifest_version\": 1", "\"manifest_version\": 99")
         assertThat(runCatching { LibraryManifestCodec.decodeAndValidate(invalidVersion) }.isFailure).isTrue()
+    }
+
+    @Test
+    fun sharedValidFixtureIsAccepted() {
+        val decoded = LibraryManifestCodec.decodeAndValidate(fixture("valid.json"))
+
+        assertThat(decoded.scope).isEqualTo(ManifestScope.LIBRARY)
+        assertThat(decoded.tracks).hasSize(2)
+        assertThat(decoded.tracks[1].ambiguityConfirmationRequired).isTrue()
+    }
+
+    @Test
+    fun sharedUnknownFieldFixtureIsRejected() {
+        assertThat(runCatching {
+            LibraryManifestCodec.decodeAndValidate(fixture("invalid-unknown-field.json"))
+        }.isFailure).isTrue()
     }
 }

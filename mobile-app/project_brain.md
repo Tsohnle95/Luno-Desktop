@@ -44,6 +44,9 @@ Luno is a **native Android offline-first music player** in the same monorepo as 
 
 ```
 luno/
+├── README.md                             # Repository-level project orientation
+├── contracts/library-export/v1/          # Shared desktop/Android manifest schema and fixtures
+├── docs/                                 # Repository-level architecture and decision indexes
 ├── mobile-app/                          # ← THIS DOCUMENT lives here
 │   ├── project_brain.md                 # This file
 │   ├── build.gradle.kts                 # Root Gradle build (plugin declarations)
