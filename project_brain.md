@@ -52,19 +52,13 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── test_downloader_sync.py   # Deterministic mocked tests for playlist synchronization
 ├── test_tkvideo.py            # Ad-hoc Tk/video experiment (not part of the app)
 ├── pytest.ini                 # Default pytest collection excludes dependency-bound ad-hoc scripts
-├── test_audio_flet.py        # Ad-hoc test scripts (not part of the app)
-├── test_audio_flet2.py
 ├── test_dl.py
 ├── test_focus.py
 ├── test_label_ph.py
 │
-├── buildozer.spec            # Android build config (not in scope)
-├── main.py                   # Flet entry point (not in scope)
-├── music_player_flet.py      # Flet mobile port (not in scope)
 └── requirements.txt          # Reproducible Python environment for app/build dependencies
 ```
 
-Files marked **"not in scope"** belong to the Flet mobile port and are not part of the desktop app architecture.
 Generated/local directories are intentionally omitted from the tracked tree: `.venv/`, `build/`, `dist/`, `__pycache__/`, `.pytest_cache/`, and `.DS_Store` are ignored and should not be committed.
 
 ---

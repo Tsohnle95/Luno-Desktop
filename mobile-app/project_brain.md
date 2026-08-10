@@ -14,7 +14,7 @@
 > 4. **Readable screenshots** — only if images are readable to the agent
 > 5. **Labeled proposals / open decisions** — never presented as implemented fact
 >
-> **Golden rule:** Never turn aspiration into implemented fact. Statements about Kotlin, Compose, Media3, Room, SAF, and **Last.fm discovery (`data/discovery/` + `DiscoveryRepository` + DiscoverScreen)** are now **supported by source files** in `mobile-app/`. WorkManager, downloader, and other deferred features remain **planned** unless source exists. Distinguish current Flet/Pygame prototype facts from native Android implementation.
+> **Golden rule:** Never turn aspiration into implemented fact. Statements about Kotlin, Compose, Media3, Room, SAF, and **Last.fm discovery (`data/discovery/` + `DiscoveryRepository` + DiscoverScreen)** are now **supported by source files** in `mobile-app/`. WorkManager, downloader, and other deferred features remain **planned** unless source exists. Distinguish desktop Pygame facts from native Android implementation.
 >
 > **When selecting file-format/output-codec decisions, the planner/coder MUST**
 > 1. Inspect the actual desktop `downloader.py` source
@@ -28,12 +28,9 @@
 
 ## Product Direction
 
-Luno is a **native Android offline-first music player** in the same monorepo as the desktop Luno and its Flet mobile/desktop-capable port. The architecture is **Kotlin + Jetpack Compose + Media3**. **As of this writing Kotlin, Compose, Media3, and Room source exist** under `mobile-app/` — the native stack foundation is implemented and committed to the repository.
+Luno is a **native Android offline-first music player** in the same monorepo as the desktop Luno. The architecture is **Kotlin + Jetpack Compose + Media3**. **As of this writing Kotlin, Compose, Media3, and Room source exist** under `mobile-app/` — the native stack foundation is implemented and committed to the repository.
 
-**Current repo state (desktop/Flet legacy alongside native):**
-- `music_player_flet.py` — Flet-based mobile/desktop prototype using **Pygame** audio backend, 3-tab responsive layout (Library/Player/Settings), mini-player, bottom nav on mobile, sidebar layout on desktop ([source](../music_player_flet.py))
-- `main.py` — Flet entry point that runs `music_player_flet.main` via `ft.run()` ([source](../main.py))
-- `buildozer.spec` — Buildozer Android build config for the Flet prototype; target API 33, min API 21, `arm64-v8a + armeabi-v7a`, permissions `INTERNET, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, MANAGE_EXTERNAL_STORAGE` ([source](../buildozer.spec))
+**Current repo state (desktop app alongside native Android):**
 - `engine.py` — Desktop audio engine (`pygame.mixer`), shared `DiscoveryService`, `scan_library`, `find_duplicates`, `_normalize_for_dupe` ([source](../engine.py); verification at lines 107–507)
 - `downloader.py` — Desktop yt-dlp wrapper (`bestaudio/best` → FFmpegExtractAudio MP3 192k 44.1kHz with loudnorm I=-14:LRA=11:TP=-1.5) ([source](../downloader.py); verification at lines 58–96)
 - `music_player.py` — Desktop Tkinter app (Controller-View-Engine pattern)
@@ -206,19 +203,15 @@ luno/
 ├── downloader.py                        # SHARED LOGIC (desktop): Downloader class,
 │                                        #   yt-dlp wrapper, playlist sync, dedupe ledger
 │
-├── theme.py                             # SHARED: current desktop/Flet palette
+├── theme.py                             # DESKTOP: current palette
 │                                        #   (#121212, #181818, #282828, etc.)
 │                                        #   does NOT match planned mobile colors
 │
 ├── utils.py                             # SHARED: split_track_name, format_time,
 │                                        #   hex_to_rgb, resource_path, etc.
 │
-├── music_player_flet.py                 # FLET PROTOTYPE: pygame backend, responsive
-│                                        #   mobile/desktop UI, 3 tabs, mini-player
 │
-├── main.py                              # FLET ENTRY POINT: runs music_player_flet.main
 │
-├── buildozer.spec                       # FLET ANDROID BUILD: target API 33, min API 21
 │
 ├── music_player.py                      # DESKTOP APP: Tkinter CVE controller
 │
@@ -230,9 +223,8 @@ luno/
 ├── test_dl.py                           # TESTS: downloader tests
 ├── test_downloader_sync.py              # TESTS: sync/download tests
 │
-├── buildozer.spec                       # FLET BUILD CONFIG (see above)
 ├── build-mobile.command                 # ROOT macOS helper: build/install/launch native Android debug APK
-├── requirements.txt                     # PYTHON DEPENDENCIES (desktop + Flet)
+├── requirements.txt                     # PYTHON DEPENDENCIES (desktop)
 ├── .gitignore                           # Ignores .venv, build/, dist/, __pycache__, .DS_Store
 ├── .opencode/                           # AI agent/plugin configuration
 └── mobile-app/                          # Native Android app (see tree above)
@@ -450,7 +442,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 **Queue/history:**
 - Queue is **local only** — never synced to a server
 - History is local only, max 100 entries (following desktop convention from `engine.py` line 328); replays **move to the front** (desktop `play_current` parity) — never duplicated; `MusicController.clearRecentlyPlayed()` exposes the desktop "Clear History" action
-- Shuffle/repeat modes: off, repeat one, repeat all (matching `music_player_flet.py` line 78)
+- Shuffle/repeat modes: off, repeat one, repeat all (matching the desktop playback behavior)
 - **"Up Next" model (implemented 2026-07-31):** user-queued items play before the playlist context, mirroring desktop `user_queue_count` logic (`engine.py` lines 213, 384–385). `MusicController.manualQueueUris` tracks manually queued items: "Play next" inserts at `current + 1`, "Add to queue" inserts after the remaining manual items (`current + 1 + manualItemsAfterCurrent`); the set drains as manual items play (or are skipped past), and resets on a new playback context or a manual queue reorder.
 
 ### Last.fm (Recommendations Only — No Scrobbling)
@@ -509,7 +501,7 @@ Via **Scoped Storage / Storage Access Framework (SAF)**:
 
 ### Visual Specification (Authoritative Fallback)
 
-> Note: The current desktop/Flet theme (`theme.py`) uses different colors (#121212, #181818, #282828, etc.). The colors below are **implemented** in `ui/theme/Color.kt` and match the visual spec. The full player screen contract (below) is **implemented** in `ui/player/` — real artwork (Coil), dominant-color dynamic gradients, and queue reordering are done; volume slider remains deferred.
+> Note: The current desktop theme (`theme.py`) uses different colors (#121212, #181818, #282828, etc.). The colors below are **implemented** in `ui/theme/Color.kt` and match the visual spec. The full player screen contract (below) is **implemented** in `ui/player/` — real artwork (Coil), dominant-color dynamic gradients, and queue reordering are done; volume slider remains deferred.
 
 **Color palette:**
 | Role | Hex | Usage |
@@ -610,33 +602,6 @@ These facts are confirmed by reading the actual source files. Link to them rathe
 | Discovery cache | Max 10 entries, cleared on exceed | Lines 76–77 |
 | Library scan | `scan_library(roots)`: walks subdirs as playlists, root as Unsorted | Lines 107–126 |
 | History | 100-entry `_recently_played` list | Lines 328 |
-
-### Flet Prototype (`music_player_flet.py`)
-
-| Fact | Detail | Source |
-|------|--------|--------|
-| Framework | Flet (Flutter-based Python UI framework) | Line 7 |
-| Audio backend | Pygame mixer (same as desktop) | Lines 93–98 |
-| Mobile tabs | 3: Library, Player, Settings | Lines 1048–1058 |
-| Responsive | <600px = mobile layout (bottom nav + mini-player), ≥600px = desktop sidebar | Lines 1336–1361 |
-| Mini-player | Floating bar at bottom on mobile (visible except on Player tab) | Lines 1031–1044 |
-| Theme colors | Uses `theme.py` (#121212, #181818, #1DB954) — different from planned mobile spec | Line 108, 109 |
-| Player UI | Fullscreen art (280dp), scrub bar, volume, shuffle/repeat/prev/play/next | Lines 796–898 |
-| Bottom player | Art 56dp, controls, scrub, volume (desktop layout) | Lines 911–1012 |
-| Search | `Filter tracks...` text field, filters by title/artist | Lines 688–699, 1293–1297 |
-| Track limit | Paginated: 100 tracks initially, Load More button | Lines 1220–1282 |
-| Art cache | `FletArtCache` with ThreadPoolExecutor, mutagen/Pillow | Lines 18–58 |
-
-### Buildozer Config (`buildozer.spec`)
-
-| Fact | Detail |
-|------|--------|
-| Target API | 33 |
-| Min API | 21 |
-| Archs | `arm64-v8a, armeabi-v7a` |
-| Permissions | `INTERNET, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, MANAGE_EXTERNAL_STORAGE` |
-| Orientation | Portrait |
-| Private storage | True |
 
 ---
 
@@ -1002,15 +967,13 @@ All files listed below exist in `mobile-app/` as of this writing.
 
 ---
 
-## 🔧 Known Current Code Smells (from desktop/Flet — avoid in native app)
+## 🔧 Known Current Code Smells (from desktop — avoid in native app)
 
 These are issues in the existing codebase that the native app should NOT reproduce:
 
 1. **`music_player.py` orphaned inline sidebar rebuild** (desktop brain line 246): After calling `_populate_sidebar()`, the function has a second block of orphaned code that destroys and rebuilds the sidebar cards again.
 3. **`views/song_page.py` thread leak** (desktop brain line 248): `_load_blur_bg` spawns a new thread on every `update_view()` call with no cancellation mechanism.
-4. **Flet prototype mixed desktop/mobile in one file** (`music_player_flet.py`): Over 1300 lines with conditional visibility toggles; native app should use proper navigation architecture.
-5. **Flet prototype hardcoded color constants** (lines 108, 429, 449, 628, etc.): Colors scattered instead of using a theme system.
-6. **Desktop downloader uses daemon threads** (`downloader.py`): Daemon threads can be killed mid-operation; native app should use WorkManager for guaranteed completion.
+4. **Desktop downloader uses daemon threads** (`downloader.py`): Daemon threads can be killed mid-operation; native app should use WorkManager for guaranteed completion.
 
 ---
 
@@ -1123,9 +1086,7 @@ Instrumented smoke tests created for API 34 emulator (`./gradlew :app:connectedD
 - [Desktop Project Brain](../project_brain.md) — desktop architecture, CVE pattern, all desktop technical protocols
 - [downloader.py](../downloader.py) — desktop downloader semantics (source of truth for format/quality/loudnorm)
 - [engine.py](../engine.py) — desktop engine, DiscoveryService, dedupe logic, library scan
-- [theme.py](../theme.py) — current desktop/Flet palette (differs from planned mobile colors)
-- [music_player_flet.py](../music_player_flet.py) — current Flet mobile/desktop prototype
-- [buildozer.spec](../buildozer.spec) — current Flet Android build configuration
+- [theme.py](../theme.py) — current desktop palette (differs from native mobile colors)
 - [utils.py](../utils.py) — shared helpers (split_track_name, format_time, extract_dominant_color)
 
 ---
