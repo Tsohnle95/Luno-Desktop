@@ -20,6 +20,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 import threading
 import queue
+from collections import OrderedDict
 import os, re, csv, time, random, math, hashlib, shutil, traceback, json
 from urllib.parse import urlparse
 from datetime import datetime
@@ -94,9 +95,15 @@ except ImportError:
     _HAS_MEDIAPLAYER = False
 
 class ArtCache:
+    # Keep artwork bounded. A 1000px RGBA image is roughly 4 MB, so an
+    # unbounded cache can consume gigabytes after browsing a large library.
+    MAX_ENTRIES = 96
+    MAX_PIXELS = 16 * 1024 * 1024
+
     def __init__(self, app):
         self.app = app
-        self.cache = {}
+        self.cache = OrderedDict()
+        self._cache_pixels = 0
         self._color_cache = {}
         self._color_fetching = set()
         self.fetching = set()
@@ -107,7 +114,8 @@ class ArtCache:
             return None
         key = (path, size)
         if key in self.cache:
-            return self.cache[key]
+            self.cache.move_to_end(key)
+            return self.cache[key][0]
             
         if key not in self.fetching:
             self.fetching.add(key)
@@ -183,7 +191,7 @@ class ArtCache:
                     # Must be created in main thread
                     try:
                         pi = ImageTk.PhotoImage(i)
-                        self.cache[(p, s)] = pi
+                        self._store((p, s), pi, s * s)
                         self.fetching.discard((p, s))
                         cb(p)
                         self.app._update_player_accent(p)
@@ -194,6 +202,18 @@ class ArtCache:
                 self.fetching.discard((path, size))
         except Exception:
             self.fetching.discard((path, size))
+
+    def _store(self, key, image, pixels):
+        """Store the newest artwork while keeping memory use predictable."""
+        old = self.cache.pop(key, None)
+        if old:
+            self._cache_pixels -= old[1]
+        self.cache[key] = (image, pixels)
+        self._cache_pixels += pixels
+        while (len(self.cache) > self.MAX_ENTRIES or
+               self._cache_pixels > self.MAX_PIXELS) and len(self.cache) > 1:
+            _, (_, old_pixels) = self.cache.popitem(last=False)
+            self._cache_pixels -= old_pixels
 
 # ── Main App ──────────────────────────────────────────────────────────────
 class LunoMusicPlayer(tk.Tk):

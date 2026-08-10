@@ -51,6 +51,7 @@ This document is a high-level architectural map for the **Luno**. It provides th
 │   └── error_log.py          # Debug log viewer
 │
 ├── test_engine_playback.py   # Deterministic mocked unit tests for playback engine
+├── test_art_cache.py         # Regression tests for bounded artwork caching
 ├── test_contract_fixtures.py  # Shared library-export compatibility fixture tests
 ├── test_library_transfer.py   # Manifest validation, export, matching, and additive merge tests
 ├── test_media_keys.py        # Deterministic mocked unit tests for media key logic
@@ -165,8 +166,8 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 6. Playlist sync compares candidates against the whole local music library root, not only the destination playlist folder, so Sync All avoids duplicating tracks that already exist in another playlist. It tracks successful/matched YouTube IDs in `.downloaded_vids` and permanent failures in `.sync_failed_vids` inside the playlist folder.
 
 ### Artwork Fetching
-1. `PlaylistArt` or `SongPageView` requests art → `ArtCache.get(path, size, callback)`
-2. `ArtCache` checks in-memory cache → if miss, submits to `ThreadPoolExecutor`
+1. `PlaylistArt` or `SongPageView` requests art → `ArtCache.get(path, size, callback)`; downloader search cards use a separate bounded 128-entry thumbnail cache
+2. `ArtCache` checks a bounded in-memory LRU cache (maximum 96 entries and 16 megapixels) → if miss, submits to `ThreadPoolExecutor`
 3. Worker reads `mutagen.mp3.MP3` → extracts `APIC` frame → resizes via `PIL.Image`
 4. Returns `ImageTk.PhotoImage` via `controller.after(0, ...)` callback
 

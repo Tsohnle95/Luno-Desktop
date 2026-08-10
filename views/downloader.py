@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
 import os, re
+from collections import OrderedDict
 from urllib.parse import urlparse
 from theme import BG, BG2, BG3, BG4, BORDER, GREEN, GREEN_HOVER, TEXT, TEXT2, TEXT3, SUCCESS, WARNING, RED, SC_COLOR, BLUE, SIDEBAR
 from utils import split_track_name, format_time, bind_scroll_events, scroll_amount
@@ -11,6 +12,10 @@ import yt_dlp
 from downloader import Downloader
 
 class DownloadView(tk.Frame):
+    # Search results are disposable; retaining every PhotoImage from every
+    # search can otherwise grow the process for the entire session.
+    MAX_SEARCH_ART_CACHE = 128
+
     def __init__(self, parent, controller):
         super().__init__(parent, bg=BG)
         self.controller = controller
@@ -27,7 +32,7 @@ class DownloadView(tk.Frame):
         self._search_limit = 10
         self._search_card_rows = []
         self._search_card_selected = None
-        self._search_art_cache = {}
+        self._search_art_cache = OrderedDict()
         self._search_art_fetching = set()
         self._downloaded_expanded = False
         self._direct_details_visible = False
@@ -1445,7 +1450,8 @@ class DownloadView(tk.Frame):
 
     def _load_search_artwork(self, url, label):
         if url in self._search_art_cache:
-            image = self._search_art_cache[url]
+            image = self._search_art_cache.pop(url)
+            self._search_art_cache[url] = image
             label.config(image=image, text="", width=60, height=60, bg=BG)
             label._search_image = image
             return
@@ -1477,10 +1483,17 @@ class DownloadView(tk.Frame):
             photo = ImageTk.PhotoImage(image)
         except Exception:
             return
-        self._search_art_cache[url] = photo
+        self._store_search_artwork(url, photo)
         if label.winfo_exists():
             label.config(image=photo, text="", width=60, height=60, bg=BG)
             label._search_image = photo
+
+    def _store_search_artwork(self, url, photo):
+        """Keep search thumbnails bounded while refreshing recently used art."""
+        self._search_art_cache.pop(url, None)
+        self._search_art_cache[url] = photo
+        while len(self._search_art_cache) > self.MAX_SEARCH_ART_CACHE:
+            self._search_art_cache.popitem(last=False)
 
     def do_search(self, reset_limit=True):
         q = self.controller.search_var.get().strip()
