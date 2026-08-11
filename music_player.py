@@ -99,6 +99,9 @@ class ArtCache:
     # unbounded cache can consume gigabytes after browsing a large library.
     MAX_ENTRIES = 96
     MAX_PIXELS = 16 * 1024 * 1024
+    MAX_INFLIGHT = 24
+    MAX_SOURCE_BYTES = 12 * 1024 * 1024
+    MAX_SOURCE_PIXELS = 16 * 1024 * 1024
 
     def __init__(self, app):
         self.app = app
@@ -107,6 +110,8 @@ class ArtCache:
         self._color_cache = {}
         self._color_fetching = set()
         self.fetching = set()
+        self._pending = OrderedDict()
+        self._callbacks = {}
         self.executor = ThreadPoolExecutor(max_workers=4)
 
     def get(self, path, size, callback):
@@ -117,19 +122,50 @@ class ArtCache:
             self.cache.move_to_end(key)
             return self.cache[key][0]
             
-        if key not in self.fetching:
-            self.fetching.add(key)
-            self.executor.submit(self._fetch, path, size, callback)
+        if key in self.fetching or key in self._pending:
+            if callback and callback not in self._callbacks.setdefault(key, []):
+                self._callbacks[key].append(callback)
+            return None
+
+        self._pending[key] = (path, size)
+        self._callbacks[key] = [callback] if callback else []
+        self._drain()
         return None
+
+    def _schedule_drain(self):
+        try:
+            self.app.after(0, self._drain)
+        except (RuntimeError, tk.TclError):
+            self._drain()
+
+    def _drain(self):
+        while self._pending and len(self.fetching) < self.MAX_INFLIGHT:
+            key, (path, size) = self._pending.popitem(last=False)
+            self.fetching.add(key)
+            try:
+                self.executor.submit(self._fetch, path, size)
+            except RuntimeError:
+                self.fetching.discard(key)
+                self._callbacks.pop(key, None)
+                break
+
+    def _release_key(self, key):
+        self.fetching.discard(key)
+        self._callbacks.pop(key, None)
+        self._schedule_drain()
 
     def get_dominant_color(self, path, fallback="#1DB954"):
         if not path:
             return fallback
         if path in self._color_cache:
             return self._color_cache[path]
-        if path not in self._color_fetching:
+        if (path not in self._color_fetching and
+                len(self.fetching) + len(self._color_fetching) < self.MAX_INFLIGHT):
             self._color_fetching.add(path)
-            self.executor.submit(self._fetch_color, path)
+            try:
+                self.executor.submit(self._fetch_color, path)
+            except RuntimeError:
+                self._color_fetching.discard(path)
         return fallback
 
     def _fetch_color(self, path):
@@ -142,19 +178,27 @@ class ArtCache:
             if audio.tags:
                 for tag in audio.tags.values():
                     if getattr(tag, 'FrameID', None) == 'APIC':
-                        img = Image.open(io.BytesIO(tag.data)).convert("RGB")
+                        if len(tag.data) > self.MAX_SOURCE_BYTES:
+                            continue
+                        with Image.open(io.BytesIO(tag.data)) as source:
+                            if source.width * source.height > self.MAX_SOURCE_PIXELS:
+                                continue
+                            img = source.convert("RGB")
                         tiny = img.resize((1, 1), Image.Resampling.LANCZOS)
                         color = tiny.getpixel((0, 0))
+                        img.close()
                         hex_color = rgb_to_hex(*color)
                         self._color_cache[path] = hex_color
-                        self._color_fetching.discard(path)
                         self.app.after(0, lambda: self.app._update_player_accent(path))
                         return
-            self._color_fetching.discard(path)
         except Exception:
+            pass
+        finally:
             self._color_fetching.discard(path)
+            self._schedule_drain()
 
-    def _fetch(self, path, size, callback):
+    def _fetch(self, path, size):
+        key = (path, size)
         try:
             from mutagen.mp3 import MP3
             from mutagen.id3 import ID3
@@ -168,9 +212,12 @@ class ArtCache:
                     if tag.FrameID == 'APIC':
                         img_data = tag.data
                         break
-            if img_data:
-                img = Image.open(io.BytesIO(img_data))
-                img = img.convert("RGBA")
+            if img_data and len(img_data) <= self.MAX_SOURCE_BYTES:
+                with Image.open(io.BytesIO(img_data)) as source:
+                    if source.width * source.height > self.MAX_SOURCE_PIXELS:
+                        self._release_key(key)
+                        return
+                    img = source.convert("RGBA")
                 min_dim = min(img.width, img.height)
                 left = (img.width - min_dim)/2
                 top = (img.height - min_dim)/2
@@ -187,21 +234,38 @@ class ArtCache:
                 except Exception:
                     pass
                 
-                def _done(i=img, p=path, s=size, cb=callback):
+                def _done(i=img, p=path, s=size):
                     # Must be created in main thread
+                    success = False
                     try:
                         pi = ImageTk.PhotoImage(i)
+                        i.close()
                         self._store((p, s), pi, s * s)
-                        self.fetching.discard((p, s))
-                        cb(p)
-                        self.app._update_player_accent(p)
+                        success = True
                     except Exception:
+                        try:
+                            i.close()
+                        except Exception:
+                            pass
+                    finally:
+                        callbacks = self._callbacks.pop((p, s), [])
                         self.fetching.discard((p, s))
+                        if success:
+                            for callback in callbacks:
+                                try:
+                                    callback(p)
+                                except Exception:
+                                    pass
+                            try:
+                                self.app._update_player_accent(p)
+                            except Exception:
+                                pass
+                        self._drain()
                 self.app.after(0, _done)
             else:
-                self.fetching.discard((path, size))
+                self._release_key(key)
         except Exception:
-            self.fetching.discard((path, size))
+            self._release_key(key)
 
     def _store(self, key, image, pixels):
         """Store the newest artwork while keeping memory use predictable."""
@@ -214,6 +278,34 @@ class ArtCache:
                self._cache_pixels > self.MAX_PIXELS) and len(self.cache) > 1:
             _, (_, old_pixels) = self.cache.popitem(last=False)
             self._cache_pixels -= old_pixels
+
+    def prune_paths(self, paths):
+        """Release cached artwork for files no longer in the library."""
+        allowed = {
+            os.path.abspath(os.path.normpath(path))
+            for path in paths
+        }
+        for key in list(self.cache):
+            if os.path.abspath(os.path.normpath(key[0])) not in allowed:
+                _, pixels = self.cache.pop(key)
+                self._cache_pixels -= pixels
+        for key in list(self._pending):
+            if os.path.abspath(os.path.normpath(key[0])) not in allowed:
+                self._pending.pop(key, None)
+                self._callbacks.pop(key, None)
+        for key in list(self._callbacks):
+            if os.path.abspath(os.path.normpath(key[0])) not in allowed:
+                self._callbacks.pop(key, None)
+        self._color_cache = {
+            path: color
+            for path, color in self._color_cache.items()
+            if os.path.abspath(os.path.normpath(path)) in allowed
+        }
+
+    def shutdown(self):
+        self._pending.clear()
+        self._callbacks.clear()
+        self.executor.shutdown(wait=False, cancel_futures=True)
 
 # ── Main App ──────────────────────────────────────────────────────────────
 class LunoMusicPlayer(tk.Tk):
@@ -602,6 +694,10 @@ class LunoMusicPlayer(tk.Tk):
         self._library              = {}
         self._last_lib_hash        = 0
         self._library_scan_generation = 0
+        self._library_scan_state_lock = threading.Lock()
+        self._library_scan_active = False
+        self._library_scan_pending = False
+        self._library_scan_pending_reset = False
         self._dl_playlists         = []
         self._is_dl                = False
         self._discovery_downloads  = 0
@@ -620,6 +716,8 @@ class LunoMusicPlayer(tk.Tk):
         self._sleep_after_id       = None
         self._sync_running         = False
         self._transfer_running     = False
+        self._duplicate_scan_lock  = threading.Lock()
+        self._duplicate_scan_active = False
         self._playlist_urls        = {}
         self._media_command_queue  = queue.SimpleQueue()
         self._closing = False
@@ -645,6 +743,10 @@ class LunoMusicPlayer(tk.Tk):
         self.auto_discovery_var = tk.BooleanVar(value=False)
         self.global_keys_var    = tk.BooleanVar(value=True)
         self.discovery          = DiscoveryService(logger=self._log_error)
+        self._discovery_request_lock = threading.Lock()
+        self._discovery_request_generation = 0
+        self._discovery_request_active = False
+        self._discovery_request_pending = None
         
         self.art_cache          = ArtCache(self)
         self._np_poll_counter = 0
@@ -663,7 +765,7 @@ class LunoMusicPlayer(tk.Tk):
             self.engine.volume = self.vol_var.get() / 100
 
         self._refresh_library()
-        self._init_watchdog()
+        self.after(30000, self._init_watchdog)
         
         # Auto-save traces
         self.lastfm_key_var.trace_add("write", lambda *a: self._save_config())
@@ -1688,11 +1790,46 @@ class LunoMusicPlayer(tk.Tk):
                 self._log_error("Discovery", f"No artist found in filename or folder for: {os.path.basename(path)}. Last.fm requires an artist name.")
                 return
 
-            def run():
-                recs = self.discovery.get_similar(final_artist, title)
-                self.after(0, lambda: self._update_discovery_results(recs))
-            
-            threading.Thread(target=run, daemon=True).start()
+            request = (final_artist, title)
+            with self._discovery_request_lock:
+                self._discovery_request_generation += 1
+                generation = self._discovery_request_generation
+                if self._discovery_request_active:
+                    self._discovery_request_pending = request
+                    return
+                self._discovery_request_active = True
+            self._start_discovery_request(request, generation)
+
+    def _start_discovery_request(self, request, generation):
+        def run():
+            try:
+                recs = self.discovery.get_similar(*request)
+            except Exception as exc:
+                self._log_error("Discovery", f"Request failed: {exc}")
+                recs = []
+
+            with self._discovery_request_lock:
+                self._discovery_request_active = False
+                pending = self._discovery_request_pending
+                self._discovery_request_pending = None
+                next_generation = self._discovery_request_generation
+                if pending and not self._closing:
+                    self._discovery_request_active = True
+
+            if (not self._closing and
+                    generation == self._discovery_request_generation):
+                try:
+                    self.after(0, lambda: self._update_discovery_results(recs))
+                except (RuntimeError, tk.TclError):
+                    pass
+            if pending and not self._closing:
+                self._start_discovery_request(pending, next_generation)
+
+        threading.Thread(
+            target=run,
+            daemon=True,
+            name="luno-discovery",
+        ).start()
 
     def _update_discovery_results(self, recs):
         if not recs:
@@ -1783,23 +1920,54 @@ class LunoMusicPlayer(tk.Tk):
 
     def _refresh_library(self, reset_track_scroll=False):
         """Manual refresh triggered by the user or startup."""
-        self._library_scan_generation += 1
-        generation = self._library_scan_generation
+        with self._library_scan_state_lock:
+            self._library_scan_generation += 1
+            generation = self._library_scan_generation
+            if self._library_scan_active:
+                self._library_scan_pending = True
+                self._library_scan_pending_reset |= reset_track_scroll
+                return
+            self._library_scan_active = True
+        roots = tuple(self._watch_roots)
         threading.Thread(
             target=self._run_library_scan_bg,
-            args=(generation, reset_track_scroll),
+            args=(generation, reset_track_scroll, roots),
             daemon=True,
+            name="luno-library-scan",
         ).start()
 
-    def _run_library_scan_bg(self, generation=None, reset_track_scroll=False):
+    def _run_library_scan_bg(self, generation=None, reset_track_scroll=False, roots=None):
         """The heavy lifting happens here on a background thread."""
-        new_lib = scan_library(self._watch_roots)
+        try:
+            new_lib = scan_library(roots if roots is not None else self._watch_roots)
+            error = None
+        except Exception as exc:
+            new_lib = None
+            error = exc
         self.after(
             0,
-            lambda: self._finalize_library_update(
-                new_lib, generation, reset_track_scroll
+            lambda: self._finish_library_scan(
+                new_lib, generation, reset_track_scroll, error
             ),
         )
+
+    def _finish_library_scan(self, new_lib, generation, reset_track_scroll, error=None):
+        try:
+            if error is not None:
+                self._log_error("library", f"Scan failed: {error}")
+            else:
+                self._finalize_library_update(
+                    new_lib, generation, reset_track_scroll
+                )
+        finally:
+            with self._library_scan_state_lock:
+                self._library_scan_active = False
+                pending = self._library_scan_pending
+                pending_reset = self._library_scan_pending_reset
+                self._library_scan_pending = False
+                self._library_scan_pending_reset = False
+            if pending and not self._closing:
+                self._refresh_library(reset_track_scroll=pending_reset)
 
     def _finalize_library_update(self, new_lib, generation=None, reset_track_scroll=False):
         # Multiple refreshes can overlap while a download is finishing. Ignore
@@ -1808,7 +1976,10 @@ class LunoMusicPlayer(tk.Tk):
             return
 
         # Only refresh UI if contents actually changed to prevent stuttering
-        current_hash = hash(str(new_lib))
+        current_hash = hash(tuple(
+            (playlist, tuple(paths))
+            for playlist, paths in sorted(new_lib.items())
+        ))
         if current_hash == self._last_lib_hash:
             if reset_track_scroll:
                 lib_view = self._frames.get("library")
@@ -1827,6 +1998,7 @@ class LunoMusicPlayer(tk.Tk):
             for tracks in self._library.values()
             for path in tracks
         }
+        self.art_cache.prune_paths(known_paths)
         before_favorites = set(self._favorite_paths)
         self._favorite_paths.intersection_update(known_paths)
         if self._favorite_paths != before_favorites:
@@ -1839,6 +2011,8 @@ class LunoMusicPlayer(tk.Tk):
         search_q = self.lib_search_entry.get() if self.lib_search_entry.get() != self._lib_ph else ""
         
         lib_view = self._frames.get("library")
+        if lib_view and hasattr(lib_view, "prune_duration_cache"):
+            lib_view.prune_duration_cache(known_paths)
 
         # 3. Redraw the track list
         self._populate_track_list("")
@@ -2309,23 +2483,47 @@ class LunoMusicPlayer(tk.Tk):
 
     def _check_playlist_duplicates(self, pl_name):
         """Localized duplicate check for a specific playlist."""
+        with self._duplicate_scan_lock:
+            if self._duplicate_scan_active:
+                self._log_error("Duplicates", "A duplicate scan is already in progress")
+                return
+            self._duplicate_scan_active = True
         if not pl_name: tracks = [p for sub in self._library.values() for p in sub]
         else: tracks = self._library.get(pl_name, [])
         
         if not tracks:
+            with self._duplicate_scan_lock:
+                self._duplicate_scan_active = False
             messagebox.showinfo("Check Duplicates", "This playlist is empty.")
             return
             
         def run_scan():
-            from engine import find_duplicates
-            # find_duplicates expects a dict: { playlist_name: [paths] }
-            dupes = find_duplicates({pl_name or "All Music": tracks}, 
-                                    allowed_keys=self.engine.allowed_dupe_keys)
-            self.after(0, lambda: self._finalize_playlist_dupe_check(dupes, pl_name))
+            try:
+                from engine import find_duplicates
+                # find_duplicates expects a dict: { playlist_name: [paths] }
+                dupes = find_duplicates(
+                    {pl_name or "All Music": tracks},
+                    allowed_keys=self.engine.allowed_dupe_keys,
+                )
+                error = None
+            except Exception as exc:
+                dupes = []
+                error = exc
+            self.after(
+                0,
+                lambda: self._finalize_playlist_dupe_check(
+                    dupes, pl_name, error
+                ),
+            )
             
         threading.Thread(target=run_scan, daemon=True).start()
 
-    def _finalize_playlist_dupe_check(self, dupes, pl_name):
+    def _finalize_playlist_dupe_check(self, dupes, pl_name, error=None):
+        with self._duplicate_scan_lock:
+            self._duplicate_scan_active = False
+        if error is not None:
+            messagebox.showerror("Check Duplicates", f"Duplicate scan failed: {error}")
+            return
         if not dupes:
             messagebox.showinfo("Check Duplicates", f"No duplicates found in '{pl_name or 'All Music'}'.")
             return
@@ -2349,6 +2547,9 @@ class LunoMusicPlayer(tk.Tk):
         on_track_log: optional callback (title, is_success, err) for per-track log messages.
         on_playlist_msg: optional callback (msg) for informational playlist messages.
         """
+        if self._sync_running and not batch_mode:
+            self._log_error("Sync", f"Already syncing a playlist; skipped '{pl_name}'")
+            return
         if not url:
             url = self._get_playlist_url(pl_name)
         if not url:
@@ -2973,8 +3174,14 @@ class LunoMusicPlayer(tk.Tk):
 
     def _init_watchdog(self):
         """Starts the automatic background refresh loop."""
-        # Only refresh if we aren't currently in the middle of a download
-        if not self._is_dl and not self._transfer_running and not self._discovery_downloads:
+        # Only refresh if no download, transfer, or scan is already active.
+        download_view = self._frames.get("download")
+        download_busy = bool(download_view and getattr(download_view, "is_dl", False))
+        with self._library_scan_state_lock:
+            scan_active = self._library_scan_active
+        if (not self._is_dl and not download_busy and not self._sync_running and
+                not self._transfer_running and not self._discovery_downloads and
+                not scan_active):
             self._refresh_library()
         
         # Schedule the next run in 30 seconds
@@ -3110,6 +3317,13 @@ class LunoMusicPlayer(tk.Tk):
     def _on_closing(self):
         """Cleanly saves config and quits."""
         self._closing = True
+        try:
+            from downloader import Downloader
+            Downloader.cancel_active()
+        except Exception:
+            pass
+        if hasattr(self, "art_cache"):
+            self.art_cache.shutdown()
         # Cancel scheduled poll callbacks
         if getattr(self, "_poll_after_id", None):
             try:

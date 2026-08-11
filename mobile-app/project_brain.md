@@ -31,7 +31,7 @@
 Luno is a **native Android offline-first music player** in the same monorepo as the desktop Luno. The architecture is **Kotlin + Jetpack Compose + Media3**. **As of this writing Kotlin, Compose, Media3, and Room source exist** under `mobile-app/` — the native stack foundation is implemented and committed to the repository.
 
 **Current repo state (desktop app alongside native Android):**
-- `engine.py` — Desktop audio engine (`pygame.mixer`), shared `DiscoveryService`, `scan_library`, `find_duplicates`, `_normalize_for_dupe` ([source](../engine.py); verification at lines 107–507)
+- `engine.py` — Desktop audio engine (`pygame.mixer`); it re-exports `DiscoveryService` and library helpers for compatibility. Discovery is implemented in `discovery.py`; library scanning and duplicate detection are implemented in `library_tools.py` ([desktop engine](../engine.py), [discovery](../discovery.py), [library helpers](../library_tools.py))
 - `downloader.py` — Desktop yt-dlp wrapper (`bestaudio/best` → FFmpegExtractAudio MP3 192k 44.1kHz with loudnorm I=-14:LRA=11:TP=-1.5) ([source](../downloader.py); verification at lines 58–96)
 - `music_player.py` — Desktop Tkinter app (Controller-View-Engine pattern)
 - `views/` — Desktop Tkinter view modules (library, downloader, settings, etc.)

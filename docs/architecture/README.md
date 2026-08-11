@@ -7,8 +7,11 @@ The repository contains two product implementations:
 ### Desktop
 
 `music_player.py` is the Tkinter controller. Views live in `views/`, playback
-is wrapped by `LunoEngine` in `engine.py`, and downloads are handled by
-`downloader.py`. Heavy filesystem, network, and media work must remain off the
+is wrapped by `LunoEngine` in `engine.py`; Last.fm recommendations live in
+`discovery.py`, library scanning and duplicate operations live in
+`library_tools.py`, and downloads are handled by
+`downloader.py`; source probing lives in `source_lookup.py`. Heavy filesystem,
+network, and media work must remain off the
 Tk thread; UI mutations return through Tk's event loop.
 
 ### Android

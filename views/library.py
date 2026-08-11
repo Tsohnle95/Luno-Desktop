@@ -28,6 +28,8 @@ class LibraryView(tk.Frame):
         self._sort_modes = {"Unsorted": "Recently added"}
         self._duration_cache = {}
         self._duration_pending = set()
+        self._duration_deferred = set()
+        self._duration_load_active = False
         self._track_redraw_after = None
         
         # Context menu
@@ -306,7 +308,11 @@ class LibraryView(tk.Frame):
         pending = [path for path in dict.fromkeys(paths) if path not in self._duration_pending]
         if not pending:
             return
+        if self._duration_load_active:
+            self._duration_deferred.update(pending)
+            return
         self._duration_pending.update(pending)
+        self._duration_load_active = True
 
         def load_durations():
             durations = {}
@@ -330,9 +336,34 @@ class LibraryView(tk.Frame):
     def _finish_track_durations(self, durations):
         self._duration_cache.update(durations)
         self._duration_pending.difference_update(durations)
+        self._duration_load_active = False
+        deferred = self._duration_deferred
+        self._duration_deferred = set()
+        if deferred:
+            self._request_track_durations(deferred)
         if self._current_sort_mode() == "Duration":
             self.populate_track_list(self._pl_search_entry.get().strip())
             self.reset_track_scroll()
+
+    def prune_duration_cache(self, paths):
+        """Drop duration metadata for files no longer in the scanned library."""
+        allowed = {
+            os.path.abspath(os.path.normpath(path))
+            for path in paths
+        }
+        self._duration_cache = {
+            path: duration
+            for path, duration in self._duration_cache.items()
+            if os.path.abspath(os.path.normpath(path)) in allowed
+        }
+        self._duration_pending = {
+            path for path in self._duration_pending
+            if os.path.abspath(os.path.normpath(path)) in allowed
+        }
+        self._duration_deferred = {
+            path for path in self._duration_deferred
+            if os.path.abspath(os.path.normpath(path)) in allowed
+        }
 
     def _sort_track_items(self, items):
         mode = self._current_sort_mode()

@@ -20,15 +20,16 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ```
 ├── music_player.py           # Main entry point — Controller (LunoMusicPlayer)
 ├── README.md                 # Repository orientation, commands, and boundaries
-├── engine.py                 # Audio engine + Discovery + Library scanning
+├── engine.py                 # Audio engine + discovery + playback compatibility surface
+├── discovery.py              # Last.fm recommendation service
+├── source_lookup.py          # yt-dlp source probing helpers
+├── library_tools.py          # Library scanning, CSV parsing, and duplicate detection
 ├── downloader.py             # yt-dlp download wrapper (Downloader class)
 ├── theme.py                  # Color palette + playlist gradient system
 ├── utils.py                  # Shared helpers (resource_path, format_time, split_track_name, etc.)
 ├── library_transfer.py       # Versioned, path-free JSON manifest codec and desktop merge planner
 ├── widgets.py                # Custom Canvas widgets (RoundButton, SlimSlider, PlaylistArt, ModernScrollbar)
 ├── icon.icns                 # macOS app icon (Apple Icon Image; regenerated from the current artwork)
-├── Pixel.png                 # User-provided icon artwork (kept; NOT currently used — the app uses its original vector music-note icon)
-├── mobile-app-icon.png       # Duplicate copy of the Pixel.png artwork (kept; not used by builds)
 ├── build.command             # Executable macOS build helper; activates .venv then runs PyInstaller spec
 ├── build-mobile.command      # Executable macOS helper; builds the Android debug APK and installs/launches it when a device is connected
 ├── Luno.spec             # PyInstaller spec for macOS build
@@ -110,8 +111,8 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 1.  **Controller (`music_player.py` / `LunoMusicPlayer`)**:
     *   **Shared State**: Holds `_library` (Playlists -> Paths), `tk.Variables` (status, search, etc.), and `_frames`.
     *   **Orchestration**: Manages tab switching (`_show_tab`) and broadcasts state changes to views.
-    *   **ArtCache**: A `ThreadPoolExecutor`-backed cache for album art thumbnails, shared across all views.
-    *   **Watchdog**: A 30-second `self.after()` polling loop (`_init_watchdog`) that auto-detects filesystem changes by calling `_refresh_library()` in the background. Skipped if a download is in progress.
+     *   **ArtCache**: A `ThreadPoolExecutor`-backed cache for album art thumbnails, shared across all views. Stored pixels, in-flight requests, source image size, and stale path entries are bounded.
+     *   **Watchdog**: A 30-second `self.after()` polling loop (`_init_watchdog`) that auto-detects filesystem changes by calling `_refresh_library()` in the background. It skips active downloads, syncs, transfers, and scans; manual and watchdog refreshes coalesce behind one active scan.
 2.  **Engine (`engine.py` / `LunoEngine`)**:
     *   **Audio Logic**: Wraps `pygame.mixer`. Manages the `queue` and track transitions.
     *   **Heartbeat**: A 400ms `poll()` loop that updates the scrubber and checks for track completion.
@@ -126,7 +127,7 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 ## 🔀 Data Flow
 
 ### Library Scan → UI
-1. `_refresh_library()` spawns a generation-tagged thread calling standalone `scan_library(roots)` (imported from `engine.py`); stale overlapping scan results are ignored
+1. `_refresh_library()` starts at most one generation-tagged thread calling standalone `scan_library(roots)` (imported from `engine.py`); repeated refresh requests coalesce into one pending scan and stale results are ignored
 2. Returns `dict[playlist_name → list[file_paths]]`; root-level tracks represented by `Unsorted` are ordered newest-first by filesystem modification time, with filename tie-breaking
 3. `_finalize_library_update(new_lib)` hashes the result, stores it in `self._library`
 4. Calls `_populate_sidebar()` → rebuilds sidebar cards
@@ -159,17 +160,18 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 
 ### Download Pipeline
 1. `DiscoverView`'s Add to Library action → `LunoMusicPlayer._download_track()` → `Downloader.download_sync_tracks()`; `DownloadView._download_selected()` / `_queue_direct_url()` → `Downloader.download_single()`, `_download_all()` → `Downloader.download_sync_tracks()`, `_start_csv_dl()` → `Downloader.download_csv_tracks()`, and URL Queue / Sync All actions → `Downloader.download_playlist_sync()`
-2. `Downloader._create_opts()` → yt-dlp options: 44.1kHz, 192k MP3, loudnorm, EmbedThumbnail
-3. Discovery download status, logs, and completion callbacks are marshalled through `controller.after(0, ...)`; the sync-track path creates the destination folder and treats a missing audio output as a failure instead of reporting a false success. A completed discovery download requests a fresh scan and resets the library track list to its first row.
-4. Progress hook → `controller.after(0, ...)` → UI update
-5. On complete → `_refresh_library()` → library scan
-6. Playlist sync compares candidates against the whole local music library root, not only the destination playlist folder, so Sync All avoids duplicating tracks that already exist in another playlist. It tracks successful/matched YouTube IDs in `.downloaded_vids` and permanent failures in `.sync_failed_vids` inside the playlist folder.
+2. `Downloader` admits one active download/write job at a time, rejects duplicate starts, and propagates cooperative cancellation through yt-dlp progress hooks. Playlist track timeouts run in the owning job and never leave a detached yt-dlp worker running while the next track starts.
+3. `Downloader._create_opts()` → yt-dlp options: 44.1kHz, 192k MP3, loudnorm, EmbedThumbnail
+4. Discovery download status, logs, and completion callbacks are marshalled through `controller.after(0, ...)`; the sync-track path creates the destination folder and treats a missing audio output as a failure instead of reporting a false success. A completed discovery download requests a fresh scan and resets the library track list to its first row.
+5. Progress hook → coalesced `controller.after(0, ...)` → UI update
+6. On complete → `_refresh_library()` → coalesced library scan
+7. Playlist sync compares candidates against the whole local music library root, not only the destination playlist folder, so Sync All avoids duplicating tracks that already exist in another playlist. It tracks successful/matched YouTube IDs in `.downloaded_vids` and permanent failures in `.sync_failed_vids` inside the playlist folder.
 
 ### Artwork Fetching
-1. `PlaylistArt` or `SongPageView` requests art → `ArtCache.get(path, size, callback)`; downloader search cards use a separate bounded 128-entry thumbnail cache
-2. `ArtCache` checks a bounded in-memory LRU cache (maximum 96 entries and 16 megapixels) → if miss, submits to `ThreadPoolExecutor`
-3. Worker reads `mutagen.mp3.MP3` → extracts `APIC` frame → resizes via `PIL.Image`
-4. Returns `ImageTk.PhotoImage` via `controller.after(0, ...)` callback
+1. `PlaylistArt` or `SongPageView` requests art → `ArtCache.get(path, size, callback)`; downloader search cards use a separate bounded 128-entry thumbnail cache and bounded in-flight executor
+2. `ArtCache` checks a bounded in-memory LRU cache (maximum 96 entries and 16 megapixels) → if miss, queues the key and drains it through `ThreadPoolExecutor` under the in-flight limit
+3. Worker reads `mutagen.mp3.MP3` → rejects oversized APIC payloads/images → extracts, crops, and resizes via `PIL.Image`
+4. Returns `ImageTk.PhotoImage` via a bounded `controller.after(0, ...)` callback; stale path cache entries are pruned after each library update
 
 ### Export / Import
 1. Export actions snapshot `_library` and selected paths, then build the manifest and probe metadata on a worker thread.
@@ -191,7 +193,7 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
   - `find_duplicates(library, allowed_keys)`: Groups tracks by `_normalize_for_dupe`.
   - `probe_soundcloud(query)`, `parse_exportify_csv(filepath)`: Supporting utilities.
 - **`library_transfer.py`**: Portable transfer contract. Provides `build_manifest()`, `validate_manifest()`, `load_manifest()`, `write_manifest()`, `plan_import()`, and `apply_import_plan()` for the path-free v1 JSON format used by Android.
-- **`downloader.py`** (root `downloader.py` — not the view): The `Downloader` class — wraps `yt-dlp` for downloading audio. Static methods: `download_single()`, `download_youtube_url()`, `download_csv_tracks()`, `download_sync_tracks()`. Forces 44.1kHz, 192k MP3, EBU R 128 loudnorm. Uses `EmbedThumbnail` postprocessor. All methods spawn daemon threads. *Note: `views/downloader.py` is the UI view that calls this module.*
+- **`downloader.py`** (root `downloader.py` — not the view): The `Downloader` class — wraps `yt-dlp` for downloading audio. Static methods: `download_single()`, `download_youtube_url()`, `download_csv_tracks()`, `download_sync_tracks()`, and `download_playlist_sync()`. A class-level job coordinator admits one active download/write job, exposes cancellation for shutdown, and keeps yt-dlp/FFmpeg work inside its owning daemon job. Forces 44.1kHz, 192k MP3, EBU R 128 loudnorm. Uses `EmbedThumbnail` postprocessor. *Note: `views/downloader.py` is the UI view that calls this module.*
 - **`utils.py`**: Helpers: `resource_path` (PyInstaller asset resolution), `format_time`, `split_track_name`, `hex_to_rgb`, `rgb_to_hex`, `draw_gradient_rect`, and cross-platform mouse/trackpad scroll binding with precise Tk 9 delta normalization. Track-name editing uses the same filename parser after sanitizing user-entered names.
 
 ### 🖼 View Modules (`views/`)
@@ -255,11 +257,12 @@ The transfer format is `luno.library.export` with `manifest_version: 1` and scop
 - **Sash Interaction**: Draggable vertical boundary between nav and playlists marked by a visual `BG4` row handle.
 - **Text Truncation Policy**: Global policy to prevent UI overlap. Library header title and track list rows use dynamic truncation placeholders (`...`) based on available canvas/frame width. Queue items use width-aware character limits (capped around 26-32 chars) for single-line consistency within the 240 px minimum queue pane.
 - **Instant Input Feedback**: Slider widgets (`SlimSlider`) trigger commands during both `B1-Motion` and `ButtonRelease-1`, ensuring instantaneous audio/UI feedback.
-- **Downloader Hub Strategy**: Uses `restrictfilenames: False` and `ignoreerrors: True`. The unified Downloader view is **wrapped in a scrollable canvas** for spacing and follows the mobile download hierarchy: `Downloader` header/subtitle, active-download status, compact source tabs (`Search`, `YT / CSV`, `Direct URL`, plus desktop Sync / URL Queue / Duplicates / Allowed Dups), thin conditional progress, source-specific input rows, artwork-backed search result cards, and a collapsed Downloaded songs accordion populated from `Unsorted`. The desktop-only tree workflows remain intact for playlist preview, sync, duplicate review, and allowed-duplicate backups. YT/CSV tab uses a **PREVIEW** workflow: fetch metadata → populate tree → then download via action buttons. Download status is shown **inline** (`Downloading {title} — x/y`) using yellow/green cycling. A collapsible download log at the bottom provides full history. **"+ New"** button next to SAVE TO combo enables in-place playlist creation.
+- **Downloader Hub Strategy**: Uses `restrictfilenames: False` and `ignoreerrors: True`. The unified Downloader view is **wrapped in a scrollable canvas** for spacing and follows the mobile download hierarchy: `Downloader` header/subtitle, active-download status, compact source tabs (`Search`, `YT / CSV`, `Direct URL`, plus desktop Sync / URL Queue / Duplicates / Allowed Dups), thin conditional progress, source-specific input rows, artwork-backed search result cards, and a collapsed Downloaded songs accordion populated from `Unsorted`. The desktop-only tree workflows remain intact for playlist preview, sync, duplicate review, and allowed-duplicate backups. YT/CSV tab uses a **PREVIEW** workflow: fetch metadata → populate tree → then download via action buttons. Download status is shown **inline** (`Downloading {title} — x/y`) using yellow/green cycling. A collapsible download log at the bottom keeps a bounded recent in-memory history. **"+ New"** button next to SAVE TO combo enables in-place playlist creation.
 - **Default Download Destination**: All downloads default to **Unsorted** (MUSIC_ROOT) unless the user explicitly selects a destination from the "SAVE TO" dropdown (Strict Prioritization). No auto-created subfolders.
 - **URL Sanitization**: Validates that inputs start with `http` before processing to prevent terminal noise or garbage text from triggering engine errors.
 - **Playlist Persistence**: Forced parsing of `list=` parameters in YouTube URLs to ensure full playlist extraction even when pointing to a specific video.
 - **Discovery Protocol**: Employs **Last.fm `track.getSimilar`** API for Spotify-style recommendations with an **`artist.getTopTracks` fallback** for niche tracks. Features a **Discovery Hub** (`views/discover.py`) with a dedicated navigation tab. Supports both **Automatic** (trigger on track start) and **Manual** (trigger via the Library's "✨ Get Similar Tracks" action, which opens Discover after starting a request—using **Smart Selection** to target active library rows if nothing is playing). Implements a **query cache** to minimize API redundancy. **Duplicate Check**: All recommendations are cross-referenced against a normalized index of the user's library (`artist - title`) and filtered out to ensure only new music is shown.
+- **Discovery Request Bound**: Last.fm requests use one active daemon worker plus one latest pending request; rapid track changes replace stale pending work instead of creating an unbounded thread backlog.
 - **Background Media Keys (macOS)**: Uses `MPRemoteCommandCenter` in the primary app process (no subprocess listener). When PyObjC and MediaPlayer are available, `playCommand`, `pauseCommand`, `togglePlayPauseCommand`, `nextTrackCommand`, and `previousTrackCommand` are registered with retained handler blocks/tokens via `addTargetWithHandler_`. Callbacks only enqueue onto a thread-safe `queue.SimpleQueue` and return `MPRemoteCommandHandlerStatus.Success` promptly. A Tk `after` timer (`_poll_media_commands`, 50 ms) drains the queue and dispatches to `_media_play`/`_media_pause`/`_media_toggle_play`/`engine.next_track`/`engine.prev_track`. Feature-detects PyObjC/MediaPlayer and degrades gracefully when unavailable. Global keys toggle (`global_keys_var`) registers/unregisters handlers via `removeTarget_`. Now Playing metadata (title, artist, duration, elapsed, playback rate) is published truthfully from engine state. Rate is 1.0 when actively playing, 0.0 when paused/stopped. Elapsed carries through pause/resume and updates after seek. Periodically refreshes at ~2 s cadence during `_poll_media_commands`. Metadata is cleared on explicit unregister/shutdown. No `defaults write com.apple.Music`, no subprocess, no `LUNO_RUN_LISTENER`, no `_listen.py`. **Persistence requirement**: The `MPRemoteCommandCenter` instance and all handler/token registrations must be stored as instance attributes (e.g. `self._mp_command_center`) — never as local variables — to prevent PyObjC from garbage-collecting the ObjC→Python bridge wrapper, which would cause a native segfault on media key press.
 - **Media-Key Readiness Guard (`_media_ready()`)**: A centralized gate added to prevent startup/shutdown crashes when media keys arrive before or after the playback system is ready. `_media_ready()` returns `True` only when `_closing` is `False`, the engine exists, and `engine.mixer_ready` is `True`. Every media-key entry point — XF86 keyboard bindings, `MPRemoteCommandCenter` handlers, `_poll_media_commands`, `_media_play`, `_media_pause`, and `_media_toggle_play` — checks `_media_ready()` before proceeding. `engine.play_current()` also guards against `_closing` to prevent Tk widget access after window destruction, while `engine.next_track()`, `prev_track()`, `toggle_play()`, and `stop()` all check `mixer_ready`. Any media-key event that arrives before full initialization or after shutdown begins is silently ignored — no crash, no queued stale commands.
 - **Decoupled Search Pattern**: The sidebar search strictly filters playlist cards, while the center search bar handles in-playlist track filtering. This prevents state-bleeding between navigation and content discovery.
@@ -267,7 +270,7 @@ The transfer format is `luno.library.export` with `manifest_version: 1` and scop
 - **Global Multi-Selection Logic**: Standardized across All Music and Recent views. Implements **Anchor-Based Range Selection** (Shift+Click) and **Individual Toggling** (Cmd/Ctrl+Click). The controller tracks the active tab to transparently hand off batch selection paths to single-track actions like "Add to Queue" or "Delete from Library".
 
 ### 2. Threading & Performance
-- **Heavy tasks** (yt-dlp, duplicate scans, discovery, library scans) MUST be threaded; UI updates MUST use `.after(0, callback)`. Blocking the main loop with OS scans is prohibited.
+- **Heavy tasks** (yt-dlp, duplicate scans, discovery, library scans) MUST be threaded; UI updates MUST use `.after(0, callback)`. Download/write jobs and metadata/artwork workers use bounded concurrency, progress/status callbacks are coalesced, and blocking the main loop with OS scans is prohibited.
 - **Transfer tasks** (manifest metadata probing, validation, local matching, and file merges) run off the Tk thread; completion dialogs/status mutations return through `.after(0, callback)`.
 - **Progressive UI Loading**: For result-heavy views (Duplicates, Search), rows MUST be inserted in small batches (e.g. 20 tracks / 10ms) using `self.after()` to ensure the main interface remains responsive.
 - **PlaylistArt Performance Protocol**: The `PlaylistArt` widget uses three mandatory optimizations to prevent scroll lag:
@@ -284,10 +287,10 @@ The transfer format is `luno.library.export` with `manifest_version: 1` and scop
 - **`get_position()`**: Canonical position method returning clamped `[0, duration]` using mixer `get_pos()` plus the current seek base while playing, paused `seek_pos` while paused, and 0.0 while stopped; falls back to monotonic base deltas when the mixer clock is unavailable.
 - **Audio Standards**: Mandatory **44.1kHz** sample rate and **192k** MP3 bitrate. Enforces **EBU R 128 Loudness Normalization** (Target: -14 LUFS, LRA: 11) via FFmpeg `loudnorm` filter during all yt-dlp downloads to ensure consistent volume playback across the entire library.
 - **Metadata & Album Art**: Track paths are stored absolutely in treeviews `raw_path`. The app integrates the **Deezer API** to fetch high-resolution (up to 1000x1000) album covers. If Deezer yields no results (e.g. for custom YouTube rips), the system falls back to a custom **`yt-dlp` `ytsearch1:` routine** to scrape the original YouTube thumbnail. Image insertion is handled purely in-memory via the `mutagen` library (using the `APIC` frame format) to explicitly avoid re-encoding tracks with FFmpeg. Thumbnails fetched from YouTube in `.webp` format are natively converted on-the-fly to strict `image/jpeg` using `Pillow` to guarantee universal MP3 ID3 compatibility. Automatically applies to all yt-dlp downloads via `EmbedThumbnail` postprocessor.
-- **ArtCache (Lazy Loading)**: A threaded `ArtCache` sits on the main Controller. It uses a `ThreadPoolExecutor` and `Pillow` (`PIL.Image`) to dynamically uncompress and resize thumbnails only when requested by the UI. Caching prevents memory exhaustion and completely eliminates stutter during virtual scrolling loops. `PlaylistArt` asynchronously utilizes this cache to build Spotify-style 4-quadrant grid thumbnails for playlists with 4+ tracks, falling back to full single images (1-3 tracks) or gradient fallbacks (0 tracks / no embedded art).
+- **ArtCache (Lazy Loading)**: A threaded `ArtCache` sits on the main Controller. It uses a bounded in-flight `ThreadPoolExecutor` and `Pillow` (`PIL.Image`) to dynamically uncompress and resize thumbnails only when requested by the UI. Stored pixels, source bytes/pixels, and stale path entries are bounded. `PlaylistArt` asynchronously utilizes this cache to build Spotify-style 4-quadrant grid thumbnails for playlists with 4+ tracks, falling back to full single images (1-3 tracks) or gradient fallbacks (0 tracks / no embedded art).
 
 ### 4. Cleanup
-- Traps `SIGINT` and `WM_DELETE_WINDOW` to ensure `_save_config()` and `pygame.mixer.quit()` are called before the process exits.
+- Traps `SIGINT` and `WM_DELETE_WINDOW` to ensure active downloads are cancelled, artwork workers are shut down, `_save_config()` and `pygame.mixer.quit()` are called before the process exits.
 
 ---
 

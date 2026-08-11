@@ -1,11 +1,17 @@
 import os
 import tempfile
 import threading
+import types
 import unittest
 from unittest import mock
 
 import downloader
-from downloader import Downloader
+from downloader import (
+    DownloadBusyError,
+    DownloadCancelled,
+    DownloadTimedOut,
+    Downloader,
+)
 
 
 class FakeYoutubeDL:
@@ -87,6 +93,7 @@ class PlaylistSyncRegressionTest(unittest.TestCase):
             self.assertIn("Searched 1 track(s) — up to date", second_messages)
             self.assertNotIn("Downloading 1/1: Obsidian", second_messages)
 
+
     def test_legacy_download_archive_excludes_items(self):
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, ".downloaded.txt"), "w", encoding="utf-8") as f:
@@ -146,6 +153,69 @@ class PlaylistSyncRegressionTest(unittest.TestCase):
             self.assertIn("Skipped 1 previously failed unavailable item(s)", second_messages)
             self.assertIn("Searched 1 track(s) — up to date", second_messages)
             self.assertNotIn("Downloading 1/1: Obsidian", second_messages)
+
+
+class DownloadJobSafetyTest(unittest.TestCase):
+    def tearDown(self):
+        Downloader.cancel_active()
+        for _ in range(100):
+            if not Downloader.is_busy():
+                break
+            threading.Event().wait(0.01)
+
+    def test_download_jobs_are_exclusive(self):
+        started = threading.Event()
+        release = threading.Event()
+        completed = threading.Event()
+        errors = []
+
+        class BlockingYoutubeDL(FakeYoutubeDL):
+            def download(self, urls):
+                started.set()
+                release.wait(2)
+
+        fake_yt_dlp = types.SimpleNamespace(YoutubeDL=BlockingYoutubeDL)
+        with mock.patch.object(downloader, "yt_dlp", fake_yt_dlp):
+            Downloader.download_single(
+                "https://example.test/first",
+                "/tmp",
+                completed.set,
+                errors.append,
+            )
+            self.assertTrue(started.wait(2))
+
+            Downloader.download_single(
+                "https://example.test/second",
+                "/tmp",
+                lambda: None,
+                errors.append,
+            )
+
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], DownloadBusyError)
+            release.set()
+            self.assertTrue(completed.wait(2))
+
+    def test_cancel_check_is_called_from_progress_hook(self):
+        opts = Downloader._create_opts(
+            "/tmp",
+            False,
+            cancel_check=lambda: True,
+        )
+
+        with self.assertRaises(DownloadCancelled):
+            opts["progress_hooks"][0]({"status": "downloading"})
+
+    def test_timeout_is_cooperative_and_does_not_spawn_a_second_thread(self):
+        class HookYoutubeDL(FakeYoutubeDL):
+            def download(self, urls):
+                self.opts["progress_hooks"][0]({"status": "downloading"})
+
+        fake_yt_dlp = types.SimpleNamespace(YoutubeDL=HookYoutubeDL)
+        with mock.patch.object(downloader, "yt_dlp", fake_yt_dlp), \
+             mock.patch.object(downloader.time, "monotonic", side_effect=[0.0, 121.0]):
+            with self.assertRaises(DownloadTimedOut):
+                downloader._download_with_timeout({}, "https://example.test/slow")
 
 
 if __name__ == "__main__":

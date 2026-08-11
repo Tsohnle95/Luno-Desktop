@@ -8,34 +8,53 @@ try:
 except ImportError:
     yt_dlp = None
 
-from engine import probe_soundcloud
+from source_lookup import probe_soundcloud
 from utils import split_track_name
 
 
+class DownloadBusyError(RuntimeError):
+    """Raised when a second download job would exceed the process budget."""
+
+
+class DownloadCancelled(RuntimeError):
+    """Raised by progress hooks when a download job is cancelled."""
+
+
+class DownloadTimedOut(DownloadCancelled):
+    """Raised when a cooperative download deadline is reached."""
+
+
+class _DownloadJob:
+    def __init__(self):
+        self.cancel_event = threading.Event()
+        self.done = threading.Event()
+        self.thread = None
+
+
 def _download_with_timeout(opts, url, timeout=120):
-    """Run yt-dlp download in a daemon thread with a timeout.
+    """Run one yt-dlp download without leaving a detached worker behind.
 
-    If the download exceeds `timeout` seconds, raises TimeoutError
-    and the background thread continues as a daemon (harmless).
+    The timeout is enforced cooperatively through a progress hook. This keeps
+    the yt-dlp and FFmpeg lifecycle inside the owning job, so a timed-out
+    playlist item cannot continue consuming resources while the next item
+    starts.
     """
-    exc = []
-    done = threading.Event()
+    if not yt_dlp:
+        raise RuntimeError("yt-dlp not available")
 
-    def run():
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-        except Exception as e:
-            exc.append(e)
-        finally:
-            done.set()
+    started = time.monotonic()
+    options = dict(opts)
+    hooks = list(options.get("progress_hooks") or [])
 
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-    if not done.wait(timeout):
-        raise TimeoutError(f"Download timed out after {timeout}s")
-    if exc:
-        raise exc[0]
+    def guard(progress):
+        if timeout and time.monotonic() - started >= timeout:
+            raise DownloadTimedOut(f"Download timed out after {timeout}s")
+        for hook in hooks:
+            hook(progress)
+
+    options["progress_hooks"] = [guard]
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.download([url])
 
 class YDLLogger:
     """Redirects yt-dlp logs to silence the console while allowing internal logging."""
@@ -53,9 +72,64 @@ class YDLLogger:
 
 class Downloader:
     """Handles all background yt-dlp downloading logic, decoupling it from Views."""
+
+    _job_lock = threading.Lock()
+    _active_job = None
+
+    @classmethod
+    def is_busy(cls):
+        with cls._job_lock:
+            if cls._active_job and cls._active_job.done.is_set():
+                cls._active_job = None
+            return cls._active_job is not None
+
+    @classmethod
+    def cancel_active(cls):
+        with cls._job_lock:
+            job = cls._active_job
+        if job:
+            job.cancel_event.set()
+
+    @classmethod
+    def _start_job(cls, run, on_busy=None):
+        with cls._job_lock:
+            if cls._active_job and cls._active_job.done.is_set():
+                cls._active_job = None
+            if cls._active_job is not None:
+                if on_busy:
+                    on_busy()
+                return None
+            job = _DownloadJob()
+            cls._active_job = job
+
+        def worker():
+            try:
+                run(job)
+            finally:
+                job.done.set()
+                with cls._job_lock:
+                    if cls._active_job is job:
+                        cls._active_job = None
+
+        job.thread = threading.Thread(
+            target=worker,
+            daemon=True,
+            name="luno-download",
+        )
+        job.thread.start()
+        return job
     
     @staticmethod
-    def _create_opts(out_folder, skip_existing, template="%(title)s.%(ext)s", progress_hook=None, error_callback=None, ignoreerrors=True):
+    def _create_opts(out_folder, skip_existing, template="%(title)s.%(ext)s", progress_hook=None, error_callback=None, ignoreerrors=True, cancel_check=None):
+        hooks = []
+        if progress_hook or cancel_check:
+            def guarded_progress(progress):
+                if cancel_check and cancel_check():
+                    raise DownloadCancelled("Download cancelled")
+                if progress_hook:
+                    progress_hook(progress)
+            hooks.append(guarded_progress)
+
         opts = {
             "format": "bestaudio/best",
             "restrictfilenames": False, 
@@ -70,7 +144,7 @@ class Downloader:
             "fragment_retries": 5,
             "extractor_retries": 3,
             "logger": YDLLogger(error_callback),
-            "progress_hooks": [progress_hook] if progress_hook else [],
+            "progress_hooks": hooks,
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -101,15 +175,27 @@ class Downloader:
             on_error("yt-dlp not available")
             return
             
-        def run():
+        def run(job):
             try:
-                opts = Downloader._create_opts(out_folder, False, progress_hook=progress_hook, error_callback=error_callback)
+                opts = Downloader._create_opts(
+                    out_folder,
+                    False,
+                    progress_hook=progress_hook,
+                    error_callback=error_callback,
+                    cancel_check=job.cancel_event.is_set,
+                )
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([url])
                 on_complete()
+            except DownloadCancelled as e:
+                on_error(e)
             except Exception as e:
                 on_error(e)
-        threading.Thread(target=run, daemon=True).start()
+
+        Downloader._start_job(
+            run,
+            on_busy=lambda: on_error(DownloadBusyError("Another download is already in progress")),
+        )
 
     @staticmethod
     def download_youtube_url(url, out_folder, skip_existing, on_complete, on_error, progress_hook=None, error_callback=None):
@@ -118,16 +204,29 @@ class Downloader:
             on_error("yt-dlp not available")
             return
             
-        def run():
+        def run(job):
             try:
-                opts = Downloader._create_opts(out_folder, skip_existing, "%(title)s.%(ext)s", progress_hook=progress_hook, error_callback=error_callback)
+                opts = Downloader._create_opts(
+                    out_folder,
+                    skip_existing,
+                    "%(title)s.%(ext)s",
+                    progress_hook=progress_hook,
+                    error_callback=error_callback,
+                    cancel_check=job.cancel_event.is_set,
+                )
                 # Force quiet to false to see output if needed, but we keep it quiet for UI mostly
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([url])
                 on_complete()
+            except DownloadCancelled as e:
+                on_error(e)
             except Exception as e:
                 on_error(e)
-        threading.Thread(target=run, daemon=True).start()
+
+        Downloader._start_job(
+            run,
+            on_busy=lambda: on_error(DownloadBusyError("Another download is already in progress")),
+        )
 
     @staticmethod
     def download_csv_tracks(tracks, get_out_folder_fn, skip_existing, try_sc, on_progress, on_log, on_complete, check_cancel):
@@ -139,11 +238,11 @@ class Downloader:
             on_complete()
             return
             
-        def run():
+        def run(job):
             total = len(tracks)
             done = 0
             for t in tracks:
-                if check_cancel(): break
+                if check_cancel() or job.cancel_event.is_set(): break
                 
                 artist = t.get('artist', '')
                 title = t.get('title', '')
@@ -166,19 +265,32 @@ class Downloader:
                 out_folder = get_out_folder_fn(pl_name)
                 os.makedirs(out_folder, exist_ok=True)
                 
-                opts = Downloader._create_opts(out_folder, skip_existing, f"{safe_name}.%(ext)s", progress_hook=None, error_callback=lambda msg: on_log(title, False, msg))
+                opts = Downloader._create_opts(
+                    out_folder,
+                    skip_existing,
+                    f"{safe_name}.%(ext)s",
+                    progress_hook=None,
+                    error_callback=lambda msg: on_log(title, False, msg),
+                    cancel_check=lambda: check_cancel() or job.cancel_event.is_set(),
+                )
                 try:
                     with yt_dlp.YoutubeDL(opts) as ydl:
                         ydl.download([use_url])
                     done += 1
                     on_log(title, True, None)
                     on_progress(done, total, None) # Update count
+                except DownloadCancelled:
+                    break
                 except Exception as e:
                     on_log(title, False, repr(e))
                     
             on_complete()
             
-        threading.Thread(target=run, daemon=True).start()
+        def on_busy():
+            on_log("", False, "Another download is already in progress")
+            on_complete()
+
+        Downloader._start_job(run, on_busy=on_busy)
 
     @staticmethod
     def download_playlist_sync(url, out_folder, skip_existing, try_sc,
@@ -194,7 +306,7 @@ class Downloader:
             on_complete()
             return
 
-        def run():
+        def run(job):
             try:
                 with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": "in_playlist",
                                         "ignoreerrors": True,
@@ -206,6 +318,9 @@ class Downloader:
                 return
 
             try:
+                if check_cancel() or job.cancel_event.is_set():
+                    on_complete()
+                    return
                 entries = info.get("entries") or []
                 if not entries:
                     if on_playlist_msg:
@@ -374,7 +489,8 @@ class Downloader:
                     on_playlist_msg(f"Found {total} new track(s) out of {len(entries)} total")
 
                 for i, t in enumerate(new_tracks):
-                    if check_cancel(): break
+                    if check_cancel() or job.cancel_event.is_set():
+                        break
                     title = t['title'] or "Unknown Track"
                     on_progress(i, total, title)
                     if on_playlist_msg:
@@ -392,8 +508,14 @@ class Downloader:
 
                     expected_paths = audio_paths_for(safe_name)
                     before_paths = {p for p in expected_paths if os.path.exists(p)}
-                    opts = Downloader._create_opts(out_folder, skip_existing, f"{safe_name}.%(ext)s",
-                                                    error_callback=lambda _: None, ignoreerrors=False)
+                    opts = Downloader._create_opts(
+                        out_folder,
+                        skip_existing,
+                        f"{safe_name}.%(ext)s",
+                        error_callback=lambda _: None,
+                        ignoreerrors=False,
+                        cancel_check=lambda: check_cancel() or job.cancel_event.is_set(),
+                    )
                     try:
                         _download_with_timeout(opts, use_url, timeout=120)
                         after_paths = {p for p in expected_paths if os.path.exists(p)}
@@ -401,6 +523,11 @@ class Downloader:
                             raise FileNotFoundError("download completed but no audio file was created")
                         save_vids([t.get("vid")])
                         on_log(title, True, None)
+                    except DownloadTimedOut as e:
+                        on_log(title, False, str(e))
+                    except DownloadCancelled as e:
+                        on_log(title, False, str(e))
+                        break
                     except TimeoutError:
                         on_log(title, False, "Download timed out (120s)")
                     except Exception as e:
@@ -414,7 +541,11 @@ class Downloader:
                 on_log("", False, f"Sync processing error: {ex}")
                 on_complete()
 
-        threading.Thread(target=run, daemon=True).start()
+        def on_busy():
+            on_log("", False, "Another download is already in progress")
+            on_complete()
+
+        Downloader._start_job(run, on_busy=on_busy)
 
     @staticmethod
     def download_sync_tracks(tracks, out_folder, skip_existing, try_sc, on_progress, on_log, on_complete, check_cancel):
@@ -424,7 +555,7 @@ class Downloader:
             on_complete()
             return
             
-        def run():
+        def run(job):
             try:
                 os.makedirs(out_folder, exist_ok=True)
             except OSError as exc:
@@ -436,7 +567,7 @@ class Downloader:
             audio_exts = (".mp3", ".m4a", ".wav", ".flac", ".webm")
             total = len(tracks)
             for i, t in enumerate(tracks):
-                if check_cancel(): break
+                if check_cancel() or job.cancel_event.is_set(): break
                 
                 artist = t.get('artist', '')
                 title = t.get('title', '')
@@ -463,6 +594,7 @@ class Downloader:
                     f"{safe_name}.%(ext)s",
                     error_callback=lambda msg, title=title: on_log(title, False, msg),
                     ignoreerrors=False,
+                    cancel_check=lambda: check_cancel() or job.cancel_event.is_set(),
                 )
                 try:
                     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -471,9 +603,15 @@ class Downloader:
                         raise FileNotFoundError("download completed but no audio file was created")
                     on_log(title, True, None)
                     on_progress(i + 1, total, None) # update tick count
+                except DownloadCancelled:
+                    break
                 except Exception as e:
                     on_log(title, False, repr(e))
                     
             on_complete()
             
-        threading.Thread(target=run, daemon=True).start()
+        def on_busy():
+            on_log("", False, "Another download is already in progress")
+            on_complete()
+
+        Downloader._start_job(run, on_busy=on_busy)

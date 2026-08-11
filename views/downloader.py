@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
 import os, re
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from urllib.parse import urlparse
 from theme import BG, BG2, BG3, BG4, BORDER, GREEN, GREEN_HOVER, TEXT, TEXT2, TEXT3, SUCCESS, WARNING, RED, SC_COLOR, BLUE, SIDEBAR
 from utils import split_track_name, format_time, bind_scroll_events, scroll_amount
@@ -15,6 +15,9 @@ class DownloadView(tk.Frame):
     # Search results are disposable; retaining every PhotoImage from every
     # search can otherwise grow the process for the entire session.
     MAX_SEARCH_ART_CACHE = 128
+    MAX_SEARCH_ART_INFLIGHT = 8
+    MAX_LOG_LINES = 5000
+    MAX_PENDING_LOGS = 256
 
     def __init__(self, parent, controller):
         super().__init__(parent, bg=BG)
@@ -34,6 +37,22 @@ class DownloadView(tk.Frame):
         self._search_card_selected = None
         self._search_art_cache = OrderedDict()
         self._search_art_fetching = set()
+        self._search_art_pending = deque()
+        self._search_art_pending_urls = set()
+        self._search_art_labels = {}
+        self._search_art_generation = 0
+        self._metadata_slots = threading.BoundedSemaphore(4)
+        self._results_generation = 0
+        self._dupe_scan_active = False
+        self._ui_thread = threading.current_thread()
+        self._dl_status_after_id = None
+        self._pending_dl_status = None
+        self._progress_after_id = None
+        self._pending_progress = None
+        self._log_line_count = 0
+        self._log_lock = threading.Lock()
+        self._pending_logs = deque()
+        self._log_flush_scheduled = False
         self._downloaded_expanded = False
         self._direct_details_visible = False
 
@@ -346,6 +365,30 @@ class DownloadView(tk.Frame):
             lambda e: self._scroll_canvas.config(scrollregion=self._scroll_canvas.bbox("all")))
             
         self._switch_tab("search")
+
+    def _submit_metadata(self, work):
+        """Run metadata work with a small bound on active tasks."""
+        if not self._metadata_slots.acquire(False):
+            self._set_dl_status("Metadata work is already queued", WARNING)
+            return False
+
+        def run():
+            try:
+                work()
+            finally:
+                self._metadata_slots.release()
+
+        worker = threading.Thread(
+            target=run,
+            daemon=True,
+            name="luno-metadata",
+        )
+        try:
+            worker.start()
+        except RuntimeError:
+            self._metadata_slots.release()
+            return False
+        return True
 
     def _build_downloaded_section(self, row_idx):
         """Build the mobile-parity completed-downloads accordion."""
@@ -715,7 +758,7 @@ class DownloadView(tk.Frame):
             self.after(0, lambda: self._uq_status_lbl.config(text=f"Fetched {len(urls)} playlist(s).", fg=TEXT3))
             self.after(0, self._refresh_dest_options)
 
-        threading.Thread(target=run, daemon=True).start()
+        self._submit_metadata(run)
 
     def _refresh_dest_options(self):
         """Populate destination combo with all playlist names."""
@@ -785,7 +828,9 @@ class DownloadView(tk.Frame):
             if track_name:
                 self._set_dl_status(f"[{idx+1}/{total_items}] {title}: downloading {track_name} ({track_idx+1}/{track_total})", WARNING)
             else:
-                self.after(0, lambda ti=track_idx: self.controller.prog_var.set((ti / max(track_total, 1)) * 100))
+                self._set_progress_value(
+                    (track_idx / max(track_total, 1)) * 100
+                )
 
         def on_log(track_name, is_success, err):
             if is_success:
@@ -861,15 +906,32 @@ class DownloadView(tk.Frame):
         self.dupes_tree.grid(row=0, column=0, sticky="nsew")
 
     def _populate_dupes(self):
+        if self._dupe_scan_active:
+            return
+        self._dupe_scan_active = True
         self.dupe_status_lbl.config(text="🔍 Scanning for duplicates...", fg=TEXT3)
         self.dupes_tree.delete(*self.dupes_tree.get_children())
         
         def run_scan():
-            from engine import find_duplicates
-            groups = find_duplicates(self.controller._library, allowed_keys=self.controller.engine.allowed_dupe_keys)
-            self.after(0, lambda: self._start_progressive_population(groups))
+            try:
+                from engine import find_duplicates
+                groups = find_duplicates(
+                    self.controller._library,
+                    allowed_keys=self.controller.engine.allowed_dupe_keys,
+                )
+                self.after(0, lambda: self._finish_dupe_scan(groups))
+            except Exception as exc:
+                self.after(0, lambda: self._finish_dupe_scan([], exc))
             
-        threading.Thread(target=run_scan, daemon=True).start()
+        if not self._submit_metadata(run_scan):
+            self._dupe_scan_active = False
+
+    def _finish_dupe_scan(self, groups, error=None):
+        self._dupe_scan_active = False
+        if error is not None:
+            self.dupe_status_lbl.config(text=f"Duplicate scan failed: {error}", fg=RED)
+            return
+        self._start_progressive_population(groups)
 
     def _start_progressive_population(self, groups):
         total_dupes = sum(len(g) - 1 for g in groups) if groups else 0
@@ -1139,6 +1201,12 @@ class DownloadView(tk.Frame):
         self._activity_row.pack(fill="x", pady=(10, 0))
 
     def _hide_progress(self):
+        if threading.current_thread() is not getattr(self, "_ui_thread", threading.current_thread()):
+            try:
+                self.after(0, self._hide_progress)
+            except (RuntimeError, tk.TclError):
+                pass
+            return
         self.after(1500, lambda: self._prog_frame.grid_remove())
         self.after(1500, self._hide_activity)
 
@@ -1265,28 +1333,93 @@ class DownloadView(tk.Frame):
             self._toggle_log()
 
     def _log(self, msg, type="normal"):
+        if threading.current_thread() is not getattr(self, "_ui_thread", threading.current_thread()):
+            should_schedule = False
+            try:
+                with self._log_lock:
+                    if len(self._pending_logs) >= self.MAX_PENDING_LOGS:
+                        self._pending_logs.popleft()
+                    self._pending_logs.append((msg, type))
+                    if not self._log_flush_scheduled:
+                        self._log_flush_scheduled = True
+                        should_schedule = True
+                if should_schedule:
+                    self.after(0, self._flush_pending_logs)
+            except (RuntimeError, tk.TclError):
+                if should_schedule:
+                    with self._log_lock:
+                        self._log_flush_scheduled = False
+                pass
+            return
+        if getattr(self, "_closing", False):
+            return
         self.log_text.config(state="normal")
         self.log_text.insert("end", "• " + msg + "\n", type)
         self.log_text.config(state="disabled")
         self.log_text.see("end")
+        self._log_line_count += 1 + msg.count("\n")
+        if self._log_line_count > self.MAX_LOG_LINES:
+            excess = self._log_line_count - self.MAX_LOG_LINES
+            self.log_text.config(state="normal")
+            self.log_text.delete("1.0", f"{excess + 1}.0")
+            self.log_text.config(state="disabled")
+            self._log_line_count = self.MAX_LOG_LINES
+
+    def _flush_pending_logs(self):
+        with self._log_lock:
+            pending = list(self._pending_logs)
+            self._pending_logs.clear()
+            self._log_flush_scheduled = False
+        for msg, type in pending:
+            self._log(msg, type)
 
     # ═════════════════════════════════════════════════════════════════════════
     # INLINE DOWNLOAD STATUS (right-aligned in action bar)
     # ═════════════════════════════════════════════════════════════════════════
 
     def _set_dl_status(self, text, color=WARNING):
+        self._pending_dl_status = (text, color)
+        if self._dl_status_after_id is not None:
+            return
+
         def update():
+            self._dl_status_after_id = None
+            pending = self._pending_dl_status
+            self._pending_dl_status = None
+            if not pending:
+                return
+            text, color = pending
             self.dl_status_lbl.config(text=text, fg=color)
             if self._activity_row.winfo_ismapped():
-                self._activity_lbl.config(text=text or "Download in progress", fg=color)
-        self.after(0, update)
+                self._activity_lbl.config(
+                    text=text or "Download in progress",
+                    fg=color if text else TEXT2,
+                )
+        try:
+            self._dl_status_after_id = self.after(0, update)
+        except (RuntimeError, tk.TclError):
+            self._dl_status_after_id = None
 
     def _clear_dl_status(self):
-        def clear():
-            self.dl_status_lbl.config(text="", fg=TEXT3)
-            if self._activity_row.winfo_ismapped():
-                self._activity_lbl.config(text="Download in progress", fg=TEXT2)
-        self.after(0, clear)
+        self._set_dl_status("", TEXT3)
+
+    def _set_progress_value(self, value):
+        """Coalesce high-frequency progress updates before touching Tk."""
+        self._pending_progress = value
+        if self._progress_after_id is not None:
+            return
+
+        def update():
+            self._progress_after_id = None
+            value = self._pending_progress
+            self._pending_progress = None
+            if value is not None:
+                self.controller.prog_var.set(value)
+
+        try:
+            self._progress_after_id = self.after(0, update)
+        except (RuntimeError, tk.TclError):
+            self._progress_after_id = None
 
     # ═════════════════════════════════════════════════════════════════════════
     # SEARCH LOGIC
@@ -1375,6 +1508,10 @@ class DownloadView(tk.Frame):
         return ""
 
     def _render_search_results(self, results):
+        self._search_art_generation += 1
+        self._search_art_pending.clear()
+        self._search_art_pending_urls.clear()
+        self._search_art_labels = {}
         for child in self._search_cards_f.winfo_children():
             child.destroy()
         self._search_card_rows = []
@@ -1449,6 +1586,7 @@ class DownloadView(tk.Frame):
             self._load_search_artwork(thumbnail_url, art)
 
     def _load_search_artwork(self, url, label):
+        self._search_art_labels[url] = label
         if url in self._search_art_cache:
             image = self._search_art_cache.pop(url)
             self._search_art_cache[url] = image
@@ -1457,36 +1595,110 @@ class DownloadView(tk.Frame):
             return
         if url in self._search_art_fetching:
             return
-        self._search_art_fetching.add(url)
+        if url not in self._search_art_pending_urls:
+            self._search_art_pending.append((url, label, self._search_art_generation))
+            self._search_art_pending_urls.add(url)
+        self._drain_search_artwork()
 
-        def fetch():
+    def _drain_search_artwork(self):
+        while (self._search_art_pending and
+               len(self._search_art_fetching) < self.MAX_SEARCH_ART_INFLIGHT):
+            url, label, generation = self._search_art_pending.popleft()
+            self._search_art_pending_urls.discard(url)
+            if generation != self._search_art_generation:
+                continue
             try:
-                import io
-                import requests
-                from PIL import Image, ImageOps
+                if not label.winfo_exists():
+                    continue
+            except tk.TclError:
+                continue
 
-                response = requests.get(url, timeout=8)
-                response.raise_for_status()
-                image = Image.open(io.BytesIO(response.content)).convert("RGB")
-                image = ImageOps.fit(image, (60, 60), method=Image.Resampling.LANCZOS)
-            except Exception:
+            self._search_art_fetching.add(url)
+
+            def fetch(url=url, label=label, generation=generation):
+                image = None
+                response = None
+                try:
+                    import io
+                    import requests
+                    from PIL import Image, ImageOps
+
+                    response = requests.get(url, timeout=8, stream=True)
+                    response.raise_for_status()
+                    chunks = []
+                    total_bytes = 0
+                    for chunk in response.iter_content(64 * 1024):
+                        total_bytes += len(chunk)
+                        if total_bytes > 4 * 1024 * 1024:
+                            raise ValueError("thumbnail exceeds the 4 MB limit")
+                        chunks.append(chunk)
+                    response.close()
+                    with Image.open(io.BytesIO(b"".join(chunks))) as source:
+                        if source.width * source.height > 12 * 1024 * 1024:
+                            raise ValueError("thumbnail dimensions exceed the limit")
+                        decoded = source.convert("RGB")
+                    image = ImageOps.fit(decoded, (60, 60), method=Image.Resampling.LANCZOS)
+                    decoded.close()
+                except Exception:
+                    if response is not None:
+                        response.close()
+                try:
+                    self.after(
+                        0,
+                        lambda: self._finish_search_artwork(
+                            url, image, label, generation
+                        ),
+                    )
+                except (RuntimeError, tk.TclError):
+                    self._search_art_fetching.discard(url)
+
+            try:
+                threading.Thread(
+                    target=fetch,
+                    daemon=True,
+                    name="luno-search-art",
+                ).start()
+            except RuntimeError:
                 self._search_art_fetching.discard(url)
-                return
-            self.after(0, lambda: self._finish_search_artwork(url, image, label))
 
-        threading.Thread(target=fetch, daemon=True).start()
-
-    def _finish_search_artwork(self, url, image, label):
+    def _finish_search_artwork(self, url, image, label, generation=None):
         self._search_art_fetching.discard(url)
+        if image is None:
+            self._drain_search_artwork()
+            return
         try:
             from PIL import ImageTk
             photo = ImageTk.PhotoImage(image)
         except Exception:
+            try:
+                image.close()
+            except Exception:
+                pass
+            self._drain_search_artwork()
+            return
+        try:
+            image.close()
+        except Exception:
+            pass
+        if generation is not None and generation != self._search_art_generation:
+            self._store_search_artwork(url, photo)
+            current_label = self._search_art_labels.get(url)
+            try:
+                if current_label and current_label.winfo_exists():
+                    current_label.config(image=photo, text="", width=60, height=60, bg=BG)
+                    current_label._search_image = photo
+            except tk.TclError:
+                pass
+            self._drain_search_artwork()
             return
         self._store_search_artwork(url, photo)
-        if label.winfo_exists():
-            label.config(image=photo, text="", width=60, height=60, bg=BG)
-            label._search_image = photo
+        try:
+            if label.winfo_exists():
+                label.config(image=photo, text="", width=60, height=60, bg=BG)
+                label._search_image = photo
+        except tk.TclError:
+            pass
+        self._drain_search_artwork()
 
     def _store_search_artwork(self, url, photo):
         """Keep search thumbnails bounded while refreshing recently used art."""
@@ -1503,15 +1715,18 @@ class DownloadView(tk.Frame):
             self._search_limit = 10
             self._clear_results()
             self.load_more_btn.pack_forget()
-        
-        self._set_dl_status(f"Searching {self._search_limit} results…", WARNING)
+
+        generation = self._results_generation
+        search_limit = self._search_limit
+
+        self._set_dl_status(f"Searching {search_limit} results…", WARNING)
 
         def run():
             results = []
             try:
                 # YT Search limit
                 with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": True}) as ydl:
-                    info = ydl.extract_info(f"ytsearch{self._search_limit}:{q}", download=False)
+                    info = ydl.extract_info(f"ytsearch{search_limit}:{q}", download=False)
                 for e in (info.get("entries") or []):
                     results.append({
                         "title": e.get("title", "?"),
@@ -1525,7 +1740,7 @@ class DownloadView(tk.Frame):
 
             try:
                 # SC Search usually returns fewer but we'll try to match N
-                sc_count = 5 if self._search_limit <= 10 else 10
+                sc_count = 5 if search_limit <= 10 else 10
                 with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": True}) as ydl:
                     info = ydl.extract_info(f"scsearch{sc_count}:{q}", download=False)
                 for e in (info.get("entries") or []):
@@ -1539,18 +1754,21 @@ class DownloadView(tk.Frame):
             except: pass
 
             def update_ui():
+                if generation != self._results_generation:
+                    return
                 self.search_results = results
                 self._render_search_results(results)
                 self._set_dl_status(
                     f"{len(results)} results" if results else "No results", TEXT3)
                 
-                if results and len(results) >= self._search_limit:
+                if results and len(results) >= search_limit:
                     self.load_more_btn.pack(side="right", padx=(0, 2))
                 
                 self.after(50, lambda: self._scroll_canvas.config(scrollregion=self._scroll_canvas.bbox("all")))
 
-            self.after(0, update_ui)
-        threading.Thread(target=run, daemon=True).start()
+            if generation == self._results_generation:
+                self.after(0, update_ui)
+        self._submit_metadata(run)
 
     def _load_more_search(self):
         self._search_limit += 10
@@ -1568,6 +1786,7 @@ class DownloadView(tk.Frame):
 
         self._clear_results()
         self._set_dl_status("Syncing…", WARNING)
+        generation = self._results_generation
 
         known = set()
         for tracks in self.controller._library.values():
@@ -1603,6 +1822,8 @@ class DownloadView(tk.Frame):
                 source_tracks.extend(pl["tracks"])
 
             def update_ui():
+                if generation != self._results_generation:
+                    return
                 self.sync_tracks = []
                 new_count = 0
                 for t in source_tracks:
@@ -1625,8 +1846,9 @@ class DownloadView(tk.Frame):
                 self.results_tree.config(height=min(8, max(1, len(source_tracks))))
                 self.after(50, lambda: self._scroll_canvas.config(scrollregion=self._scroll_canvas.bbox("all")))
 
-            self.after(0, update_ui)
-        threading.Thread(target=run, daemon=True).start()
+            if generation == self._results_generation:
+                self.after(0, update_ui)
+        self._submit_metadata(run)
 
     def _do_sync_all(self):
         """Sync every playlist in the library that has a URL configured."""
@@ -1675,7 +1897,7 @@ class DownloadView(tk.Frame):
                     if attempted else "All playlists synced ✓"),
                 self.controller._refresh_library(),
             ]),
-            on_batch_progress=lambda pct: self.after(0, lambda p=pct: self.controller.prog_var.set(p))
+            on_batch_progress=self._set_progress_value
         )
 
     # ═════════════════════════════════════════════════════════════════════════
@@ -1701,6 +1923,7 @@ class DownloadView(tk.Frame):
 
         self._clear_results()
         self._set_dl_status("Fetching playlist…", WARNING)
+        generation = self._results_generation
 
         known = set()
         for tracks in self.controller._library.values():
@@ -1734,6 +1957,8 @@ class DownloadView(tk.Frame):
                 return
 
             def update_ui():
+                if generation != self._results_generation:
+                    return
                 self.sync_tracks = []
                 self._preview_tracks = source_tracks
                 new_count = 0
@@ -1760,14 +1985,18 @@ class DownloadView(tk.Frame):
                 self.results_tree.config(height=min(8, max(1, total)))
                 self.after(50, lambda: self._scroll_canvas.config(scrollregion=self._scroll_canvas.bbox("all")))
 
-            self.after(0, update_ui)
-        threading.Thread(target=run, daemon=True).start()
+            if generation == self._results_generation:
+                self.after(0, update_ui)
+        self._submit_metadata(run)
 
     # ═════════════════════════════════════════════════════════════════════════
     # DOWNLOAD LOGIC
     # ═════════════════════════════════════════════════════════════════════════
 
     def _download_selected(self):
+        if self.is_dl:
+            messagebox.showwarning("Busy", "A download is already in progress.")
+            return
         track = None
         if self._active_tab == "search":
             track = self._selected_search_result()
@@ -1820,6 +2049,9 @@ class DownloadView(tk.Frame):
                                    progress_hook=self._on_yt_progress)
 
     def _download_all(self):
+        if self.is_dl:
+            messagebox.showwarning("Busy", "A download is already in progress.")
+            return
         if not self.sync_tracks:
             messagebox.showwarning("Nothing", "Run a sync check or preview first.")
             return
@@ -1838,7 +2070,7 @@ class DownloadView(tk.Frame):
             if title:
                 self._set_dl_status(f"Downloading {title} — {idx + 1}/{tot}", WARNING)
             else:
-                self.after(0, lambda i=idx, to=tot: self.controller.prog_var.set((i / to) * 100))
+                self._set_progress_value((idx / to) * 100)
                 self._set_dl_status(f"✓ Downloaded — {idx}/{tot}", SUCCESS)
 
         def on_log(title, is_success, err):
@@ -1860,6 +2092,9 @@ class DownloadView(tk.Frame):
             lambda: not self.is_dl)
 
     def _start_csv_dl(self):
+        if self.is_dl:
+            messagebox.showwarning("Busy", "A download is already in progress.")
+            return
         if not self.dl_playlists:
             messagebox.showwarning("No CSVs", "Load CSV files first.")
             return
@@ -1884,7 +2119,7 @@ class DownloadView(tk.Frame):
             if track_q:
                 self._set_dl_status(f"Downloading {track_q} — {done + 1}/{tot}", WARNING)
             else:
-                self.after(0, lambda d=done: self.controller.prog_var.set((d / tot) * 100))
+                self._set_progress_value((done / tot) * 100)
                 self._set_dl_status(f"✓ Downloaded — {done}/{tot}", SUCCESS)
 
         def on_log(title, is_success, err):
@@ -1919,7 +2154,7 @@ class DownloadView(tk.Frame):
             try:
                 clean_p = re.sub(r'\x1b\[[0-9;]*m', '', p).replace('%', '').strip()
                 progress = float(clean_p)
-                self.after(0, lambda value=progress: self.controller.prog_var.set(value))
+                self._set_progress_value(progress)
             except: pass
         elif d['status'] == 'finished':
             fn = d.get('filename', '')
@@ -1958,6 +2193,7 @@ class DownloadView(tk.Frame):
     # ═════════════════════════════════════════════════════════════════════════
 
     def _clear_results(self):
+        self._results_generation += 1
         self.results_tree.delete(*self.results_tree.get_children())
         self._render_search_results([])
         self.search_results = []
@@ -1968,6 +2204,20 @@ class DownloadView(tk.Frame):
         self._clear_dl_status()
         self.results_tree.config(height=1)
         self.after(50, lambda: self._scroll_canvas.config(scrollregion=self._scroll_canvas.bbox("all")))
+
+    def destroy(self):
+        if getattr(self, "_closing", False):
+            return
+        self._closing = True
+        for attr in ("_dl_status_after_id", "_progress_after_id"):
+            after_id = getattr(self, attr, None)
+            if after_id is not None:
+                try:
+                    self.after_cancel(after_id)
+                except (RuntimeError, tk.TclError):
+                    pass
+                setattr(self, attr, None)
+        super().destroy()
 
     def _on_tree_double_click(self):
         if self._active_tab == "search":

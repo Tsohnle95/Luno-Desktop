@@ -116,24 +116,6 @@ def draw_gradient_rect(canvas, x1, y1, x2, y2, color1, color2, steps=80):
         yn = y1 + int(h*(i+1)/steps)
         canvas.create_rectangle(x1, y, x2, yn, fill=rgb_to_hex(r,g,b), outline="")
 
-def extract_dominant_color(path, fallback="#1DB954"):
-    """Extract dominant color from album art. Returns hex string."""
-    try:
-        from mutagen.mp3 import MP3
-        from mutagen.id3 import ID3
-        from PIL import Image
-        import io
-        audio = MP3(path, ID3=ID3)
-        if audio.tags:
-            for tag in audio.tags.values():
-                if getattr(tag, 'FrameID', None) == 'APIC':
-                    img = Image.open(io.BytesIO(tag.data)).convert("RGB")
-                    tiny = img.resize((1, 1), Image.Resampling.LANCZOS)
-                    return rgb_to_hex(*tiny.getpixel((0, 0)))
-    except Exception:
-        pass
-    return fallback
-
 def make_rounded_image(img, size, radius):
     """Return a rounded-corner version of a PIL Image as a PhotoImage."""
     from PIL import Image, ImageDraw
