@@ -1,7 +1,7 @@
 # R01 Keychain Migration Receipt
 
 - Baseline: `4e251ef624c390e4d7e7ade4c2b5dc1fdcc284ec`
-- Final HEAD: `PENDING_COMMIT_SHA`
+- Final implementation HEAD: `755ca8959bb6eeb7ec15ca7b4198576520ce68f0`
 - Adapter: macOS Security.framework generic-password item, service `com.ty.luno`, account `lastfm-key`.
 - Startup: `main.rs` now uses `MacOsKeychain`; `NoopKeychain` and plaintext fallback are removed.
 - Safety: the injected Keychain boundary runs before target settings/version creation; failure leaves both absent.
