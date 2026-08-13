@@ -180,6 +180,10 @@ class _FFmpegVideoPlayer:
         with self._lock:
             self._video_frames.clear()
 
+    def seek(self):
+        """Interrupt a blocked decoder so it restarts at the audio clock."""
+        self._stop_decoder()
+
     def _stop_decoder(self):
         decoder = self._decoder
         self._decoder = None
@@ -1161,6 +1165,7 @@ class SongPageView(tk.Frame):
             self._stop_video()
             self._start_current_staged_video(path)
             if self.video_preload_var.get():
+                self._preload_current_video(path)
                 self._preload_next_video()
         if self._video_player is None:
             self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
@@ -1382,8 +1387,8 @@ class SongPageView(tk.Frame):
             self._preload_current_video()
             self._preload_next_video()
 
-    def _preload_current_video(self):
-        path = self._current_path()
+    def _preload_current_video(self, path=None):
+        path = path or self._current_path()
         if path:
             self._preload_video(path, start_current=True)
 
@@ -1432,7 +1437,9 @@ class SongPageView(tk.Frame):
     def on_audio_track_started(self, path):
         """Engine hook: preload independently of Song Page redraw timing."""
         if self.video_preload_var.get():
-            self._preload_current_video()
+            # Use the event's immutable path, not a queue index that may have
+            # changed again before this UI callback runs.
+            self._preload_current_video(path)
             self._preload_next_video()
 
     def _stop_video(self):

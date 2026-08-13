@@ -352,6 +352,9 @@ class LunoEngine:
         self._last_position = pos
         pygame.mixer.music.play(start=pos)
         if self.paused: pygame.mixer.music.pause()
+        sp = self.c._frames.get("song_page")
+        if sp and getattr(sp, "_video_player", None) is not None:
+            sp._video_player.seek()
         self._update_position_display(pos)
         if self.queue and 0 <= self.queue_idx < len(self.queue):
             title, artist = split_track_name(self.queue[self.queue_idx])
