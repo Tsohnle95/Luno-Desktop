@@ -305,20 +305,10 @@ class SongPageView(tk.Frame):
         self.art_lbl = tk.Label(self.art_container, text="♫", font=("Helvetica", 80),
                                  fg=TEXT3, bg=BG2)
         self.art_lbl.pack(fill="both", expand=True)
-        # Video actions live in a hover menu beside the title.
-        self.video_btn = tk.Label(self.main_f, text="▷ Video", font=("Helvetica Neue", 9),
-                                  fg=TEXT3, bg=BG, cursor="hand2")
-        self.video_btn.bind("<Button-1>", lambda e: self._request_video())
-        self.video_spinner = tk.Label(self.main_f, text=".", font=("Helvetica Neue", 12),
-                                      fg=TEXT3, bg=BG)
-        self.video_preload_chk = tk.Checkbutton(
-            self.main_f, text="Preload next", variable=self.video_preload_var,
-            command=self._video_preload_changed, font=("Helvetica Neue", 9),
-            fg=TEXT3, bg=BG, activebackground=BG, activeforeground=TEXT,
-            selectcolor=BG, highlightthickness=0, borderwidth=0)
-        self.video_menu_btn = tk.Label(self.main_f, text="▣", font=("Helvetica Neue", 14),
+        # Video actions live in a compact hover menu below the media stage.
+        self.video_menu_btn = tk.Label(self.main_f, text="🎥", font=("Helvetica Neue", 14),
                                        fg=TEXT3, bg=BG, cursor="hand2")
-        self.video_menu_btn.grid(row=2, column=0, sticky="e", padx=12, pady=(0, 10))
+        self.video_menu_btn.grid(row=2, column=0, sticky="e", padx=12, pady=(0, 8))
         self.video_menu_btn.bind("<Enter>", lambda e: self._show_video_menu())
         self.video_menu_btn.bind("<Leave>", lambda e: self._hide_video_menu_later())
         self.video_menu = tk.Frame(self.main_f, bg=BG3, bd=1, relief="solid")
@@ -342,6 +332,9 @@ class SongPageView(tk.Frame):
             fg=TEXT, bg=BG3, anchor="w", padx=10, pady=6, cursor="hand2")
         self.video_menu_fullscreen.pack(fill="x")
         self.video_menu_fullscreen.bind("<Button-1>", lambda e: self._open_fullscreen_video())
+        # Keep playback state updates targeting the menu controls.
+        self.video_btn = self.video_menu_play
+        self.video_spinner = self.video_menu_spinner
         for widget in (self.video_menu, self.video_menu_play,
                        self.video_menu_preload, self.video_menu_fullscreen):
             widget.bind("<Enter>", lambda e: self._cancel_hide_video_menu())
@@ -351,7 +344,7 @@ class SongPageView(tk.Frame):
         self.title_lbl = tk.Label(self.main_f, text="Song Title",
                                    font=("Helvetica Neue", 42, "bold"),
                                    fg=TEXT, bg=BG, justify="center")
-        self.title_lbl.grid(row=2, column=0, pady=(0, 10))
+        self.title_lbl.grid(row=3, column=0, pady=(0, 10))
 
         def _on_main_resize(e):
             if e.width > 50:
@@ -361,13 +354,13 @@ class SongPageView(tk.Frame):
         self.artist_lbl = tk.Label(self.main_f, text="Artist Name",
                                     font=("Helvetica Neue", 20),
                                     fg=TEXT2, bg=BG, justify="center")
-        self.artist_lbl.grid(row=3, column=0, pady=(0, 40))
+        self.artist_lbl.grid(row=4, column=0, pady=(0, 40))
 
         self.favorite_btn = tk.Label(
             self.main_f, text="☆  Add to Favorites", font=("Helvetica Neue", 11, "bold"),
             fg=TEXT3, bg=BG, cursor="hand2"
         )
-        self.favorite_btn.grid(row=4, column=0, pady=(0, 18))
+        self.favorite_btn.grid(row=5, column=0, pady=(0, 18))
         self.favorite_btn.bind("<Button-1>", lambda e: self.controller._toggle_current_favorite())
         self.favorite_btn.bind("<Enter>", lambda e: self.favorite_btn.config(fg=TEXT))
         self.favorite_btn.bind("<Leave>", lambda e: self._sync_favorite_button())
@@ -375,7 +368,7 @@ class SongPageView(tk.Frame):
         # 3. Recommended for this song (mobile FullPlayerScreen parity) —
         #    rows pack into the page flow so the whole page scrolls together.
         self.recs_wrap = tk.Frame(self.main_f, bg=BG)
-        self.recs_wrap.grid(row=5, column=0, sticky="ew", padx=40, pady=(0, 24))
+        self.recs_wrap.grid(row=6, column=0, sticky="ew", padx=40, pady=(0, 24))
 
         # Header: title + refresh
         self.recs_hdr = tk.Frame(self.recs_wrap, bg=BG)
