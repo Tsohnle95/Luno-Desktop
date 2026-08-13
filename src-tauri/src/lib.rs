@@ -52,4 +52,8 @@ pub mod playback {
     pub mod recovery;
     pub mod sleep_timer;
 }
+pub mod discovery {
+    pub mod service;
+    pub mod artwork;
+}
 pub mod platform { pub mod media_session; }
