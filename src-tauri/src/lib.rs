@@ -1,4 +1,8 @@
 pub mod contracts;
+pub mod domain {
+    pub mod identity;
+    pub mod normalization;
+}
 pub mod logging {
     pub mod redaction;
     pub mod service;
@@ -6,6 +10,10 @@ pub mod logging {
 pub mod persistence {
     pub mod atomic_write;
     pub mod recovery;
+    pub mod legacy;
+}
+pub mod migration {
+    pub mod legacy_readers;
 }
 pub mod runtime {
     pub mod shutdown;
