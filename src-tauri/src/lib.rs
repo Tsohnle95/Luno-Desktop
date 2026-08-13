@@ -62,6 +62,8 @@ pub mod discovery {
 }
 pub mod preview {
     pub mod assets;
+    pub mod discover_mode;
+    pub mod save;
     pub mod session;
 }
 pub mod platform { pub mod media_session; }
