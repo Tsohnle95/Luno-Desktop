@@ -1,0 +1,12 @@
+{
+  "schema": "luno.desktop.journey-receipt.v1",
+  "rule": "A required receipt is pass only with a completed, non-skipped, non-timeout, non-truncated command.",
+  "journeys": [
+    {"id": "JRN-SCAN-PLAY", "steps": ["scan", "project scopes", "play context", "Play Next", "favorite/prune"], "acceptance": ["AC-LIB-01", "AC-LIB-02", "AC-LIB-03", "AC-LIB-04", "AC-LIB-05", "AC-PLAY-01", "AC-PLAY-02"]},
+    {"id": "JRN-DISCOVER", "steps": ["recommend", "filter", "prefetch/tap", "temporary playback", "explicit playlist save", "rescan"], "acceptance": ["AC-DISC-01", "AC-DISC-02", "AC-DISC-03", "AC-DISC-04", "AC-DISC-05", "AC-DISC-06"]},
+    {"id": "JRN-DOWNLOAD", "steps": ["download/search/sync", "validate and promote", "rescan", "play", "busy/cancel/failure"], "acceptance": ["AC-DL-01", "AC-DL-02", "AC-DL-03", "AC-DL-04"]},
+    {"id": "JRN-RENAME", "steps": ["sanitize", "collision check", "rename", "repair references", "rescan"], "acceptance": ["AC-LIB-06"]},
+    {"id": "JRN-TRANSFER", "steps": ["validate manifest", "additive match/copy", "report missing/ambiguous", "optional handoff", "rescan"], "acceptance": ["AC-XFER-01", "AC-XFER-02", "AC-XFER-03", "AC-XFER-04"]},
+    {"id": "JRN-VIDEO", "steps": ["probe/stage", "play beside audio", "pause/seek/resize/fullscreen", "cleanup"], "acceptance": ["AC-VIDEO-01", "AC-VIDEO-02", "AC-VIDEO-03", "AC-OPS-03"]}
+  ]
+}
