@@ -26,7 +26,9 @@ pub mod process {
 pub mod download {
     pub mod csv;
     pub mod coordinator;
+    pub mod markers;
     pub mod promotion;
+    pub mod sync;
     pub mod workflows;
 }
 pub mod state;
