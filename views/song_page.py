@@ -321,10 +321,6 @@ class SongPageView(tk.Frame):
         self.art_lbl = tk.Label(self.art_container, text="♫", font=("Helvetica", 80),
                                  fg=TEXT3, bg=BG2)
         self.art_lbl.pack(fill="both", expand=True)
-        for widget in (self.art_container, self.art_lbl):
-            widget.bind("<Enter>", lambda e: self._show_video_menu())
-            widget.bind("<Leave>", lambda e: self._schedule_video_menu_check())
-            widget.bind("<Button-1>", lambda e: self._show_video_menu())
         for sequence, handler in (("<KeyPress-f>", self._handle_video_f_key),
                                   ("<KeyPress-F>", self._handle_video_f_key),
                                   ("<Escape>", self._handle_video_escape)):
