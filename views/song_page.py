@@ -69,7 +69,7 @@ class _FFmpegVideoPlayer:
                 continue
             position = max(float(self.position_provider()), 0.0)
             if (self._decoder is not None and
-                    abs(position - getattr(self, "_last_audio_position", position)) > 1.0):
+                    abs(position - getattr(self, "_last_audio_position", position)) > 0.2):
                 # A scrub or track handoff moved the audio clock. Restart the
                 # decoder at that authoritative position instead of drifting.
                 self._stop_decoder()
@@ -79,8 +79,8 @@ class _FFmpegVideoPlayer:
                 self._decoded_frames = 0
                 try:
                     self._decoder = subprocess.Popen([
-                        "ffmpeg", "-loglevel", "error", "-i", self.path,
-                        "-ss", f"{position:.3f}", "-vf", vf, "-an", "-f", "rawvideo",
+                        "ffmpeg", "-loglevel", "error", "-ss", f"{position:.3f}",
+                        "-i", self.path, "-vf", vf, "-an", "-f", "rawvideo",
                         "-pix_fmt", "rgb24", "pipe:1"],
                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
                 except OSError:
@@ -1284,7 +1284,7 @@ class SongPageView(tk.Frame):
         path = self._current_path()
         if not path:
             return
-        title, artist = split_track_name(path)
+        title, artist = self._video_track_metadata(path)
         self._video_loading = True
         self.video_btn.config(text="Checking video...", cursor="arrow")
 
@@ -1308,6 +1308,15 @@ class SongPageView(tk.Frame):
             return q[i] if q and 0 <= i < len(q) else ""
         except Exception:
             return ""
+
+    def _video_track_metadata(self, path):
+        """Use one artist/title pair for lookup, staging, and adoption."""
+        title, artist = split_track_name(path)
+        if not artist:
+            playlist = getattr(self.controller, "_queue_playlist_name", None)
+            if playlist and playlist not in ("All Music", "Unsorted"):
+                artist = playlist
+        return title, artist
 
     def _video_probe_done(self, path, artist, title, source, error):
         self._video_loading = False
@@ -1358,7 +1367,7 @@ class SongPageView(tk.Frame):
     def _start_current_staged_video(self, path):
         if not path or self._video_player is not None:
             return
-        title, artist = split_track_name(path)
+        title, artist = self._video_track_metadata(path)
         target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
         try:
             from video_preview import find_video
@@ -1380,11 +1389,7 @@ class SongPageView(tk.Frame):
         except (AttributeError, IndexError):
             self.controller.status_var.set("No next song in the current queue")
             return
-        title, artist = split_track_name(next_path)
-        if not artist:
-            playlist = getattr(self.controller, "_queue_playlist_name", None)
-            if playlist and playlist not in ("All Music", "Unsorted"):
-                artist = playlist
+        title, artist = self._video_track_metadata(next_path)
         if self._video_preload_path == next_path:
             return
         self._video_preload_path = next_path

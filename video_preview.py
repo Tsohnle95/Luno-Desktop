@@ -5,6 +5,7 @@ Video files are temporary presentation assets, not library downloads.
 
 import os
 import re
+import unicodedata
 
 try:
     import yt_dlp
@@ -22,6 +23,26 @@ class VideoPreviewError(RuntimeError):
 def _safe_name(artist, title):
     value = f"{artist} - {title}" if artist else title or "Unknown"
     return re.sub(r'[<>:"/\\|?*]', "", value).strip() or "Unknown"
+
+
+def _tokens(value):
+    value = unicodedata.normalize("NFKD", value or "").lower()
+    return set(re.findall(r"[a-z0-9]+", value))
+
+
+def _video_relevance(entry, artist, title):
+    wanted_title = _tokens(title)
+    wanted_artist = _tokens(artist)
+    result_title = _tokens(entry.get("title"))
+    # Flat search often omits uploader, while the artist is present in the
+    # video title. Treat both fields as artist evidence.
+    result_artist = result_title | _tokens(entry.get("uploader") or entry.get("channel"))
+    title_score = len(wanted_title & result_title) / max(len(wanted_title), 1)
+    artist_score = (len(wanted_artist & result_artist) /
+                    max(len(wanted_artist), 1)) if wanted_artist else 0.0
+    # A title match is mandatory. When an artist is known, artist/channel
+    # agreement is also required because unrelated title matches are common.
+    return title_score, artist_score
 
 
 def resolve_video_source(artist, title):
@@ -63,12 +84,16 @@ def resolve_video_source(artist, title):
         raise VideoPreviewError(f"Video search failed: {exc}") from exc
 
     if entries:
-        wanted = f"{artist} {title}".lower()
-        entries.sort(key=lambda entry: (
-            wanted not in (entry.get("title") or "").lower(),
-            -(entry.get("duration") or 0) if entry.get("duration") else 0,
-        ))
-        entry = entries[0]
+        ranked = []
+        for entry in entries:
+            title_score, artist_score = _video_relevance(entry, artist, title)
+            artist_ok = not _tokens(artist) or artist_score >= 0.5
+            if title_score >= 0.5 and artist_ok:
+                ranked.append((title_score, artist_score, entry))
+        if not ranked:
+            raise VideoPreviewError("No relevant video was found for this song")
+        ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        entry = ranked[0][2]
         video_id = entry["id"]
         return {
             "url": f"https://www.youtube.com/watch?v={video_id}",
