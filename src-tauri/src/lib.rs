@@ -44,4 +44,5 @@ pub mod playback {
     pub mod backend;
     pub mod backend_adapter;
     pub mod crossfade;
+    pub mod queue;
 }
