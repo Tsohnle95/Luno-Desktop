@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Track } from "../shared/contracts";
 import { Artwork } from "../components/Artwork";
 import { Recommendations, type Recommendation, type RecommendationState } from "../components/Recommendations";
+import { VideoStage, type VideoStageProps } from "../components/VideoStage";
 
 export interface SongPageViewProps {
   track?: Track | null;
@@ -20,9 +21,10 @@ export interface SongPageViewProps {
   onPreviewRecommendation?: (item: Recommendation) => void;
   onSaveRecommendation?: (item: Recommendation) => void;
   onFavoriteToggle?: (track: Track) => void;
+  video?: VideoStageProps;
 }
 
-export function SongPageView({ track = null, recommendations = [], recommendationState = "idle", recommendationError, recommendationLoadMoreError, recommendationsExhausted, recommendationsLoadingMore, hasApiKey = true, sessionActive = false, discoverMode = false, onRetryRecommendations, onRefreshRecommendations, onLoadMoreRecommendations, onPreviewRecommendation, onSaveRecommendation, onFavoriteToggle }: SongPageViewProps) {
+export function SongPageView({ track = null, recommendations = [], recommendationState = "idle", recommendationError, recommendationLoadMoreError, recommendationsExhausted, recommendationsLoadingMore, hasApiKey = true, sessionActive = false, discoverMode = false, onRetryRecommendations, onRefreshRecommendations, onLoadMoreRecommendations, onPreviewRecommendation, onSaveRecommendation, onFavoriteToggle, video }: SongPageViewProps) {
   const [lastTrack, setLastTrack] = useState<Track | null>(track);
   useEffect(() => { if (track) setLastTrack(track); }, [track]);
   const displayedTrack = track ?? lastTrack;
@@ -32,7 +34,7 @@ export function SongPageView({ track = null, recommendations = [], recommendatio
     <div className="luno-song-page-backdrop" aria-hidden="true" style={displayedTrack?.artwork_url ? { backgroundImage: `url(${displayedTrack.artwork_url})` } : undefined} />
     <div className="luno-song-page-scroll">
       <main className="luno-song-page-content">
-        <div className="luno-song-media-slot" data-video-slot="song-page" aria-label="Media preview placeholder"><Artwork src={displayedTrack?.artwork_url} alt={displayedTrack ? `${displayedTrack.title} artwork` : "Artwork unavailable"} size="100%" /></div>
+        <div className="luno-song-media-slot" data-video-slot="song-page"><VideoStage {...video} artworkUrl={video?.artworkUrl ?? displayedTrack?.artwork_url} artworkAlt={displayedTrack ? `${displayedTrack.title} artwork` : "Artwork unavailable"} /></div>
         <div className="luno-song-meta">{displayedTrack ? <><h1>{displayedTrack.title}</h1><p>{displayedTrack.artist || "Unknown artist"}</p><button type="button" aria-label={favoriteLabel} onClick={() => onFavoriteToggle?.(displayedTrack)}>{displayedTrack.favorite ? "★" : "☆"} {displayedTrack.favorite ? "Favorited" : "Add to Favorites"}</button></> : <><h1>Nothing playing</h1><p>Play a song to open its page.</p></>}</div>
         <Recommendations seed={displayedTrack} items={recommendations} state={recommendationState} error={recommendationError} loadMoreError={recommendationLoadMoreError} exhausted={recommendationsExhausted} loadingMore={recommendationsLoadingMore} hasApiKey={hasApiKey} sessionActive={sessionActive} discoverMode={discoverMode} onRetry={onRetryRecommendations} onRefresh={onRefreshRecommendations} onLoadMore={onLoadMoreRecommendations} onPreview={onPreviewRecommendation} onSave={onSaveRecommendation} />
       </main>
@@ -48,6 +50,12 @@ const songPageStyles = `
 .luno-song-media-slot { width:min(100%, 800px); aspect-ratio:16 / 9; margin:0 auto 24px; overflow:hidden; border:1px solid rgba(255,255,255,.12); border-radius:12px; background:var(--luno-bg-3); box-shadow:0 20px 60px rgba(0,0,0,.35); }
 .luno-song-media-slot .luno-artwork { width:100% !important; height:100% !important; }
 .luno-song-media-slot img { object-fit:cover; }
+.luno-video-stage { position:relative; width:100%; height:100%; background:var(--luno-bg-3); }
+.luno-video-stage video, .luno-video-stage .luno-artwork { display:block; width:100% !important; height:100% !important; object-fit:contain; }
+.luno-video-stage .luno-artwork img { object-fit:cover; }
+.luno-video-status { position:absolute; inset:auto 12px 12px; margin:0; padding:7px 10px; border-radius:6px; background:rgba(0,0,0,.7); color:var(--luno-text-2); text-align:center; }
+.luno-video-fullscreen { position:absolute; right:10px; top:10px; border:0; border-radius:6px; padding:6px 9px; color:var(--luno-text); background:rgba(0,0,0,.7); cursor:pointer; }
+.luno-video-fullscreen:disabled { opacity:.45; cursor:default; }
 .luno-song-meta { text-align:center; margin-bottom:40px; }
 .luno-song-meta h1 { margin:0; font-size:clamp(28px,5vw,48px); line-height:1.1; }
 .luno-song-meta p { margin:10px 0 20px; color:var(--luno-text-2); font-size:18px; }
