@@ -332,12 +332,7 @@ class SongPageView(tk.Frame):
             selectcolor=BG, highlightthickness=0, borderwidth=0,
             anchor="w", padx=0, cursor="hand2")
         self.video_check.grid(row=2, column=0, sticky="e", padx=12, pady=(0, 2))
-        self.video_status = tk.Label(
-            self.main_f, text="", font=("Helvetica Neue", 9),
-            fg=TEXT3, bg=BG, anchor="e")
-        self.video_status.grid(row=2, column=0, sticky="e", padx=(0, 12), pady=(0, 18))
         self.video_btn = self.video_check
-        self.video_spinner = self.video_status
 
         # Typography
         self.title_lbl = tk.Label(self.main_f, text="Song Title",
@@ -1202,7 +1197,6 @@ class SongPageView(tk.Frame):
                 artist = pl_ctx
         self.title_lbl.config(text=title)
         self.artist_lbl.config(text=artist or "Unknown Artist")
-        self._refresh_video_status(path)
         if path != self._video_path:
             self._stop_video()
             self.art_container.update_idletasks()
@@ -1467,24 +1461,7 @@ class SongPageView(tk.Frame):
         self.controller.status_var.set("Playing song video over album art")
 
     def _set_video_controls(self, current_text, status):
-        self.video_status.config(text=status, fg=GREEN if self._video_player else TEXT3)
         self.video_check.config(fg=GREEN if self._video_player else TEXT3)
-
-    def _refresh_video_status(self, path):
-        if self._video_loading:
-            self.video_status.config(text="Current video: checking or downloading")
-            return
-        state = self._video_preload_states.get(path)
-        if self._video_player is not None and self._video_path == path:
-            self.video_status.config(text="Current video: ready and playing")
-        elif state == "downloading":
-            self.video_status.config(text="Current video: downloading")
-        elif state == "ready":
-            self.video_status.config(text="Current video: ready to play")
-        elif state == "unavailable":
-            self.video_status.config(text="Current video: unavailable")
-        else:
-            self.video_status.config(text="Current video: not checked")
 
     def _start_current_staged_video(self, path):
         if not path or self._video_player is not None:
@@ -1510,11 +1487,9 @@ class SongPageView(tk.Frame):
             self._set_video_spinner(True)
             self._load_current_video()
             self._preload_next_video()
-            self.video_status.config(text="Checking current video and next video")
         else:
             self.video_check.config(fg=TEXT3, activeforeground=GREEN)
             self._set_video_spinner(False)
-            self.video_status.config(text="Video disabled")
 
     def _preload_current_video(self, path=None):
         path = path or self._current_path()
@@ -1524,14 +1499,12 @@ class SongPageView(tk.Frame):
     def _load_current_video(self):
         path = self._current_path()
         if not path:
-            self.video_status.config(text="Video: no song is playing")
             return
         if self._video_player is not None or self._video_loading:
             return
         title, artist = self._video_track_metadata(path)
         target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
         self._video_loading = True
-        self.video_status.config(text="Current video: checking staged files")
 
         def run():
             try:
@@ -1566,9 +1539,6 @@ class SongPageView(tk.Frame):
         self._video_preload_paths.add(path)
         self._video_preload_states[path] = "downloading"
         self._set_video_spinner(True)
-        self.video_status.config(text=(
-            "Current video: checking and downloading" if path == self._current_path()
-            else "Next video: checking and downloading"))
         title, artist = self._video_track_metadata(path)
         target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
 
@@ -1606,37 +1576,12 @@ class SongPageView(tk.Frame):
             self._video_download_done(path, video_path, None)
         if not self._video_preload_paths:
             self._set_video_spinner(False)
-        label = "Current" if path == self._current_path() else "Next"
-        self.video_status.config(
-            text=f"{label} video: {'ready' if video_path else 'unavailable'}")
         self.controller.status_var.set(message)
 
     def _set_video_spinner(self, loading):
-        if loading:
-            if self._video_spinner_after is not None:
-                return
-            self.video_spinner.config(fg=GREEN)
-            self._animate_video_spinner()
-        else:
-            if self._video_spinner_after is not None:
-                try:
-                    self.after_cancel(self._video_spinner_after)
-                except (RuntimeError, tk.TclError):
-                    pass
-                self._video_spinner_after = None
-            self.video_spinner.config(text=".", fg=TEXT3)
-
-    def _animate_video_spinner(self):
-        if not self._video_preload_paths:
-            self._set_video_spinner(False)
-            return
-        frames = ("|", "/", "-", "\\")
-        self.video_spinner.config(text=frames[self._video_spinner_frame % len(frames)])
-        self._video_spinner_frame += 1
-        try:
-            self._video_spinner_after = self.after(120, self._animate_video_spinner)
-        except (RuntimeError, tk.TclError):
-            self._video_spinner_after = None
+        # Loading remains asynchronous and intentionally has no extra status
+        # text; the checkbox is the sole video control.
+        return
 
     def _preload_next_video(self):
         try:
@@ -1644,7 +1589,6 @@ class SongPageView(tk.Frame):
             next_idx = engine.queue_idx + 1
             next_path = engine.queue[next_idx]
         except (AttributeError, IndexError):
-            self.video_status.config(text="Next video: no next song in the queue")
             self.controller.status_var.set("No next song in the current queue")
             return
         self._preload_video(next_path)
