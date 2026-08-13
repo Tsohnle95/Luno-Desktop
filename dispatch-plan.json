@@ -1,590 +1,773 @@
 {
+  "version": 2,
+  "dependencyIndex": "zero-based-plan-item-index",
   "items": [
     {
       "todo": "U01 Freeze Python reference corpus and acceptance IDs",
       "files": [
-        "migration-work/U01.md"
+        "docs/migration/reference-corpus.md",
+        "docs/migration/acceptance-catalog.md",
+        "tests/reference/manifest.json"
       ],
       "wave": 1,
-      "dependsOn": []
+      "dependsOn": [],
+      "owner": "integration"
     },
     {
       "todo": "U02 Resolve migration decisions and record ADRs",
       "files": [
-        "migration-work/U02.md"
+        "docs/decisions/desktop-migration.md",
+        "docs/migration/decision-checklist.md"
       ],
       "wave": 2,
       "dependsOn": [
         0
-      ]
+      ],
+      "owner": "integration",
+      "approvalRequired": true
     },
     {
       "todo": "U03 Define versioned Rust/TypeScript domain and IPC contracts",
       "files": [
-        "migration-work/U03.md"
+        "src-tauri/src/contracts/mod.rs",
+        "src-tauri/src/contracts/types.rs",
+        "src-tauri/src/contracts/events.rs",
+        "src/shared/contracts.ts",
+        "tests/contracts/",
+        "src-tauri/src/lib.rs"
       ],
       "wave": 3,
       "dependsOn": [
         1
-      ]
+      ],
+      "owner": "integration"
     },
     {
       "todo": "U04 Establish Python-versus-target differential harness",
       "files": [
-        "migration-work/U04.md"
+        "tools/differential/",
+        "tests/differential/"
       ],
       "wave": 4,
       "dependsOn": [
+        0,
         2
-      ]
+      ],
+      "owner": "integration"
     },
     {
       "todo": "U05 Bootstrap Tauri 2, React, TypeScript, and Rust workspace",
       "files": [
-        "migration-work/U05.md"
+        "package.json",
+        "tsconfig.json",
+        "src/main.tsx",
+        "src-tauri/Cargo.toml",
+        "src-tauri/src/main.rs",
+        "src-tauri/tauri.conf.json",
+        "src-tauri/capabilities/default.json",
+        ".github/workflows/desktop-tauri-foundation.yml"
       ],
       "wave": 4,
       "dependsOn": [
         2
-      ]
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U06 Implement runtime ownership, bounded tasks, cancellation, and shutdown",
       "files": [
-        "migration-work/U06.md"
+        "src-tauri/src/runtime/task_registry.rs",
+        "src-tauri/src/runtime/shutdown.rs",
+        "src-tauri/src/state.rs",
+        "tests/runtime/"
       ],
       "wave": 5,
       "dependsOn": [
         4
-      ]
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U07 Implement atomic persistence and recovery primitives",
       "files": [
-        "migration-work/U07.md"
+        "src-tauri/src/persistence/atomic_write.rs",
+        "src-tauri/src/persistence/recovery.rs",
+        "tests/persistence/"
       ],
       "wave": 5,
       "dependsOn": [
         4
-      ]
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U08 Implement structured redacted logging",
       "files": [
-        "migration-work/U08.md"
+        "src-tauri/src/logging/service.rs",
+        "src-tauri/src/logging/redaction.rs",
+        "src/shared/logs.ts",
+        "tests/logging/"
       ],
       "wave": 5,
       "dependsOn": [
         4
-      ]
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U09 Implement subprocess supervision and executable discovery",
       "files": [
-        "migration-work/U09.md"
+        "src-tauri/src/process/supervisor.rs",
+        "src-tauri/src/process/executables.rs",
+        "tests/process/"
       ],
       "wave": 6,
       "dependsOn": [
-        4,
         5
-      ]
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U10 Implement legacy settings, marker, favorite, and preview readers",
       "files": [
-        "migration-work/U10.md"
+        "src-tauri/src/migration/legacy_readers.rs",
+        "src-tauri/src/persistence/legacy.rs",
+        "tests/migration/legacy_readers.rs"
       ],
-      "wave": 6,
+      "wave": 7,
       "dependsOn": [
-        5,
         6,
-        7
-      ]
+        8
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U11 Implement Track/Playlist identity and normalization policies",
       "files": [
-        "migration-work/U11.md"
-      ],
-      "wave": 3,
-      "dependsOn": [
-        0,
-        1
-      ]
-    },
-    {
-      "todo": "U12 Implement library index and exact scan semantics",
-      "files": [
-        "migration-work/U12.md"
-      ],
-      "wave": 7,
-      "dependsOn": [
-        4,
-        9,
-        10
-      ]
-    },
-    {
-      "todo": "U13 Implement filesystem watching and reconciliation",
-      "files": [
-        "migration-work/U13.md"
-      ],
-      "wave": 8,
-      "dependsOn": [
-        4,
-        9,
-        10,
-        11
-      ]
-    },
-    {
-      "todo": "U14 Implement playlist CRUD and protected-root safeguards",
-      "files": [
-        "migration-work/U14.md"
-      ],
-      "wave": 8,
-      "dependsOn": [
-        5,
-        9,
-        10,
-        11
-      ]
-    },
-    {
-      "todo": "U15 Implement favorites and path-reference repair",
-      "files": [
-        "migration-work/U15.md"
-      ],
-      "wave": 8,
-      "dependsOn": [
-        5,
-        9,
-        10,
-        11
-      ]
-    },
-    {
-      "todo": "U16 Implement duplicate detection and allowed-duplicate backups",
-      "files": [
-        "migration-work/U16.md"
-      ],
-      "wave": 8,
-      "dependsOn": [
-        5,
-        9,
-        10,
-        11
-      ]
-    },
-    {
-      "todo": "U17 Implement transfer codec and strict v1 validation",
-      "files": [
-        "migration-work/U17.md"
+        "src-tauri/src/domain/identity.rs",
+        "src-tauri/src/domain/normalization.rs",
+        "tests/differential/identity.rs"
       ],
       "wave": 6,
       "dependsOn": [
         1,
+        2,
+        3
+      ],
+      "owner": "platform",
+      "approvalRequired": true
+    },
+    {
+      "todo": "U12 Implement library index and exact scan semantics",
+      "files": [
+        "src-tauri/src/library/index.rs",
+        "src-tauri/src/library/scanner.rs",
+        "tests/library/scan.rs"
+      ],
+      "wave": 7,
+      "dependsOn": [
+        10
+      ],
+      "owner": "platform"
+    },
+    {
+      "todo": "U13 Implement filesystem watching and reconciliation",
+      "files": [
+        "src-tauri/src/library/watch.rs",
+        "src-tauri/src/library/reconcile.rs",
+        "tests/library/watch.rs"
+      ],
+      "wave": 8,
+      "dependsOn": [
+        11,
         5
-      ]
+      ],
+      "owner": "platform"
+    },
+    {
+      "todo": "U14 Implement playlist CRUD and protected-root safeguards",
+      "files": [
+        "src-tauri/src/library/mutations.rs",
+        "tests/library/playlists.rs"
+      ],
+      "wave": 8,
+      "dependsOn": [
+        9,
+        11
+      ],
+      "owner": "platform"
+    },
+    {
+      "todo": "U15 Implement favorites and path-reference repair",
+      "files": [
+        "src-tauri/src/library/favorites.rs",
+        "src-tauri/src/library/reference_repair.rs",
+        "tests/library/references.rs"
+      ],
+      "wave": 8,
+      "dependsOn": [
+        9,
+        11
+      ],
+      "owner": "platform"
+    },
+    {
+      "todo": "U16 Implement duplicate detection and allowed-duplicate backups",
+      "files": [
+        "src-tauri/src/library/duplicates.rs",
+        "tests/library/duplicates.rs"
+      ],
+      "wave": 9,
+      "dependsOn": [
+        9,
+        10
+      ],
+      "owner": "platform"
+    },
+    {
+      "todo": "U17 Implement transfer codec and strict v1 validation",
+      "files": [
+        "src-tauri/src/transfer/codec.rs",
+        "tests/transfer/codec.rs"
+      ],
+      "wave": 4,
+      "dependsOn": [
+        2
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U18 Implement provider index, matching, and import planning",
       "files": [
-        "migration-work/U18.md"
+        "src-tauri/src/transfer/planner.rs",
+        "src-tauri/src/transfer/provider_index.rs",
+        "tests/transfer/planner.rs"
       ],
       "wave": 9,
       "dependsOn": [
         9,
         10,
         11,
-        15,
         16
-      ]
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U19 Select and implement the Rust audio backend",
       "files": [
-        "migration-work/U19.md"
+        "src-tauri/src/playback/backend.rs",
+        "src-tauri/src/playback/backend_adapter.rs",
+        "tests/playback/backend.rs"
       ],
-      "wave": 5,
+      "wave": 6,
       "dependsOn": [
-        0,
         2,
-        3
-      ]
+        4
+      ],
+      "owner": "platform",
+      "approvalRequired": true
     },
     {
       "todo": "U20 Implement playback queue and Up Next semantics",
       "files": [
-        "migration-work/U20.md"
+        "src-tauri/src/playback/queue.rs",
+        "tests/playback/queue.rs"
       ],
-      "wave": 10,
+      "wave": 7,
       "dependsOn": [
-        9,
-        17,
-        18
-      ]
+        18,
+        10
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U21 Implement clock, seeking, completion, and failure recovery",
       "files": [
-        "migration-work/U21.md"
+        "src-tauri/src/playback/clock.rs",
+        "src-tauri/src/playback/recovery.rs",
+        "tests/playback/timing.rs"
       ],
-      "wave": 11,
+      "wave": 9,
       "dependsOn": [
-        17,
         18,
         19
-      ]
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U22 Resolve and implement crossfade semantics",
       "files": [
-        "migration-work/U22.md"
+        "src-tauri/src/playback/crossfade.rs",
+        "docs/decisions/desktop-migration.md",
+        "tests/playback/crossfade.rs"
       ],
       "wave": 10,
       "dependsOn": [
-        0,
-        17,
+        1,
         18
-      ]
+      ],
+      "owner": "platform",
+      "approvalRequired": true
     },
     {
       "todo": "U23 Implement sleep timer and desktop media-session adapters",
       "files": [
-        "migration-work/U23.md"
+        "src-tauri/src/platform/media_session.rs",
+        "src-tauri/src/playback/sleep_timer.rs",
+        "tests/platform/media.rs"
       ],
-      "wave": 11,
+      "wave": 10,
       "dependsOn": [
-        4,
-        19
-      ]
+        18,
+        20
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U24 Implement typed IPC bridge and frontend projection store",
       "files": [
-        "migration-work/U24.md"
+        "src/app/bridge.ts",
+        "src/state/backend_projection.ts",
+        "src/state/ui_state.ts",
+        "src/test/bridge.test.ts"
       ],
-      "wave": 11,
+      "wave": 10,
       "dependsOn": [
-        1,
         2,
-        4,
-        19
-      ]
+        4
+      ],
+      "owner": "presentation"
     },
     {
       "todo": "U25 Implement design tokens, responsive shell, routing, and scrolling",
       "files": [
-        "migration-work/U25.md"
+        "src/styles/tokens.css",
+        "src/styles/layout.css",
+        "src/app/Shell.tsx",
+        "src/test/shell.visual.ts"
       ],
-      "wave": 12,
+      "wave": 11,
       "dependsOn": [
-        1,
-        2,
-        22,
+        4,
         23
-      ]
+      ],
+      "owner": "presentation"
     },
     {
       "todo": "U26 Implement shared artwork, row, queue, and player components",
       "files": [
-        "migration-work/U26.md"
+        "src/components/Artwork.tsx",
+        "src/components/TrackRow.tsx",
+        "src/components/Queue.tsx",
+        "src/components/PlayerBar.tsx",
+        "src/test/components/"
       ],
-      "wave": 13,
+      "wave": 12,
       "dependsOn": [
-        19,
-        21,
-        22,
+        18,
+        20,
         23,
-        24,
-        20
-      ]
+        24
+      ],
+      "owner": "presentation"
     },
     {
       "todo": "U27 Implement Library and Recent views",
       "files": [
-        "migration-work/U27.md"
+        "src/views/LibraryView.tsx",
+        "src/views/RecentView.tsx",
+        "src/test/views/library.test.tsx"
       ],
-      "wave": 14,
+      "wave": 13,
       "dependsOn": [
         11,
         12,
-        13,
         14,
         23,
         24,
         25
-      ]
+      ],
+      "owner": "presentation"
     },
     {
       "todo": "U28 Implement Settings and Error Log views",
       "files": [
-        "migration-work/U28.md"
-      ],
-      "wave": 13,
-      "dependsOn": [
-        6,
-        7,
-        9,
-        22,
-        23,
-        24
-      ]
-    },
-    {
-      "todo": "U29 Implement transfer dialogs and library mutation dialogs",
-      "files": [
-        "migration-work/U29.md"
-      ],
-      "wave": 13,
-      "dependsOn": [
-        13,
-        14,
-        16,
-        17,
-        22,
-        23,
-        24
-      ]
-    },
-    {
-      "todo": "U30 Implement validated media output and atomic download promotion",
-      "files": [
-        "migration-work/U30.md"
-      ],
-      "wave": 7,
-      "dependsOn": [
-        5,
-        6,
-        8,
-        9
-      ]
-    },
-    {
-      "todo": "U31 Implement normal download job coordination and cancellation",
-      "files": [
-        "migration-work/U31.md"
-      ],
-      "wave": 8,
-      "dependsOn": [
-        5,
-        7,
-        29,
-        8
-      ]
-    },
-    {
-      "todo": "U32 Implement search, direct URL, CSV, and URL Queue workflows",
-      "files": [
-        "migration-work/U32.md"
-      ],
-      "wave": 14,
-      "dependsOn": [
-        9,
-        10,
-        28,
-        29,
-        30
-      ]
-    },
-    {
-      "todo": "U33 Implement playlist sync, markers, and duplicate destination rules",
-      "files": [
-        "migration-work/U33.md"
-      ],
-      "wave": 14,
-      "dependsOn": [
-        9,
-        11,
-        12,
-        28,
-        29,
-        30
-      ]
-    },
-    {
-      "todo": "U34 Implement Downloader workspace UI",
-      "files": [
-        "migration-work/U34.md"
-      ],
-      "wave": 15,
-      "dependsOn": [
-        22,
-        23,
-        24,
-        25,
-        29,
-        30,
-        31,
-        32
-      ]
-    },
-    {
-      "todo": "U35 Implement discovery provider, cache, filtering, and recommendation artwork",
-      "files": [
-        "migration-work/U35.md"
+        "src/views/SettingsView.tsx",
+        "src/views/ErrorLogView.tsx",
+        "src/test/views/settings.test.tsx"
       ],
       "wave": 12,
       "dependsOn": [
         7,
-        9,
-        10,
-        23
-      ]
+        23,
+        24
+      ],
+      "owner": "presentation"
     },
     {
-      "todo": "U36 Implement preview staging and asset lifecycle",
+      "todo": "U29 Implement transfer dialogs and library mutation dialogs",
       "files": [
-        "migration-work/U36.md"
+        "src/components/PlaylistDialogs.tsx",
+        "src/components/TransferDialogs.tsx",
+        "src/test/dialogs.test.tsx"
+      ],
+      "wave": 12,
+      "dependsOn": [
+        13,
+        16,
+        17,
+        23,
+        24
+      ],
+      "owner": "presentation"
+    },
+    {
+      "todo": "U30 Implement validated media output and atomic download promotion",
+      "files": [
+        "src-tauri/src/download/promotion.rs",
+        "tests/download/promotion.rs"
+      ],
+      "wave": 11,
+      "dependsOn": [
+        6,
+        8
+      ],
+      "owner": "platform"
+    },
+    {
+      "todo": "U31 Implement normal download job coordination and cancellation",
+      "files": [
+        "src-tauri/src/download/coordinator.rs",
+        "tests/download/coordinator.rs"
       ],
       "wave": 13,
       "dependsOn": [
         5,
-        6,
         8,
-        34
-      ]
+        29
+      ],
+      "owner": "platform"
     },
     {
-      "todo": "U37 Implement tap-preview sessions and queue handoff",
+      "todo": "U32 Implement search, direct URL, CSV, and URL Queue workflows",
       "files": [
-        "migration-work/U37.md"
+        "src-tauri/src/download/workflows.rs",
+        "src-tauri/src/download/csv.rs",
+        "tests/download/workflows.rs"
       ],
       "wave": 14,
       "dependsOn": [
-        19,
-        20,
-        34,
-        35
-      ]
-    },
-    {
-      "todo": "U38 Implement Discover mode and explicit save promotion",
-      "files": [
-        "migration-work/U38.md"
-      ],
-      "wave": 15,
-      "dependsOn": [
         29,
-        34,
-        35,
-        36
-      ]
+        30
+      ],
+      "owner": "platform"
     },
     {
-      "todo": "U39 Implement Song Page layout, recommendations, and UI states",
+      "todo": "U33 Implement playlist sync, markers, and duplicate destination rules",
       "files": [
-        "migration-work/U39.md"
+        "src-tauri/src/download/sync.rs",
+        "src-tauri/src/download/markers.rs",
+        "tests/download/sync.rs"
+      ],
+      "wave": 14,
+      "dependsOn": [
+        11,
+        15,
+        29,
+        30
+      ],
+      "owner": "platform"
+    },
+    {
+      "todo": "U34 Implement Downloader workspace UI",
+      "files": [
+        "src/views/DownloaderView.tsx",
+        "src/components/DownloadTabs.tsx",
+        "src/test/views/downloader.test.tsx"
       ],
       "wave": 15,
       "dependsOn": [
         23,
         24,
-        25,
+        29,
+        30,
+        31,
+        32
+      ],
+      "owner": "presentation"
+    },
+    {
+      "todo": "U35 Implement discovery provider, cache, filtering, and recommendation artwork",
+      "files": [
+        "src-tauri/src/discovery/service.rs",
+        "src-tauri/src/discovery/artwork.rs",
+        "tests/discovery/service.rs"
+      ],
+      "wave": 11,
+      "dependsOn": [
+        7,
+        10,
+        23
+      ],
+      "owner": "platform"
+    },
+    {
+      "todo": "U36 Implement preview staging and asset lifecycle",
+      "files": [
+        "src-tauri/src/preview/assets.rs",
+        "tests/preview/assets.rs"
+      ],
+      "wave": 13,
+      "dependsOn": [
+        5,
+        8,
+        29,
+        34
+      ],
+      "owner": "platform"
+    },
+    {
+      "todo": "U37 Implement tap-preview sessions and queue handoff",
+      "files": [
+        "src-tauri/src/preview/session.rs",
+        "tests/preview/session.rs"
+      ],
+      "wave": 14,
+      "dependsOn": [
+        19,
         34,
+        35
+      ],
+      "owner": "platform"
+    },
+    {
+      "todo": "U38 Implement Discover mode and explicit save promotion",
+      "files": [
+        "src-tauri/src/preview/discover_mode.rs",
+        "src-tauri/src/preview/save.rs",
+        "tests/preview/discover_mode.rs"
+      ],
+      "wave": 15,
+      "dependsOn": [
+        29,
+        35,
         36
-      ]
+      ],
+      "owner": "platform"
+    },
+    {
+      "todo": "U39 Implement Song Page layout, recommendations, and UI states",
+      "files": [
+        "src/views/SongPageView.tsx",
+        "src/components/Recommendations.tsx",
+        "src/test/views/song_page.test.tsx"
+      ],
+      "wave": 15,
+      "dependsOn": [
+        23,
+        24,
+        34,
+        35
+      ],
+      "owner": "presentation"
     },
     {
       "todo": "U40 Implement video source lookup and temporary staging",
       "files": [
-        "migration-work/U40.md"
+        "src-tauri/src/video/source.rs",
+        "src-tauri/src/video/staging.rs",
+        "tests/video/source.rs"
       ],
       "wave": 16,
       "dependsOn": [
         8,
-        9,
-        34,
-        38
-      ]
+        34
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U41 Implement audio-clock video playback, resize, seek, and fullscreen",
       "files": [
-        "migration-work/U41.md"
+        "src-tauri/src/video/player.rs",
+        "tests/video/player.rs"
       ],
       "wave": 17,
       "dependsOn": [
-        8,
         18,
-        38,
+        20,
         39
-      ]
+      ],
+      "owner": "platform"
     },
     {
       "todo": "U46 Integrate the video stage into the Song Page presentation",
       "files": [
-        "migration-work/U46.md"
+        "src/views/SongPageView.tsx",
+        "src/components/VideoStage.tsx",
+        "src/test/views/video_stage.test.tsx"
       ],
       "wave": 18,
       "dependsOn": [
         38,
         39,
         40
-      ]
+      ],
+      "owner": "presentation"
     },
     {
       "todo": "U42 Implement first-run data migration and rollback",
       "files": [
-        "migration-work/U42.md"
+        "src-tauri/src/migration/first_run.rs",
+        "docs/migration/rollback.md",
+        "tests/migration/first_run.rs"
       ],
       "wave": 16,
       "dependsOn": [
         6,
+        8,
         9,
-        17,
+        14,
+        16,
         29,
         37
-      ]
+      ],
+      "owner": "platform",
+      "approvalRequired": true
     },
     {
       "todo": "U43 Implement Tauri packaging and dependency provisioning",
       "files": [
-        "migration-work/U43.md"
+        "src-tauri/tauri.conf.json",
+        "src-tauri/capabilities/default.json",
+        ".github/workflows/desktop-tauri-release.yml",
+        "docs/release/desktop.md"
       ],
-      "wave": 18,
+      "wave": 17,
       "dependsOn": [
         4,
         8,
-        30,
-        40
-      ]
+        18,
+        29,
+        39
+      ],
+      "owner": "platform",
+      "approvalRequired": true
     },
     {
       "todo": "U44 Add differential, visual, accessibility, and journey verification suites",
       "files": [
-        "migration-work/U44.md"
+        "tests/differential/",
+        "tests/journeys/",
+        "src/test/visual/",
+        "src/test/accessibility/",
+        "docs/verification/desktop.md"
       ],
       "wave": 19,
       "dependsOn": [
+        0,
+        1,
+        2,
         3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
         26,
+        27,
         28,
+        29,
+        30,
+        31,
+        32,
         33,
+        34,
+        35,
+        36,
         37,
+        38,
+        39,
         40,
         41,
         42,
         43
-      ]
+      ],
+      "owner": "integration"
     },
     {
       "todo": "U45 Complete final parity, shutdown, migration, and release sign-off",
       "files": [
-        "migration-work/U45.md"
+        "docs/verification/final-parity.md",
+        "docs/release/sign-off.md",
+        "migration-implementation-plan.md"
       ],
       "wave": 20,
       "dependsOn": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
         21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
         33,
+        34,
+        35,
+        36,
         37,
+        38,
+        39,
         40,
+        41,
         42,
         43,
-        44,
-        41
-      ]
+        44
+      ],
+      "owner": "integration",
+      "approvalRequired": true
     }
   ]
 }

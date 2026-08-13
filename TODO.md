@@ -1,7 +1,7 @@
 # Desktop Migration Implementation Dispatch
 
 ## Wave 0: Reference And Contracts
-- [ ] U01 Freeze Python reference corpus and acceptance IDs
+- [x] U01 Freeze Python reference corpus and acceptance IDs
 - [ ] U02 Resolve migration decisions and record ADRs
 - [ ] U03 Define versioned Rust/TypeScript domain and IPC contracts
 - [ ] U04 Establish Python-versus-target differential harness
