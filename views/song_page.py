@@ -235,6 +235,8 @@ class SongPageView(tk.Frame):
         self._video_preload_states = {}
         self._video_spinner_after = None
         self._video_menu_hide_after = None
+        self._video_menu_poll_after = None
+        self._video_menu_visible = False
         self._video_spinner_frame = 0
         self._video_key_bindings = []
         self.video_preload_var = tk.BooleanVar(value=False)
@@ -1340,6 +1342,12 @@ class SongPageView(tk.Frame):
             except tk.TclError:
                 pass
             self.video_menu_window = None
+        if self._video_menu_poll_after is not None:
+            try:
+                self.after_cancel(self._video_menu_poll_after)
+            except (RuntimeError, tk.TclError):
+                pass
+            self._video_menu_poll_after = None
         if self._video_spinner_after is not None:
             try:
                 self.after_cancel(self._video_spinner_after)
@@ -1603,16 +1611,25 @@ class SongPageView(tk.Frame):
 
     def _show_video_menu(self):
         self._cancel_hide_video_menu()
+        self._video_menu_visible = True
         self.video_menu_window.update_idletasks()
         x = self.video_menu_btn.winfo_rootx() - self.video_menu_window.winfo_reqwidth()
         y = self.video_menu_btn.winfo_rooty() + self.video_menu_btn.winfo_height() + 4
         self.video_menu_window.geometry(f"{self.video_menu_window.winfo_reqwidth()}x"
                                         f"{self.video_menu_window.winfo_reqheight()}+{x}+{y}")
         self.video_menu_window.deiconify()
+        self._poll_video_menu_pointer()
 
     def _run_video_menu_action(self, action):
         self._cancel_hide_video_menu()
+        self._video_menu_visible = False
         self.video_menu_window.withdraw()
+        if self._video_menu_poll_after is not None:
+            try:
+                self.after_cancel(self._video_menu_poll_after)
+            except (RuntimeError, tk.TclError):
+                pass
+            self._video_menu_poll_after = None
         self.after(0, action)
 
     def _cancel_hide_video_menu(self):
@@ -1635,6 +1652,8 @@ class SongPageView(tk.Frame):
 
     def _hide_video_menu_if_outside(self):
         self._video_menu_hide_after = None
+        if not self._video_menu_visible:
+            return
         try:
             x, y = self.winfo_pointerxy()
             for widget in (self.video_menu_btn, self.art_container,
@@ -1642,10 +1661,41 @@ class SongPageView(tk.Frame):
                 left = widget.winfo_rootx()
                 top = widget.winfo_rooty()
                 if left <= x < left + widget.winfo_width() and top <= y < top + widget.winfo_height():
+                    self._poll_video_menu_pointer()
                     return
+            self._video_menu_visible = False
             self.video_menu_window.withdraw()
         except (RuntimeError, tk.TclError):
             pass
+
+    def _poll_video_menu_pointer(self):
+        if not self._video_menu_visible or self._video_menu_poll_after is not None:
+            return
+        try:
+            self._video_menu_poll_after = self.after(60, self._video_menu_pointer_tick)
+        except (RuntimeError, tk.TclError):
+            self._video_menu_poll_after = None
+
+    def _video_menu_pointer_tick(self):
+        self._video_menu_poll_after = None
+        if not self._video_menu_visible:
+            return
+        try:
+            x, y = self.winfo_pointerxy()
+            widgets = (self.video_menu_btn, self.art_container,
+                       self.video_menu_window)
+            inside = any(
+                widget.winfo_rootx() <= x < widget.winfo_rootx() + widget.winfo_width()
+                and widget.winfo_rooty() <= y < widget.winfo_rooty() + widget.winfo_height()
+                for widget in widgets
+            )
+            if inside:
+                self._poll_video_menu_pointer()
+            else:
+                self._video_menu_visible = False
+                self.video_menu_window.withdraw()
+        except (RuntimeError, tk.TclError):
+            self._video_menu_visible = False
 
     def on_audio_track_started(self, path):
         """Engine hook: preload independently of Song Page redraw timing."""
