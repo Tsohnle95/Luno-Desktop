@@ -5,6 +5,7 @@ import { SettingsView } from "../views/SettingsView";
 import { ErrorLogView } from "../views/ErrorLogView";
 import { LibraryView } from "../views/LibraryView";
 import { RecentView } from "../views/RecentView";
+import { DownloaderView } from "../views/DownloaderView";
 
 export const ROUTES = ["library", "recent", "discover", "downloader", "settings", "error_log"] as const;
 export type Route = (typeof ROUTES)[number];
@@ -20,7 +21,7 @@ export function clampScrollTop(scrollTop: number, scrollHeight: number, clientHe
 
 export function Shell({ views = {}, queue, player }: ShellProps) {
   const [route, setRoute] = useState<Route>("library");
-  const content = views[route] ?? (route === "library" ? <LibraryView /> : route === "recent" ? <RecentView /> : route === "settings" ? <SettingsView onOpenErrorLog={() => setRoute("error_log")} /> : route === "error_log" ? <ErrorLogView /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
+  const content = views[route] ?? (route === "library" ? <LibraryView /> : route === "recent" ? <RecentView /> : route === "downloader" ? <DownloaderView /> : route === "settings" ? <SettingsView onOpenErrorLog={() => setRoute("error_log")} /> : route === "error_log" ? <ErrorLogView /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
   return <div className="luno-shell" data-route={route}>
     <aside className="luno-sidebar" data-slot="sidebar">
       <div className="luno-brand" aria-label="Luno">Luno</div>
