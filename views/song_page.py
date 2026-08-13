@@ -275,10 +275,7 @@ class SongPageView(tk.Frame):
         # ── BACKGROUND CANVAS ────────────────────────────────────────────────
         self.canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg=BG)
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", lambda e: (
-            self._resize_media_stage(e.width, e.height),
-            self._schedule_layout(),
-        ))
+        self.canvas.bind("<Configure>", lambda e: self._on_resize(e.width, e.height))
 
         # ── OVERLAY CONTAINER (Fills Canvas) ─────────────────────────────────
         self.content = tk.Frame(self.canvas, bg=BG, bd=0)
@@ -1127,11 +1124,20 @@ class SongPageView(tk.Frame):
 
     def _schedule_layout(self):
         if self._layout_after is not None:
-            return
+            try:
+                self.after_cancel(self._layout_after)
+            except (RuntimeError, tk.TclError):
+                pass
         try:
-            self._layout_after = self.after_idle(self._run_scheduled_layout)
+            # Wait until the resize gesture pauses. Full redraws include
+            # artwork/background work and must not run for every Configure.
+            self._layout_after = self.after(120, self._run_scheduled_layout)
         except (RuntimeError, tk.TclError):
             self._layout_after = None
+
+    def _on_resize(self, width, height):
+        self._resize_media_stage(width, height)
+        self._schedule_layout()
 
     def _run_scheduled_layout(self):
         self._layout_after = None
@@ -1184,8 +1190,6 @@ class SongPageView(tk.Frame):
         else:
             self.title_lbl.config(font=("Helvetica Neue", 24, "bold"))
             self.artist_lbl.config(font=("Helvetica Neue", 12))
-
-        self.canvas.config(width=w, height=h)
 
         # Get current track
         path = ""
