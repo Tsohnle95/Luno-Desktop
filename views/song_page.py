@@ -45,6 +45,8 @@ class _FFmpegVideoPlayer:
         self._latest_frame = None
         self._present_after = None
         self._photo = None
+        self._decoder_audio_start = None
+        self._decoder_mono_start = None
 
     def play(self):
         self.running = True
@@ -69,6 +71,8 @@ class _FFmpegVideoPlayer:
                 self._stop_decoder()
             if self._decoder is None:
                 self._last_audio_position = position
+                self._decoder_audio_start = position
+                self._decoder_mono_start = time.monotonic()
                 try:
                     self._decoder = subprocess.Popen([
                         "ffmpeg", "-loglevel", "error", "-ss", f"{position:.3f}",
@@ -88,6 +92,14 @@ class _FFmpegVideoPlayer:
                 self._latest_frame = Image.frombytes(
                     "RGB", (self.width, self.height), data)
             self._last_audio_position = position
+            # A decoder can fall behind while the OS is busy or while a high
+            # resolution frame is being scaled. Do not present stale frames;
+            # restart from the audio clock so delay cannot accumulate.
+            expected = self._decoder_audio_start + (
+                time.monotonic() - self._decoder_mono_start)
+            current = float(self.position_provider())
+            if abs(current - expected) > 0.25:
+                self._stop_decoder()
 
     def _read_exact(self, size):
         chunks = []
@@ -1061,7 +1073,7 @@ class SongPageView(tk.Frame):
         # for the recommendation header + first rows, like the mobile full
         # player's fixed controls over its scrollable content.
         max_h = h - 230
-        max_w = w - 60
+        max_w = w - 10
         art_size = min(max_h, max_w, 1000)
         if art_size < 200: art_size = 200 # Minimum size
 
