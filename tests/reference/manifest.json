@@ -1,0 +1,52 @@
+{
+  "format": "luno.reference.corpus",
+  "manifest_version": 1,
+  "corpus_id": "python-desktop-2026-08-13",
+  "source": "python-desktop-reference",
+  "path_policy": "synthetic-fixture-uris-only",
+  "fixture_count": 27,
+  "fixtures": [
+    {"id":"REF-ROOT-MISSING","kind":"filesystem","input":"fixture://missing-root","acceptance":["AC-LIB-01"]},
+    {"id":"REF-ROOT-EMPTY","kind":"filesystem","input":"fixture://empty-root","acceptance":["AC-LIB-02"]},
+    {"id":"REF-SCAN-ORDER","kind":"filesystem","input":"fixture://scan-order","acceptance":["AC-LIB-02","AC-LIB-03"]},
+    {"id":"REF-SCAN-GENERATION","kind":"async-scan","input":"fixture://scan-generation","acceptance":["AC-LIB-04"]},
+    {"id":"REF-PLAY-CONTEXT","kind":"playback","input":"fixture://play-context","acceptance":["AC-PLAY-01","JRN-SCAN-PLAY"]},
+    {"id":"REF-QUEUE-UP-NEXT","kind":"queue","input":"fixture://queue-up-next","acceptance":["AC-PLAY-02","JRN-SCAN-PLAY"]},
+    {"id":"REF-SHUFFLE-REPEAT","kind":"playback","input":"fixture://shuffle-repeat","acceptance":["AC-PLAY-03"]},
+    {"id":"REF-CLOCK-SEEK","kind":"playback","input":"fixture://clock-seek","acceptance":["AC-PLAY-04"]},
+    {"id":"REF-FAILURE-SKIP","kind":"playback","input":"fixture://failure-skip","acceptance":["AC-PLAY-05"]},
+    {"id":"REF-FAVORITES","kind":"persistence","input":"fixture://favorites","acceptance":["AC-LIB-05","JRN-SCAN-PLAY"]},
+    {"id":"REF-RENAME-REPAIR","kind":"mutation","input":"fixture://rename-repair","acceptance":["AC-LIB-06","JRN-RENAME"]},
+    {"id":"REF-URL-MARKERS","kind":"markers","input":"fixture://url-markers","acceptance":["AC-DL-03","AC-PERSIST-02"]},
+    {"id":"REF-DIRECT-OUTPUT","kind":"download","input":"fixture://direct-output","acceptance":["AC-DL-02","AC-DL-04","JRN-DOWNLOAD"]},
+    {"id":"REF-DOWNLOAD-JOB","kind":"download","input":"fixture://download-job","acceptance":["AC-DL-01"]},
+    {"id":"REF-DISCOVERY","kind":"discovery","input":"fixture://discovery","acceptance":["AC-DISC-01","AC-DISC-02"]},
+    {"id":"REF-PREVIEW-SESSION","kind":"preview","input":"fixture://preview-session","acceptance":["AC-DISC-03","AC-DISC-04","JRN-DISCOVER"]},
+    {"id":"REF-DISCOVER-HANDOFF","kind":"preview","input":"fixture://discover-handoff","acceptance":["AC-DISC-05","JRN-DISCOVER"]},
+    {"id":"REF-PREVIEW-SAVE","kind":"promotion","input":"fixture://preview-save","acceptance":["AC-DISC-06","JRN-DISCOVER"]},
+    {"id":"REF-ARTWORK","kind":"artwork","input":"fixture://artwork","acceptance":["AC-ART-01"]},
+    {"id":"REF-VIDEO","kind":"video","input":"fixture://video","acceptance":["AC-VIDEO-01","AC-VIDEO-02","JRN-VIDEO"]},
+    {"id":"REF-TRANSFER-VALID","kind":"transfer","input":"fixture://transfer-valid","acceptance":["AC-XFER-01","JRN-TRANSFER"]},
+    {"id":"REF-TRANSFER-REJECT","kind":"transfer","input":"fixture://transfer-reject","acceptance":["AC-XFER-02","JRN-TRANSFER"]},
+    {"id":"REF-TRANSFER-MATCH","kind":"transfer","input":"fixture://transfer-match","acceptance":["AC-XFER-03","AC-XFER-04","JRN-TRANSFER"]},
+    {"id":"REF-CONFIG-CORRUPT","kind":"persistence","input":"fixture://config-corrupt","acceptance":["AC-PERSIST-01","AC-OPS-01"]},
+    {"id":"REF-MARKER-CORRUPT","kind":"persistence","input":"fixture://marker-corrupt","acceptance":["AC-PERSIST-02"]},
+    {"id":"REF-SHUTDOWN","kind":"lifecycle","input":"fixture://shutdown","acceptance":["AC-OPS-03","JRN-VIDEO"]},
+    {"id":"REF-SHELL-CAPTURE","kind":"visual-manual","input":"fixture://visual-capture-matrix","acceptance":["AC-SHELL-01","AC-SHELL-02"]}
+  ],
+  "verification": {
+    "configured_gate": "python -m pytest",
+    "receipt_status": "inconclusive",
+    "receipt": "python -m pytest -> exit 127: zsh:1: command not found: python; no collection count.",
+    "syntax_receipt": "jq empty tests/reference/manifest.json -> exit 0",
+    "diff_receipt": "git diff --check -> exit 0",
+    "inconclusive_checks": [
+      "visual/manual screenshots",
+      "full-shell integration",
+      "real yt-dlp/FFmpeg/network execution",
+      "persistence crash recovery",
+      "shutdown/orphan-process checks",
+      "target differential tests"
+    ]
+  }
+}
