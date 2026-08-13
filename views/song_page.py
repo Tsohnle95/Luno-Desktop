@@ -218,6 +218,8 @@ class SongPageView(tk.Frame):
         self._video_loading = False
         self._video_photo = None
         self._video_preload_paths = set()
+        self._video_spinner_after = None
+        self._video_spinner_frame = 0
         self.video_preload_var = tk.BooleanVar(value=False)
 
         # Recommendation section state (mirrors FullPlayerScreen.kt states)
@@ -304,6 +306,9 @@ class SongPageView(tk.Frame):
                                   fg=TEXT3, bg=BG, cursor="hand2")
         self.video_btn.grid(row=1, column=0, sticky="se", padx=8, pady=8)
         self.video_btn.bind("<Button-1>", lambda e: self._request_video())
+        self.video_spinner = tk.Label(self.main_f, text=".", font=("Helvetica Neue", 12),
+                                      fg=TEXT3, bg=BG)
+        self.video_spinner.grid(row=1, column=0, sticky="se", padx=(0, 76), pady=8)
         self.video_preload_chk = tk.Checkbutton(
             self.main_f, text="Preload next", variable=self.video_preload_var,
             command=self._video_preload_changed, font=("Helvetica Neue", 9),
@@ -1168,7 +1173,11 @@ class SongPageView(tk.Frame):
                 self._preload_current_video(path)
                 self._preload_next_video()
         if self._video_player is None:
-            self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
+            if self._video_preload_paths:
+                self._set_video_spinner(True)
+            else:
+                self._set_video_spinner(False)
+                self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
         self._sync_favorite_button(path)
         self._ensure_recs_seed(title, artist or "")
         self._layout_page(w, h)
@@ -1268,6 +1277,12 @@ class SongPageView(tk.Frame):
 
     def destroy(self):
         self._stop_video()
+        if self._video_spinner_after is not None:
+            try:
+                self.after_cancel(self._video_spinner_after)
+            except (RuntimeError, tk.TclError):
+                pass
+            self._video_spinner_after = None
         self._bg_generation += 1
         if self._bg_future and not self._bg_future.done():
             self._bg_future.cancel()
@@ -1366,6 +1381,7 @@ class SongPageView(tk.Frame):
             lambda: bool(self.controller.engine.playing and
                          not self.controller.engine.paused))
         self._video_player.play()
+        self._set_video_spinner(False)
         self.video_btn.config(text="■ Video", fg=GREEN, cursor="hand2")
         self.controller.status_var.set("Playing song video over album art")
 
@@ -1384,8 +1400,11 @@ class SongPageView(tk.Frame):
 
     def _video_preload_changed(self):
         if self.video_preload_var.get():
+            self._set_video_spinner(True)
             self._preload_current_video()
             self._preload_next_video()
+        else:
+            self._set_video_spinner(False)
 
     def _preload_current_video(self, path=None):
         path = path or self._current_path()
@@ -1396,6 +1415,7 @@ class SongPageView(tk.Frame):
         if not path or path in self._video_preload_paths:
             return
         self._video_preload_paths.add(path)
+        self._set_video_spinner(True)
         title, artist = self._video_track_metadata(path)
         target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
 
@@ -1419,10 +1439,47 @@ class SongPageView(tk.Frame):
         threading.Thread(target=run, daemon=True, name="luno-video-preload").start()
 
     def _preload_video_done(self, path, video_path, start_current, message):
+        if not video_path:
+            title, artist = self._video_track_metadata(path)
+            target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
+            try:
+                from video_preview import find_video
+                video_path = find_video(artist, title, target)
+            except Exception:
+                video_path = None
         if (start_current and video_path and path == self._current_path() and
                 self._video_player is None):
             self._video_download_done(path, video_path, None)
+        if not self._video_preload_paths:
+            self._set_video_spinner(False)
         self.controller.status_var.set(message)
+
+    def _set_video_spinner(self, loading):
+        if loading:
+            if self._video_spinner_after is not None:
+                return
+            self.video_spinner.config(fg=GREEN)
+            self._animate_video_spinner()
+        else:
+            if self._video_spinner_after is not None:
+                try:
+                    self.after_cancel(self._video_spinner_after)
+                except (RuntimeError, tk.TclError):
+                    pass
+                self._video_spinner_after = None
+            self.video_spinner.config(text=".", fg=TEXT3)
+
+    def _animate_video_spinner(self):
+        if not self._video_preload_paths:
+            self._set_video_spinner(False)
+            return
+        frames = ("|", "/", "-", "\\")
+        self.video_spinner.config(text=frames[self._video_spinner_frame % len(frames)])
+        self._video_spinner_frame += 1
+        try:
+            self._video_spinner_after = self.after(120, self._animate_video_spinner)
+        except (RuntimeError, tk.TclError):
+            self._video_spinner_after = None
 
     def _preload_next_video(self):
         try:
