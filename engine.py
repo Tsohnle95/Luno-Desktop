@@ -162,6 +162,8 @@ class LunoEngine:
             sp = self.c._frames.get("song_page")
             if sp and hasattr(sp, "update_view"):
                 self.c.after(0, sp.update_view)
+            if sp and hasattr(sp, "on_audio_track_started"):
+                self.c.after(0, lambda path=path: sp.on_audio_track_started(path))
             
             # History
             if path not in self.c._recently_played:

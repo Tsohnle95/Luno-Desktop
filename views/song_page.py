@@ -117,7 +117,9 @@ class _FFmpegVideoPlayer:
         if not self.running:
             return
         try:
-            self._present_after = self.after(33, self._present)
+            # Present often enough for 24/30/60 FPS sources; the latest-frame
+            # buffer prevents Tk from building a stale queue.
+            self._present_after = self.after(16, self._present)
         except (RuntimeError, tk.TclError):
             self.running = False
 
@@ -1346,6 +1348,10 @@ class SongPageView(tk.Frame):
             self.controller.status_var.set("No next song in the current queue")
             return
         title, artist = split_track_name(next_path)
+        if not artist:
+            playlist = getattr(self.controller, "_queue_playlist_name", None)
+            if playlist and playlist not in ("All Music", "Unsorted"):
+                artist = playlist
         if self._video_preload_path == next_path:
             return
         self._video_preload_path = next_path
@@ -1369,6 +1375,11 @@ class SongPageView(tk.Frame):
             except (RuntimeError, tk.TclError):
                 pass
         threading.Thread(target=run, daemon=True, name="luno-video-preload").start()
+
+    def on_audio_track_started(self, path):
+        """Engine hook: preload independently of Song Page redraw timing."""
+        if self.video_preload_var.get():
+            self._preload_next_video()
 
     def _stop_video(self):
         player = self._video_player
