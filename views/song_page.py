@@ -219,12 +219,14 @@ class SongPageView(tk.Frame):
         self._video_player = None
         self._video_generation = 0
         self._video_loading = False
+        self._video_probe_attempt = 0
         self._video_photo = None
         self._video_preload_paths = set()
         self._video_preload_states = {}
         self._video_spinner_after = None
         self._video_menu_hide_after = None
         self._video_spinner_frame = 0
+        self._video_key_bindings = []
         self.video_preload_var = tk.BooleanVar(value=False)
 
         # Recommendation section state (mirrors FullPlayerScreen.kt states)
@@ -305,6 +307,15 @@ class SongPageView(tk.Frame):
         self.art_lbl = tk.Label(self.art_container, text="♫", font=("Helvetica", 80),
                                  fg=TEXT3, bg=BG2)
         self.art_lbl.pack(fill="both", expand=True)
+        for widget in (self.art_container, self.art_lbl):
+            widget.bind("<Enter>", lambda e: self._show_video_menu())
+            widget.bind("<Leave>", lambda e: self._hide_video_menu_later())
+            widget.bind("<Button-1>", lambda e: self._request_video())
+        for sequence, handler in (("<KeyPress-f>", self._handle_video_f_key),
+                                  ("<KeyPress-F>", self._handle_video_f_key),
+                                  ("<Escape>", self._handle_video_escape)):
+            self._video_key_bindings.append(
+                (sequence, self.bind_all(sequence, handler, add="+")))
         # Video actions live in a compact hover menu below the media stage.
         self.video_menu_btn = tk.Label(self.main_f, text="🎥", font=("Helvetica Neue", 14),
                                        fg=TEXT3, bg=BG, cursor="hand2")
@@ -1321,6 +1332,11 @@ class SongPageView(tk.Frame):
                 pass
             self._video_spinner_after = None
         self._cancel_hide_video_menu()
+        for sequence, bind_id in self._video_key_bindings:
+            try:
+                self.unbind_all(sequence, bind_id)
+            except tk.TclError:
+                pass
         self._bg_generation += 1
         if self._bg_future and not self._bg_future.done():
             self._bg_future.cancel()
@@ -1353,6 +1369,8 @@ class SongPageView(tk.Frame):
             self._video_download_done(path, staged, None)
             return
         self._video_loading = True
+        self._video_probe_attempt += 1
+        attempt = self._video_probe_attempt
         self.video_btn.config(text="Checking video...", cursor="arrow")
 
         def run():
@@ -1363,10 +1381,23 @@ class SongPageView(tk.Frame):
             except Exception as exc:
                 source, error = None, str(exc)
             try:
-                self.after(0, lambda: self._video_probe_done(path, artist, title, source, error))
+                self.after(0, lambda: self._video_probe_done(
+                    path, artist, title, source, error, attempt))
             except (RuntimeError, tk.TclError):
                 pass
         threading.Thread(target=run, daemon=True, name="luno-video-probe").start()
+
+    def _handle_video_f_key(self, event):
+        if self._fullscreen_window is not None:
+            self._close_fullscreen_video()
+        elif self._video_player is not None:
+            self._open_fullscreen_video()
+        return "break"
+
+    def _handle_video_escape(self, event):
+        if self._fullscreen_window is not None:
+            self._close_fullscreen_video()
+            return "break"
 
     def _current_path(self):
         try:
@@ -1385,11 +1416,15 @@ class SongPageView(tk.Frame):
                 artist = playlist
         return title, artist
 
-    def _video_probe_done(self, path, artist, title, source, error):
+    def _video_probe_done(self, path, artist, title, source, error, attempt=None):
         self._video_loading = False
         if path != self._current_path():
             return
         if error:
+            if attempt == self._video_probe_attempt and attempt < 2:
+                self._video_loading = False
+                self.after(250, self._request_video)
+                return
             self.video_btn.config(text="No video found", fg=TEXT3, cursor="arrow")
             self.controller.status_var.set(error)
             return
@@ -1603,9 +1638,6 @@ class SongPageView(tk.Frame):
         label = tk.Label(window, bg="black")
         label.pack(fill="both", expand=True)
         window.focus_force()
-        window.bind("<Escape>", lambda e: self._close_fullscreen_video())
-        window.bind("<KeyPress-f>", lambda e: self._toggle_fullscreen_window())
-        window.bind("<KeyPress-F>", lambda e: self._toggle_fullscreen_window())
         self._fullscreen_window = window
         width = max(window.winfo_screenwidth(), 2)
         height = max(window.winfo_screenheight(), 2)
@@ -1618,12 +1650,6 @@ class SongPageView(tk.Frame):
         self._fullscreen_player.play()
         window.bind("<Escape>", lambda e: self._close_fullscreen_video())
         window.protocol("WM_DELETE_WINDOW", self._close_fullscreen_video)
-
-    def _toggle_fullscreen_window(self):
-        if self._fullscreen_window is not None:
-            self._close_fullscreen_video()
-        else:
-            self._open_fullscreen_video()
 
     def _close_fullscreen_video(self):
         player = self._fullscreen_player
