@@ -239,6 +239,7 @@ class SongPageView(tk.Frame):
         self._video_menu_visible = False
         self._video_spinner_frame = 0
         self._video_key_bindings = []
+        self._layout_after = None
         self.video_preload_var = tk.BooleanVar(value=False)
 
         # Recommendation section state (mirrors FullPlayerScreen.kt states)
@@ -277,7 +278,7 @@ class SongPageView(tk.Frame):
         # ── BACKGROUND CANVAS ────────────────────────────────────────────────
         self.canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg=BG)
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", lambda e: self.update_view())
+        self.canvas.bind("<Configure>", lambda e: self._schedule_layout())
 
         # ── OVERLAY CONTAINER (Fills Canvas) ─────────────────────────────────
         self.content = tk.Frame(self.canvas, bg=BG, bd=0)
@@ -296,6 +297,7 @@ class SongPageView(tk.Frame):
                                                           anchor="nw", tags="pagewin")
         self.page_canvas.bind("<Configure>", lambda e: (
             self.page_canvas.itemconfig("pagewin", width=max(e.width - PAGE_SB_WIDTH, 50)),
+            self._schedule_layout(),
         ))
 
         def _on_wheel(e):
@@ -311,7 +313,7 @@ class SongPageView(tk.Frame):
         self.main_f.columnconfigure(0, weight=1)
 
         # Wide YouTube-style media stage; dimensions are set responsively.
-        self.art_container = tk.Frame(self.main_f, bg=BG2, width=480, height=480,
+        self.art_container = tk.Frame(self.main_f, bg=BG2, width=480, height=270,
                                        highlightthickness=2, highlightbackground="#000")
         self.art_container.pack_propagate(False) # Force pixel sizes
         self.art_container.grid(row=1, column=0, pady=(0, 20))
@@ -1154,8 +1156,20 @@ class SongPageView(tk.Frame):
 
     def populate(self):
         """Called when this tab is shown."""
-        self.update_view()
+        self._schedule_layout()
         self._sync_discover_button()
+
+    def _schedule_layout(self):
+        if self._layout_after is not None:
+            return
+        try:
+            self._layout_after = self.after_idle(self._run_scheduled_layout)
+        except (RuntimeError, tk.TclError):
+            self._layout_after = None
+
+    def _run_scheduled_layout(self):
+        self._layout_after = None
+        self.update_view()
 
     def update_view(self):
         if not self.winfo_ismapped(): return
@@ -1334,6 +1348,12 @@ class SongPageView(tk.Frame):
             pass
 
     def destroy(self):
+        if self._layout_after is not None:
+            try:
+                self.after_cancel(self._layout_after)
+            except (RuntimeError, tk.TclError):
+                pass
+            self._layout_after = None
         self._stop_video()
         self._close_fullscreen_video()
         if self.video_menu_window is not None:
