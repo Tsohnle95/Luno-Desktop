@@ -200,3 +200,18 @@ and rollback trial. Until then Python is the behavioral fallback.
 - Coverage gaps: no target source, complete target harness, screenshots,
   real-process corpus, packaged smoke receipt, crash corpus or rollback trial.
 - Status: complete, with blockers unresolved.
+
+## U45 Final Gate
+
+- Status: **BLOCKED** on 2026-08-13; no parity or release sign-off is claimed.
+- Reference-only checks passed (`python3 -m pytest -q`: 109 passed; U44 subset:
+  6 passed; both reference/journey manifests parse; `git diff --check` passed).
+- Required target receipts remain unresolved: `cargo test`, `npm run typecheck`,
+  target differential and journey execution, visual screenshots, accessibility,
+  packaged clean-machine smoke, signing/notarization, migration/rollback corpus,
+  and shutdown/orphan-process checks.
+- Release inputs are incomplete: managed binary input files are absent and
+  `release/desktop-binaries.json` retains placeholder checksums.
+- Keep the Python fallback and legacy data unchanged. Reopen sign-off only when
+  `docs/verification/final-parity.md` has no inconclusive or blocked acceptance
+  and `docs/release/sign-off.md` is explicitly approved.

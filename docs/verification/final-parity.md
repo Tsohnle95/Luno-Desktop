@@ -1,0 +1,52 @@
+# Final Desktop Parity Gate
+
+Status: **BLOCKED** (U45, 2026-08-13).
+
+This is a fan-in receipt, not a claim that the React/Tauri/Rust application is
+at parity. A required gate is `pass` only when its configured command or manual
+receipt completed without a skip, timeout, missing dependency, collection
+failure, truncation, or missing artifact. The Python application remains the
+behavioral fallback.
+
+## Acceptance Audit
+
+| IDs | Result | Evidence or blocker |
+|---|---|---|
+| AC-SHELL-01, AC-SHELL-02 | BLOCKED | Source-contract checks exist; browser screenshots and manual receipts are unavailable. |
+| AC-LIB-01, AC-LIB-02, AC-LIB-03 | INCONCLUSIVE | Python/reference differential surface only; no target conformance receipt. |
+| AC-LIB-04, AC-LIB-05, AC-LIB-06 | INCONCLUSIVE | Target generation, journey, and rename/reference-repair receipts unavailable. |
+| AC-PLAY-01, AC-PLAY-02 | INCONCLUSIVE | Pure reference coverage exists; target/shell journey receipt unavailable. |
+| AC-PLAY-03, AC-PLAY-04, AC-PLAY-05 | INCONCLUSIVE | Target differential/audio backend receipts unavailable (`cargo` missing). |
+| AC-PLAY-06 | BLOCKED | Decision D8 approves removal, but the target migration rejection test is not evidenced. |
+| AC-DL-01, AC-DL-02, AC-DL-03, AC-DL-04 | INCONCLUSIVE | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
+| AC-DISC-01, AC-DISC-02, AC-DISC-03, AC-DISC-04, AC-DISC-05, AC-DISC-06 | INCONCLUSIVE | Target provider, preview, save, journey, and shutdown receipts unavailable. |
+| AC-ART-01 | INCONCLUSIVE | Target artwork/cache and visual receipt unavailable. |
+| AC-VIDEO-01, AC-VIDEO-02, AC-VIDEO-03 | INCONCLUSIVE | Target staging/audio-clock lifecycle, visual, manual, and shutdown receipts unavailable. |
+| AC-XFER-01, AC-XFER-02 | PASS (reference only) | Frozen v1 codec/rejection coverage and manifest validation pass; this does not prove packaged target parity. |
+| AC-XFER-03, AC-XFER-04 | BLOCKED | Target planner receipt and provider-index/controller handoff evidence unavailable. |
+| AC-PERSIST-01, AC-PERSIST-02 | INCONCLUSIVE | No target crash/recovery or marker recovery corpus receipt. |
+| AC-OPS-01 | INCONCLUSIVE | No browser accessibility/manual diagnostics receipt. |
+| AC-OPS-02 | BLOCKED | No packaged bundle/smoke artifact; managed binary inputs are absent and manifest SHA-256 values are placeholders. |
+| AC-OPS-03 | BLOCKED | Target shutdown/journey receipt unavailable; U44 classifies the shutdown check as timed out/inconclusive. |
+| JRN-SCAN-PLAY, JRN-DISCOVER, JRN-DOWNLOAD, JRN-RENAME, JRN-TRANSFER, JRN-VIDEO | INCONCLUSIVE | Journey manifest exists, but no executed target journey receipts or artifacts exist. |
+
+## Exact Receipts
+
+- `python3 -m pytest tests/differential/test_harness.py tests/differential/test_u44_receipts.py -q`: exit `0`, `6 passed in 0.49s`.
+- `python3 -m pytest -q`: exit `0`, `109 passed in 6.60s`.
+- `python -m pytest -q`: exit `127`, `zsh:1: command not found: python` (inconclusive).
+- `npm run typecheck`: exit `127`, `sh: tsc: command not found` (inconclusive).
+- `cargo test --manifest-path src-tauri/Cargo.toml`: exit `127`, `zsh:1: command not found: cargo` (inconclusive).
+- `python3 -m json.tool tests/journeys/manifest.json >/dev/null`: exit `0`.
+- `python3 -m json.tool tests/reference/manifest.json >/dev/null`: exit `0`.
+- `git diff --check`: exit `0`.
+
+## Release-Critical Gaps
+
+- No target-vs-reference adapter receipt, browser screenshot artifacts, accessibility run, or executed manual journey receipts.
+- No clean-machine packaged smoke receipt, signed/notarized DMG, or macOS release artifact.
+- `release/desktop-binaries.json` still contains `REPLACE_WITH_REVIEWED_SHA256`; `release-input/bin/` is absent, so provisioning and integrity checks cannot pass.
+- No real-user-data migration corpus/crash-at-each-stage receipt or rollback rehearsal receipt.
+- No target shutdown/orphan-process receipt for audio, yt-dlp, FFmpeg, video, and worker tasks.
+
+No parity or release approval may be inferred from source files, U01-U44 handoff descriptions, or implementation commits without the required execution receipts.
