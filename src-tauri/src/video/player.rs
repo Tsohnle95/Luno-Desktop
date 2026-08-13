@@ -58,6 +58,7 @@ impl<F: DecoderFactory> VideoPlayer<F> {
 
     pub fn load(&mut self, position: Duration) -> VideoGeneration {
         self.restart(position);
+        if self.status == VideoStatus::Fallback { return self.generation; }
         self.status = VideoStatus::Loading;
         self.events.push(VideoEvent::StateChanged(self.status));
         self.generation
@@ -98,8 +99,10 @@ impl<F: DecoderFactory> VideoPlayer<F> {
         self.events.push(VideoEvent::Resize(size));
         if matches!(self.status, VideoStatus::Playing | VideoStatus::Paused | VideoStatus::Loading) {
             let was_playing = self.status == VideoStatus::Playing;
+            let was_paused = self.status == VideoStatus::Paused;
             self.restart(audio_position);
             if was_playing { let generation = self.generation; let _ = self.start(generation, audio_position); }
+            else if was_paused { self.status = VideoStatus::Paused; self.events.push(VideoEvent::StateChanged(self.status)); }
         }
     }
 
@@ -113,7 +116,11 @@ impl<F: DecoderFactory> VideoPlayer<F> {
         if self.fullscreen != fullscreen { self.fullscreen = fullscreen; self.events.push(VideoEvent::FullscreenChanged(fullscreen)); }
     }
 
-    pub fn shutdown(&mut self) { self.stop_decoder(); self.status = VideoStatus::Idle; self.fullscreen = false; }
+    pub fn shutdown(&mut self) {
+        self.stop_decoder();
+        self.status = VideoStatus::Idle;
+        if self.fullscreen { self.fullscreen = false; self.events.push(VideoEvent::FullscreenChanged(false)); }
+    }
 
     fn restart(&mut self, position: Duration) {
         self.stop_decoder();
