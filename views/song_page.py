@@ -213,7 +213,7 @@ class SongPageView(tk.Frame):
         self._video_generation = 0
         self._video_loading = False
         self._video_photo = None
-        self._video_preload_path = None
+        self._video_preload_paths = set()
         self.video_preload_var = tk.BooleanVar(value=False)
 
         # Recommendation section state (mirrors FullPlayerScreen.kt states)
@@ -1379,7 +1379,45 @@ class SongPageView(tk.Frame):
 
     def _video_preload_changed(self):
         if self.video_preload_var.get():
+            self._preload_current_video()
             self._preload_next_video()
+
+    def _preload_current_video(self):
+        path = self._current_path()
+        if path:
+            self._preload_video(path, start_current=True)
+
+    def _preload_video(self, path, start_current=False):
+        if not path or path in self._video_preload_paths:
+            return
+        self._video_preload_paths.add(path)
+        title, artist = self._video_track_metadata(path)
+        target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
+
+        def run():
+            video_path = None
+            try:
+                from video_preview import find_video, resolve_video_source, download_video
+                video_path = find_video(artist, title, target)
+                if not video_path:
+                    source = resolve_video_source(artist, title)
+                    video_path = download_video(artist, title, source["url"], target)
+                message = f"Video preloaded: {title}"
+            except Exception as exc:
+                message = f"Video preload failed: {exc}"
+            self._video_preload_paths.discard(path)
+            try:
+                self.after(0, lambda: self._preload_video_done(
+                    path, video_path, start_current, message))
+            except (RuntimeError, tk.TclError):
+                pass
+        threading.Thread(target=run, daemon=True, name="luno-video-preload").start()
+
+    def _preload_video_done(self, path, video_path, start_current, message):
+        if (start_current and video_path and path == self._current_path() and
+                self._video_player is None):
+            self._video_download_done(path, video_path, None)
+        self.controller.status_var.set(message)
 
     def _preload_next_video(self):
         try:
@@ -1389,34 +1427,12 @@ class SongPageView(tk.Frame):
         except (AttributeError, IndexError):
             self.controller.status_var.set("No next song in the current queue")
             return
-        title, artist = self._video_track_metadata(next_path)
-        if self._video_preload_path == next_path:
-            return
-        self._video_preload_path = next_path
-        target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
-
-        def run():
-            try:
-                from video_preview import find_video, resolve_video_source, download_video
-                if find_video(artist, title, target):
-                    message = f"Video preloaded: {title}"
-                else:
-                    source = resolve_video_source(artist, title)
-                    download_video(artist, title, source["url"], target)
-                    message = f"Video preloaded: {title}"
-            except Exception as exc:
-                message = f"Video preload failed: {exc}"
-            if self._video_preload_path == next_path:
-                self._video_preload_path = None
-            try:
-                self.after(0, lambda: self.controller.status_var.set(message))
-            except (RuntimeError, tk.TclError):
-                pass
-        threading.Thread(target=run, daemon=True, name="luno-video-preload").start()
+        self._preload_video(next_path)
 
     def on_audio_track_started(self, path):
         """Engine hook: preload independently of Song Page redraw timing."""
         if self.video_preload_var.get():
+            self._preload_current_video()
             self._preload_next_video()
 
     def _stop_video(self):
