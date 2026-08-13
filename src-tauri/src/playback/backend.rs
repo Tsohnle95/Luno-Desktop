@@ -1,0 +1,75 @@
+//! Audio backend contract.  The queue and transition policy deliberately live elsewhere.
+
+use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
+
+pub const SAMPLE_RATE: u32 = 44_100;
+pub const CHANNELS: u16 = 2;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutputFormat { pub sample_rate: u32, pub channels: u16 }
+
+impl Default for OutputFormat {
+    fn default() -> Self { Self { sample_rate: SAMPLE_RATE, channels: CHANNELS } }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrackInfo { pub path: PathBuf, pub duration: Option<Duration>, pub format: OutputFormat }
+
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum BackendError {
+    #[error("unsupported audio format: {0}")]
+    UnsupportedFormat(String),
+    #[error("audio file error: {0}")]
+    Io(String),
+    #[error("audio decode error: {0}")]
+    Decode(String),
+    #[error("audio output device unavailable: {0}")]
+    Device(String),
+    #[error("no track is loaded")]
+    NotLoaded,
+    #[error("seek position is invalid: {0}")]
+    InvalidSeek(f64),
+}
+
+pub trait AudioBackend {
+    fn load(&mut self, path: &Path) -> Result<TrackInfo, BackendError>;
+    fn play(&mut self) -> Result<(), BackendError>;
+    fn pause(&mut self) -> Result<(), BackendError>;
+    fn seek(&mut self, position: Duration) -> Result<(), BackendError>;
+    /// Position is the backend's authoritative elapsed audio position.
+    fn position(&self) -> Result<Duration, BackendError>;
+    fn duration(&self) -> Result<Option<Duration>, BackendError>;
+}
+
+#[derive(Debug, Default)]
+pub struct FakeBackend {
+    track: Option<TrackInfo>, position: Duration, started: Option<Instant>, paused: bool,
+}
+
+impl FakeBackend {
+    pub fn new() -> Self { Self::default() }
+    pub fn with_track(path: impl Into<PathBuf>, duration: Option<Duration>) -> Self {
+        let mut backend = Self::new();
+        backend.track = Some(TrackInfo { path: path.into(), duration, format: OutputFormat::default() });
+        backend
+    }
+    /// Advances the fake clock without sleeping, for deterministic tests.
+    pub fn advance(&mut self, amount: Duration) {
+        if self.started.is_some() && !self.paused { self.position += amount; self.clamp_position(); }
+    }
+    pub fn is_playing(&self) -> bool { self.started.is_some() && !self.paused }
+    fn clamp_position(&mut self) { if let Some(Some(end)) = self.track.as_ref().map(|t| t.duration) { self.position = self.position.min(end); } }
+}
+
+impl AudioBackend for FakeBackend {
+    fn load(&mut self, path: &Path) -> Result<TrackInfo, BackendError> {
+        if path.extension().and_then(|x| x.to_str()).map(|x| matches!(x.to_ascii_lowercase().as_str(), "mp3"|"m4a"|"mp4"|"flac"|"wav")).unwrap_or(false) == false { return Err(BackendError::UnsupportedFormat(path.display().to_string())); }
+        let info = TrackInfo { path: path.to_path_buf(), duration: None, format: OutputFormat::default() };
+        self.track = Some(info.clone()); self.position = Duration::ZERO; self.started = None; self.paused = false; Ok(info)
+    }
+    fn play(&mut self) -> Result<(), BackendError> { if self.track.is_none() { return Err(BackendError::NotLoaded); } self.started = Some(Instant::now()); self.paused = false; Ok(()) }
+    fn pause(&mut self) -> Result<(), BackendError> { if self.track.is_none() { return Err(BackendError::NotLoaded); } self.paused = true; self.started = None; Ok(()) }
+    fn seek(&mut self, position: Duration) -> Result<(), BackendError> { if self.track.is_none() { return Err(BackendError::NotLoaded); } self.position = position; self.clamp_position(); Ok(()) }
+    fn position(&self) -> Result<Duration, BackendError> { if self.track.is_none() { Err(BackendError::NotLoaded) } else { Ok(self.position) } }
+    fn duration(&self) -> Result<Option<Duration>, BackendError> { self.track.as_ref().map(|t| t.duration).ok_or(BackendError::NotLoaded) }
+}

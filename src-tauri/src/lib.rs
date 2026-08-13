@@ -23,9 +23,20 @@ pub mod process {
     pub mod executables;
     pub mod supervisor;
 }
+pub mod download {
+    pub mod promotion;
+}
 pub mod state;
+pub mod library {
+    pub mod index;
+    pub mod scanner;
+}
 pub mod transfer {
     pub mod codec;
     pub mod planner;
     pub mod provider_index;
+}
+pub mod playback {
+    pub mod backend;
+    pub mod backend_adapter;
 }
