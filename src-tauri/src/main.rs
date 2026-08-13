@@ -2,6 +2,7 @@
 
 use luno_desktop_lib::contracts::{CommandEnvelope, ContractError};
 use luno_desktop_lib::migration::first_run::{migrate, Keychain, MigrationOptions, MigrationPaths};
+use luno_desktop_lib::migration::legacy_readers::has_legacy_data;
 use luno_desktop_lib::state::AppState;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -23,12 +24,13 @@ fn backend_command(_state: tauri::State<'_, AppState>, envelope: CommandEnvelope
 
 fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
     let legacy_root = dirs_fallback_home()?;
-    if !legacy_root.join(".luno_config.json").is_file() { return Ok(()); }
+    let preview_dir = legacy_root.join(".luno_previews");
+    if !has_legacy_data(&legacy_root, Some(&preview_dir)) { return Ok(()); }
     let target_root = app.path().app_data_dir().map_err(|error| error.to_string())?;
     let paths = MigrationPaths {
         legacy_root,
         target_root,
-        preview_dir: dirs_fallback_home()?.join(".luno_previews"),
+        preview_dir,
         current_preview: Vec::new(),
         promoted_assets: Vec::new(),
     };
@@ -36,8 +38,6 @@ fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
     let mut keychain = NoopKeychain;
     match migrate(&paths, &MigrationOptions::default(), &mut keychain) {
         Ok(_) => Ok(()),
-        Err(luno_desktop_lib::migration::first_run::MigrationError::UnsupportedPlatform) => Ok(()),
-        Err(luno_desktop_lib::migration::first_run::MigrationError::Keychain(_)) => Ok(()),
         Err(error) => Err(format!("startup migration failed: {error:?}")),
     }
 }
@@ -51,9 +51,7 @@ fn main() {
         .manage(AppState::new(32))
         .invoke_handler(tauri::generate_handler![backend_command])
         .setup(|app| {
-            if let Err(error) = startup_migration(app.handle()) {
-                eprintln!("{error}");
-            }
+            startup_migration(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
         .run(tauri::generate_context!())

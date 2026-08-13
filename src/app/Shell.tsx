@@ -16,17 +16,17 @@ export const routeLabels: Record<Route, string> = {
   library: "Home", recent: "Recent", discover: "Discover", downloader: "Downloader", settings: "Settings", song_page: "Song", error_log: "Error Log",
 };
 
-export interface ShellProps { views?: Partial<Record<Route, ReactNode>>; queue?: ReactNode; player?: ReactNode; backendProjection?: { getSnapshot: () => BackendProjection; subscribe: (listener: () => void) => () => void }; }
+export interface ShellProps { views?: Partial<Record<Route, ReactNode>>; queue?: ReactNode; player?: ReactNode; backendProjection?: { getSnapshot: () => BackendProjection; subscribe: (listener: () => void) => () => void }; backendAvailable?: boolean; videoConnected?: boolean; }
 
 export function clampScrollTop(scrollTop: number, scrollHeight: number, clientHeight: number): number {
   return Math.min(Math.max(0, scrollTop), Math.max(0, scrollHeight - clientHeight));
 }
 
-export function Shell({ views = {}, queue, player, backendProjection }: ShellProps) {
+export function Shell({ views = {}, queue, player, backendProjection, backendAvailable = false, videoConnected = false }: ShellProps) {
   const [route, setRoute] = useState<Route>("library");
   const projection = useSyncExternalStore(backendProjection?.subscribe ?? (() => () => {}), backendProjection?.getSnapshot ?? (() => ({ library: null, playback: null } as BackendProjection)));
   const content = views[route] ?? (route === "library" ? <LibraryView /> : route === "recent" ? <RecentView /> : route === "discover" ? <DiscoverView /> : route === "downloader" ? <DownloaderView /> : route === "settings" ? <SettingsView onOpenErrorLog={() => setRoute("error_log")} /> : route === "error_log" ? <ErrorLogView /> : route === "song_page" ? <SongPageView /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
-  return <div className="luno-shell" data-route={route}>
+  return <div className="luno-shell" data-route={route} data-backend-state={backendAvailable ? "available" : "unavailable"} data-video-state={videoConnected ? "connected" : "unconnected"}>
     <aside className="luno-sidebar" data-slot="sidebar">
       <div className="luno-brand" aria-label="Luno">Luno</div>
       <nav className="luno-nav" aria-label="Primary navigation"><ul className="luno-nav-list">
@@ -34,7 +34,7 @@ export function Shell({ views = {}, queue, player, backendProjection }: ShellPro
       </ul></nav>
       <div className="luno-playlists luno-scroll" data-slot="playlists" aria-label="Playlists" />
     </aside>
-    <main className="luno-main" data-slot="main"><div className="luno-main-content luno-scroll">{content}</div></main>
+     <main className="luno-main" data-slot="main">{(!backendAvailable || !videoConnected) && <div className="luno-runtime-status" role="status">{!backendAvailable && <span data-state="backend-unavailable">Backend unavailable; runtime commands are disabled.</span>}{!videoConnected && <span data-state="video-unconnected">Video preview unconnected; artwork fallback is active.</span>}</div>}<div className="luno-main-content luno-scroll">{content}</div></main>
     <aside className="luno-queue luno-scroll" data-slot="queue" aria-label="Queue">{queue}</aside>
     <footer className="luno-player" data-slot="player" aria-label="Player">{player}</footer>
   </div>;

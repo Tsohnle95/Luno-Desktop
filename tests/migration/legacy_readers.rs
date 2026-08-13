@@ -34,3 +34,16 @@ fn preview_inventory_is_sorted_and_contained() {
     assert_eq!(files[0].file_name().unwrap(), "a.mp3");
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn legacy_detection_covers_configured_root_and_ignores_empty_surfaces() {
+    let dir = tempdir();
+    let music = dir.join("music");
+    fs::create_dir_all(&music).unwrap();
+    fs::write(dir.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, music.display())).unwrap();
+    fs::write(music.join(".downloaded_vids"), "").unwrap();
+    assert!(!has_legacy_data(&dir, Some(&dir.join(".luno_previews"))));
+    fs::write(music.join(".luno_allowed_dups.json"), "[\"track\"]").unwrap();
+    assert!(has_legacy_data(&dir, None));
+    fs::remove_dir_all(dir).unwrap();
+}

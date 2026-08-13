@@ -20,6 +20,8 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: none; box-
 .luno-nav-button:hover, .luno-nav-button[aria-current="page"] { color: var(--luno-text); background: var(--luno-bg-3); }
 .luno-playlists { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px 24px; }
 .luno-main { display: flex; flex-direction: column; background: var(--luno-bg-2); }
+.luno-runtime-status { display: flex; gap: 12px; flex-wrap: wrap; padding: 8px 16px; color: var(--luno-warning); background: var(--luno-bg); font-size: 12px; }
+.luno-runtime-status [data-state="video-unconnected"] { color: var(--luno-text-2); }
 .luno-main-content { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .luno-main-content > * { min-height: 100%; }
 .luno-queue { background: var(--luno-bg-2); overflow-y: auto; overscroll-behavior: contain; }

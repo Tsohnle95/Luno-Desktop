@@ -115,10 +115,29 @@ fn preflight(p: &MigrationPaths) -> Result<(), MigrationError> {
 fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
     let dir = p.target_root.join(format!("migration-backup-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()));
     fs::create_dir_all(&dir)?;
-    for name in [".luno_config.json", ".luno_playlist_urls.json", ".luno_allowed_dups.json", ".downloaded_vids", ".sync_failed_vids", ".downloaded.txt"] {
-        let from = p.legacy_root.join(name); if from.is_file() { fs::copy(&from, dir.join(name))?; }
+    for root in [p.legacy_root.clone(), read_legacy(&p.legacy_root, None).config.and_then(|config| config.music_root.map(PathBuf::from)).unwrap_or_default()] {
+        if root.as_os_str().is_empty() { continue; }
+        for name in [".luno_config.json", ".luno_playlist_urls.json", ".luno_allowed_dups.json", ".downloaded_vids", ".sync_failed_vids", ".downloaded.txt"] {
+            let from = root.join(name); if from.is_file() { let destination = if root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } fs::copy(&from, destination)?; }
+        }
+        for path in walk_marker_files(&root) {
+            if path == root.join(".downloaded_vids") || path == root.join(".sync_failed_vids") || path == root.join(".downloaded.txt") { continue; }
+            let destination = dir.join(path.strip_prefix(&root).unwrap_or(&path));
+            if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; }
+            fs::copy(path, destination)?;
+        }
     }
     Ok(dir)
+}
+
+fn walk_marker_files(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(root) else { return Vec::new(); };
+    entries.flatten().flat_map(|entry| {
+        let path = entry.path();
+        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) { walk_marker_files(&path) }
+        else if matches!(path.file_name().and_then(|name| name.to_str()), Some(".downloaded_vids" | ".sync_failed_vids" | ".downloaded.txt")) { vec![path] }
+        else { Vec::new() }
+    }).collect()
 }
 
 fn convert(s: &LegacyState) -> MigratedSettings {

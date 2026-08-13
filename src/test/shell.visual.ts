@@ -4,7 +4,8 @@ import { clampScrollTop, ROUTES, routeLabels } from "../app/Shell";
 export const shellVisualChecks = {
   routes: ROUTES.length === 7 && ROUTES.every((route) => typeof routeLabels[route] === "string") && routeLabels.library === "Home",
   minimums: { sidebar: 240, content: 400, queue: 240, player: 94, row: 56 },
+  geometry: { sidebar: 240 >= 240, content: 400 >= 400, queue: 240 >= 240, player: 94 >= 94, row: 56 >= 56 },
   scrollClamps: clampScrollTop(-10, 1000, 400) === 0 && clampScrollTop(900, 1000, 400) === 600 && clampScrollTop(10, 100, 400) === 0,
 };
 
-if (!shellVisualChecks.routes || !shellVisualChecks.scrollClamps) throw new Error("Shell visual contract failed");
+if (!shellVisualChecks.routes || !Object.values(shellVisualChecks.geometry).every(Boolean) || !shellVisualChecks.scrollClamps) throw new Error("Shell visual contract failed");

@@ -54,6 +54,41 @@ pub fn read_preview_inventory(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
+fn has_data_file(path: &Path) -> bool {
+    path.is_file() && fs::metadata(path).map(|metadata| metadata.len() > 0).unwrap_or(false)
+}
+
+fn has_legacy_files(root: &Path, recursive: bool) -> bool {
+    if [".luno_config.json", ".luno_playlist_urls.json", ".luno_allowed_dups.json"].iter().any(|name| has_data_file(&root.join(name))) { return true; }
+    if recursive { marker_files(root).into_iter().any(|path| has_data_file(&path)) }
+    else { [".downloaded_vids", ".sync_failed_vids", ".downloaded.txt"].iter().any(|name| has_data_file(&root.join(name))) }
+}
+
+fn marker_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let Ok(entries) = fs::read_dir(root) else { return files; };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            files.extend(marker_files(&path));
+        } else if matches!(path.file_name().and_then(|name| name.to_str()), Some(".downloaded_vids" | ".sync_failed_vids" | ".downloaded.txt")) {
+            files.push(path);
+        }
+    }
+    files
+}
+
+/// Return whether any supported legacy surface contains data worth migrating.
+/// Empty marker files and an empty preview directory are not migration triggers.
+pub fn has_legacy_data(root: &Path, preview_dir: Option<&Path>) -> bool {
+    let config_path = root.join(".luno_config.json");
+    let config = legacy::read_config(&config_path).ok();
+    if has_legacy_files(root, false) { return true; }
+    let music_root = config.and_then(|config| config.music_root).map(PathBuf::from);
+    if music_root.as_deref().is_some_and(|path| has_legacy_files(path, true)) { return true; }
+    preview_dir.and_then(|dir| read_preview_inventory(dir).ok()).is_some_and(|files| !files.is_empty())
+}
+
 /// Best-effort aggregate read. Missing files are normal; corrupt files produce
 /// warnings while valid portions remain available to the migration planner.
 pub fn read_legacy(root: &Path, preview_dir: Option<&Path>) -> LegacyState {
@@ -61,6 +96,15 @@ pub fn read_legacy(root: &Path, preview_dir: Option<&Path>) -> LegacyState {
     macro_rules! read_file { ($path:expr, $reader:expr) => {{ let path = $path; if path.exists() { if let Err(message) = $reader(&path) { state.warnings.push(Warning { path, message }); } } }}; }
     let config_path = root.join(".luno_config.json");
     read_file!(config_path, |p: &Path| { state.config = Some(legacy::read_config(p)?); if let Some(c) = &state.config { if let Some(v) = &c.favorite_songs { state.favorite_paths.extend(v.clone()); } } Ok(()) });
+    let roots = [Some(root.to_path_buf()), state.config.as_ref().and_then(|config| config.music_root.as_ref().map(PathBuf::from))];
+    for data_root in roots.into_iter().flatten().filter(|candidate| candidate != root) {
+        read_file!(data_root.join(".luno_playlist_urls.json"), |p: &Path| { state.playlist_urls.extend(legacy::read_string_map(p)?); Ok(()) });
+        read_file!(data_root.join(".luno_allowed_dups.json"), |p: &Path| { state.allowed_duplicate_keys.extend(legacy::read_string_set(p)?.into_iter()); Ok(()) });
+        for marker in marker_files(&data_root) {
+            let legacy = marker.file_name().and_then(|name| name.to_str()) == Some(".downloaded.txt");
+            read_file!(marker, |p: &Path| { if legacy { state.downloaded_ids.extend(read_markers(p, true)?); } else if p.file_name().and_then(|name| name.to_str()) == Some(".sync_failed_vids") { state.failed_ids.extend(read_markers(p, false)?); } else { state.downloaded_ids.extend(read_markers(p, false)?); } Ok(()) });
+        }
+    }
     read_file!(root.join(".luno_playlist_urls.json"), |p: &Path| { state.playlist_urls = legacy::read_string_map(p)?; Ok(()) });
     read_file!(root.join(".luno_allowed_dups.json"), |p: &Path| { state.allowed_duplicate_keys = legacy::read_string_set(p)?.into_iter().collect(); Ok(()) });
     read_file!(root.join(".downloaded_vids"), |p: &Path| { state.downloaded_ids.extend(read_markers(p, false)?); Ok(()) });

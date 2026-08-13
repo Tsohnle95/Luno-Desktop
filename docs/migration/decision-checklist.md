@@ -1,7 +1,8 @@
 # Desktop Migration Decision Checklist
 
-Status: U02 decisions approved by the user; target implementation is not yet
-complete. This checklist is the integration handoff and release gate map.
+Status: U02 decisions approved by the user; target source exists, but runtime,
+toolchain, and required evidence remain pending. This checklist is the
+integration handoff and release gate map.
 
 | Area | Approved decision | Affected interface | Required evidence | Deferral/risk | Status |
 |---|---|---|---|---|---|
