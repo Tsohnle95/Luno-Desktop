@@ -212,6 +212,9 @@ class SongPageView(tk.Frame):
         self._art_photo = None      # last good artwork for the current path
         self._art_path = None
         self._video_path = None
+        self._video_file = None
+        self._fullscreen_window = None
+        self._fullscreen_player = None
         self._video_size = None
         self._video_player = None
         self._video_generation = 0
@@ -292,7 +295,7 @@ class SongPageView(tk.Frame):
 
         self.main_f.columnconfigure(0, weight=1)
 
-        # FIXED SIZE CONTAINER FOR ART (Ensures pixels, not characters)
+        # Wide YouTube-style media stage; dimensions are set responsively.
         self.art_container = tk.Frame(self.main_f, bg=BG2, width=480, height=480,
                                        highlightthickness=2, highlightbackground="#000")
         self.art_container.pack_propagate(False) # Force pixel sizes
@@ -301,6 +304,11 @@ class SongPageView(tk.Frame):
         self.art_lbl = tk.Label(self.art_container, text="♫", font=("Helvetica", 80),
                                  fg=TEXT3, bg=BG2)
         self.art_lbl.pack(fill="both", expand=True)
+        self.fullscreen_btn = tk.Label(self.art_container, text="⛶",
+                                       font=("Helvetica Neue", 18), fg=TEXT,
+                                       bg="#222222", cursor="hand2")
+        self.fullscreen_btn.place(relx=1.0, rely=1.0, anchor="se", x=-10, y=-10)
+        self.fullscreen_btn.bind("<Button-1>", lambda e: self._open_fullscreen_video())
 
         # Deliberately quiet opt-in control: probing never starts a download.
         self.video_btn = tk.Label(self.main_f, text="▷ Video", font=("Helvetica Neue", 9),
@@ -1118,14 +1126,12 @@ class SongPageView(tk.Frame):
         # for the recommendation header + first rows, like the mobile full
         # player's fixed controls over its scrollable content.
         max_h = h - 230
-        max_w = w - 10
-        art_size = min(max_h, max_w, 1000)
-        if art_size < 200: art_size = 200 # Minimum size
-
-        # Quantize art size to 20px increments to prevent spamming ArtCache thread pool during rapid window resize
-        art_size = (int(art_size) // 20) * 20
-
-        self.art_container.config(width=art_size, height=art_size)
+        media_width = max(w - 10, 200)
+        media_height = min(max_h, int(media_width * 9 / 16), 700)
+        media_height = max(media_height, 160)
+        media_width = (int(media_width) // 20) * 20
+        media_height = (int(media_height) // 20) * 20
+        self.art_container.config(width=media_width, height=media_height)
 
         if w < 600:
             self.title_lbl.config(font=("Helvetica Neue", 32, "bold"))
@@ -1190,11 +1196,13 @@ class SongPageView(tk.Frame):
         if self._video_player is not None and self._video_path == path:
             img = None
         else:
-            img = self.controller.art_cache.get(path, art_size, lambda p: self.after(0, self.update_view))
+            img = self.controller.art_cache.get(
+                path, (media_width, media_height), lambda p: self.after(0, self.update_view))
         if img:
             self._art_photo = img
             self._art_path = path
-            self.art_lbl.config(image=img, text="", bg=BG2, width=art_size, height=art_size)
+            self.art_lbl.config(image=img, text="", bg=BG2,
+                                width=media_width, height=media_height)
         elif self._video_player is not None and self._video_path == path:
             pass
         elif self._art_photo is not None and self._art_path == path:
@@ -1278,6 +1286,7 @@ class SongPageView(tk.Frame):
 
     def destroy(self):
         self._stop_video()
+        self._close_fullscreen_video()
         if self._video_spinner_after is not None:
             try:
                 self.after_cancel(self._video_spinner_after)
@@ -1370,6 +1379,7 @@ class SongPageView(tk.Frame):
             self.controller.status_var.set(error or "Video could not be downloaded")
             return
         self._video_path = path
+        self._video_file = video_path
         self._video_generation += 1
         self.art_container.update_idletasks()
         width = max(self.art_container.winfo_width(), 2)
@@ -1508,6 +1518,7 @@ class SongPageView(tk.Frame):
         player = self._video_player
         self._video_player = None
         self._video_path = None
+        self._video_file = None
         self._video_size = None
         self._video_generation += 1
         if player is not None:
@@ -1516,9 +1527,47 @@ class SongPageView(tk.Frame):
             except Exception:
                 pass
 
+    def _open_fullscreen_video(self):
+        if not self._video_file or self._video_player is None:
+            return
+        if self._fullscreen_window is not None:
+            return
+        window = tk.Toplevel(self)
+        window.configure(bg="black")
+        window.attributes("-fullscreen", True)
+        label = tk.Label(window, bg="black")
+        label.pack(fill="both", expand=True)
+        self._fullscreen_window = window
+        width = max(window.winfo_screenwidth(), 2)
+        height = max(window.winfo_screenheight(), 2)
+        self._fullscreen_player = _FFmpegVideoPlayer(
+            self._video_file, label, width, height, window.after,
+            lambda: self._close_fullscreen_video(),
+            lambda: self.controller.engine.get_position(),
+            lambda: bool(self.controller.engine.playing and
+                         not self.controller.engine.paused))
+        self._fullscreen_player.play()
+        window.bind("<Escape>", lambda e: self._close_fullscreen_video())
+        window.protocol("WM_DELETE_WINDOW", self._close_fullscreen_video)
+
+    def _close_fullscreen_video(self):
+        player = self._fullscreen_player
+        self._fullscreen_player = None
+        window = self._fullscreen_window
+        self._fullscreen_window = None
+        if player is not None:
+            player.stop()
+        if window is not None:
+            try:
+                window.destroy()
+            except tk.TclError:
+                pass
+
     def _on_video_finished(self):
+        self._close_fullscreen_video()
         if self._video_player is not None:
             self._video_player = None
+            self._video_file = None
             self._video_size = None
             self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
 

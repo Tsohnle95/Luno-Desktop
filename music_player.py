@@ -225,11 +225,18 @@ class ArtCache:
                         self._release_key(key)
                         return
                     img = source.convert("RGBA")
-                min_dim = min(img.width, img.height)
-                left = (img.width - min_dim)/2
-                top = (img.height - min_dim)/2
-                img = img.crop((left, top, left+min_dim, top+min_dim))
-                img = img.resize((size, size), Image.Resampling.LANCZOS)
+                target_w, target_h = size if isinstance(size, tuple) else (size, size)
+                source_ratio = img.width / img.height
+                target_ratio = target_w / target_h
+                if source_ratio > target_ratio:
+                    crop_w = int(img.height * target_ratio)
+                    left = (img.width - crop_w) // 2
+                    img = img.crop((left, 0, left + crop_w, img.height))
+                else:
+                    crop_h = int(img.width / target_ratio)
+                    top = (img.height - crop_h) // 2
+                    img = img.crop((0, top, img.width, top + crop_h))
+                img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
                 
                 # Extract dominant color for player bar accent
                 try:
@@ -247,7 +254,7 @@ class ArtCache:
                     try:
                         pi = ImageTk.PhotoImage(i)
                         i.close()
-                        self._store((p, s), pi, s * s)
+                        self._store((p, s), pi, pi.width() * pi.height())
                         success = True
                     except Exception:
                         try:
