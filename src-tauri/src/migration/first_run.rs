@@ -146,7 +146,7 @@ fn preflight(p: &MigrationPaths) -> Result<(), MigrationError> {
 fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
     let dir = p.target_root.join(format!("migration-backup-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()));
     fs::create_dir_all(&dir)?;
-    for root in [p.legacy_root.clone(), read_legacy(&p.legacy_root, None).config.and_then(|config| config.music_root.map(PathBuf::from)).unwrap_or_default()] {
+    let result = (|| -> Result<(), MigrationError> { for root in [p.legacy_root.clone(), read_legacy(&p.legacy_root, None).config.and_then(|config| config.music_root.map(PathBuf::from)).unwrap_or_default()] {
         if root.as_os_str().is_empty() { continue; }
         for name in [".luno_config.json", ".luno_playlist_urls.json", ".luno_allowed_dups.json", ".downloaded_vids", ".sync_failed_vids", ".downloaded.txt"] {
             let from = root.join(name); if from.is_file() { let destination = if root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } if name == ".luno_config.json" { snapshot_config(&from, &destination, &dir)?; } else { fs::copy(&from, destination)?; } }
@@ -157,7 +157,8 @@ fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
             if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; }
             fs::copy(path, destination)?;
         }
-    }
+    } Ok(()) })();
+    if let Err(error) = result { let _ = fs::remove_dir_all(&dir); return Err(error); }
     Ok(dir)
 }
 
@@ -277,7 +278,10 @@ fn quarantine_records(p: &MigrationPaths) -> Result<Vec<(PathBuf, PathBuf)>, Mig
     for original in [p.state_file(), p.version_record()] {
         if !original.exists() { continue; }
         let backup = p.target_root.join(format!(".migration-recovery-{}-{}", nonce(), original.file_name().unwrap().to_string_lossy()));
-        fs::rename(&original, &backup)?;
+        if let Err(error) = fs::rename(&original, &backup) {
+            for (restored, stranded) in result.into_iter().rev() { let _ = fs::rename(stranded, restored); }
+            return Err(error.into());
+        }
         result.push((original, backup));
     }
     Ok(result)
