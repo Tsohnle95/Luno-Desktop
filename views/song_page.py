@@ -40,10 +40,15 @@ class _FFmpegVideoPlayer:
         self.position_provider = position_provider
         self.playing_provider = playing_provider
         self.running = False
+        self._decoder = None
+        self._lock = threading.Lock()
+        self._latest_frame = None
+        self._present_after = None
         self._photo = None
 
     def play(self):
         self.running = True
+        self._schedule_present()
         threading.Thread(target=self._render_loop, daemon=True,
                          name="luno-video-frames").start()
 
@@ -51,32 +56,59 @@ class _FFmpegVideoPlayer:
         from PIL import Image
         vf = (f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
               f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black")
-        last_position = -1.0
         while self.running:
-            playing = bool(self.playing_provider())
-            position = float(self.position_provider())
-            # Do not decode new frames while audio is paused. The last frame
-            # remains visible and the next resume seeks from the audio clock.
-            if playing and abs(position - last_position) >= 0.04:
+            if not self.playing_provider():
+                self._stop_decoder()
+                time.sleep(0.05)
+                continue
+            if self._decoder is None:
+                position = max(float(self.position_provider()), 0.0)
                 try:
-                    completed = subprocess.run([
+                    self._decoder = subprocess.Popen([
                         "ffmpeg", "-loglevel", "error", "-ss", f"{position:.3f}",
-                        "-i", self.path, "-vf", vf, "-frames:v", "1",
-                        "-f", "image2pipe", "-vcodec", "png", "pipe:1",
-                    ], capture_output=True, timeout=2, check=True)
-                    image = Image.open(__import__("io").BytesIO(completed.stdout)).convert("RGB")
-                except (OSError, subprocess.SubprocessError, ValueError):
-                    image = None
-                if image is not None:
-                    last_position = position
-                    try:
-                        self.after(0, lambda image=image: self._show(image))
-                    except (RuntimeError, tk.TclError):
-                        break
-            try:
-                time.sleep(0.08)
-            except (RuntimeError, tk.TclError):
+                        "-i", self.path, "-vf", vf, "-an", "-f", "rawvideo",
+                        "-pix_fmt", "rgb24", "pipe:1"],
+                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                except OSError:
+                    self.running = False
+                    break
+            frame_size = self.width * self.height * 3
+            data = self._read_exact(frame_size)
+            if len(data) != frame_size:
+                self._stop_decoder()
+                continue
+            with self._lock:
+                self._latest_frame = Image.frombytes(
+                    "RGB", (self.width, self.height), data)
+
+    def _read_exact(self, size):
+        chunks = []
+        remaining = size
+        stream = self._decoder.stdout if self._decoder else None
+        while self.running and stream and remaining:
+            chunk = stream.read(remaining)
+            if not chunk:
                 break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def _schedule_present(self):
+        if not self.running:
+            return
+        try:
+            self._present_after = self.after(33, self._present)
+        except (RuntimeError, tk.TclError):
+            self.running = False
+
+    def _present(self):
+        self._present_after = None
+        with self._lock:
+            image = self._latest_frame
+            self._latest_frame = None
+        if image is not None:
+            self._show(image)
+        self._schedule_present()
 
     def _show(self, image):
         if self.running:
@@ -87,6 +119,26 @@ class _FFmpegVideoPlayer:
 
     def stop(self):
         self.running = False
+        if self._present_after is not None:
+            try:
+                self.after_cancel(self._present_after)
+            except (RuntimeError, tk.TclError):
+                pass
+            self._present_after = None
+        self._stop_decoder()
+
+    def _stop_decoder(self):
+        decoder = self._decoder
+        self._decoder = None
+        if decoder is not None:
+            try:
+                decoder.terminate()
+                decoder.wait(timeout=0.5)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    decoder.kill()
+                except OSError:
+                    pass
 
 class SongPageView(tk.Frame):
     def __init__(self, parent, controller):
