@@ -5,8 +5,11 @@ from utils import bind_scroll_events, scroll_amount
 from theme import playlist_gradient
 from widgets import ModernScrollbar, Spinner
 import os
+import shutil
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 import rec_artwork
+import threading
 
 # Mobile FullPlayerScreen parity: recommendations load in pages of 25 and can
 # grow up to 1,000 results.
@@ -16,6 +19,66 @@ PAGE_SB_WIDTH = 8
 DARK_BG = "#0f0f0f"
 REC_ART_CACHE_LIMIT = 128
 REC_ART_SIZE = 48  # mobile 48dp row artwork thumb
+
+
+class _FFmpegVideoPlayer:
+    """Small Tk-compatible frame pump using the system FFmpeg binary."""
+
+    def __init__(self, path, label, width, height, after, on_finished):
+        self.path = path
+        self.label = label
+        self.width = max(int(width), 2)
+        self.height = max(int(height), 2)
+        self.after = after
+        self.on_finished = on_finished
+        self.process = None
+        self.running = False
+
+    def play(self):
+        from PIL import Image
+        self._image = Image
+        vf = (f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
+              f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black")
+        self.process = subprocess.Popen([
+            "ffmpeg", "-loglevel", "error", "-i", self.path, "-vf", vf,
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.running = True
+        threading.Thread(target=self._read_frames, daemon=True,
+                         name="luno-video-frames").start()
+
+    def _read_frames(self):
+        frame_size = self.width * self.height * 3
+        while self.running and self.process and self.process.stdout:
+            data = self.process.stdout.read(frame_size)
+            if len(data) != frame_size:
+                break
+            image = self._image.frombytes("RGB", (self.width, self.height), data)
+            try:
+                self.after(0, lambda image=image: self._show(image))
+            except (RuntimeError, tk.TclError):
+                break
+        if self.running:
+            try:
+                self.after(0, self.on_finished)
+            except (RuntimeError, tk.TclError):
+                pass
+
+    def _show(self, image):
+        if self.running:
+            from PIL import ImageTk
+            self._photo = ImageTk.PhotoImage(image)
+            self.label.config(image=self._photo, text="")
+
+    def stop(self):
+        self.running = False
+        if self.process is not None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=1)
+            except (subprocess.TimeoutExpired, OSError):
+                self.process.kill()
+            self.process = None
 
 class SongPageView(tk.Frame):
     def __init__(self, parent, controller):
@@ -29,6 +92,11 @@ class SongPageView(tk.Frame):
         self._bg_signature = None
         self._art_photo = None      # last good artwork for the current path
         self._art_path = None
+        self._video_path = None
+        self._video_player = None
+        self._video_generation = 0
+        self._video_loading = False
+        self._video_photo = None
 
         # Recommendation section state (mirrors FullPlayerScreen.kt states)
         self._rec_seed = ("", "")          # (artist, title) the list was seeded for
@@ -108,6 +176,12 @@ class SongPageView(tk.Frame):
         self.art_lbl = tk.Label(self.art_container, text="♫", font=("Helvetica", 80),
                                  fg=TEXT3, bg=BG2)
         self.art_lbl.pack(fill="both", expand=True)
+
+        # Deliberately quiet opt-in control: probing never starts a download.
+        self.video_btn = tk.Label(self.main_f, text="▷ Video", font=("Helvetica Neue", 9),
+                                  fg=TEXT3, bg=BG, cursor="hand2")
+        self.video_btn.grid(row=1, column=0, sticky="se", padx=8, pady=8)
+        self.video_btn.bind("<Button-1>", lambda e: self._request_video())
 
         # Typography
         self.title_lbl = tk.Label(self.main_f, text="Song Title",
@@ -934,6 +1008,7 @@ class SongPageView(tk.Frame):
             path = self.controller.engine.queue[self.controller.engine.queue_idx]
 
         if not path:
+            self._stop_video()
             self._bg_generation += 1
             self._bg_signature = None
             if self._bg_future and not self._bg_future.done():
@@ -958,6 +1033,9 @@ class SongPageView(tk.Frame):
                 artist = pl_ctx
         self.title_lbl.config(text=title)
         self.artist_lbl.config(text=artist or "Unknown Artist")
+        if path != self._video_path:
+            self._stop_video()
+        self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
         self._sync_favorite_button(path)
         self._ensure_recs_seed(title, artist or "")
         self._layout_page(w, h)
@@ -1051,12 +1129,114 @@ class SongPageView(tk.Frame):
             pass
 
     def destroy(self):
+        self._stop_video()
         self._bg_generation += 1
         if self._bg_future and not self._bg_future.done():
             self._bg_future.cancel()
         self._bg_executor.shutdown(wait=False, cancel_futures=True)
         self._rec_art_executor.shutdown(wait=False, cancel_futures=True)
         super().destroy()
+
+    def _request_video(self):
+        """Probe first, then ask before spending bandwidth on a video file."""
+        if self._video_player is not None:
+            self._stop_video()
+            self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
+            return
+        if not shutil.which("ffmpeg"):
+            self.video_btn.config(text="FFmpeg unavailable", cursor="arrow")
+            return
+        if self._video_loading:
+            return
+        path = self._current_path()
+        if not path:
+            return
+        title, artist = split_track_name(path)
+        self._video_loading = True
+        self.video_btn.config(text="Checking video...", cursor="arrow")
+
+        def run():
+            try:
+                from video_preview import resolve_video_source
+                source = resolve_video_source(artist, title)
+                error = None
+            except Exception as exc:
+                source, error = None, str(exc)
+            try:
+                self.after(0, lambda: self._video_probe_done(path, artist, title, source, error))
+            except (RuntimeError, tk.TclError):
+                pass
+        threading.Thread(target=run, daemon=True, name="luno-video-probe").start()
+
+    def _current_path(self):
+        try:
+            q = self.controller.engine.queue
+            i = self.controller.engine.queue_idx
+            return q[i] if q and 0 <= i < len(q) else ""
+        except Exception:
+            return ""
+
+    def _video_probe_done(self, path, artist, title, source, error):
+        self._video_loading = False
+        if path != self._current_path():
+            return
+        if error:
+            self.video_btn.config(text="No video found", fg=TEXT3, cursor="arrow")
+            self.controller.status_var.set(error)
+            return
+        from tkinter import messagebox
+        if not messagebox.askyesno("Play song video?",
+                                   f"Download and show the video for\n{source['title']}?"):
+            self.video_btn.config(text="▷ Video", cursor="hand2")
+            return
+        self.video_btn.config(text="Downloading video...", cursor="arrow")
+        target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
+
+        def run():
+            try:
+                from video_preview import download_video
+                result, error = download_video(artist, title, source["url"], target), None
+            except Exception as exc:
+                result, error = None, str(exc)
+            try:
+                self.after(0, lambda: self._video_download_done(path, result, error))
+            except (RuntimeError, tk.TclError):
+                pass
+        threading.Thread(target=run, daemon=True, name="luno-video-download").start()
+
+    def _video_download_done(self, path, video_path, error):
+        if path != self._current_path():
+            return
+        if error or not video_path:
+            self.video_btn.config(text="Video unavailable", fg=TEXT3, cursor="arrow")
+            self.controller.status_var.set(error or "Video could not be downloaded")
+            return
+        self._video_path = path
+        self._video_generation += 1
+        self._video_player = _FFmpegVideoPlayer(
+            video_path, self.art_lbl, self.art_container.winfo_width(),
+            self.art_container.winfo_height(), self.after,
+            self._on_video_finished)
+        self._video_player.play()
+        self.video_btn.config(text="■ Video", fg=GREEN, cursor="hand2")
+        self.controller.status_var.set("Playing song video over album art")
+
+    def _stop_video(self):
+        player = self._video_player
+        self._video_player = None
+        self._video_path = None
+        self._video_generation += 1
+        if player is not None:
+            try:
+                player.stop()
+            except Exception:
+                pass
+
+    def _on_video_finished(self):
+        if self._video_player is not None:
+            self._video_player = None
+            self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
+
 
     def _sync_favorite_button(self, path="__current__"):
         if path == "__current__":

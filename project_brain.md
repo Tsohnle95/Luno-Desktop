@@ -25,6 +25,7 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── previews.py               # Temporary recommendation preview pipeline (resolve + download)
 ├── rec_artwork.py            # Deezer row-artwork fallback + 75 deterministic abstract designs
 ├── source_lookup.py          # yt-dlp source probing helpers
+├── video_preview.py           # Temporary YouTube video probe/download helpers
 ├── library_tools.py          # Library scanning, CSV parsing, and duplicate detection
 ├── downloader.py             # yt-dlp download wrapper (Downloader class)
 ├── theme.py                  # Color palette + playlist gradient system
@@ -176,6 +177,11 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 3. Worker reads `mutagen.mp3.MP3` → rejects oversized APIC payloads/images → extracts, crops, and resizes via `PIL.Image`
 4. Returns `ImageTk.PhotoImage` via a bounded `controller.after(0, ...)` callback; stale path cache entries are pruned after each library update
 
+### Song Video Preview
+1. The Song Page's discreet Video control probes `ytsearch5:` with yt-dlp on a worker thread; it does not begin playback or download during the probe.
+2. After confirmation, yt-dlp downloads one merged MP4 into `~/.luno_previews`, outside the library scan. The existing audio engine continues playing normally.
+3. System FFmpeg decodes the temporary MP4 into RGB frames on a worker thread; frames are marshalled to Tk with `.after(0, ...)` and displayed over the album-art label. Missing FFmpeg, unavailable sources, cancelled prompts, or failed downloads leave normal artwork/audio intact.
+
 ### Export / Import
 1. Export actions snapshot `_library` and selected paths, then build the manifest and probe metadata on a worker thread.
 2. The manifest stores stable provider IDs when available and marks metadata-only tracks with `ambiguity_confirmation_required`.
@@ -196,6 +202,7 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
   - `find_duplicates(library, allowed_keys)`: Groups tracks by `_normalize_for_dupe`.
   - `probe_soundcloud(query)`, `parse_exportify_csv(filepath)`: Supporting utilities.
 - **`previews.py`**: The temporary recommendation preview pipeline (mobile `resolveRecommendation`/`downloadPreview` parity). `resolve_preview_source(artist, title)` probes `ytsearch5:` with `extract_flat` and picks the first candidate with a 1s–3h duration (else the first with unknown duration) — used under a hard 15s controller deadline ("Finding a playable source timed out. Tap to retry."). `download_preview(...)` streams the resolved source through FFmpeg to a 44.1 kHz / 192k MP3 **without loudnorm** (transient previews mirror the mobile raw-stream path), embeds the thumbnail, enforces a cooperative 5-minute deadline ("Preview download timed out. Tap to retry.") and a 512 MiB size cap ("This source is too large for a quick preview…"). The preview pipeline never uses the library `Downloader` single job slot, so preview chains run while real downloads are in flight.
+- **`video_preview.py`**: Optional Song Page video support. Resolves a YouTube result and downloads a merged temporary MP4 into `PREVIEW_DIR`; it never adds video to `_library` or the audio queue. The Song Page uses system FFmpeg to decode frames into Tk and degrades to album art when the binary or source is unavailable.
 - **`rec_artwork.py`**: Recommendation row artwork (mobile `RecommendationArtworkService` + `RecommendationArtwork` parity). `find_artwork(artist, title)` runs the cached Deezer cover search (`api.deezer.com/search` with **quoted-term queries** `'"artist" "title"'` plus a plain-text fallback — Deezer's `artist:"X" track:"Y"` field query returns no results), preferring cover_xl→big→medium, with nulls cached too. `render_design(index, size)` draws one of **75 deterministic abstract designs** (index = `crc32(normalized key) mod 75` — stable across processes) used for loading/missing/error row states; `load_image(url)` downloads and center-crops a square thumbnail.
 - **`library_transfer.py`**: Portable transfer contract. Provides `build_manifest()`, `validate_manifest()`, `load_manifest()`, `write_manifest()`, `plan_import()`, and `apply_import_plan()` for the path-free v1 JSON format used by Android.
 - **`downloader.py`** (root `downloader.py` — not the view): The `Downloader` class — wraps `yt-dlp` for downloading audio. Static methods: `download_single()`, `download_youtube_url()`, `download_csv_tracks()`, `download_sync_tracks()`, and `download_playlist_sync()`. A class-level job coordinator admits one active download/write job, exposes cancellation for shutdown, and keeps yt-dlp/FFmpeg work inside its owning daemon job. Forces 44.1kHz, 192k MP3, EBU R 128 loudnorm. Uses `EmbedThumbnail` postprocessor. *Note: `views/downloader.py` is the UI view that calls this module.*
