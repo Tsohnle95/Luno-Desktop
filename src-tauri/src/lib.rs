@@ -29,7 +29,9 @@ pub mod download {
 pub mod state;
 pub mod library {
     pub mod index;
+    pub mod reconcile;
     pub mod scanner;
+    pub mod watch;
 }
 pub mod transfer {
     pub mod codec;
