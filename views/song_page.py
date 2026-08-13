@@ -61,11 +61,18 @@ class _FFmpegVideoPlayer:
                 self._stop_decoder()
                 time.sleep(0.05)
                 continue
+            position = max(float(self.position_provider()), 0.0)
+            if (self._decoder is not None and
+                    abs(position - getattr(self, "_last_audio_position", position)) > 1.0):
+                # A scrub or track handoff moved the audio clock. Restart the
+                # decoder at that authoritative position instead of drifting.
+                self._stop_decoder()
             if self._decoder is None:
-                position = max(float(self.position_provider()), 0.0)
+                self._last_audio_position = position
                 try:
                     self._decoder = subprocess.Popen([
                         "ffmpeg", "-loglevel", "error", "-ss", f"{position:.3f}",
+                        "-re",
                         "-i", self.path, "-vf", vf, "-an", "-f", "rawvideo",
                         "-pix_fmt", "rgb24", "pipe:1"],
                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -80,6 +87,7 @@ class _FFmpegVideoPlayer:
             with self._lock:
                 self._latest_frame = Image.frombytes(
                     "RGB", (self.width, self.height), data)
+            self._last_audio_position = position
 
     def _read_exact(self, size):
         chunks = []
@@ -1261,11 +1269,6 @@ class SongPageView(tk.Frame):
         if error:
             self.video_btn.config(text="No video found", fg=TEXT3, cursor="arrow")
             self.controller.status_var.set(error)
-            return
-        from tkinter import messagebox
-        if not messagebox.askyesno("Play song video?",
-                                   f"Download and show the video for\n{source['title']}?"):
-            self.video_btn.config(text="▷ Video", cursor="hand2")
             return
         self.video_btn.config(text="Downloading video...", cursor="arrow")
         target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
