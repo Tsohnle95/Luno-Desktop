@@ -1,19 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use luno_desktop_lib::contracts::{CommandEnvelope, ContractError};
-use luno_desktop_lib::migration::first_run::{migrate, Keychain, MigrationOptions, MigrationPaths};
+use luno_desktop_lib::migration::first_run::{migrate, MigrationOptions, MigrationPaths};
+use luno_desktop_lib::migration::keychain::MacOsKeychain;
 use luno_desktop_lib::migration::legacy_readers::has_legacy_data;
 use luno_desktop_lib::state::AppState;
 use serde_json::Value;
 use std::path::PathBuf;
 use tauri::Manager;
-
-struct NoopKeychain;
-impl Keychain for NoopKeychain {
-    fn import_lastfm_key(&mut self, _key: &str) -> Result<(), String> {
-        Err("secure keychain integration is not available in this shell".into())
-    }
-}
 
 #[tauri::command]
 fn backend_command(_state: tauri::State<'_, AppState>, envelope: CommandEnvelope) -> Result<Value, String> {
@@ -35,7 +29,7 @@ fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
         promoted_assets: Vec::new(),
     };
     if paths.version_record().exists() { return Ok(()); }
-    let mut keychain = NoopKeychain;
+    let mut keychain = MacOsKeychain::new();
     match migrate(&paths, &MigrationOptions::default(), &mut keychain) {
         Ok(_) => Ok(()),
         Err(error) => Err(format!("startup migration failed: {error:?}")),

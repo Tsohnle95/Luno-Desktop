@@ -12,6 +12,9 @@ fn tempdir() -> PathBuf {
 struct TestKeychain;
 impl Keychain for TestKeychain { fn import_lastfm_key(&mut self, _: &str) -> Result<(), String> { Ok(()) } }
 
+struct FailingKeychain;
+impl Keychain for FailingKeychain { fn import_lastfm_key(&mut self, _: &str) -> Result<(), String> { Err("access denied".into()) } }
+
 fn paths(root: &PathBuf) -> MigrationPaths {
     MigrationPaths { legacy_root: root.join("legacy"), target_root: root.join("target"), preview_dir: root.join("previews"), current_preview: Vec::new(), promoted_assets: Vec::new() }
 }
@@ -33,5 +36,20 @@ fn migration_is_explicitly_macos_only() {
     fs::create_dir_all(&p.legacy_root).unwrap();
     let result = migrate(&p, &MigrationOptions::default(), &mut TestKeychain);
     if cfg!(target_os = "macos") { assert!(result.is_ok()); } else { assert!(matches!(result, Err(MigrationError::UnsupportedPlatform))); }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn keychain_failure_writes_no_target_state_or_version() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    fs::write(p.legacy_root.join(".luno_config.json"), r#"{"lastfm_key":"secret"}"#).unwrap();
+
+    let result = migrate(&p, &MigrationOptions::default(), &mut FailingKeychain);
+    assert!(matches!(result, Err(MigrationError::Keychain(_))));
+    assert!(!p.state_file().exists());
+    assert!(!p.version_record().exists());
     fs::remove_dir_all(root).unwrap();
 }

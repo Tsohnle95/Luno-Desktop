@@ -14,6 +14,7 @@ pub mod persistence {
 }
 pub mod migration {
     pub mod first_run;
+    pub mod keychain;
     pub mod legacy_readers;
 }
 pub mod runtime {
