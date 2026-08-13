@@ -37,11 +37,22 @@ behavioral fallback.
 - `python -m pytest -q`: exit `127`, `zsh:1: command not found: python` (inconclusive).
 - `npm run typecheck`: exit `127`, `sh: tsc: command not found` (inconclusive).
 - `cargo test --manifest-path src-tauri/Cargo.toml`: exit `127`, `zsh:1: command not found: cargo` (inconclusive).
+- `npm run typecheck` (final-review rerun): exit `127`, `sh: tsc: command not found` (inconclusive).
+- `cargo test --manifest-path src-tauri/Cargo.toml` (final-review rerun): exit `127`, `zsh:1: command not found: cargo` (inconclusive).
+- `python3 -m pytest -q` (final-review rerun): exit `0`, `109 passed in 6.61s`.
 - `python3 -m json.tool tests/journeys/manifest.json >/dev/null`: exit `0`.
 - `python3 -m json.tool tests/reference/manifest.json >/dev/null`: exit `0`.
 - `git diff --check`: exit `0`.
 
 ## Release-Critical Gaps
+
+## Integration Blockers (U45)
+
+- **Tauri runtime:** resolved in source: managed `AppState`, registered bridge command, explicit unsupported-command errors, and startup migration invocation are now present. Target `cargo` verification remains inconclusive.
+- **Frontend projection:** resolved in source: startup subscription and library/scan projection requests are initialized with static fallback preserved. Target `tsc` verification remains inconclusive.
+- **Song Page video:** resolved in source: the page exposes typed connected/loading/disconnected video state and artwork fallback. Backend video lifecycle remains unverified.
+- **Discover route and shell contract:** resolved in source: a Discover placeholder is rendered and the visual contract asserts seven routes.
+- These source resolutions do not change the blocked status: required target build, runtime, visual, migration, shutdown, and release receipts remain unresolved below.
 
 - No target-vs-reference adapter receipt, browser screenshot artifacts, accessibility run, or executed manual journey receipts.
 - No clean-machine packaged smoke receipt, signed/notarized DMG, or macOS release artifact.

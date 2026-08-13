@@ -197,7 +197,7 @@ and rollback trial. Until then Python is the behavioral fallback.
 - Claims requiring review: crossfade, direct output validation, persistence
   atomicity, provider-ID wiring, identity/ambiguity, visual/manual coverage,
   shutdown, packaging and rollback.
-- Coverage gaps: no target source, complete target harness, screenshots,
+- Coverage gaps: target source is present but the complete target harness, screenshots,
   real-process corpus, packaged smoke receipt, crash corpus or rollback trial.
 - Status: complete, with blockers unresolved.
 

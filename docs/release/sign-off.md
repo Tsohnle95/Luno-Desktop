@@ -7,6 +7,8 @@ legacy user data must remain available as rollback fallback.
 
 ## Blocking Conditions
 
+- U45 integration blockers are source-resolved: Tauri bootstrap/unsupported command errors, startup projection, typed Song Page video fallback, Discover placeholder, and seven-route shell contract. Their target build and runtime receipts remain inconclusive.
+
 - Required target Rust and TypeScript gates are inconclusive: `cargo` and `tsc` are unavailable.
 - Visual screenshots, accessibility checks, and all manual journeys have no executed receipts or artifacts.
 - Target differential, migration-corpus, crash-recovery, shutdown/orphan, and clean-machine smoke gates are unavailable or inconclusive.

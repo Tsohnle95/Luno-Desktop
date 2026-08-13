@@ -25,9 +25,12 @@ const tauriTransport: BridgeTransport = {
 };
 
 let requestSequence = 0;
-function envelope(command: Command): CommandEnvelope {
+type UnitCommand = "get_library" | "scan_library" | "pause";
+
+function envelope(command: Command | UnitCommand): CommandEnvelope {
   const request_id = `frontend-${Date.now()}-${requestSequence++}`;
-  const result = { version: CONTRACT_VERSION, request_id, command };
+  const wireCommand: Command = typeof command === "string" ? { type: command } : command;
+  const result = { version: CONTRACT_VERSION, request_id, command: wireCommand };
   if (!isCommandEnvelope(result)) throw new Error("invalid command envelope");
   return result;
 }
@@ -55,7 +58,7 @@ function validPayload(value: EventEnvelope): boolean {
 }
 
 export function createBridge(transport: BridgeTransport = tauriTransport) {
-  const send = <T>(command: Command) => transport.invoke<T>(BACKEND_COMMAND, envelope(command));
+  const send = <T>(command: Command | UnitCommand) => transport.invoke<T>(BACKEND_COMMAND, envelope(command));
   return {
     getLibrary: () => send("get_library"),
     scanLibrary: () => send("scan_library"),
