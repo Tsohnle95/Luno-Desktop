@@ -234,9 +234,6 @@ class SongPageView(tk.Frame):
         self._video_preload_paths = set()
         self._video_preload_states = {}
         self._video_spinner_after = None
-        self._video_menu_hide_after = None
-        self._video_menu_poll_after = None
-        self._video_menu_visible = False
         self._video_spinner_frame = 0
         self._video_key_bindings = []
         self._layout_after = None
@@ -326,66 +323,21 @@ class SongPageView(tk.Frame):
                                   ("<Escape>", self._handle_video_escape)):
             self._video_key_bindings.append(
                 (sequence, self.bind_all(sequence, handler, add="+")))
-        # Video actions live in a compact hover menu below the media stage.
-        self.video_menu_btn = tk.Label(self.main_f, text="🎥", font=("Helvetica Neue", 14),
-                                       fg=TEXT3, bg=BG, cursor="hand2")
-        self.video_menu_btn.grid(row=2, column=0, sticky="e", padx=12, pady=(0, 8))
-        self.video_menu_btn.bind("<Enter>", lambda e: self._show_video_menu())
-        self.video_menu_btn.bind("<Leave>", lambda e: self._schedule_video_menu_check())
-        self.video_menu_window = tk.Toplevel(self)
-        self.video_menu_window.withdraw()
-        self.video_menu_window.overrideredirect(True)
-        self.video_menu_window.attributes("-topmost", False)
-        self.video_menu_window.configure(bg=BG3)
-        self.video_menu = tk.Frame(self.video_menu_window, bg=BG3,
-                                   bd=1, relief="solid")
-        self.video_menu.pack(fill="both", expand=True)
-        self.video_menu_play = tk.Label(self.video_menu, text="▷  Play video",
-                                        font=("Helvetica Neue", 10), fg=TEXT,
-                                        bg=BG3, anchor="w", padx=10, pady=6,
-                                        cursor="hand2")
-        self.video_menu_play.pack(fill="x")
-        self.video_menu_play.bind("<Button-1>", lambda e: self._run_video_menu_action(self._request_video))
-        self.video_menu_current = tk.Label(
-            self.video_menu, text="↓  Load current video", font=("Helvetica Neue", 10),
-            fg=TEXT, bg=BG3, anchor="w", padx=10, pady=6, cursor="hand2")
-        self.video_menu_current.pack(fill="x")
-        self.video_menu_current.bind(
-            "<Button-1>", lambda e: self._run_video_menu_action(self._load_current_video))
-        self.video_menu_next = tk.Label(
-            self.video_menu, text="→  Preload next video", font=("Helvetica Neue", 10),
-            fg=TEXT, bg=BG3, anchor="w", padx=10, pady=6, cursor="hand2")
-        self.video_menu_next.pack(fill="x")
-        self.video_menu_next.bind(
-            "<Button-1>", lambda e: self._run_video_menu_action(self._preload_next_video))
-        self.video_menu_auto = tk.Checkbutton(
-            self.video_menu, text="Auto-preload next", variable=self.video_preload_var,
-            command=lambda: self._run_video_menu_action(self._video_preload_changed),
-            font=("Helvetica Neue", 10), fg=TEXT, bg=BG3,
-            activebackground=BG3, activeforeground=TEXT, selectcolor=BG3,
-            highlightthickness=0, borderwidth=0, anchor="w")
-        self.video_menu_auto.pack(fill="x", padx=4, pady=2)
-        self.video_menu_status = tk.Label(
-            self.video_menu, text="", font=("Helvetica Neue", 9), fg=TEXT3,
-            bg=BG3, anchor="w", justify="left", padx=10, pady=4)
-        self.video_menu_status.pack(fill="x")
-        self.video_menu_spinner = tk.Label(self.video_menu, text="", fg=GREEN,
-                                           bg=BG3, font=("Helvetica Neue", 11))
-        self.video_menu_spinner.place(relx=1.0, rely=0.5, anchor="e", x=-8)
-        self.video_menu_fullscreen = tk.Label(
-            self.video_menu, text="⛶  Full screen", font=("Helvetica Neue", 10),
-            fg=TEXT, bg=BG3, anchor="w", padx=10, pady=6, cursor="hand2")
-        self.video_menu_fullscreen.pack(fill="x")
-        self.video_menu_fullscreen.bind("<Button-1>", lambda e: self._run_video_menu_action(self._open_fullscreen_video))
-        # Keep playback state updates targeting the menu controls.
-        self.video_btn = self.video_menu_play
-        self.video_spinner = self.video_menu_spinner
-        for widget in (self.video_menu, self.video_menu_play,
-                       self.video_menu_current, self.video_menu_next,
-                       self.video_menu_auto, self.video_menu_status,
-                       self.video_menu_fullscreen):
-            widget.bind("<Enter>", lambda e: self._cancel_hide_video_menu())
-            widget.bind("<Leave>", lambda e: self._schedule_video_menu_check())
+        # Keep video activation in the page window. A child checkbutton avoids
+        # the input/focus problems caused by a borderless popup Toplevel.
+        self.video_check = tk.Checkbutton(
+            self.main_f, text="Video", variable=self.video_preload_var,
+            command=self._video_preload_changed, font=("Helvetica Neue", 11),
+            fg=TEXT3, bg=BG, activebackground=BG, activeforeground=GREEN,
+            selectcolor=BG, highlightthickness=0, borderwidth=0,
+            anchor="w", padx=0, cursor="hand2")
+        self.video_check.grid(row=2, column=0, sticky="e", padx=12, pady=(0, 2))
+        self.video_status = tk.Label(
+            self.main_f, text="", font=("Helvetica Neue", 9),
+            fg=TEXT3, bg=BG, anchor="e")
+        self.video_status.grid(row=2, column=0, sticky="e", padx=(0, 12), pady=(0, 18))
+        self.video_btn = self.video_check
+        self.video_spinner = self.video_status
 
         # Typography
         self.title_lbl = tk.Label(self.main_f, text="Song Title",
@@ -1250,7 +1202,7 @@ class SongPageView(tk.Frame):
                 artist = pl_ctx
         self.title_lbl.config(text=title)
         self.artist_lbl.config(text=artist or "Unknown Artist")
-        self._refresh_video_menu_status(path)
+        self._refresh_video_status(path)
         if path != self._video_path:
             self._stop_video()
             self.art_container.update_idletasks()
@@ -1372,25 +1324,12 @@ class SongPageView(tk.Frame):
             self._layout_after = None
         self._stop_video()
         self._close_fullscreen_video()
-        if self.video_menu_window is not None:
-            try:
-                self.video_menu_window.destroy()
-            except tk.TclError:
-                pass
-            self.video_menu_window = None
-        if self._video_menu_poll_after is not None:
-            try:
-                self.after_cancel(self._video_menu_poll_after)
-            except (RuntimeError, tk.TclError):
-                pass
-            self._video_menu_poll_after = None
         if self._video_spinner_after is not None:
             try:
                 self.after_cancel(self._video_spinner_after)
             except (RuntimeError, tk.TclError):
                 pass
             self._video_spinner_after = None
-        self._cancel_hide_video_menu()
         for sequence, bind_id in self._video_key_bindings:
             try:
                 self.unbind_all(sequence, bind_id)
@@ -1528,27 +1467,24 @@ class SongPageView(tk.Frame):
         self.controller.status_var.set("Playing song video over album art")
 
     def _set_video_controls(self, current_text, status):
-        self.video_btn.config(text=current_text, fg=GREEN if self._video_player else TEXT3,
-                              cursor="hand2" if self._video_player or current_text.startswith(("▷", "Load")) else "arrow")
-        self.video_menu_play.config(text=current_text)
-        self.video_menu_current.config(text="↓  Load current video")
-        self.video_menu_status.config(text=status)
+        self.video_status.config(text=status, fg=GREEN if self._video_player else TEXT3)
+        self.video_check.config(fg=GREEN if self._video_player else TEXT3)
 
-    def _refresh_video_menu_status(self, path):
+    def _refresh_video_status(self, path):
         if self._video_loading:
-            self.video_menu_status.config(text="Current video: checking or downloading")
+            self.video_status.config(text="Current video: checking or downloading")
             return
         state = self._video_preload_states.get(path)
         if self._video_player is not None and self._video_path == path:
-            self.video_menu_status.config(text="Current video: ready and playing")
+            self.video_status.config(text="Current video: ready and playing")
         elif state == "downloading":
-            self.video_menu_status.config(text="Current video: downloading")
+            self.video_status.config(text="Current video: downloading")
         elif state == "ready":
-            self.video_menu_status.config(text="Current video: ready to play")
+            self.video_status.config(text="Current video: ready to play")
         elif state == "unavailable":
-            self.video_menu_status.config(text="Current video: unavailable")
+            self.video_status.config(text="Current video: unavailable")
         else:
-            self.video_menu_status.config(text="Current video: not checked")
+            self.video_status.config(text="Current video: not checked")
 
     def _start_current_staged_video(self, path):
         if not path or self._video_player is not None:
@@ -1570,13 +1506,15 @@ class SongPageView(tk.Frame):
 
     def _video_preload_changed(self):
         if self.video_preload_var.get():
+            self.video_check.config(fg=GREEN, activeforeground=GREEN)
             self._set_video_spinner(True)
-            self._preload_current_video()
+            self._load_current_video()
             self._preload_next_video()
-            self.video_menu_status.config(text="Auto-preload enabled; checking current and next songs")
+            self.video_status.config(text="Checking current video and next video")
         else:
+            self.video_check.config(fg=TEXT3, activeforeground=GREEN)
             self._set_video_spinner(False)
-            self.video_menu_status.config(text="Auto-preload disabled")
+            self.video_status.config(text="Video disabled")
 
     def _preload_current_video(self, path=None):
         path = path or self._current_path()
@@ -1586,19 +1524,37 @@ class SongPageView(tk.Frame):
     def _load_current_video(self):
         path = self._current_path()
         if not path:
-            self.video_menu_status.config(text="Current video: no song is playing")
+            self.video_status.config(text="Video: no song is playing")
+            return
+        if self._video_player is not None or self._video_loading:
             return
         title, artist = self._video_track_metadata(path)
         target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
-        try:
-            from video_preview import find_video
-            staged = find_video(artist, title, target)
-        except Exception:
-            staged = None
-        if staged:
-            self._video_download_done(path, staged, None)
-        else:
-            self._request_video()
+        self._video_loading = True
+        self.video_status.config(text="Current video: checking staged files")
+
+        def run():
+            try:
+                from video_preview import find_video
+                staged = find_video(artist, title, target)
+            except Exception:
+                staged = None
+
+            def done():
+                self._video_loading = False
+                if path != self._current_path():
+                    return
+                if staged:
+                    self._video_download_done(path, staged, None)
+                else:
+                    self._request_video()
+
+            try:
+                self.after(0, done)
+            except (RuntimeError, tk.TclError):
+                pass
+
+        threading.Thread(target=run, daemon=True, name="luno-video-current-check").start()
 
     def _preload_video(self, path, start_current=False):
         if not path or path in self._video_preload_paths:
@@ -1610,7 +1566,7 @@ class SongPageView(tk.Frame):
         self._video_preload_paths.add(path)
         self._video_preload_states[path] = "downloading"
         self._set_video_spinner(True)
-        self.video_menu_status.config(text=(
+        self.video_status.config(text=(
             "Current video: checking and downloading" if path == self._current_path()
             else "Next video: checking and downloading"))
         title, artist = self._video_track_metadata(path)
@@ -1651,7 +1607,7 @@ class SongPageView(tk.Frame):
         if not self._video_preload_paths:
             self._set_video_spinner(False)
         label = "Current" if path == self._current_path() else "Next"
-        self.video_menu_status.config(
+        self.video_status.config(
             text=f"{label} video: {'ready' if video_path else 'unavailable'}")
         self.controller.status_var.set(message)
 
@@ -1660,7 +1616,6 @@ class SongPageView(tk.Frame):
             if self._video_spinner_after is not None:
                 return
             self.video_spinner.config(fg=GREEN)
-            self.video_menu_spinner.config(fg=GREEN)
             self._animate_video_spinner()
         else:
             if self._video_spinner_after is not None:
@@ -1670,7 +1625,6 @@ class SongPageView(tk.Frame):
                     pass
                 self._video_spinner_after = None
             self.video_spinner.config(text=".", fg=TEXT3)
-            self.video_menu_spinner.config(text="", fg=TEXT3)
 
     def _animate_video_spinner(self):
         if not self._video_preload_paths:
@@ -1678,7 +1632,6 @@ class SongPageView(tk.Frame):
             return
         frames = ("|", "/", "-", "\\")
         self.video_spinner.config(text=frames[self._video_spinner_frame % len(frames)])
-        self.video_menu_spinner.config(text=frames[self._video_spinner_frame % len(frames)])
         self._video_spinner_frame += 1
         try:
             self._video_spinner_after = self.after(120, self._animate_video_spinner)
@@ -1691,119 +1644,10 @@ class SongPageView(tk.Frame):
             next_idx = engine.queue_idx + 1
             next_path = engine.queue[next_idx]
         except (AttributeError, IndexError):
-            self.video_menu_status.config(text="Next video: no next song in the queue")
+            self.video_status.config(text="Next video: no next song in the queue")
             self.controller.status_var.set("No next song in the current queue")
             return
         self._preload_video(next_path)
-
-    def _show_video_menu(self):
-        self._cancel_hide_video_menu()
-        self._video_menu_visible = True
-        self.video_menu_window.update_idletasks()
-        x = self.video_menu_btn.winfo_rootx()
-        # Touch the icon's lower edge so diagonal pointer movement cannot cross
-        # a dead zone between the trigger and the borderless popup.
-        y = self.video_menu_btn.winfo_rooty() + self.video_menu_btn.winfo_height()
-        self.video_menu_window.geometry(f"{self.video_menu_window.winfo_reqwidth()}x"
-                                        f"{self.video_menu_window.winfo_reqheight()}+{x}+{y}")
-        self.video_menu_window.deiconify()
-        self._poll_video_menu_pointer()
-
-    def _run_video_menu_action(self, action):
-        self._cancel_hide_video_menu()
-        self._video_menu_visible = False
-        if self._video_menu_poll_after is not None:
-            try:
-                self.after_cancel(self._video_menu_poll_after)
-            except (RuntimeError, tk.TclError):
-                pass
-            self._video_menu_poll_after = None
-        self._dismiss_video_menu()
-        self.after(0, action)
-
-    def _dismiss_video_menu(self):
-        """Hide the popup without leaving its native window owning input."""
-        window = self.video_menu_window
-        if window is None:
-            return
-        try:
-            grab = window.grab_current()
-            if grab and str(grab).startswith(str(window)):
-                window.grab_release()
-        except (RuntimeError, tk.TclError):
-            pass
-        try:
-            window.focus_clear()
-            window.withdraw()
-        except (RuntimeError, tk.TclError):
-            pass
-        try:
-            self.controller.focus_set()
-        except (RuntimeError, tk.TclError):
-            pass
-
-    def _cancel_hide_video_menu(self):
-        if self._video_menu_hide_after is not None:
-            try:
-                self.after_cancel(self._video_menu_hide_after)
-            except (RuntimeError, tk.TclError):
-                pass
-            self._video_menu_hide_after = None
-
-    def _hide_video_menu_later(self):
-        self._cancel_hide_video_menu()
-        try:
-            self._video_menu_hide_after = self.after(180, self._hide_video_menu_if_outside)
-        except (RuntimeError, tk.TclError):
-            self._video_menu_hide_after = None
-
-    def _schedule_video_menu_check(self):
-        self._hide_video_menu_later()
-
-    def _hide_video_menu_if_outside(self):
-        self._video_menu_hide_after = None
-        if not self._video_menu_visible:
-            return
-        try:
-            x, y = self.winfo_pointerxy()
-            for widget in (self.video_menu_btn, self.video_menu_window):
-                left = widget.winfo_rootx()
-                top = widget.winfo_rooty()
-                if left <= x < left + widget.winfo_width() and top <= y < top + widget.winfo_height():
-                    self._poll_video_menu_pointer()
-                    return
-            self._video_menu_visible = False
-            self._dismiss_video_menu()
-        except (RuntimeError, tk.TclError):
-            pass
-
-    def _poll_video_menu_pointer(self):
-        if not self._video_menu_visible or self._video_menu_poll_after is not None:
-            return
-        try:
-            self._video_menu_poll_after = self.after(60, self._video_menu_pointer_tick)
-        except (RuntimeError, tk.TclError):
-            self._video_menu_poll_after = None
-
-    def _video_menu_pointer_tick(self):
-        self._video_menu_poll_after = None
-        if not self._video_menu_visible:
-            return
-        try:
-            x, y = self.winfo_pointerxy()
-            widgets = (self.video_menu_btn, self.video_menu_window)
-            inside = any(
-                widget.winfo_rootx() <= x < widget.winfo_rootx() + widget.winfo_width()
-                and widget.winfo_rooty() <= y < widget.winfo_rooty() + widget.winfo_height()
-                for widget in widgets
-            )
-            if inside:
-                self._poll_video_menu_pointer()
-            else:
-                self._video_menu_visible = False
-                self._dismiss_video_menu()
-        except (RuntimeError, tk.TclError):
-            self._video_menu_visible = False
 
     def on_audio_track_started(self, path):
         """Engine hook: preload independently of Song Page redraw timing."""
