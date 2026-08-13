@@ -180,7 +180,8 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 ### Song Video Preview
 1. The Song Page's discreet Video control probes `ytsearch5:` with yt-dlp on a worker thread; it does not begin playback or download during the probe.
 2. After confirmation, yt-dlp downloads one merged MP4 into `~/.luno_previews`, outside the library scan. The existing audio engine continues playing normally.
-3. System FFmpeg decodes the temporary MP4 into RGB frames on a worker thread; frames are marshalled to Tk with `.after(0, ...)` and displayed over the album-art label. Missing FFmpeg, unavailable sources, cancelled prompts, or failed downloads leave normal artwork/audio intact.
+3. System FFmpeg decodes one aspect-fitted frame at a time into the exact artwork-square dimensions on a worker thread. The audio engine's elapsed position is the video clock, so pause/resume and scrubbing seek the video rather than allowing an independent stream to drift; frames are marshalled to Tk with `.after(0, ...)`. Missing FFmpeg, unavailable sources, cancelled prompts, or failed downloads leave normal artwork/audio intact.
+4. The Song Page `Preload next` checkbox uses the engine's active context queue (`engine.queue` and `queue_idx`) to resolve/download only the immediate successor into the same temporary directory. When that successor becomes current, its staged video is adopted automatically; it remains outside `_library` and the audio queue.
 
 ### Export / Import
 1. Export actions snapshot `_library` and selected paths, then build the manifest and probe metadata on a worker thread.

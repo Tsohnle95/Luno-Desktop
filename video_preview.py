@@ -82,3 +82,13 @@ def download_video(artist, title, source_url, target_dir):
         if os.path.isfile(path):
             return path
     raise VideoPreviewError("The downloaded video could not be opened")
+
+
+def find_video(artist, title, target_dir):
+    """Return an already staged video for this track, if one exists."""
+    safe = _safe_name(artist, title)
+    for ext in VIDEO_EXTS:
+        path = os.path.join(target_dir, f"{safe}{ext}")
+        if os.path.isfile(path):
+            return path
+    return None

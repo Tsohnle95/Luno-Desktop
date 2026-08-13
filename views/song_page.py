@@ -7,6 +7,7 @@ from widgets import ModernScrollbar, Spinner
 import os
 import shutil
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 import rec_artwork
 import threading
@@ -22,75 +23,70 @@ REC_ART_SIZE = 48  # mobile 48dp row artwork thumb
 
 
 class _FFmpegVideoPlayer:
-    """Small Tk-compatible frame pump using the system FFmpeg binary."""
+    """Timestamp-driven Tk video renderer.
 
-    def __init__(self, path, label, width, height, after, on_finished):
+    The audio engine is the clock. A frame is decoded at the current audio
+    position, so pausing and seeking audio also pauses/seeks the video.
+    """
+
+    def __init__(self, path, label, width, height, after, on_finished,
+                 position_provider, playing_provider):
         self.path = path
         self.label = label
         self.width = max(int(width), 2)
         self.height = max(int(height), 2)
         self.after = after
         self.on_finished = on_finished
-        self.process = None
+        self.position_provider = position_provider
+        self.playing_provider = playing_provider
         self.running = False
+        self._photo = None
 
     def play(self):
-        from PIL import Image
-        self._image = Image
-        vf = (f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
-              f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black")
-        self.process = subprocess.Popen([
-            "ffmpeg", "-loglevel", "error", "-re", "-i", self.path, "-vf", vf,
-            "-r", "12", "-an",
-            "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.running = True
-        threading.Thread(target=self._read_frames, daemon=True,
+        threading.Thread(target=self._render_loop, daemon=True,
                          name="luno-video-frames").start()
 
-    def _read_frames(self):
-        frame_size = self.width * self.height * 3
-        while self.running and self.process and self.process.stdout:
-            data = self._read_exact(frame_size)
-            if len(data) != frame_size:
-                break
-            image = self._image.frombytes("RGB", (self.width, self.height), data)
+    def _render_loop(self):
+        from PIL import Image
+        vf = (f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
+              f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black")
+        last_position = -1.0
+        while self.running:
+            playing = bool(self.playing_provider())
+            position = float(self.position_provider())
+            # Do not decode new frames while audio is paused. The last frame
+            # remains visible and the next resume seeks from the audio clock.
+            if playing and abs(position - last_position) >= 0.04:
+                try:
+                    completed = subprocess.run([
+                        "ffmpeg", "-loglevel", "error", "-ss", f"{position:.3f}",
+                        "-i", self.path, "-vf", vf, "-frames:v", "1",
+                        "-f", "image2pipe", "-vcodec", "png", "pipe:1",
+                    ], capture_output=True, timeout=2, check=True)
+                    image = Image.open(__import__("io").BytesIO(completed.stdout)).convert("RGB")
+                except (OSError, subprocess.SubprocessError, ValueError):
+                    image = None
+                if image is not None:
+                    last_position = position
+                    try:
+                        self.after(0, lambda image=image: self._show(image))
+                    except (RuntimeError, tk.TclError):
+                        break
             try:
-                self.after(0, lambda image=image: self._show(image))
+                time.sleep(0.08)
             except (RuntimeError, tk.TclError):
                 break
-        if self.running:
-            try:
-                self.after(0, self.on_finished)
-            except (RuntimeError, tk.TclError):
-                pass
-
-    def _read_exact(self, size):
-        chunks = []
-        remaining = size
-        while self.running and self.process and self.process.stdout and remaining:
-            chunk = self.process.stdout.read(remaining)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        return b"".join(chunks)
 
     def _show(self, image):
         if self.running:
             from PIL import ImageTk
             self._photo = ImageTk.PhotoImage(image)
-            self.label.config(image=self._photo, text="")
+            self.label.config(image=self._photo, text="", anchor="center",
+                              width=self.width, height=self.height)
 
     def stop(self):
         self.running = False
-        if self.process is not None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=1)
-            except (subprocess.TimeoutExpired, OSError):
-                self.process.kill()
-            self.process = None
 
 class SongPageView(tk.Frame):
     def __init__(self, parent, controller):
@@ -105,10 +101,13 @@ class SongPageView(tk.Frame):
         self._art_photo = None      # last good artwork for the current path
         self._art_path = None
         self._video_path = None
+        self._video_size = None
         self._video_player = None
         self._video_generation = 0
         self._video_loading = False
         self._video_photo = None
+        self._video_preload_path = None
+        self.video_preload_var = tk.BooleanVar(value=False)
 
         # Recommendation section state (mirrors FullPlayerScreen.kt states)
         self._rec_seed = ("", "")          # (artist, title) the list was seeded for
@@ -194,6 +193,12 @@ class SongPageView(tk.Frame):
                                   fg=TEXT3, bg=BG, cursor="hand2")
         self.video_btn.grid(row=1, column=0, sticky="se", padx=8, pady=8)
         self.video_btn.bind("<Button-1>", lambda e: self._request_video())
+        self.video_preload_chk = tk.Checkbutton(
+            self.main_f, text="Preload next", variable=self.video_preload_var,
+            command=self._video_preload_changed, font=("Helvetica Neue", 9),
+            fg=TEXT3, bg=BG, activebackground=BG, activeforeground=TEXT,
+            selectcolor=BG, highlightthickness=0, borderwidth=0)
+        self.video_preload_chk.grid(row=1, column=0, sticky="sw", padx=8, pady=8)
 
         # Typography
         self.title_lbl = tk.Label(self.main_f, text="Song Title",
@@ -1047,7 +1052,11 @@ class SongPageView(tk.Frame):
         self.artist_lbl.config(text=artist or "Unknown Artist")
         if path != self._video_path:
             self._stop_video()
-        self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
+            self._start_current_staged_video(path)
+            if self.video_preload_var.get():
+                self._preload_next_video()
+        if self._video_player is None:
+            self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
         self._sync_favorite_button(path)
         self._ensure_recs_seed(title, artist or "")
         self._layout_page(w, h)
@@ -1056,11 +1065,16 @@ class SongPageView(tk.Frame):
         # (e.g. favoriting a song) can evict this page's entry mid-display;
         # keep showing the last good image for this path instead of flashing
         # the placeholder while the refetch is in flight.
-        img = self.controller.art_cache.get(path, art_size, lambda p: self.after(0, self.update_view))
+        if self._video_player is not None and self._video_path == path:
+            img = None
+        else:
+            img = self.controller.art_cache.get(path, art_size, lambda p: self.after(0, self.update_view))
         if img:
             self._art_photo = img
             self._art_path = path
-            self.art_lbl.config(image=img, text="", bg=BG)
+            self.art_lbl.config(image=img, text="", bg=BG2, width=art_size, height=art_size)
+        elif self._video_player is not None and self._video_path == path:
+            pass
         elif self._art_photo is not None and self._art_path == path:
             try:
                 self.art_lbl.config(image=self._art_photo, text="")
@@ -1225,18 +1239,75 @@ class SongPageView(tk.Frame):
             return
         self._video_path = path
         self._video_generation += 1
+        self.art_container.update_idletasks()
+        width = max(self.art_container.winfo_width(), 2)
+        height = max(self.art_container.winfo_height(), 2)
+        self._video_size = (width, height)
         self._video_player = _FFmpegVideoPlayer(
-            video_path, self.art_lbl, self.art_container.winfo_width(),
-            self.art_container.winfo_height(), self.after,
-            self._on_video_finished)
+            video_path, self.art_lbl, width, height, self.after,
+            self._on_video_finished,
+            lambda: self.controller.engine.get_position(),
+            lambda: bool(self.controller.engine.playing and
+                         not self.controller.engine.paused))
         self._video_player.play()
         self.video_btn.config(text="■ Video", fg=GREEN, cursor="hand2")
         self.controller.status_var.set("Playing song video over album art")
+
+    def _start_current_staged_video(self, path):
+        if not path or self._video_player is not None:
+            return
+        title, artist = split_track_name(path)
+        target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
+        try:
+            from video_preview import find_video
+            video_path = find_video(artist, title, target)
+        except Exception:
+            video_path = None
+        if video_path:
+            self._video_download_done(path, video_path, None)
+
+    def _video_preload_changed(self):
+        if self.video_preload_var.get():
+            self._preload_next_video()
+
+    def _preload_next_video(self):
+        try:
+            engine = self.controller.engine
+            next_idx = engine.queue_idx + 1
+            next_path = engine.queue[next_idx]
+        except (AttributeError, IndexError):
+            self.controller.status_var.set("No next song in the current queue")
+            return
+        title, artist = split_track_name(next_path)
+        if self._video_preload_path == next_path:
+            return
+        self._video_preload_path = next_path
+        target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
+
+        def run():
+            try:
+                from video_preview import find_video, resolve_video_source, download_video
+                if find_video(artist, title, target):
+                    message = f"Video preloaded: {title}"
+                else:
+                    source = resolve_video_source(artist, title)
+                    download_video(artist, title, source["url"], target)
+                    message = f"Video preloaded: {title}"
+            except Exception as exc:
+                message = f"Video preload failed: {exc}"
+            if self._video_preload_path == next_path:
+                self._video_preload_path = None
+            try:
+                self.after(0, lambda: self.controller.status_var.set(message))
+            except (RuntimeError, tk.TclError):
+                pass
+        threading.Thread(target=run, daemon=True, name="luno-video-preload").start()
 
     def _stop_video(self):
         player = self._video_player
         self._video_player = None
         self._video_path = None
+        self._video_size = None
         self._video_generation += 1
         if player is not None:
             try:
@@ -1247,6 +1318,7 @@ class SongPageView(tk.Frame):
     def _on_video_finished(self):
         if self._video_player is not None:
             self._video_player = None
+            self._video_size = None
             self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
 
 
