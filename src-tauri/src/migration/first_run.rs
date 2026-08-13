@@ -118,7 +118,10 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     }
     let removed_previews = match cleanup.commit() {
         Ok(removed) => removed,
-        Err(error) => return Err(rollback(paths, snapshot, error, true, quarantined_records)),
+        Err((cleanup, error)) => {
+            cleanup.restore()?;
+            return Err(rollback(paths, snapshot, error, true, quarantined_records));
+        }
     };
     discard_quarantine(quarantined_records)?;
     Ok(MigrationReceipt { version: paths.version_record(), state: paths.state_file(), snapshot, removed_previews, warnings: legacy.warnings.len() })
@@ -188,7 +191,10 @@ impl PreviewCleanup {
         fs::remove_dir(&self.quarantine)?;
         Ok(())
     }
-    fn commit(self) -> Result<Vec<PathBuf>, MigrationError> { fs::remove_dir_all(self.quarantine)?; Ok(self.removed) }
+    fn commit(self) -> Result<Vec<PathBuf>, (Self, MigrationError)> {
+        if let Err(error) = fs::remove_dir_all(&self.quarantine) { return Err((self, MigrationError::Cleanup(format!("preview quarantine cleanup failed: {error}")))); }
+        Ok(self.removed)
+    }
 }
 fn cleanup_previews(p: &MigrationPaths) -> Result<PreviewCleanup, MigrationError> {
     if !p.preview_dir.exists() { return Ok(PreviewCleanup { removed: Vec::new(), quarantine: p.preview_dir.clone() }); }
