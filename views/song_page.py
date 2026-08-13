@@ -275,7 +275,10 @@ class SongPageView(tk.Frame):
         # ── BACKGROUND CANVAS ────────────────────────────────────────────────
         self.canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg=BG)
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", lambda e: self._schedule_layout())
+        self.canvas.bind("<Configure>", lambda e: (
+            self._resize_media_stage(e.width, e.height),
+            self._schedule_layout(),
+        ))
 
         # ── OVERLAY CONTAINER (Fills Canvas) ─────────────────────────────────
         self.content = tk.Frame(self.canvas, bg=BG, bd=0)
@@ -294,6 +297,7 @@ class SongPageView(tk.Frame):
                                                           anchor="nw", tags="pagewin")
         self.page_canvas.bind("<Configure>", lambda e: (
             self.page_canvas.itemconfig("pagewin", width=max(e.width - PAGE_SB_WIDTH, 50)),
+            self._resize_media_stage(e.width, e.height),
             self._schedule_layout(),
         ))
 
@@ -1133,6 +1137,22 @@ class SongPageView(tk.Frame):
         self._layout_after = None
         self.update_view()
 
+    def _resize_media_stage(self, width, height):
+        """Resize only the media stage during a window Configure event."""
+        try:
+            # page_canvas is already the area remaining beside the scrollbar.
+            page_width = max(self.page_canvas.winfo_width(), 200)
+            media_width = max(page_width - 10, 200)
+            media_height = min(max(height - 150, 160),
+                               int(media_width * 9 / 16), 700)
+            media_width = (media_width // 20) * 20
+            media_height = max((media_height // 20) * 20, 160)
+            self.art_container.config(width=media_width, height=media_height)
+            if self._video_player is not None:
+                self._video_player.resize(media_width, media_height)
+        except (RuntimeError, tk.TclError):
+            pass
+
     def update_view(self):
         if not self.winfo_ismapped(): return
 
@@ -1147,7 +1167,8 @@ class SongPageView(tk.Frame):
         # for the recommendation header + first rows, like the mobile full
         # player's fixed controls over its scrollable content.
         max_h = h - 150
-        media_width = max(w - 10, 200)
+        page_width = max(self.page_canvas.winfo_width(), 200)
+        media_width = max(page_width - 10, 200)
         media_height = min(max_h, int(media_width * 9 / 16), 700)
         media_height = max(media_height, 160)
         media_width = (int(media_width) // 20) * 20
