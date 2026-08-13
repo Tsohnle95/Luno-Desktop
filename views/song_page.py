@@ -335,6 +335,7 @@ class SongPageView(tk.Frame):
         self.video_menu_window = tk.Toplevel(self)
         self.video_menu_window.withdraw()
         self.video_menu_window.overrideredirect(True)
+        self.video_menu_window.attributes("-topmost", False)
         self.video_menu_window.configure(bg=BG3)
         self.video_menu = tk.Frame(self.video_menu_window, bg=BG3,
                                    bd=1, relief="solid")
@@ -344,10 +345,10 @@ class SongPageView(tk.Frame):
                                         bg=BG3, anchor="w", padx=10, pady=6,
                                         cursor="hand2")
         self.video_menu_play.pack(fill="x")
-        self.video_menu_play.bind("<Button-1>", lambda e: self._request_video())
+        self.video_menu_play.bind("<Button-1>", lambda e: self._run_video_menu_action(self._request_video))
         self.video_menu_preload = tk.Checkbutton(
             self.video_menu, text="Preload next", variable=self.video_preload_var,
-            command=self._video_preload_changed, font=("Helvetica Neue", 10),
+            command=lambda: self._run_video_menu_action(self._video_preload_changed), font=("Helvetica Neue", 10),
             fg=TEXT, bg=BG3, activebackground=BG3, activeforeground=TEXT,
             selectcolor=BG3, highlightthickness=0, borderwidth=0, anchor="w")
         self.video_menu_preload.pack(fill="x", padx=4, pady=2)
@@ -358,7 +359,7 @@ class SongPageView(tk.Frame):
             self.video_menu, text="⛶  Full screen", font=("Helvetica Neue", 10),
             fg=TEXT, bg=BG3, anchor="w", padx=10, pady=6, cursor="hand2")
         self.video_menu_fullscreen.pack(fill="x")
-        self.video_menu_fullscreen.bind("<Button-1>", lambda e: self._open_fullscreen_video())
+        self.video_menu_fullscreen.bind("<Button-1>", lambda e: self._run_video_menu_action(self._open_fullscreen_video))
         # Keep playback state updates targeting the menu controls.
         self.video_btn = self.video_menu_play
         self.video_spinner = self.video_menu_spinner
@@ -1167,7 +1168,7 @@ class SongPageView(tk.Frame):
         # Responsive Layout Adjustments. Reserve ~230px of the first viewport
         # for the recommendation header + first rows, like the mobile full
         # player's fixed controls over its scrollable content.
-        max_h = h - 230
+        max_h = h - 150
         media_width = max(w - 10, 200)
         media_height = min(max_h, int(media_width * 9 / 16), 700)
         media_height = max(media_height, 160)
@@ -1179,11 +1180,11 @@ class SongPageView(tk.Frame):
             self._video_player.resize(media_width, media_height)
 
         if w < 600:
-            self.title_lbl.config(font=("Helvetica Neue", 32, "bold"))
-            self.artist_lbl.config(font=("Helvetica Neue", 16))
+            self.title_lbl.config(font=("Helvetica Neue", 20, "bold"))
+            self.artist_lbl.config(font=("Helvetica Neue", 10))
         else:
-            self.title_lbl.config(font=("Helvetica Neue", 42, "bold"))
-            self.artist_lbl.config(font=("Helvetica Neue", 20))
+            self.title_lbl.config(font=("Helvetica Neue", 24, "bold"))
+            self.artist_lbl.config(font=("Helvetica Neue", 12))
 
         self.canvas.config(width=w, height=h)
 
@@ -1608,7 +1609,11 @@ class SongPageView(tk.Frame):
         self.video_menu_window.geometry(f"{self.video_menu_window.winfo_reqwidth()}x"
                                         f"{self.video_menu_window.winfo_reqheight()}+{x}+{y}")
         self.video_menu_window.deiconify()
-        self.video_menu_window.lift()
+
+    def _run_video_menu_action(self, action):
+        self._cancel_hide_video_menu()
+        self.video_menu_window.withdraw()
+        self.after(0, action)
 
     def _cancel_hide_video_menu(self):
         if self._video_menu_hide_after is not None:
