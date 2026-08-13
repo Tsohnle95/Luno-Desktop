@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import rec_artwork
 import threading
@@ -43,10 +44,12 @@ class _FFmpegVideoPlayer:
         self._decoder = None
         self._lock = threading.Lock()
         self._latest_frame = None
+        self._video_frames = deque(maxlen=12)
         self._present_after = None
         self._photo = None
-        self._decoder_audio_start = None
-        self._decoder_mono_start = None
+        self._source_fps = None
+        self._decoder_start_position = None
+        self._decoded_frames = 0
 
     def play(self):
         self.running = True
@@ -58,6 +61,7 @@ class _FFmpegVideoPlayer:
         from PIL import Image
         vf = (f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
               f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black")
+        fps = self._get_source_fps()
         while self.running:
             if not self.playing_provider():
                 self._stop_decoder()
@@ -71,35 +75,58 @@ class _FFmpegVideoPlayer:
                 self._stop_decoder()
             if self._decoder is None:
                 self._last_audio_position = position
-                self._decoder_audio_start = position
-                self._decoder_mono_start = time.monotonic()
+                self._decoder_start_position = position
+                self._decoded_frames = 0
                 try:
                     self._decoder = subprocess.Popen([
-                        "ffmpeg", "-loglevel", "error", "-ss", f"{position:.3f}",
-                        "-re",
-                        "-i", self.path, "-vf", vf, "-an", "-f", "rawvideo",
+                        "ffmpeg", "-loglevel", "error", "-i", self.path,
+                        "-ss", f"{position:.3f}", "-vf", vf, "-an", "-f", "rawvideo",
                         "-pix_fmt", "rgb24", "pipe:1"],
                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
                 except OSError:
                     self.running = False
                     break
+            with self._lock:
+                buffered_until = (self._video_frames[-1][0]
+                                  if self._video_frames else position)
+            if buffered_until > position + 0.25:
+                time.sleep(0.005)
+                continue
             frame_size = self.width * self.height * 3
             data = self._read_exact(frame_size)
             if len(data) != frame_size:
                 self._stop_decoder()
                 continue
+            timestamp = self._decoder_start_position + (
+                self._decoded_frames / fps)
+            frame = Image.frombytes("RGB", (self.width, self.height), data)
             with self._lock:
-                self._latest_frame = Image.frombytes(
-                    "RGB", (self.width, self.height), data)
+                self._video_frames.append((timestamp, frame))
+            self._decoded_frames += 1
             self._last_audio_position = position
-            # A decoder can fall behind while the OS is busy or while a high
-            # resolution frame is being scaled. Do not present stale frames;
-            # restart from the audio clock so delay cannot accumulate.
-            expected = self._decoder_audio_start + (
-                time.monotonic() - self._decoder_mono_start)
-            current = float(self.position_provider())
-            if abs(current - expected) > 0.25:
-                self._stop_decoder()
+
+    def _get_source_fps(self):
+        if self._source_fps:
+            return self._source_fps
+        try:
+            result = subprocess.run([
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=avg_frame_rate,r_frame_rate",
+                "-of", "default=noprint_wrappers=1:nokey=1", self.path,
+            ], capture_output=True, text=True, timeout=5, check=True)
+            rates = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            for rate in rates:
+                if "/" in rate:
+                    numerator, denominator = rate.split("/", 1)
+                    value = float(numerator) / float(denominator)
+                else:
+                    value = float(rate)
+                if 1.0 <= value <= 240.0:
+                    self._source_fps = value
+                    break
+        except (OSError, ValueError, subprocess.SubprocessError, ZeroDivisionError):
+            pass
+        return self._source_fps or 30.0
 
     def _read_exact(self, size):
         chunks = []
@@ -117,17 +144,19 @@ class _FFmpegVideoPlayer:
         if not self.running:
             return
         try:
-            # Present often enough for 24/30/60 FPS sources; the latest-frame
-            # buffer prevents Tk from building a stale queue.
-            self._present_after = self.after(16, self._present)
+            # The timestamped queue determines which native-rate frame is due;
+            # this only controls how often Tk checks the audio clock.
+            self._present_after = self.after(5, self._present)
         except (RuntimeError, tk.TclError):
             self.running = False
 
     def _present(self):
         self._present_after = None
+        position = max(float(self.position_provider()), 0.0)
+        image = None
         with self._lock:
-            image = self._latest_frame
-            self._latest_frame = None
+            while self._video_frames and self._video_frames[0][0] <= position:
+                _, image = self._video_frames.popleft()
         if image is not None:
             self._show(image)
         self._schedule_present()
@@ -148,10 +177,14 @@ class _FFmpegVideoPlayer:
                 pass
             self._present_after = None
         self._stop_decoder()
+        with self._lock:
+            self._video_frames.clear()
 
     def _stop_decoder(self):
         decoder = self._decoder
         self._decoder = None
+        with self._lock:
+            self._video_frames.clear()
         if decoder is not None:
             try:
                 decoder.terminate()
