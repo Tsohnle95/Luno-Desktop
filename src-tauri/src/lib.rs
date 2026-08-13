@@ -67,3 +67,8 @@ pub mod preview {
     pub mod session;
 }
 pub mod platform { pub mod media_session; }
+pub mod video {
+    pub mod player;
+    pub mod source;
+    pub mod staging;
+}
