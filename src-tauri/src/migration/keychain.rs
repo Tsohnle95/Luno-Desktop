@@ -1,6 +1,6 @@
 //! macOS Keychain adapter for first-run secret migration.
 
-use super::first_run::{Keychain, MAX_LASTFM_KEY_LEN};
+use super::first_run::{Keychain, KeychainImport, MAX_LASTFM_KEY_LEN};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SERVICE: &str = "com.ty.luno";
@@ -90,7 +90,7 @@ mod security {
         format!("macOS Keychain operation failed (status {status})")
     }
 
-    pub fn set(service_name: &str, account_name: &str, value: &[u8]) -> Result<(), String> {
+    pub fn set(service_name: &str, account_name: &str, value: &[u8]) -> Result<KeychainImport, String> {
         let service = service_name.as_bytes();
         let account = account_name.as_bytes();
         let service_len = UInt32::try_from(service.len()).map_err(|_| "invalid Keychain namespace".to_owned())?;
@@ -111,7 +111,7 @@ mod security {
             let same = existing == value;
             unsafe { SecKeychainItemFreeContent(ptr::null(), existing_data); }
             unsafe { CFRelease(item) };
-            return if same { Ok(()) } else { Err(status_error(ERR_SEC_CONFLICT)) };
+            return if same { Ok(KeychainImport::Existing) } else { Err(status_error(ERR_SEC_CONFLICT)) };
         }
         if status != ERR_SEC_ITEM_NOT_FOUND { return Err(status_error(status)); }
 
@@ -123,7 +123,7 @@ mod security {
         };
         if added == 0 {
             if !item.is_null() { unsafe { CFRelease(item) }; }
-            return Ok(());
+            return Ok(KeychainImport::Created);
         }
         // Another process may have created the stable item between Find and Add.
         if added == ERR_SEC_DUPLICATE_ITEM {
@@ -137,7 +137,7 @@ mod security {
             let same = unsafe { std::slice::from_raw_parts(existing_data, existing_length as usize) == value };
             unsafe { SecKeychainItemFreeContent(ptr::null(), existing_data); }
             unsafe { CFRelease(existing) };
-            return if same { Ok(()) } else { Err(status_error(ERR_SEC_CONFLICT)) };
+            return if same { Ok(KeychainImport::Existing) } else { Err(status_error(ERR_SEC_CONFLICT)) };
         }
         Err(status_error(added))
     }
@@ -169,13 +169,20 @@ mod security {
 }
 
 impl Keychain for MacOsKeychain {
-    fn import_lastfm_key(&mut self, key: &str) -> Result<(), String> {
+    fn import_lastfm_key(&mut self, key: &str) -> Result<KeychainImport, String> {
         if key.trim().is_empty() { return Err("Last.fm key is empty".into()); }
         if key.len() > MAX_LASTFM_KEY_LEN { return Err("Last.fm key exceeds maximum length".into()); }
         #[cfg(target_os = "macos")]
         { security::set(self.service, self.account, key.as_bytes()) }
         #[cfg(not(target_os = "macos"))]
         { Err("macOS Keychain is unavailable on this platform".into()) }
+    }
+
+    fn rollback_lastfm_key(&mut self, import: KeychainImport) -> Result<(), String> {
+        match import {
+            KeychainImport::Created => self.remove_lastfm_key(),
+            KeychainImport::Existing => Ok(()),
+        }
     }
 }
 

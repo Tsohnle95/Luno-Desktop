@@ -86,7 +86,8 @@ pub fn has_legacy_data(root: &Path, preview_dir: Option<&Path>) -> bool {
     if has_legacy_files(root, false) { return true; }
     let music_root = config.and_then(|config| config.music_root).map(PathBuf::from);
     if music_root.as_deref().is_some_and(|path| has_legacy_files(path, true)) { return true; }
-    preview_dir.and_then(|dir| read_preview_inventory(dir).ok()).is_some_and(|files| !files.is_empty())
+    preview_dir.is_some_and(|dir| fs::symlink_metadata(dir).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false))
+        || preview_dir.and_then(|dir| read_preview_inventory(dir).ok()).is_some_and(|files| !files.is_empty())
 }
 
 /// Best-effort aggregate read. Missing files are normal; corrupt files produce

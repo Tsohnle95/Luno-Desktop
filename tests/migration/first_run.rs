@@ -10,10 +10,22 @@ fn tempdir() -> PathBuf {
 }
 
 struct TestKeychain;
-impl Keychain for TestKeychain { fn import_lastfm_key(&mut self, _: &str) -> Result<(), String> { Ok(()) } }
+impl Keychain for TestKeychain {
+    fn import_lastfm_key(&mut self, _: &str) -> Result<KeychainImport, String> { Ok(KeychainImport::Existing) }
+    fn rollback_lastfm_key(&mut self, _: KeychainImport) -> Result<(), String> { Ok(()) }
+}
 
 struct FailingKeychain;
-impl Keychain for FailingKeychain { fn import_lastfm_key(&mut self, _: &str) -> Result<(), String> { Err("access denied".into()) } }
+impl Keychain for FailingKeychain {
+    fn import_lastfm_key(&mut self, _: &str) -> Result<KeychainImport, String> { Err("access denied".into()) }
+    fn rollback_lastfm_key(&mut self, _: KeychainImport) -> Result<(), String> { Ok(()) }
+}
+
+struct TrackingKeychain { rollback_count: usize }
+impl Keychain for TrackingKeychain {
+    fn import_lastfm_key(&mut self, _: &str) -> Result<KeychainImport, String> { Ok(KeychainImport::Created) }
+    fn rollback_lastfm_key(&mut self, _: KeychainImport) -> Result<(), String> { self.rollback_count += 1; Ok(()) }
+}
 
 fn paths(root: &PathBuf) -> MigrationPaths {
     MigrationPaths { legacy_root: root.join("legacy"), target_root: root.join("target"), preview_dir: root.join("previews"), current_preview: Vec::new(), promoted_assets: Vec::new() }
@@ -182,6 +194,21 @@ fn post_commit_quarantine_cleanup_is_only_a_warning() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn completed_retry_discards_leftover_recovery_quarantine_with_warning() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.target_root).unwrap();
+    fs::write(p.version_record(), r#"{"migration":"desktop-first-run","version":1,"completed":true}"#).unwrap();
+    let leftover = p.target_root.join(".migration-recovery-leftover");
+    fs::write(&leftover, "old").unwrap();
+    let result = migrate(&p, &MigrationOptions::default(), &mut TestKeychain);
+    assert!(matches!(result, Err(MigrationError::AlreadyComplete(warnings)) if warnings.iter().any(|warning| warning.contains("discarded leftover"))));
+    assert!(!leftover.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(all(target_os = "macos", unix))]
 #[test]
 fn dangling_preview_symlink_is_rejected() {
@@ -208,5 +235,19 @@ fn preview_cleanup_failure_rolls_back_every_migration_artifact() {
     assert!(!p.state_file().exists());
     assert!(!p.version_record().exists());
     assert!(fs::read_dir(&p.target_root).unwrap().next().is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn post_import_failure_rolls_back_new_keychain_item() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    fs::write(p.legacy_root.join(".luno_config.json"), r#"{"lastfm_key":"secret"}"#).unwrap();
+    let mut keychain = TrackingKeychain { rollback_count: 0 };
+    let result = migrate(&p, &MigrationOptions { crash_at: Some(CrashStage::Converted), ..Default::default() }, &mut keychain);
+    assert!(matches!(result, Err(MigrationError::InjectedCrash(CrashStage::Converted))));
+    assert_eq!(keychain.rollback_count, 1);
     fs::remove_dir_all(root).unwrap();
 }

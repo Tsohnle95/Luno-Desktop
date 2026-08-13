@@ -47,3 +47,14 @@ fn legacy_detection_covers_configured_root_and_ignores_empty_surfaces() {
     assert!(has_legacy_data(&dir, None));
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn dangling_preview_symlink_is_a_migration_trigger_for_main_gating() {
+    use std::os::unix::fs::symlink;
+    let dir = tempdir();
+    let preview = dir.join(".luno_previews");
+    symlink(dir.join("missing"), &preview).unwrap();
+    assert!(has_legacy_data(&dir, Some(&preview)));
+    fs::remove_dir_all(dir).unwrap();
+}
