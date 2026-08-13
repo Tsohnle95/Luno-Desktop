@@ -1,0 +1,145 @@
+//! State machine for a tapped recommendation preview.
+//!
+//! The session owns no library state.  It captures the physical playback queue
+//! on entry and produces a temporary queue projection until the user hands
+//! playback back to the physical queue (or the session is invalidated).
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use crate::contracts::TrackId;
+
+pub const AHEAD_WINDOW: usize = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionMode { Tap }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionAction {
+    Play(TrackId),
+    Wait(TrackId),
+    LeaveToNext { queue: Vec<TrackId>, index: Option<usize> },
+    ReturnToSeed { queue: Vec<TrackId>, index: usize },
+    Ended,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Handoff { pub queue: Vec<TrackId>, pub index: Option<usize> }
+
+#[derive(Debug, Clone)]
+pub struct PreviewSession {
+    generation: u64,
+    physical_queue: Vec<TrackId>,
+    physical_index: usize,
+    recommendations: Vec<TrackId>,
+    paths: HashMap<TrackId, PathBuf>,
+    window_start: usize,
+    window_end: usize,
+    current: Option<usize>,
+    active: bool,
+}
+
+impl PreviewSession {
+    /// Captures the queue before any preview item is inserted.
+    pub fn start(
+        generation: u64,
+        physical_queue: Vec<TrackId>,
+        physical_index: usize,
+        recommendations: Vec<TrackId>,
+        tapped: &TrackId,
+    ) -> Option<Self> {
+        let tapped_index = recommendations.iter().position(|id| id == tapped)?;
+        if physical_queue.is_empty() || physical_index >= physical_queue.len() { return None; }
+        Some(Self {
+            generation,
+            physical_queue,
+            physical_index,
+            recommendations,
+            paths: HashMap::new(),
+            window_start: tapped_index,
+            window_end: tapped_index.saturating_add(1 + AHEAD_WINDOW),
+            current: None,
+            active: true,
+        })
+    }
+
+    pub fn generation(&self) -> u64 { self.generation }
+    pub fn is_active(&self) -> bool { self.active }
+    pub fn current(&self) -> Option<&TrackId> { self.current.and_then(|i| self.recommendations.get(i)) }
+    pub fn window(&self) -> &[TrackId] { &self.recommendations[self.window_start..self.window_end.min(self.recommendations.len())] }
+    pub fn prepared(&self) -> usize { self.paths.len() }
+    pub fn physical_queue(&self) -> &[TrackId] { &self.physical_queue }
+
+    /// Accepts a completed asset.  A stale completion is ignored and cannot
+    /// resurrect a session after handoff or shutdown.
+    pub fn prepared_asset(&mut self, generation: u64, id: TrackId, path: PathBuf) -> SessionAction {
+        if !self.active || generation != self.generation || !self.in_window(&id) { return SessionAction::Ended; }
+        self.paths.insert(id.clone(), path);
+        if self.current.is_none() {
+            self.current = Some(self.window_start);
+            return SessionAction::Play(id);
+        }
+        SessionAction::Wait(id)
+    }
+
+    /// A failed tapped item ends the session without changing physical
+    /// playback.  Later-item failures simply leave a preparation gap.
+    pub fn failed_asset(&mut self, generation: u64, id: &TrackId) -> SessionAction {
+        if !self.active || generation != self.generation { return SessionAction::Ended; }
+        if self.current.is_none() && self.recommendations.get(self.window_start) == Some(id) {
+            self.active = false;
+            return SessionAction::Ended;
+        }
+        self.paths.remove(id);
+        SessionAction::Wait(id.clone())
+    }
+
+    /// Advances to a prepared recommendation and extends the desired window.
+    pub fn next(&mut self) -> SessionAction {
+        let next = self.current.map_or(self.window_start, |i| i + 1);
+        if next >= self.window_end.min(self.recommendations.len()) { return self.leave_next(); }
+        self.current = Some(next);
+        let id = self.recommendations[next].clone();
+        if self.paths.contains_key(&id) { SessionAction::Play(id) } else { SessionAction::Wait(id) }
+    }
+
+    pub fn previous(&mut self) -> SessionAction {
+        match self.current {
+            Some(i) if i > self.window_start => {
+                let id = self.recommendations[i - 1].clone();
+                self.current = Some(i - 1);
+                if self.paths.contains_key(&id) { SessionAction::Play(id) } else { SessionAction::Wait(id) }
+            }
+            _ => self.return_to_seed(),
+        }
+    }
+
+    pub fn refill_target(&self) -> usize {
+        self.current.map_or(0, |i| (i + 1 + AHEAD_WINDOW).min(self.recommendations.len()))
+    }
+
+    pub fn invalidate(&mut self, new_generation: u64) -> Handoff {
+        self.generation = new_generation;
+        self.active = false;
+        self.handoff()
+    }
+
+    pub fn shutdown(&mut self) -> Handoff { self.invalidate(self.generation.saturating_add(1)) }
+
+    pub fn handoff(&self) -> Handoff {
+        Handoff { queue: self.physical_queue.clone(), index: Some(self.physical_index) }
+    }
+
+    fn leave_next(&mut self) -> SessionAction {
+        self.active = false;
+        let index = (self.physical_index + 1 < self.physical_queue.len()).then_some(self.physical_index + 1);
+        SessionAction::LeaveToNext { queue: self.physical_queue.clone(), index }
+    }
+
+    fn return_to_seed(&mut self) -> SessionAction {
+        self.active = false;
+        SessionAction::ReturnToSeed { queue: self.physical_queue.clone(), index: self.physical_index }
+    }
+
+    fn in_window(&self, id: &TrackId) -> bool { self.window().iter().any(|candidate| candidate == id) }
+}
