@@ -59,8 +59,6 @@ class _FFmpegVideoPlayer:
 
     def _render_loop(self):
         from PIL import Image
-        vf = (f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
-              f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black")
         fps = self._get_source_fps()
         while self.running:
             if not self.playing_provider():
@@ -78,6 +76,8 @@ class _FFmpegVideoPlayer:
                 self._decoder_start_position = position
                 self._decoded_frames = 0
                 try:
+                    vf = (f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
+                          f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black")
                     self._decoder = subprocess.Popen([
                         "ffmpeg", "-loglevel", "error", "-ss", f"{position:.3f}",
                         "-i", self.path, "-vf", vf, "-an", "-f", "rawvideo",
@@ -183,6 +183,16 @@ class _FFmpegVideoPlayer:
     def seek(self):
         """Interrupt a blocked decoder so it restarts at the audio clock."""
         self._stop_decoder()
+
+    def resize(self, width, height):
+        width = max(int(width), 2)
+        height = max(int(height), 2)
+        if (width, height) == (self.width, self.height):
+            return
+        self.width = width
+        self.height = height
+        self._stop_decoder()
+        self.label.config(width=width, height=height)
 
     def _stop_decoder(self):
         decoder = self._decoder
@@ -1164,6 +1174,9 @@ class SongPageView(tk.Frame):
         media_width = (int(media_width) // 20) * 20
         media_height = (int(media_height) // 20) * 20
         self.art_container.config(width=media_width, height=media_height)
+        self.art_container.update_idletasks()
+        if self._video_player is not None:
+            self._video_player.resize(media_width, media_height)
 
         if w < 600:
             self.title_lbl.config(font=("Helvetica Neue", 32, "bold"))
@@ -1207,6 +1220,7 @@ class SongPageView(tk.Frame):
         self.artist_lbl.config(text=artist or "Unknown Artist")
         if path != self._video_path:
             self._stop_video()
+            self.art_container.update_idletasks()
             self._start_current_staged_video(path)
             if self.video_preload_var.get():
                 self._preload_current_video(path)
@@ -1480,6 +1494,11 @@ class SongPageView(tk.Frame):
             video_path = None
         if video_path:
             self._video_download_done(path, video_path, None)
+        elif self.video_preload_var.get():
+            try:
+                self.after(50, lambda: self._start_current_staged_video(path))
+            except (RuntimeError, tk.TclError):
+                pass
 
     def _video_preload_changed(self):
         if self.video_preload_var.get():
