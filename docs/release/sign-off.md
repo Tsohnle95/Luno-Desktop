@@ -14,6 +14,9 @@ legacy user data must remain available as rollback fallback.
 - Target differential, migration-corpus, crash-recovery, shutdown/orphan, and clean-machine smoke gates are unavailable or inconclusive.
 - No signed/notarized bundle exists. Binary provisioning cannot pass because `release-input/bin/` is absent and the release manifest contains placeholder SHA-256 values.
 - Provider-index transfer handoff and the approved crossfade-removal migration test lack target evidence.
+- Production still uses `NoopKeychain`; key-bearing legacy migration must block until a real macOS Keychain adapter is wired.
+- Frontend backend and video availability remain explicitly unavailable because runtime IPC is not implemented.
+- The shell geometry check is a contract check only, not rendered screenshot evidence.
 
 ## Evidence
 

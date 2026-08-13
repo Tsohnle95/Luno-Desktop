@@ -12,7 +12,7 @@ behavioral fallback.
 
 | IDs | Result | Evidence or blocker |
 |---|---|---|
-| AC-SHELL-01, AC-SHELL-02 | BLOCKED | Source-contract checks exist; browser screenshots and manual receipts are unavailable. |
+| AC-SHELL-01, AC-SHELL-02 | BLOCKED | The shell geometry check is a browser-independent contract check, not rendered screenshot evidence; browser screenshots and manual receipts are unavailable. |
 | AC-LIB-01, AC-LIB-02, AC-LIB-03 | INCONCLUSIVE | Python/reference differential surface only; no target conformance receipt. |
 | AC-LIB-04, AC-LIB-05, AC-LIB-06 | INCONCLUSIVE | Target generation, journey, and rename/reference-repair receipts unavailable. |
 | AC-PLAY-01, AC-PLAY-02 | INCONCLUSIVE | Pure reference coverage exists; target/shell journey receipt unavailable. |
@@ -21,7 +21,7 @@ behavioral fallback.
 | AC-DL-01, AC-DL-02, AC-DL-03, AC-DL-04 | INCONCLUSIVE | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
 | AC-DISC-01, AC-DISC-02, AC-DISC-03, AC-DISC-04, AC-DISC-05, AC-DISC-06 | INCONCLUSIVE | Target provider, preview, save, journey, and shutdown receipts unavailable. |
 | AC-ART-01 | INCONCLUSIVE | Target artwork/cache and visual receipt unavailable. |
-| AC-VIDEO-01, AC-VIDEO-02, AC-VIDEO-03 | INCONCLUSIVE | Target staging/audio-clock lifecycle, visual, manual, and shutdown receipts unavailable. |
+| AC-VIDEO-01, AC-VIDEO-02, AC-VIDEO-03 | BLOCKED | Frontend backend/video availability remains explicitly unavailable because runtime IPC is not implemented; target staging/audio-clock lifecycle, visual, manual, and shutdown receipts are unavailable. |
 | AC-XFER-01, AC-XFER-02 | PASS (reference only) | Frozen v1 codec/rejection coverage and manifest validation pass; this does not prove packaged target parity. |
 | AC-XFER-03, AC-XFER-04 | BLOCKED | Target planner receipt and provider-index/controller handoff evidence unavailable. |
 | AC-PERSIST-01, AC-PERSIST-02 | INCONCLUSIVE | No target crash/recovery or marker recovery corpus receipt. |
@@ -49,8 +49,8 @@ behavioral fallback.
 ## Integration Blockers (U45)
 
 - **Tauri runtime:** resolved in source: managed `AppState`, registered bridge command, explicit unsupported-command errors, and startup migration invocation are now present. Target `cargo` verification remains inconclusive.
-- **Frontend projection:** resolved in source: startup subscription and library/scan projection requests are initialized with static fallback preserved. Target `tsc` verification remains inconclusive.
-- **Song Page video:** resolved in source: the page exposes typed connected/loading/disconnected video state and artwork fallback. Backend video lifecycle remains unverified.
+- **Frontend projection:** runtime IPC is not implemented, so backend availability remains explicitly unavailable; startup subscription and library/scan projection source contracts do not provide a target runtime receipt. Target `tsc` verification remains inconclusive.
+- **Song Page video:** video availability remains explicitly unavailable because runtime IPC is not implemented; the page's typed disconnected state and artwork fallback are not backend video evidence.
 - **Discover route and shell contract:** resolved in source: a Discover placeholder is rendered and the visual contract asserts seven routes.
 - These source resolutions do not change the blocked status: required target build, runtime, visual, migration, shutdown, and release receipts remain unresolved below.
 
@@ -59,5 +59,7 @@ behavioral fallback.
 - `release/desktop-binaries.json` still contains `REPLACE_WITH_REVIEWED_SHA256`; `release-input/bin/` is absent, so provisioning and integrity checks cannot pass.
 - No real-user-data migration corpus/crash-at-each-stage receipt or rollback rehearsal receipt.
 - No target shutdown/orphan-process receipt for audio, yt-dlp, FFmpeg, video, and worker tasks.
+- Production still uses `NoopKeychain`; any key-bearing legacy migration must block until a real macOS Keychain adapter is wired.
+- The shell geometry check is contract evidence only and must not be reported as rendered screenshot evidence.
 
 No parity or release approval may be inferred from source files, U01-U44 handoff descriptions, or implementation commits without the required execution receipts.

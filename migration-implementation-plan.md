@@ -74,8 +74,10 @@ source descriptions are not proof.
 ## Data And Persistence Migration
 
 - Read `~/.luno_config.json` tolerantly; validate types/root, preserve it on
-  failure, atomically write a versioned schema, and decide one-time plaintext
-  Last.fm import to OS secure storage.
+  failure, atomically write a versioned schema, and import a plaintext Last.fm
+  key only through a real macOS Keychain adapter. Production currently uses
+  `NoopKeychain`, so key-bearing legacy migration must block until that adapter
+  is wired.
 - Read the root URL map, allowed-duplicate JSON, `.downloaded_vids`,
   `.sync_failed_vids`, and legacy `.downloaded.txt`; canonicalize IDs, bind
   success only to verified output, and map URL names to stable playlists with
@@ -178,7 +180,9 @@ used here.
 - TrackId versus filename/path identity; URL mapping on rename; per-record
   ambiguity; durable history; keychain import; video/audio backend; FFmpeg/yt-dlp
   distribution/licensing; supported OS/signing/update policy; fonts, breakpoints
-  and visual tolerances.
+  and visual tolerances. Runtime IPC is not implemented, so frontend backend and
+  video availability remain explicitly unavailable. The shell geometry check is
+  a contract check, not rendered screenshot evidence.
 
 ## Definition Of Done
 
@@ -204,6 +208,11 @@ and rollback trial. Until then Python is the behavioral fallback.
 ## U45 Final Gate
 
 - Status: **BLOCKED** on 2026-08-13; no parity or release sign-off is claimed.
+- Final reviewer findings: production still uses `NoopKeychain`, so key-bearing
+  legacy migration must block until a real macOS Keychain adapter is wired;
+  frontend backend/video availability remains explicitly unavailable because
+  runtime IPC is not implemented; and the shell geometry check is contract
+  evidence only, not rendered screenshot evidence.
 - Reference-only checks passed (`python3 -m pytest -q`: 109 passed; U44 subset:
   6 passed; both reference/journey manifests parse; `git diff --check` passed).
 - Required target receipts remain unresolved: `cargo test`, `npm run typecheck`,
