@@ -1,26 +1,28 @@
 //! macOS Keychain adapter for first-run secret migration.
 
-use super::first_run::Keychain;
+use super::first_run::{Keychain, MAX_LASTFM_KEY_LEN};
 
 pub const SERVICE: &str = "com.ty.luno";
 pub const LASTFM_ACCOUNT: &str = "lastfm-key";
 
 /// Store the legacy Last.fm key in the user's login Keychain.
-pub struct MacOsKeychain;
+pub struct MacOsKeychain { service: &'static str, account: &'static str }
 
 impl MacOsKeychain {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self { Self { service: SERVICE, account: LASTFM_ACCOUNT } }
+
+    pub fn new_for_test() -> Self { Self { service: "com.ty.luno.test", account: "lastfm-key-test" } }
 
     pub fn remove_lastfm_key(&mut self) -> Result<(), String> {
         #[cfg(target_os = "macos")]
-        { security::remove() }
+        { security::remove(self.service, self.account) }
         #[cfg(not(target_os = "macos"))]
         { Err("macOS Keychain is unavailable on this platform".into()) }
     }
 
     pub fn read_lastfm_key(&mut self) -> Result<Vec<u8>, String> {
         #[cfg(target_os = "macos")]
-        { security::get() }
+        { security::get(self.service, self.account) }
         #[cfg(not(target_os = "macos"))]
         { Err("macOS Keychain is unavailable on this platform".into()) }
     }
@@ -81,9 +83,9 @@ mod security {
         format!("macOS Keychain operation failed (status {status})")
     }
 
-    pub fn set(value: &[u8]) -> Result<(), String> {
-        let service = SERVICE.as_bytes();
-        let account = LASTFM_ACCOUNT.as_bytes();
+    pub fn set(service_name: &str, account_name: &str, value: &[u8]) -> Result<(), String> {
+        let service = service_name.as_bytes();
+        let account = account_name.as_bytes();
         let service_len = UInt32::try_from(service.len()).map_err(|_| "invalid Keychain namespace".to_owned())?;
         let account_len = UInt32::try_from(account.len()).map_err(|_| "invalid Keychain account".to_owned())?;
         let value_len = UInt32::try_from(value.len()).map_err(|_| "Keychain value is too large".to_owned())?;
@@ -126,9 +128,9 @@ mod security {
         Err(status_error(added))
     }
 
-    pub fn get() -> Result<Vec<u8>, String> {
-        let service = SERVICE.as_bytes();
-        let account = LASTFM_ACCOUNT.as_bytes();
+    pub fn get(service_name: &str, account_name: &str) -> Result<Vec<u8>, String> {
+        let service = service_name.as_bytes();
+        let account = account_name.as_bytes();
         let mut length = 0;
         let mut data = ptr::null_mut();
         let mut item = ptr::null_mut();
@@ -139,9 +141,9 @@ mod security {
         Ok(result)
     }
 
-    pub fn remove() -> Result<(), String> {
-        let service = SERVICE.as_bytes();
-        let account = LASTFM_ACCOUNT.as_bytes();
+    pub fn remove(service_name: &str, account_name: &str) -> Result<(), String> {
+        let service = service_name.as_bytes();
+        let account = account_name.as_bytes();
         let mut item = ptr::null_mut();
         let status = unsafe { SecKeychainFindGenericPassword(ptr::null(), service.len() as UInt32, service.as_ptr(), account.len() as UInt32, account.as_ptr(), ptr::null_mut(), ptr::null_mut(), &mut item) };
         if status == ERR_SEC_ITEM_NOT_FOUND { return Ok(()); }
@@ -155,8 +157,9 @@ mod security {
 impl Keychain for MacOsKeychain {
     fn import_lastfm_key(&mut self, key: &str) -> Result<(), String> {
         if key.trim().is_empty() { return Err("Last.fm key is empty".into()); }
+        if key.len() > MAX_LASTFM_KEY_LEN { return Err("Last.fm key exceeds maximum length".into()); }
         #[cfg(target_os = "macos")]
-        { security::set(key.as_bytes()) }
+        { security::set(self.service, self.account, key.as_bytes()) }
         #[cfg(not(target_os = "macos"))]
         { Err("macOS Keychain is unavailable on this platform".into()) }
     }
@@ -169,18 +172,18 @@ mod tests {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            let _ = MacOsKeychain::new().remove_lastfm_key();
+            let _ = MacOsKeychain::new_for_test().remove_lastfm_key();
         }
     }
 
     #[test]
     #[ignore = "requires an interactive macOS login Keychain; run explicitly"]
     fn real_keychain_round_trip() {
-        let mut keychain = MacOsKeychain::new();
+        let mut keychain = MacOsKeychain::new_for_test();
         let cleanup = Cleanup;
         let result = (|| {
             keychain.import_lastfm_key("luno-real-keychain-test")?;
-            if security::get()? != b"luno-real-keychain-test" { return Err("round-trip value mismatch".into()); }
+            if keychain.read_lastfm_key()? != b"luno-real-keychain-test" { return Err("round-trip value mismatch".into()); }
             Ok(())
         })();
         drop(cleanup);

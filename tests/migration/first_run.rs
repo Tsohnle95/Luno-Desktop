@@ -88,3 +88,32 @@ fn snapshot_redacts_key_and_invalid_record_is_recoverable() {
     assert_eq!(fs::read_to_string(p.legacy_root.join(".luno_config.json")).unwrap(), r#"{"lastfm_key":"secret","volume":0.5}"#);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn malformed_or_non_object_config_is_not_snapshotted() {
+    for contents in ["not-json", "[\"secret\"]"] {
+        let root = tempdir();
+        let p = paths(&root);
+        fs::create_dir_all(&p.legacy_root).unwrap();
+        fs::write(p.legacy_root.join(".luno_config.json"), contents).unwrap();
+        let result = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
+        let backup = fs::read_to_string(result.snapshot.join("config-snapshot-omitted.txt")).unwrap();
+        assert!(backup.contains("snapshot omitted"));
+        assert!(!fs::read_to_string(result.snapshot.join(".luno_config.json")).is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn version_record_crash_rolls_back_state_and_version() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    let result = migrate(&p, &MigrationOptions { crash_at: Some(CrashStage::VersionRecorded) }, &mut TestKeychain);
+    assert!(matches!(result, Err(MigrationError::InjectedCrash(CrashStage::VersionRecorded))));
+    assert!(!p.state_file().exists());
+    assert!(!p.version_record().exists());
+    fs::remove_dir_all(root).unwrap();
+}
