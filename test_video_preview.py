@@ -44,6 +44,14 @@ class VideoPreviewTests(unittest.TestCase):
             with self.assertRaises(video_preview.VideoPreviewError):
                 video_preview.resolve_video_source("Palm Tree", "Prod by the Architect")
 
+    def test_relevance_allows_title_artist_match_without_uploader(self):
+        entry = {"title": "Palm Tree - Prod by the Architect"}
+        title_score, artist_score, evidence = video_preview._video_relevance(
+            entry, "Palm Tree", "Prod by the Architect")
+        self.assertGreaterEqual(title_score, 0.5)
+        self.assertGreaterEqual(artist_score, 0.5)
+        self.assertTrue(evidence)
+
 
 if __name__ == "__main__":
     unittest.main()

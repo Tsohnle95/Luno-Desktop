@@ -218,6 +218,7 @@ class SongPageView(tk.Frame):
         self._video_loading = False
         self._video_photo = None
         self._video_preload_paths = set()
+        self._video_preload_states = {}
         self._video_spinner_after = None
         self._video_spinner_frame = 0
         self.video_preload_var = tk.BooleanVar(value=False)
@@ -1414,7 +1415,10 @@ class SongPageView(tk.Frame):
     def _preload_video(self, path, start_current=False):
         if not path or path in self._video_preload_paths:
             return
+        if self._video_preload_states.get(path) in ("ready", "unavailable"):
+            return
         self._video_preload_paths.add(path)
+        self._video_preload_states[path] = "downloading"
         self._set_video_spinner(True)
         title, artist = self._video_track_metadata(path)
         target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
@@ -1431,6 +1435,7 @@ class SongPageView(tk.Frame):
             except Exception as exc:
                 message = f"Video preload failed: {exc}"
             self._video_preload_paths.discard(path)
+            self._video_preload_states[path] = "ready" if video_path else "unavailable"
             try:
                 self.after(0, lambda: self._preload_video_done(
                     path, video_path, start_current, message))

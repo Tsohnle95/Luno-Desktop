@@ -42,7 +42,9 @@ def _video_relevance(entry, artist, title):
                     max(len(wanted_artist), 1)) if wanted_artist else 0.0
     # A title match is mandatory. When an artist is known, artist/channel
     # agreement is also required because unrelated title matches are common.
-    return title_score, artist_score
+    artist_metadata = bool(entry.get("uploader") or entry.get("channel"))
+    artist_in_title = bool(wanted_artist & result_title)
+    return title_score, artist_score, artist_metadata or artist_in_title
 
 
 def resolve_video_source(artist, title):
@@ -86,14 +88,14 @@ def resolve_video_source(artist, title):
     if entries:
         ranked = []
         for entry in entries:
-            title_score, artist_score = _video_relevance(entry, artist, title)
-            artist_ok = not _tokens(artist) or artist_score >= 0.5
-            if title_score >= 0.5 and artist_ok:
-                ranked.append((title_score, artist_score, entry))
+            title_score, artist_score, artist_evidence = _video_relevance(
+                entry, artist, title)
+            if title_score >= 0.5:
+                ranked.append((title_score, artist_score, artist_evidence, entry))
         if not ranked:
             raise VideoPreviewError("No relevant video was found for this song")
-        ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        entry = ranked[0][2]
+        ranked.sort(key=lambda item: (item[0], item[2], item[1]), reverse=True)
+        entry = ranked[0][3]
         video_id = entry["id"]
         return {
             "url": f"https://www.youtube.com/watch?v={video_id}",
