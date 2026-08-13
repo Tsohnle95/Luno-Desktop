@@ -84,11 +84,15 @@ implemented.
   - `music_player.py:59-75`
   - `music_player.py:4621-4642`
   - `music_player.py:4673-4689`
+  - `Luno.spec:23-39,50-55`
   - `views/settings.py:78-92`
   - `.gitignore:19-23`
 - User behavior: The user enters a Last.fm API key in Settings; the field is
   masked, but the key is persisted in plaintext in `~/.luno_config.json`.
   Library/config/preview paths are created under the user's home directory.
+- The macOS bundle declares no entitlements, sandbox profile, or documented
+  permission/access policy; access to the chosen music root and home-directory
+  files is therefore an undocumented runtime assumption.
 - State and data flow: Config loads and saves `lastfm_key` alongside playback
   preferences and favorite paths. Playlist URL metadata is written under the
   selected music root. No keychain, OS secure storage, environment-secret
