@@ -30,6 +30,7 @@ pub mod state;
 pub mod library {
     pub mod duplicates;
     pub mod index;
+    pub mod mutations;
     pub mod reconcile;
     pub mod scanner;
     pub mod watch;
