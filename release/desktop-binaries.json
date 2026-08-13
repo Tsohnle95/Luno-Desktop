@@ -1,0 +1,29 @@
+{
+  "manifest_version": 1,
+  "platform": "macos",
+  "architectures": ["aarch64", "x86_64"],
+  "update_policy": "Pinned binaries are changed only in a reviewed release commit.",
+  "artifacts": [
+    {
+      "name": "ffmpeg",
+      "version": "7.1.1",
+      "source": "release-attached",
+      "sha256": "REPLACE_WITH_REVIEWED_SHA256",
+      "license_notice": "THIRD_PARTY_NOTICES.md#ffmpeg"
+    },
+    {
+      "name": "ffprobe",
+      "version": "7.1.1",
+      "source": "release-attached",
+      "sha256": "REPLACE_WITH_REVIEWED_SHA256",
+      "license_notice": "THIRD_PARTY_NOTICES.md#ffmpeg"
+    },
+    {
+      "name": "yt-dlp",
+      "version": "2025.08.11",
+      "source": "release-attached",
+      "sha256": "REPLACE_WITH_REVIEWED_SHA256",
+      "license_notice": "THIRD_PARTY_NOTICES.md#yt-dlp"
+    }
+  ]
+}

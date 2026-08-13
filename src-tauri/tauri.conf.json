@@ -25,7 +25,15 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all"
+    "active": true,
+    "targets": ["dmg"],
+    "resources": [
+      "../release/desktop-binaries.json",
+      "../release/THIRD_PARTY_NOTICES.md",
+      "resources/bin"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    }
   }
 }

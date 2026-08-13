@@ -1,0 +1,43 @@
+name: Desktop Tauri release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        required: true
+        type: string
+
+jobs:
+  macos-release:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm install
+      - name: Provision reviewed media binaries
+        env:
+          LUNO_BINARY_SOURCE_DIR: ${{ github.workspace }}/release-input/bin
+        run: ./scripts/provision-desktop-binaries.sh
+      - name: Build signed macOS bundle
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$APPLE_SIGNING_IDENTITY" || { echo "signing identity is required"; exit 1; }
+          npm run tauri -- build --bundles dmg
+      - name: Inspect bundle and smoke without developer PATH
+        run: ./scripts/verify-desktop-bundle.sh src-tauri/target/release/bundle/macos/Luno.app
+      - name: Publish DMG
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: src-tauri/target/release/bundle/dmg/*.dmg
