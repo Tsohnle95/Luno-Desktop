@@ -1,0 +1,590 @@
+{
+  "items": [
+    {
+      "todo": "U01 Freeze Python reference corpus and acceptance IDs",
+      "files": [
+        "migration-work/U01.md"
+      ],
+      "wave": 1,
+      "dependsOn": []
+    },
+    {
+      "todo": "U02 Resolve migration decisions and record ADRs",
+      "files": [
+        "migration-work/U02.md"
+      ],
+      "wave": 2,
+      "dependsOn": [
+        0
+      ]
+    },
+    {
+      "todo": "U03 Define versioned Rust/TypeScript domain and IPC contracts",
+      "files": [
+        "migration-work/U03.md"
+      ],
+      "wave": 3,
+      "dependsOn": [
+        1
+      ]
+    },
+    {
+      "todo": "U04 Establish Python-versus-target differential harness",
+      "files": [
+        "migration-work/U04.md"
+      ],
+      "wave": 4,
+      "dependsOn": [
+        2
+      ]
+    },
+    {
+      "todo": "U05 Bootstrap Tauri 2, React, TypeScript, and Rust workspace",
+      "files": [
+        "migration-work/U05.md"
+      ],
+      "wave": 4,
+      "dependsOn": [
+        2
+      ]
+    },
+    {
+      "todo": "U06 Implement runtime ownership, bounded tasks, cancellation, and shutdown",
+      "files": [
+        "migration-work/U06.md"
+      ],
+      "wave": 5,
+      "dependsOn": [
+        4
+      ]
+    },
+    {
+      "todo": "U07 Implement atomic persistence and recovery primitives",
+      "files": [
+        "migration-work/U07.md"
+      ],
+      "wave": 5,
+      "dependsOn": [
+        4
+      ]
+    },
+    {
+      "todo": "U08 Implement structured redacted logging",
+      "files": [
+        "migration-work/U08.md"
+      ],
+      "wave": 5,
+      "dependsOn": [
+        4
+      ]
+    },
+    {
+      "todo": "U09 Implement subprocess supervision and executable discovery",
+      "files": [
+        "migration-work/U09.md"
+      ],
+      "wave": 6,
+      "dependsOn": [
+        4,
+        5
+      ]
+    },
+    {
+      "todo": "U10 Implement legacy settings, marker, favorite, and preview readers",
+      "files": [
+        "migration-work/U10.md"
+      ],
+      "wave": 6,
+      "dependsOn": [
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "todo": "U11 Implement Track/Playlist identity and normalization policies",
+      "files": [
+        "migration-work/U11.md"
+      ],
+      "wave": 3,
+      "dependsOn": [
+        0,
+        1
+      ]
+    },
+    {
+      "todo": "U12 Implement library index and exact scan semantics",
+      "files": [
+        "migration-work/U12.md"
+      ],
+      "wave": 7,
+      "dependsOn": [
+        4,
+        9,
+        10
+      ]
+    },
+    {
+      "todo": "U13 Implement filesystem watching and reconciliation",
+      "files": [
+        "migration-work/U13.md"
+      ],
+      "wave": 8,
+      "dependsOn": [
+        4,
+        9,
+        10,
+        11
+      ]
+    },
+    {
+      "todo": "U14 Implement playlist CRUD and protected-root safeguards",
+      "files": [
+        "migration-work/U14.md"
+      ],
+      "wave": 8,
+      "dependsOn": [
+        5,
+        9,
+        10,
+        11
+      ]
+    },
+    {
+      "todo": "U15 Implement favorites and path-reference repair",
+      "files": [
+        "migration-work/U15.md"
+      ],
+      "wave": 8,
+      "dependsOn": [
+        5,
+        9,
+        10,
+        11
+      ]
+    },
+    {
+      "todo": "U16 Implement duplicate detection and allowed-duplicate backups",
+      "files": [
+        "migration-work/U16.md"
+      ],
+      "wave": 8,
+      "dependsOn": [
+        5,
+        9,
+        10,
+        11
+      ]
+    },
+    {
+      "todo": "U17 Implement transfer codec and strict v1 validation",
+      "files": [
+        "migration-work/U17.md"
+      ],
+      "wave": 6,
+      "dependsOn": [
+        1,
+        5
+      ]
+    },
+    {
+      "todo": "U18 Implement provider index, matching, and import planning",
+      "files": [
+        "migration-work/U18.md"
+      ],
+      "wave": 9,
+      "dependsOn": [
+        9,
+        10,
+        11,
+        15,
+        16
+      ]
+    },
+    {
+      "todo": "U19 Select and implement the Rust audio backend",
+      "files": [
+        "migration-work/U19.md"
+      ],
+      "wave": 5,
+      "dependsOn": [
+        0,
+        2,
+        3
+      ]
+    },
+    {
+      "todo": "U20 Implement playback queue and Up Next semantics",
+      "files": [
+        "migration-work/U20.md"
+      ],
+      "wave": 10,
+      "dependsOn": [
+        9,
+        17,
+        18
+      ]
+    },
+    {
+      "todo": "U21 Implement clock, seeking, completion, and failure recovery",
+      "files": [
+        "migration-work/U21.md"
+      ],
+      "wave": 11,
+      "dependsOn": [
+        17,
+        18,
+        19
+      ]
+    },
+    {
+      "todo": "U22 Resolve and implement crossfade semantics",
+      "files": [
+        "migration-work/U22.md"
+      ],
+      "wave": 10,
+      "dependsOn": [
+        0,
+        17,
+        18
+      ]
+    },
+    {
+      "todo": "U23 Implement sleep timer and desktop media-session adapters",
+      "files": [
+        "migration-work/U23.md"
+      ],
+      "wave": 11,
+      "dependsOn": [
+        4,
+        19
+      ]
+    },
+    {
+      "todo": "U24 Implement typed IPC bridge and frontend projection store",
+      "files": [
+        "migration-work/U24.md"
+      ],
+      "wave": 11,
+      "dependsOn": [
+        1,
+        2,
+        4,
+        19
+      ]
+    },
+    {
+      "todo": "U25 Implement design tokens, responsive shell, routing, and scrolling",
+      "files": [
+        "migration-work/U25.md"
+      ],
+      "wave": 12,
+      "dependsOn": [
+        1,
+        2,
+        22,
+        23
+      ]
+    },
+    {
+      "todo": "U26 Implement shared artwork, row, queue, and player components",
+      "files": [
+        "migration-work/U26.md"
+      ],
+      "wave": 13,
+      "dependsOn": [
+        19,
+        21,
+        22,
+        23,
+        24,
+        20
+      ]
+    },
+    {
+      "todo": "U27 Implement Library and Recent views",
+      "files": [
+        "migration-work/U27.md"
+      ],
+      "wave": 14,
+      "dependsOn": [
+        11,
+        12,
+        13,
+        14,
+        23,
+        24,
+        25
+      ]
+    },
+    {
+      "todo": "U28 Implement Settings and Error Log views",
+      "files": [
+        "migration-work/U28.md"
+      ],
+      "wave": 13,
+      "dependsOn": [
+        6,
+        7,
+        9,
+        22,
+        23,
+        24
+      ]
+    },
+    {
+      "todo": "U29 Implement transfer dialogs and library mutation dialogs",
+      "files": [
+        "migration-work/U29.md"
+      ],
+      "wave": 13,
+      "dependsOn": [
+        13,
+        14,
+        16,
+        17,
+        22,
+        23,
+        24
+      ]
+    },
+    {
+      "todo": "U30 Implement validated media output and atomic download promotion",
+      "files": [
+        "migration-work/U30.md"
+      ],
+      "wave": 7,
+      "dependsOn": [
+        5,
+        6,
+        8,
+        9
+      ]
+    },
+    {
+      "todo": "U31 Implement normal download job coordination and cancellation",
+      "files": [
+        "migration-work/U31.md"
+      ],
+      "wave": 8,
+      "dependsOn": [
+        5,
+        7,
+        29,
+        8
+      ]
+    },
+    {
+      "todo": "U32 Implement search, direct URL, CSV, and URL Queue workflows",
+      "files": [
+        "migration-work/U32.md"
+      ],
+      "wave": 14,
+      "dependsOn": [
+        9,
+        10,
+        28,
+        29,
+        30
+      ]
+    },
+    {
+      "todo": "U33 Implement playlist sync, markers, and duplicate destination rules",
+      "files": [
+        "migration-work/U33.md"
+      ],
+      "wave": 14,
+      "dependsOn": [
+        9,
+        11,
+        12,
+        28,
+        29,
+        30
+      ]
+    },
+    {
+      "todo": "U34 Implement Downloader workspace UI",
+      "files": [
+        "migration-work/U34.md"
+      ],
+      "wave": 15,
+      "dependsOn": [
+        22,
+        23,
+        24,
+        25,
+        29,
+        30,
+        31,
+        32
+      ]
+    },
+    {
+      "todo": "U35 Implement discovery provider, cache, filtering, and recommendation artwork",
+      "files": [
+        "migration-work/U35.md"
+      ],
+      "wave": 12,
+      "dependsOn": [
+        7,
+        9,
+        10,
+        23
+      ]
+    },
+    {
+      "todo": "U36 Implement preview staging and asset lifecycle",
+      "files": [
+        "migration-work/U36.md"
+      ],
+      "wave": 13,
+      "dependsOn": [
+        5,
+        6,
+        8,
+        34
+      ]
+    },
+    {
+      "todo": "U37 Implement tap-preview sessions and queue handoff",
+      "files": [
+        "migration-work/U37.md"
+      ],
+      "wave": 14,
+      "dependsOn": [
+        19,
+        20,
+        34,
+        35
+      ]
+    },
+    {
+      "todo": "U38 Implement Discover mode and explicit save promotion",
+      "files": [
+        "migration-work/U38.md"
+      ],
+      "wave": 15,
+      "dependsOn": [
+        29,
+        34,
+        35,
+        36
+      ]
+    },
+    {
+      "todo": "U39 Implement Song Page layout, recommendations, and UI states",
+      "files": [
+        "migration-work/U39.md"
+      ],
+      "wave": 15,
+      "dependsOn": [
+        23,
+        24,
+        25,
+        34,
+        36
+      ]
+    },
+    {
+      "todo": "U40 Implement video source lookup and temporary staging",
+      "files": [
+        "migration-work/U40.md"
+      ],
+      "wave": 16,
+      "dependsOn": [
+        8,
+        9,
+        34,
+        38
+      ]
+    },
+    {
+      "todo": "U41 Implement audio-clock video playback, resize, seek, and fullscreen",
+      "files": [
+        "migration-work/U41.md"
+      ],
+      "wave": 17,
+      "dependsOn": [
+        8,
+        18,
+        38,
+        39
+      ]
+    },
+    {
+      "todo": "U46 Integrate the video stage into the Song Page presentation",
+      "files": [
+        "migration-work/U46.md"
+      ],
+      "wave": 18,
+      "dependsOn": [
+        38,
+        39,
+        40
+      ]
+    },
+    {
+      "todo": "U42 Implement first-run data migration and rollback",
+      "files": [
+        "migration-work/U42.md"
+      ],
+      "wave": 16,
+      "dependsOn": [
+        6,
+        9,
+        17,
+        29,
+        37
+      ]
+    },
+    {
+      "todo": "U43 Implement Tauri packaging and dependency provisioning",
+      "files": [
+        "migration-work/U43.md"
+      ],
+      "wave": 18,
+      "dependsOn": [
+        4,
+        8,
+        30,
+        40
+      ]
+    },
+    {
+      "todo": "U44 Add differential, visual, accessibility, and journey verification suites",
+      "files": [
+        "migration-work/U44.md"
+      ],
+      "wave": 19,
+      "dependsOn": [
+        3,
+        26,
+        28,
+        33,
+        37,
+        40,
+        41,
+        42,
+        43
+      ]
+    },
+    {
+      "todo": "U45 Complete final parity, shutdown, migration, and release sign-off",
+      "files": [
+        "migration-work/U45.md"
+      ],
+      "wave": 20,
+      "dependsOn": [
+        21,
+        33,
+        37,
+        40,
+        42,
+        43,
+        44,
+        41
+      ]
+    }
+  ]
+}
