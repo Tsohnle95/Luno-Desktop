@@ -5,12 +5,13 @@ import { SettingsView } from "../views/SettingsView";
 import { ErrorLogView } from "../views/ErrorLogView";
 import { LibraryView } from "../views/LibraryView";
 import { RecentView } from "../views/RecentView";
+import { SongPageView } from "../views/SongPageView";
 import { DownloaderView } from "../views/DownloaderView";
 
-export const ROUTES = ["library", "recent", "discover", "downloader", "settings", "error_log"] as const;
+export const ROUTES = ["library", "recent", "discover", "downloader", "settings", "song_page", "error_log"] as const;
 export type Route = (typeof ROUTES)[number];
 export const routeLabels: Record<Route, string> = {
-  library: "Home", recent: "Recent", discover: "Discover", downloader: "Downloader", settings: "Settings", error_log: "Error Log",
+  library: "Home", recent: "Recent", discover: "Discover", downloader: "Downloader", settings: "Settings", song_page: "Song", error_log: "Error Log",
 };
 
 export interface ShellProps { views?: Partial<Record<Route, ReactNode>>; queue?: ReactNode; player?: ReactNode; }
@@ -21,7 +22,7 @@ export function clampScrollTop(scrollTop: number, scrollHeight: number, clientHe
 
 export function Shell({ views = {}, queue, player }: ShellProps) {
   const [route, setRoute] = useState<Route>("library");
-  const content = views[route] ?? (route === "library" ? <LibraryView /> : route === "recent" ? <RecentView /> : route === "downloader" ? <DownloaderView /> : route === "settings" ? <SettingsView onOpenErrorLog={() => setRoute("error_log")} /> : route === "error_log" ? <ErrorLogView /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
+  const content = views[route] ?? (route === "library" ? <LibraryView /> : route === "recent" ? <RecentView /> : route === "downloader" ? <DownloaderView /> : route === "settings" ? <SettingsView onOpenErrorLog={() => setRoute("error_log")} /> : route === "error_log" ? <ErrorLogView /> : route === "song_page" ? <SongPageView /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
   return <div className="luno-shell" data-route={route}>
     <aside className="luno-sidebar" data-slot="sidebar">
       <div className="luno-brand" aria-label="Luno">Luno</div>
