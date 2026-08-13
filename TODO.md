@@ -9,7 +9,6 @@
 - [ ] Audit downloads, playlist sync, and media subprocesses
 - [ ] Audit discovery, recommendation previews, and Discover mode
 - [ ] Audit Song Page, artwork, and video behavior
-- [ ] Audit Android implementation and desktop/mobile parity boundary
 - [ ] Audit transfer contracts and cross-platform compatibility
 - [ ] Audit tests, fixtures, and behavioral verification gaps
 - [ ] Audit packaging, security, operations, and release behavior

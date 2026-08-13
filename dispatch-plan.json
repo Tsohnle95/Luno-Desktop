@@ -9,7 +9,6 @@
     {"todo": "Audit downloads, playlist sync, and media subprocesses", "files": ["migration-audit/06-download-sync.md"], "wave": 2, "dependsOn": [0]},
     {"todo": "Audit discovery, recommendation previews, and Discover mode", "files": ["migration-audit/07-discovery-previews.md"], "wave": 2, "dependsOn": [0]},
     {"todo": "Audit Song Page, artwork, and video behavior", "files": ["migration-audit/08-song-art-video.md"], "wave": 2, "dependsOn": [0]},
-    {"todo": "Audit Android implementation and desktop/mobile parity boundary", "files": ["migration-audit/09-android-parity.md"], "wave": 2, "dependsOn": [0]},
     {"todo": "Audit transfer contracts and cross-platform compatibility", "files": ["migration-audit/10-transfer-contracts.md"], "wave": 2, "dependsOn": [0]},
     {"todo": "Audit tests, fixtures, and behavioral verification gaps", "files": ["migration-audit/11-verification-gaps.md"], "wave": 2, "dependsOn": [0]},
     {"todo": "Audit packaging, security, operations, and release behavior", "files": ["migration-audit/12-operations-release.md"], "wave": 2, "dependsOn": [0]},
