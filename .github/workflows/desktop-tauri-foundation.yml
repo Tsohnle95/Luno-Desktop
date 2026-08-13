@@ -1,0 +1,32 @@
+name: Desktop Tauri Foundation
+
+on:
+  push:
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "tsconfig.json"
+      - ".github/workflows/desktop-tauri-foundation.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "tsconfig.json"
+      - ".github/workflows/desktop-tauri-foundation.yml"
+
+jobs:
+  foundation:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm run build
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --manifest-path src-tauri/Cargo.toml

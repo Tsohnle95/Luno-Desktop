@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Luno",
+  "version": "0.1.0",
+  "identifier": "com.ty.luno",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Luno",
+        "width": 1180,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 660,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost http://localhost:1420; style-src 'self' 'unsafe-inline';"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all"
+  }
+}
