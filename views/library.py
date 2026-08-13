@@ -23,6 +23,7 @@ class LibraryView(tk.Frame):
         self._track_hover_idx = None
         self._favorite_star_positions = {}
         self._pulse_frame = 0
+        self._pulse_items = []
         self._pulse_running = False
         self._favorites_first = False
         self._sort_modes = {"Unsorted": "Recently added"}
@@ -636,8 +637,27 @@ class LibraryView(tk.Frame):
         has_playing = any(path == cur_path for path, _, _, _ in self._track_items)
         if has_playing:
             self._pulse_frame = (self._pulse_frame + 1) % 100
-            self._redraw_track_list()
+            self._update_pulse()
         self.after(80, self._pulse_tick)
+
+    def _update_pulse(self):
+        """Animate only the equalizer bars on the playing row. The 80 ms
+        heartbeat must never rebuild the whole canvas — that full redraw every
+        tick leaks Tk canvas-item memory and grows the process for the whole
+        session (mirrors RecentView._update_pulse)."""
+        items = getattr(self, "_pulse_items", None)
+        if not items or not self.winfo_ismapped():
+            return
+        c = self._track_canvas
+        pulse = self._pulse_frame
+        bar_h = 14
+        for (item, x0, cy, x1, bi) in items:
+            try:
+                h_off = int(abs(math.sin((pulse / 20.0) + bi * 1.5)) * (bar_h - 4) + 4)
+                c.coords(item, x0, cy - h_off // 2, x1, cy + h_off // 2)
+            except tk.TclError:
+                self._pulse_items = []
+                return
 
     def on_shuffle_changed(self, is_shuffled):
         """Sync the green Shuffle control and its active underline."""
@@ -741,6 +761,7 @@ class LibraryView(tk.Frame):
     def _redraw_track_list(self):
         c = self._track_canvas
         c.delete("all")
+        self._pulse_items = []
         w = c.winfo_width()
         if w < 10: return
         
@@ -772,11 +793,6 @@ class LibraryView(tk.Frame):
 
         cur_path = self.controller.engine.queue[self.controller.engine.queue_idx] if 0 <= self.controller.engine.queue_idx < len(self.controller.engine.queue) else ""
 
-        # Playing animation frame: pulse the indicator slightly
-        pulse = 0
-        if hasattr(self, '_pulse_frame'):
-            pulse = self._pulse_frame or 0
-        
         for i in range(start_idx, end_idx):
             path, title, artist, pl_name = self._track_items[i]
             y0, y1 = i * rh, (i + 1) * rh
@@ -808,12 +824,14 @@ class LibraryView(tk.Frame):
                 bar_w = 3
                 gap = 2
                 n_bars = 4
+                cy = art_yc + bar_h // 2
                 for bi in range(n_bars):
-                    h_off = int(abs(math.sin((pulse / 20.0) + bi * 1.5)) * (bar_h - 4) + 4)
-                    cy = art_yc + bar_h//2
-                    c.create_rectangle(bar_x + bi*(bar_w+gap), cy - h_off//2,
-                                       bar_x + bi*(bar_w+gap) + bar_w, cy + h_off//2,
-                                       fill=GREEN, outline="", tags="row")
+                    x0 = bar_x + bi * (bar_w + gap)
+                    item = c.create_rectangle(x0, cy - bar_h // 2,
+                                              x0 + bar_w, cy + bar_h // 2,
+                                              fill=GREEN, outline="",
+                                              tags=("row", "pulse"))
+                    self._pulse_items.append((item, x0, cy, x0 + bar_w, bi))
             else:
                 c.create_text(bar_x, art_yc, text=str(i+1), font=("Helvetica", 10), fill=TEXT3, tags="row")
 

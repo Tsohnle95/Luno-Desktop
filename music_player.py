@@ -46,6 +46,8 @@ from engine import (
 
 from views.discover import DiscoverView
 from views.song_page import SongPageView
+import previews
+import rec_artwork
 from library_transfer import (
     apply_import_plan,
     build_manifest,
@@ -66,6 +68,11 @@ except Exception as e:
 
 WATCH_ROOTS = [MUSIC_ROOT]
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".luno_config.json")
+# Mobile RecommendationPreviewManager parity: temporary recommendation audio is
+# staged OUTSIDE the library root (so library scans and the Unsorted view never
+# see it) and wiped at every app launch, exactly like the Android cache preview
+# directory (DownloadRepository.PREVIEW_DOWNLOAD_DIR).
+PREVIEW_DIR = os.path.join(os.path.expanduser("~"), ".luno_previews")
 # ──────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -346,8 +353,13 @@ class LunoMusicPlayer(tk.Tk):
             
         self._show_add_to_playlist_dialog(paths, f"Dump all from {source_pl_name}")
 
-    def _show_add_to_playlist_dialog(self, paths, title_text):
-        """Show a searchable destination playlist picker."""
+    def _show_add_to_playlist_dialog(self, paths, title_text, on_transfer=None,
+                                    subtitle=None):
+        """Show a searchable destination playlist picker.
+
+        on_transfer(dest_dir, playlist_name) is called after a successful
+        transfer instead of the default success messagebox (used by the song
+        page's save flows so the destination is never silently Unsorted)."""
         playlists = sorted(self._library.keys(), key=str.casefold)
         if not playlists:
             messagebox.showinfo("No Playlists", "Create a destination playlist first.")
@@ -363,7 +375,8 @@ class LunoMusicPlayer(tk.Tk):
         
         tk.Label(dlg, text=title_text, font=("Helvetica Neue", 14, "bold"), 
                  fg=TEXT, bg=BG2).pack(pady=(25, 5))
-        tk.Label(dlg, text=f"{len(paths)} tracks will be copied", font=("Helvetica Neue", 10), 
+        tk.Label(dlg, text=subtitle or f"{len(paths)} tracks will be copied",
+                 font=("Helvetica Neue", 10), 
                   fg=TEXT3, bg=BG2).pack(pady=(0, 15))
 
         search_frame = tk.Frame(dlg, bg=BG3, highlightbackground=BORDER, highlightthickness=1)
@@ -425,8 +438,11 @@ class LunoMusicPlayer(tk.Tk):
                 except: pass
             
             dlg.destroy()
-            self._refresh_library()
-            messagebox.showinfo("Success", f"Copied {count} songs to '{target}'")
+            if on_transfer is not None:
+                on_transfer(dest_dir, target)
+            else:
+                self._refresh_library()
+                messagebox.showinfo("Success", f"Copied {count} songs to '{target}'")
 
         # Styled Green Button (Matching the rest of the Luno UI)
         btn = tk.Label(dlg, text="Confirm Transfer", font=("Helvetica Neue", 11, "bold"),
@@ -747,6 +763,60 @@ class LunoMusicPlayer(tk.Tk):
         self._discovery_request_generation = 0
         self._discovery_request_active = False
         self._discovery_request_pending = None
+
+        # Song-page "Recommended for this song" requests (independent of the
+        # Discover-tab machinery so the two surfaces never cancel each other).
+        self._song_page_recs_lock = threading.Lock()
+        self._song_page_recs_generation = 0
+        self._song_page_recs_active = False
+        self._song_page_recs_pending = None
+
+        # Discover mode (mobile RecommendationPreviewManager parity): prepares
+        # temporary previews in PREVIEW_DIR (outside the library root) behind
+        # the current song and restores the captured physical queue when
+        # toggled off. Previews are wiped at app launch and at session end;
+        # only explicit "Add to Library" promotions copy audio into the library.
+        self._discover_active = False
+        self._discover_seed = None
+        self._discover_chain_running = False
+        self._discover_chain_gen = 0
+        self._discover_physical_queue = None
+        self._discover_physical_idx = None
+        self._discover_paths = []
+        self._discover_recs = []
+        self._discover_rec_pos = 0
+        self._discover_states = OrderedDict()   # key -> {"status", "path", "error", "rec", "promoted", "source"}
+        self._discover_retry_queue = []
+        self._discover_insert_pos = 0
+        self._discover_dest = None
+        self._discover_downloading = False
+        self._discover_deferred_delete = []
+
+        # Mobile RecommendationPreviewManager session parity (2026-08-11):
+        # a tap-to-preview session (non-Discover) plays the tapped
+        # recommendation immediately with a rolling window of at most five
+        # prepared ahead, while Discover keeps a deferred block behind the
+        # seed. Save state mirrors the mobile rows: saving / queued /
+        # permanent / saveFailure.
+        self._discover_discover_mode = False
+        self._discover_window_start = 0      # first rec index of the active window
+        self._discover_window_end = 0        # exclusive end of the active window
+        self._discover_first_play_pending = False
+        self._discover_advance_armed = False
+        self._discover_saving_keys = set()
+        self._discover_saved_uris = {}       # key -> permanent library path
+        self._discover_queued_keys = {}      # key -> destination playlist dir
+        self._discover_save_failures = {}
+        self._preview_resolver_pool = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="luno-preview-resolver")
+
+        # Mobile startupCleanup parity: a previous crashed session may have
+        # left staged preview audio behind — never let it accumulate.
+        try:
+            shutil.rmtree(self.PREVIEW_DIR, ignore_errors=True)
+            os.makedirs(self.PREVIEW_DIR, exist_ok=True)
+        except Exception:
+            pass
         
         self.art_cache          = ArtCache(self)
         self._np_poll_counter = 0
@@ -1213,6 +1283,7 @@ class LunoMusicPlayer(tk.Tk):
 
     def _build_queue_panel(self, parent):
         self._queue_tab = "queue"
+        self._q_art_targets = {}  # path -> placeholder art labels (targeted update)
         
         inner = tk.Frame(parent, bg=BG2)
         inner.pack(fill="both", expand=True)
@@ -1272,10 +1343,24 @@ class LunoMusicPlayer(tk.Tk):
         else:
             self._r_tab_btn.config(fg=TEXT, font=("Helvetica Neue",11,"bold"))
             self._q_tab_btn.config(fg=TEXT3, font=("Helvetica Neue",11))
-        self._update_queue()
+        self._update_queue(scroll_top=True)
 
-    def _update_queue(self):
-        """Redraws the queue/recent list."""
+    def _update_queue(self, scroll_top=False):
+        """Redraws the queue/recent list.
+
+        The rebuild keeps the current scroll position: recreating every row
+        widget while the user is scrolled (and snapping back to the top on
+        every redraw) is what made the panel flash and jump while artwork
+        loaded or tracks changed. Explicit tab switches pass scroll_top=True
+        to land at the top.
+        """
+        try:
+            y = self._q_canvas.yview()[0]
+        except tk.TclError:
+            y = 0.0
+        targets = getattr(self, "_q_art_targets", None)
+        if targets is not None:
+            targets.clear()
         for w in self._q_inner.winfo_children(): w.destroy()
         
         if self._queue_tab == "queue":
@@ -1287,8 +1372,7 @@ class LunoMusicPlayer(tk.Tk):
         h = self._q_inner.winfo_reqheight()
         w = self._q_canvas.winfo_width()
         self._q_canvas.config(scrollregion=(0, 0, w, h))
-        # Reset scroll to top to ensure "Now Playing" is visible
-        self._q_canvas.yview_moveto(0)
+        self._q_canvas.yview_moveto(0.0 if scroll_top else min(y, 1.0))
         
     def _draw_queue_items(self):
         q = self.engine.queue
@@ -1356,16 +1440,34 @@ class LunoMusicPlayer(tk.Tk):
         f.bind("<Leave>", lambda e: f.config(bg=BG2))
 
         def _on_q_art_loaded(p):
-            if not getattr(self, "_q_art_pending", False):
-                self._q_art_pending = True
-                self.after(50, lambda: [setattr(self, "_q_art_pending", False), self._update_queue()])
-                
+            # Targeted update: swap the placeholder label for the loaded image
+            # instead of rebuilding (and scroll-jumping) the whole panel.
+            img = self.art_cache.get(p, 36, None)
+            if not img:
+                return
+            targets = self._q_art_targets.get(p)
+            if not targets:
+                return
+            alive = []
+            for lbl in targets:
+                try:
+                    if lbl.winfo_exists():
+                        lbl.config(image=img, text="", bg=BG3, width=36, height=36)
+                        alive.append(lbl)
+                except tk.TclError:
+                    pass
+            if alive:
+                self._q_art_targets[p] = alive
+            else:
+                self._q_art_targets.pop(p, None)
+
         img = self.art_cache.get(path, 36, _on_q_art_loaded)
         if img:
             art = tk.Label(f, image=img, bg=BG3, width=36, height=36)
         else:
             art = tk.Label(f, text="♫", font=("Helvetica Neue",12),
                            fg=(GREEN if is_playing else TEXT3), bg=BG3, width=4, height=2)
+            self._q_art_targets.setdefault(path, []).append(art)
         art.pack(side="left", padx=(16,12), pady=6)
         art.bind("<Button-1>", lambda e: play_from_q())
 
@@ -1475,13 +1577,13 @@ class LunoMusicPlayer(tk.Tk):
 
         self.shuf_lbl = icon_lbl("⇄", lambda: self._toggle_shuffle_ui())
         self.shuf_lbl.pack(side="left")
-        icon_lbl("⏮", lambda: self.engine.prev_track(), 17, TEXT2).pack(side="left")
+        icon_lbl("⏮", lambda: self._user_prev(), 17, TEXT2).pack(side="left")
 
         # Round play button
         self.play_btn = RoundButton(btn_row, 36, lambda: self.engine.toggle_play(), bg=PLAYER_BG)
         self.play_btn.pack(side="left", padx=8)
 
-        icon_lbl("⏭", lambda: self.engine.next_track(), 17, TEXT2).pack(side="left")
+        icon_lbl("⏭", lambda: self._user_next(), 17, TEXT2).pack(side="left")
         self.rep_lbl = icon_lbl("↺", lambda: self._toggle_repeat_ui())
         self.rep_lbl.pack(side="left")
 
@@ -1750,6 +1852,10 @@ class LunoMusicPlayer(tk.Tk):
     # ── Discovery Methods ─────────────────────────────────────────────────────
     def _on_track_changed_discovery(self, path):
         """Called by the engine when a track starts playing."""
+        self._discover_deferred_flush(path)
+        self._discover_consider_handoff()
+        self._discover_refill()
+        self._discover_maybe_auto_extend()
         if self.auto_discovery_var.get():
             self._trigger_discovery(path)
 
@@ -1831,37 +1937,1328 @@ class LunoMusicPlayer(tk.Tk):
             name="luno-discovery",
         ).start()
 
+    def _filter_library_recs(self, recs):
+        """Drop owned tracks and duplicate identities from a recommendation list.
+
+        Matches the mobile DiscoveryRepository ownership filter: normalized
+        case/whitespace artist-title keys cross-referenced against the library.
+        """
+        lib_keys = set()
+        for tracks in self._library.values():
+            for path in tracks:
+                t, a = split_track_name(path)
+                if t and a:
+                    lib_keys.add(f"{a.lower().strip()} - {t.lower().strip()}")
+
+        filtered = []
+        seen = set()
+        for r in recs:
+            r_art = r.get("artist", "").lower().strip()
+            r_ttl = r.get("title", "").lower().strip()
+            r_key = f"{r_art} - {r_ttl}"
+            if r_art and r_ttl and r_key not in lib_keys and r_key not in seen:
+                seen.add(r_key)
+                filtered.append(r)
+        return filtered
+
     def _update_discovery_results(self, recs):
         if not recs:
             if "discover" in self._frames:
                 self._frames["discover"].render_recommendations([])
             return
 
-        # Build a set of normalized "Artist - Title" strings from library for filtering
-        lib_keys = set()
-        for tracks in self._library.values():
-            for path in tracks:
-                t, a = split_track_name(path)
-                if t and a:
-                    key = f"{a.lower().strip()} - {t.lower().strip()}"
-                    lib_keys.add(key)
-        
-        # Filter out anything the user already has
-        filtered = []
-        for r in recs:
-            r_art = r.get("artist", "").lower().strip()
-            r_ttl = r.get("title", "").lower().strip()
-            r_key = f"{r_art} - {r_ttl}"
-            
-            if r_key not in lib_keys:
-                filtered.append(r)
-        
+        filtered = self._filter_library_recs(recs)
         if "discover" in self._frames:
             self._frames["discover"].render_recommendations(filtered)
 
-    def _download_track(self, artist, title, url=None):
-        """Standardized interface to bridge Discovery with the Downloader."""
-        dest = (self.dl_dest_var.get() or "").strip()
+    def _fetch_song_page_recs(self, artist, title, limit, on_result):
+        """Single-flight Last.fm fetch for the song page recommendation section.
+
+        Mirrors the Discover-tab request bound: one active daemon worker plus
+        one latest pending request; rapid seed changes replace stale work
+        instead of spawning an unbounded thread backlog. `on_result(recs,
+        error)` runs on the UI thread only if this request is still the latest.
+        """
+        request = (artist, title, limit, on_result)
+        with self._song_page_recs_lock:
+            if self._closing:
+                return
+            self._song_page_recs_generation += 1
+            generation = self._song_page_recs_generation
+            if self._song_page_recs_active:
+                self._song_page_recs_pending = request
+                return
+            self._song_page_recs_active = True
+        self._start_song_page_recs_request(request, generation)
+
+    def _start_song_page_recs_request(self, request, generation):
+        def run():
+            artist, title, limit, on_result = request
+            error = None
+            try:
+                if hasattr(self, "discovery"):
+                    self.discovery.api_key = self.lastfm_key_var.get().strip()
+                recs = self.discovery.get_similar(artist, title, limit=limit)
+            except Exception as exc:
+                self._log_error("Discovery", f"Request failed: {exc}")
+                recs, error = [], str(exc)
+            recs = self._filter_library_recs(recs)
+
+            with self._song_page_recs_lock:
+                self._song_page_recs_active = False
+                pending = self._song_page_recs_pending
+                self._song_page_recs_pending = None
+                next_generation = self._song_page_recs_generation
+                if pending and not self._closing:
+                    self._song_page_recs_active = True
+
+            if (not self._closing and
+                    generation == self._song_page_recs_generation and
+                    on_result is not None):
+                try:
+                    self.after(0, lambda: on_result(recs, error))
+                except (RuntimeError, tk.TclError):
+                    pass
+            if pending and not self._closing:
+                self._start_song_page_recs_request(pending, next_generation)
+
+        threading.Thread(
+            target=run,
+            daemon=True,
+            name="luno-song-page-recs",
+        ).start()
+
+    # ── Discover Mode (mobile RecommendationPreviewManager parity) ───────────
+    # 2026-08-11 full port: recommendations are prepared into PREVIEW_DIR — a
+    # temporary staging area OUTSIDE the library root (the Android equivalent
+    # of cacheDir/PREVIEW_DOWNLOAD_DIR) — so library scans and the Unsorted
+    # view never see them. Previews are wiped at app launch and at session
+    # end; only explicit "Add to Library" promotions copy audio into the real
+    # download destination. Per-row states mirror the mobile
+    # FullPlayerRecommendationRow machine: waiting -> preparing (spinner) ->
+    # ready (green check) / failed (retry). The chain prepares the first
+    # DISCOVER_IMMEDIATE_COUNT recommendations passively (mobile
+    # prefetchRecommendations), and Discover mode adopts the ready block into
+    # the queue behind the current track, autoplaying when the seed ends, with
+    # a rolling window of at most five prepared ahead of playback
+    # (IMMEDIATE_PREVIEW_AHEAD_COUNT). Playback leaving the block (or a
+    # replaced queue) ends the session (mobile natural-handoff parity).
+    DISCOVER_IMMEDIATE_COUNT = 5
+    PREVIEW_EXTS = (".mp3", ".m4a", ".wav", ".flac", ".webm")
+    # Overridable staging location (tests point this at a temp dir).
+    PREVIEW_DIR = PREVIEW_DIR
+
+    @staticmethod
+    def _discover_key(rec):
+        return f"{rec.get('artist', '').lower().strip()} - {rec.get('title', '').lower().strip()}"
+
+    # ── Chain lifecycle (prefetch + rolling window) ─────────────────────────
+
+    def _discover_chain_start(self):
+        """Hold the watchdog quiet while the preview chain owns downloads."""
+        if self._discover_chain_running or self._closing:
+            return
+        self._discover_chain_running = True
+        self._discovery_downloads += 1
+
+    def _discover_chain_stop(self):
+        if not self._discover_chain_running:
+            return
+        self._discover_chain_running = False
+        self._discovery_downloads = max(0, self._discovery_downloads - 1)
+
+    def _discover_notify_ui(self):
+        """Bump the UI version and ask the song page to re-render its rows."""
+        try:
+            sp = getattr(self, "_frames", {}).get("song_page")
+            if sp is not None and hasattr(sp, "_on_discover_ui_changed"):
+                self.after(0, sp._on_discover_ui_changed)
+        except (RuntimeError, tk.TclError):
+            pass
+
+    def _discover_prefetch(self, seed, recs):
+        """Mobile prefetchRecommendations parity: when the song page delivers
+        a fresh recommendation list, passively prepare the first five into
+        the preview staging directory without touching playback. A new seed
+        (or a refresh) cancels any in-flight preview download and restarts."""
+        if self._closing or seed is None or not recs:
+            return
+        if self._discover_active:
+            if (self._discover_seed is not None and
+                    tuple(seed) != self._discover_seed):
+                # A different song's recommendations arrived while a session
+                # was active: the old seed's session is over (mobile
+                # natural-handoff / playback-intervention parity).
+                self._discover_end_session(ended=True)
+            else:
+                # The session owns this seed — never reset the chain
+                # mid-session (mobile: prefetch returns while active).
+                return
+        self._discover_chain_gen += 1
+        self._discover_chain_stop()
+        old_deferred = self._discover_deferred_delete or []
+        self._discover_deferred_delete = None
+        for p in old_deferred:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        self._discover_seed = tuple(seed)
+        self._discover_recs = list(recs)
+        self._discover_rec_pos = 0
+        self._discover_window_start = 0
+        self._discover_window_end = min(
+            self.DISCOVER_IMMEDIATE_COUNT, len(recs))
+        self._discover_states = OrderedDict()
+        self._discover_retry_queue = []
+        self._discover_downloading = False
+        self._discover_deferred_delete = []
+        self._discover_dest = self.PREVIEW_DIR
+        self._discover_chain_start()
+        self._discover_refill()
+
+    def _discover_refill(self):
+        """Mobile rolling-window parity: keep DISCOVER_IMMEDIATE_COUNT ready
+        ahead of playback (or simply the first five while passively
+        prefetching); never floods the whole list. Only rows inside the
+        active window count toward the ready target, so prefetched rows
+        outside a tap-to-preview window cannot stall its preparation."""
+        if self._closing or self._discover_downloading:
+            return
+        if self._discover_retry_queue:
+            # A user-initiated retry always wins over the rolling window.
+            self._discover_chain_start()
+            self._discover_prepare_next()
+            return
+        if self._discover_rec_pos >= self._discover_window_end:
+            if self._discover_chain_running:
+                self._discover_chain_stop()
+                if self._discover_active and self._discover_discover_mode:
+                    self.status_var.set("Discover mode on — all recommendations downloaded")
+            self._discover_notify_ui()
+            return
+        window_start = self._discover_window_start
+        inserted = set(self._discover_paths)
+        if window_start:
+            idx_map = {self._discover_key(r): i
+                       for i, r in enumerate(self._discover_recs)}
+            ready = sum(1 for k, s in self._discover_states.items()
+                        if s["status"] in ("ready", "saved")
+                        and s.get("path") in inserted
+                        and idx_map.get(k, -1) >= window_start)
+        else:
+            ready = sum(1 for s in self._discover_states.values()
+                        if s["status"] in ("ready", "saved")
+                        and s.get("path") in inserted)
+        if self._discover_active:
+            target = self._discover_consumed() + self.DISCOVER_IMMEDIATE_COUNT
+        else:
+            target = self.DISCOVER_IMMEDIATE_COUNT
+        if ready >= target:
+            if not self._discover_active and self._discover_chain_running:
+                # Passive window full — release the watchdog until needed.
+                self._discover_chain_stop()
+                self._discover_notify_ui()
+            # Mobile waitingKeys parity: rows queued behind the active
+            # preparation show "Queued for temporary preview" while the
+            # window gate holds the chain.
+            self._discover_mark_waiting_band()
+            return
+        self._discover_chain_start()
+        self._discover_prepare_next()
+
+    def _discover_append_recs(self, recs):
+        """Mobile appendRecommendations parity: 'Load 25 more' grows the
+        chain while keeping already-prepared states."""
+        if self._closing or not recs:
+            return
+        known = {self._discover_key(r) for r in self._discover_recs}
+        additions = [r for r in recs if self._discover_key(r) not in known]
+        if not additions:
+            return
+        self._discover_recs.extend(additions)
+        if self._discover_discover_mode:
+            self._discover_window_end = len(self._discover_recs)
+        self._discover_refill()
+        self._discover_notify_ui()
+
+    def _discover_retry(self, key):
+        """Per-row retry for a failed preview download."""
+        if self._closing:
+            return
+        st = self._discover_states.get(key)
+        if not st or st["status"] != "failed":
+            return
+        st["status"] = "waiting"
+        st["error"] = None
+        st["path"] = None
+        self._discover_retry_queue.append(st["rec"])
+        self._discover_chain_start()
+        self._discover_refill()
+        self._discover_notify_ui()
+
+    def _discover_existing_download(self, artist, title):
+        safe_name = re.sub(r'[<>:"/\\|?*]', '', f"{artist} - {title}").strip() or "Unknown"
+        for ext in self.PREVIEW_EXTS:
+            candidate = os.path.join(self._discover_dest, f"{safe_name}{ext}")
+            if os.path.isfile(candidate):
+                return candidate
+        return None
+
+    def _discover_mark_waiting_band(self):
+        """Mobile waitingKeys/prefetchQueuedKeys parity: rows inside the
+        active window that are not yet prepared show 'Queued for temporary
+        preview'. While passively prefetching the whole first-five window is
+        marked; inside a session only the immediate successor waits (the
+        rest of a Discover list keeps its default status)."""
+        if self._closing:
+            return
+        if self._discover_active:
+            end = self._discover_rec_pos + 1
+        else:
+            end = self._discover_window_end
+        changed = False
+        for i in range(self._discover_rec_pos, min(end, self._discover_window_end)):
+            rec = self._discover_recs[i]
+            k = self._discover_key(rec)
+            if k not in self._discover_states:
+                self._discover_states[k] = {
+                    "status": "waiting", "path": None, "error": None,
+                    "rec": rec, "promoted": False, "source": None,
+                }
+                changed = True
+        if changed:
+            self._discover_notify_ui()
+
+    def _discover_prepare_next(self):
+        """Prepare exactly one recommendation: adopt a staged asset, or
+        resolve a playable source (15s deadline) then download it (5 min
+        deadline). One recommendation at a time (mobile sequential
+        preparation loop) — the preview pipeline never touches the library
+        Downloader's single job slot."""
+        if self._closing or not self._discover_chain_running:
+            return
+        if self._discover_retry_queue:
+            track = self._discover_retry_queue.pop(0)
+        elif self._discover_rec_pos < self._discover_window_end:
+            track = self._discover_recs[self._discover_rec_pos]
+            self._discover_rec_pos += 1
+        else:
+            return
+        key = self._discover_key(track)
+        artist = track.get("artist", "")
+        title = track.get("title", "")
+        self._discover_mark_waiting_band()
+
+        existing = self._discover_existing_download(artist, title)
+        if existing:
+            st = self._discover_states.get(key)
+            if st is None:
+                st = {
+                    "status": "waiting", "path": None, "error": None,
+                    "rec": track, "promoted": False, "source": None,
+                }
+                self._discover_states[key] = st
+            st["status"] = "ready"
+            st["path"] = existing
+            st["error"] = None
+            st["promoted"] = st.get("promoted", False)
+            self._discover_downloading = False
+            self._discover_track_ready(key, st, existing)
+            return
+
+        st = self._discover_states.get(key)
+        if st is None:
+            st = {
+                "status": "resolving", "path": None, "error": None,
+                "rec": track, "promoted": False, "source": None,
+            }
+            self._discover_states[key] = st
+        else:
+            st["status"] = "resolving"
+            st["path"] = None
+            st["error"] = None
+            st["source"] = None
+        self._discover_notify_ui()
+        self._discover_downloading = True
+        gen = self._discover_chain_gen
+        self._discover_start_resolve(key, st, gen)
+
+    def _discover_fail_preview(self, key, st, message):
+        """Mark a preview row failed (retryable). A tap-to-preview session
+        whose FIRST item cannot be prepared ends without hijacking playback —
+        the seed keeps playing and the session is cleaned up (mobile
+        finishEmptyPreviewSession parity); failures inside a running session
+        or Discover skip onward."""
+        st["status"] = "failed"
+        st["error"] = message
+        st["path"] = None
+        self._discover_downloading = False
+        if (self._discover_active and not self._discover_discover_mode
+                and self._discover_first_play_pending):
+            self._discover_active = False
+            self._discover_first_play_pending = False
+            self._discover_chain_gen += 1
+            self._discover_teardown()
+            self._discover_notify_ui()
+            return
+        self._discover_notify_ui()
+        self._discover_refill()
+
+    def _discover_start_resolve(self, key, st, gen):
+        """Mobile resolveRecommendation parity: YouTube search on the
+        2-thread luno-preview-resolver pool with a 15s hard deadline. The
+        first completion wins; a late resolve can never start a download."""
+        artist = st["rec"].get("artist", "")
+        title = st["rec"].get("title", "")
+        settled = {"done": False}
+
+        def on_result(src, err):
+            if self._closing:
+                return
+            if settled["done"]:
+                return
+            settled["done"] = True
+            if gen != self._discover_chain_gen:
+                self._discover_downloading = False
+                self._discover_refill()
+                return
+            if self._discover_states.get(key) is not st:
+                self._discover_downloading = False
+                self._discover_refill()
+                return
+            if err is not None:
+                self._discover_fail_preview(key, st, str(err))
+                return
+            st["source"] = src
+            st["status"] = "preparing"
+            self._discover_notify_ui()
+            self._discover_start_preview_download(key, st, gen)
+
+        def run():
+            try:
+                src = previews.resolve_preview_source(artist, title)
+                err = None
+            except Exception as exc:
+                src, err = None, exc
+            try:
+                self.after(0, lambda: on_result(src, err))
+            except (RuntimeError, tk.TclError):
+                pass
+
+        self._preview_resolver_pool.submit(run)
+
+        def _timeout():
+            try:
+                self.after(0, lambda: on_result(
+                    None,
+                    previews.PreviewTimeoutError(
+                        previews.PREVIEW_RESOLVE_TIMED_OUT_MESSAGE)))
+            except (RuntimeError, tk.TclError):
+                pass
+
+        threading.Timer(previews.PREVIEW_RESOLVE_TIMEOUT_S, _timeout).start()
+
+    def _discover_start_preview_download(self, key, st, gen):
+        """Mobile downloadPreview parity: stream the resolved source to
+        PREVIEW_DIR on a worker thread with a cooperative 5-minute deadline
+        and the chain's cancellation hook."""
+        artist = st["rec"].get("artist", "")
+        title = st["rec"].get("title", "")
+        src = st.get("source") or {}
+        url = src.get("url") or ""
+        if not url:
+            st["status"] = "failed"
+            st["error"] = "Could not prepare this song"
+            self._discover_downloading = False
+            self._discover_notify_ui()
+            self._discover_refill()
+            return
+
+        def run():
+            try:
+                path = previews.download_preview(
+                    artist, title, url, self._discover_dest,
+                    cancel_check=lambda: (
+                        self._discover_chain_gen != gen or self._closing),
+                    error_callback=lambda msg: None,
+                )
+                err = None
+            except Exception as exc:
+                path, err = None, exc
+            try:
+                self.after(0, lambda: self._discover_download_done(
+                    key, st, gen, path, err))
+            except (RuntimeError, tk.TclError):
+                pass
+
+        threading.Thread(target=run, daemon=True,
+                         name="luno-preview-download").start()
+
+    def _discover_download_done(self, key, st, gen, path, err):
+        """UI thread: a preview download finished (or failed/timeout)."""
+        if self._closing:
+            return
+        if gen != self._discover_chain_gen or self._discover_states.get(key) is not st:
+            # The session was reset while this download was in flight — drop
+            # any partial staged file (unless a newer session already owns
+            # the same key, in which case its own chain manages it).
+            if path and self._discover_states.get(key) is not st:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            self._discover_downloading = False
+            self._discover_refill()
+            return
+        self._discover_downloading = False
+        if err is not None:
+            self._discover_fail_preview(key, st, str(err))
+            return
+        self._discover_track_ready(key, st, path)
+
+    def _discover_track_ready(self, key, st, path):
+        """A recommendation is prepared: adopt it into the active session —
+        the first non-Discover item jumps into playback immediately (mobile
+        playSequential), Discover items join the deferred block — or just
+        mark it ready for the passive prefetch."""
+        st["status"] = "ready"
+        st["path"] = path
+        st["error"] = None
+        if self._discover_active:
+            if self._discover_discover_mode:
+                self._discover_consider_handoff()
+                if not self._discover_active:
+                    st["status"] = "saved"
+                    self._discover_notify_ui()
+                    self._discover_refill()
+                    return
+                self._discover_insert_path(path, st["rec"].get("title", ""))
+                if (self._discover_advance_armed and
+                        not self._discover_consumed()):
+                    # The user pressed Next while the deferred block was
+                    # still being prepared — jump into it now.
+                    self._discover_advance_armed = False
+                    self._discover_jump_into_preview(path)
+            else:
+                self._discover_insert_path(path, st["rec"].get("title", ""))
+                if self._discover_first_play_pending:
+                    self._discover_first_play_pending = False
+                    self._discover_jump_into_preview(path)
+        self._discover_notify_ui()
+        self._discover_refill()
+
+    # ── Discover mode toggle / preview sessions ─────────────────────────────
+
+    def _discover_set(self, enabled, recs=None):
+        """Toggle Discover mode on/off.
+
+        ON: captures the physical queue, adopts every already-prepared
+        (staged) recommendation into the queue behind the current track and
+        keeps preparing the rolling window of five into PREVIEW_DIR. The
+        block autoplays when the current song ends (engine.next_track walks
+        it naturally, Next/Previous route through it).
+        OFF: cancels pending preview downloads, deletes the staged preview
+        audio and restores the captured physical queue — a playing
+        recommendation is allowed to finish, then playback continues at the
+        seed's successor (mobile "resume at the seed's successor" parity). A
+        user-initiated new queue, or playback that has already walked past
+        the block, ends the session without restoring. Nothing ever lands in
+        the library unless the user explicitly promotes a row.
+        """
+        if enabled:
+            if self._discover_active or self._closing:
+                return
+            if not (hasattr(self, "engine") and
+                    (self.engine.playing or self.engine.paused) and self.engine.queue):
+                self.status_var.set("Discover mode needs a playing track")
+                return
+            if not recs:
+                self.status_var.set("No recommendations to play yet")
+                return
+            if list(recs) != self._discover_recs:
+                self._discover_prefetch(tuple(self._rec_seed_for(recs)), recs)
+            self._discover_start_session(recs, 0, discover_mode=True)
+            self._discover_adopt_ready()
+            self.status_var.set(
+                f"Discover mode on — {len(self._discover_paths)} ready song(s) "
+                f"queued behind this one")
+            self._discover_notify_ui()
+            self._discover_refill()
+        else:
+            if not self._discover_active:
+                return
+            self._discover_active = False
+            self._discover_discover_mode = False
+            self._discover_downloading = False
+            self._discover_chain_gen += 1  # cancels in-flight preview downloads
+            self._discover_teardown()
+
+    def _discover_start_session(self, recs, start_index, discover_mode):
+        """Mobile startPreview parity: begin a temporary preview session.
+
+        discover_mode=False (row tap): the tapped recommendation plays
+        immediately once prepared (adopting any cached asset) — mobile
+        playSequential — with the next five prepared ahead (rolling window).
+        discover_mode=True (Discover): the block is inserted behind the
+        current song and starts only when the seed finishes naturally
+        (deferred handoff). A session captures the physical queue so it can
+        be restored on toggle-off / handoff.
+        """
+        if self._closing or not recs:
+            return
+        if not (hasattr(self, "engine") and self.engine.queue and
+                0 <= self.engine.queue_idx < len(self.engine.queue)):
+            self.status_var.set("A song must be playing to preview recommendations")
+            return
+        first_index = max(0, min(start_index, len(recs) - 1))
+        if not os.path.isdir(self.PREVIEW_DIR):
+            try:
+                os.makedirs(self.PREVIEW_DIR, exist_ok=True)
+            except OSError as exc:
+                self._log_error("Discover", f"Could not create preview folder: {exc}")
+                self.status_var.set("Preview failed — preview folder unavailable")
+                return
+        self._discover_dest = self.PREVIEW_DIR
+        self._discover_chain_gen += 1
+        self._discover_chain_stop()
+        self._discover_active = True
+        self._discover_discover_mode = discover_mode
+        self._discover_physical_queue = list(self.engine.queue)
+        self._discover_physical_idx = self.engine.queue_idx
+        self._discover_paths = []
+        if discover_mode:
+            # Discover adoption resumes the passive prefetch's progress
+            # (mobile: the session loop adopts prefetched assets and keeps
+            # preparing from where the prefetch left off), so already-staged
+            # rows are never re-walked or re-inserted.
+            self._discover_rec_pos = max(
+                start_index, self._discover_rec_pos)
+        else:
+            self._discover_rec_pos = start_index
+        self._discover_window_start = first_index
+        if discover_mode:
+            self._discover_window_end = len(recs)
+        else:
+            self._discover_window_end = min(
+                first_index + 1 + self.DISCOVER_IMMEDIATE_COUNT, len(recs))
+        # Retain prepared states whose files are still valid and fall inside
+        # the new session's window (mobile retainPreparedRecommendationKeys);
+        # rows outside the window revert to untouched and their stale files
+        # are cleaned up below.
+        window_keys = {
+            self._discover_key(r) for r in recs[self._discover_window_start:]
+        }
+        kept = OrderedDict()
+        for k, s in self._discover_states.items():
+            if (k in window_keys and s.get("path")
+                    and os.path.isfile(s["path"])
+                    and s["status"] in ("ready", "saved")):
+                kept[k] = s
+        stale_files = [
+            s.get("path") for k, s in self._discover_states.items()
+            if k not in kept and s.get("path")
+        ]
+        self._discover_states = kept
+        self._discover_retry_queue = []
+        self._discover_downloading = False
+        self._discover_insert_pos = self.engine.queue_idx + 1
+        self._discover_deferred_delete = []
+        self._discover_first_play_pending = not discover_mode
+        self._discover_advance_armed = False
+        self._discover_delete_files(stale_files)
+        # Callers drive the chain (Discover: adopt_ready first, then refill;
+        # row taps: refill straight away) so adopted rows are never prepared
+        # twice. The chain's first prepare adopts a staged tapped row (mobile
+        # asset adoption) and the first-play pending flag jumps into it.
+        self._discover_chain_start()
+
+    def _discover_restart_session(self, recs, start_index):
+        """Mobile startPreview-while-active parity: restart the window at the
+        tapped row, keep the currently playing preview, drop unplayed
+        previews from the queue, and keep already-staged assets for the new
+        window so nothing re-downloads."""
+        if self._closing or not recs:
+            return
+        first_index = max(0, min(start_index, len(recs) - 1))
+        self._discover_chain_gen += 1   # cancels the in-flight prepare
+        self._discover_downloading = False
+        cur_idx = self.engine.queue_idx
+        dropped = []
+        for i in range(len(self.engine.queue) - 1, cur_idx, -1):
+            p = self.engine.queue[i]
+            if self._is_discover_path(p):
+                dropped.append(p)
+                self.engine.queue.pop(i)
+        self._discover_paths = [p for p in self._discover_paths
+                                if p not in dropped]
+        self._discover_insert_pos = cur_idx + 1
+        self._discover_rec_pos = first_index
+        self._discover_window_start = first_index
+        if self._discover_discover_mode:
+            self._discover_window_end = len(recs)
+        else:
+            self._discover_window_end = min(
+                first_index + 1 + self.DISCOVER_IMMEDIATE_COUNT, len(recs))
+        window_keys = {
+            self._discover_key(r) for r in recs[self._discover_window_start:]
+        }
+        kept = OrderedDict()
+        for k, s in self._discover_states.items():
+            if (k in window_keys and s.get("path")
+                    and os.path.isfile(s["path"])
+                    and s["status"] in ("ready", "saved")):
+                kept[k] = s
+        self._discover_states = kept
+        self._discover_first_play_pending = not self._discover_discover_mode
+        kept_paths = {s.get("path") for s in kept.values()}
+        self._discover_delete_files([p for p in dropped if p not in kept_paths])
+        self._discover_chain_start()
+        self._discover_refill()
+
+    def _discover_jump_into_preview(self, path):
+        """Jump playback to an inserted preview (mobile playSequential /
+        advanceToDeferredRecommendation parity)."""
+        try:
+            idx = self.engine.queue.index(path)
+        except ValueError:
+            return
+        self.engine.queue_idx = idx
+        self.engine.play_current()
+        self.status_var.set("Discover: playing your recommendations")
+
+    def _discover_leave_block(self, forward):
+        """Non-Discover Next/Previous parity: leave the preview block and
+        play the captured physical track — the seed's successor when moving
+        forward, the seed itself when moving backward — then tear down."""
+        physical = self._discover_physical_queue
+        pidx = self._discover_physical_idx
+        if physical is None or pidx is None:
+            self._discover_end_session(ended=True)
+            return True
+        expected = (physical[:pidx + 1] + self._discover_paths +
+                    physical[pidx + 1:])
+        if self.engine.queue != expected:
+            # The user replaced the queue — just end the session.
+            self._discover_end_session(ended=True)
+            return True
+        target = min(pidx + (1 if forward else 0),
+                     max(len(physical) - 1, 0))
+        self.engine.queue = list(physical)
+        self.engine.queue_idx = target
+        self._discover_active = False
+        self._discover_teardown()
+        self.engine.play_current()
+        return True
+
+    def _discover_restart_window_after_current(self):
+        """Mobile Discover Next-parity: the next recommendation is not queued
+        yet — re-anchor preparation right behind the current preview instead
+        of leaving the session. Returns False when nothing is left to prepare
+        so the press falls through to the player (mobile: at the end, falls
+        back to player skip)."""
+        cur_idx = self.engine.queue_idx
+        key = self._discover_key_for_path(
+            self.engine.queue[cur_idx]) if 0 <= cur_idx < len(self.engine.queue) else None
+        nxt = -1
+        if key is not None:
+            nxt = next((i for i, r in enumerate(self._discover_recs)
+                        if self._discover_key(r) == key), -1)
+        self._discover_rec_pos = max(nxt + 1, 0)
+        self._discover_insert_pos = cur_idx + 1
+        if self._discover_rec_pos >= self._discover_window_end:
+            return False
+        self._discover_refill()
+        return True
+
+    def _rec_seed_for(self, recs):
+        if self._discover_seed is not None:
+            return self._discover_seed
+        first = recs[0] if recs else {}
+        return (first.get("artist", ""), first.get("title", ""))
+
+    def _discover_adopt_ready(self):
+        """Discover ON: insert every already-staged recommendation into the
+        queue behind the current track (mobile adoption of prefetched
+        assets — no re-download)."""
+        for rec in self._discover_recs:
+            st = self._discover_states.get(self._discover_key(rec))
+            if st and st["status"] == "ready" and st.get("path"):
+                self._discover_insert_path(st["path"], rec.get("title", ""))
+
+    def _discover_insert_path(self, path, title):
+        self._discover_paths.append(path)
+        pos = max(self._discover_insert_pos, self.engine.queue_idx + 1)
+        self.engine.queue.insert(pos, path)
+        self._discover_insert_pos = pos + 1
+        self._update_queue()
+        self.status_var.set(f"Discover: queued {title}")
+
+    def _discover_consumed(self):
+        """How many recommendation-block tracks playback has already walked
+        past (0 while the seed is current)."""
+        if self._discover_physical_idx is None:
+            return 0
+        if self.engine.queue_idx <= self._discover_physical_idx:
+            return 0
+        block_end = self._discover_physical_idx + len(self._discover_paths)
+        if self.engine.queue_idx > block_end:
+            return len(self._discover_paths)
+        return self.engine.queue_idx - self._discover_physical_idx
+
+    # ── Session end (toggle off / natural handoff) ──────────────────────────
+
+    def _discover_consider_handoff(self):
+        """Mobile natural-handoff parity: end the session once playback
+        leaves the recommendation block (or the queue was replaced by a new
+        playback context / the engine looped the playlist). Called whenever a
+        track starts and after every completed download."""
+        if not self._discover_active or self._closing:
+            return
+        if self._discover_downloading:
+            # An in-flight download still owns the chain; its completion
+            # handler re-runs this check before inserting or refilling.
+            return
+        physical = self._discover_physical_queue
+        physical_idx = self._discover_physical_idx
+        if physical is None or physical_idx is None:
+            return
+        expected = (
+            physical[:physical_idx + 1] + self._discover_paths +
+            physical[physical_idx + 1:]
+        )
+        block_end = physical_idx + len(self._discover_paths)
+        if self.engine.queue != expected:
+            self._discover_end_session(ended=True)
+            return
+        if self.engine.queue_idx > block_end:
+            self._discover_end_session(ended=True)
+
+    def _discover_end_session(self, ended=False):
+        """Force-end the session (handoff path): cancels pending downloads
+        via the generation hook and tears down."""
+        self._discover_active = False
+        self._discover_downloading = False
+        self._discover_chain_gen += 1
+        self._discover_teardown(ended=ended)
+
+    def _discover_teardown(self, ended=False):
+        """Remove the recommendation block from the queue, restore the
+        captured queue where allowed, and wipe the staged preview audio.
+
+        Restore rules (mobile parity): playback still on the seed or inside
+        the block -> restore the physical queue and let the current
+        recommendation finish (completion advances to the seed's successor).
+        Playback already past the block -> rebuild the queue from the
+        physical capture at the current position (no rewind). User replaced
+        the queue -> leave it alone.
+        """
+        physical = self._discover_physical_queue
+        physical_idx = self._discover_physical_idx
+        discover_paths = self._discover_paths
+        if physical is not None and physical_idx is not None:
+            expected = (
+                physical[:physical_idx + 1] + discover_paths +
+                physical[physical_idx + 1:]
+            )
+            block_end = physical_idx + len(discover_paths)
+            if self.engine.queue == expected and self.engine.queue_idx <= block_end:
+                # Queue untouched — restore it and let the current track
+                # finish before advancing to the seed's successor.
+                self.engine.queue = list(physical)
+                self.engine.queue_idx = physical_idx
+                self._update_queue()
+                self.status_var.set(
+                    "Discover mode off — returned to your library"
+                    if not discover_paths else
+                    "Discover mode off — finishing the current song"
+                )
+            elif self.engine.queue == expected:
+                # Playback already walked past the block: drop the played
+                # previews from the queue and keep the current position
+                # (mobile rebuilds the physical queue at the current index).
+                self.engine.queue = list(physical)
+                self.engine.queue_idx = max(0, self.engine.queue_idx - len(discover_paths))
+                self._update_queue()
+                self.status_var.set(
+                    "Discover mode off — recommendations finished" if ended
+                    else "Discover mode off")
+            else:
+                # The user started a new playback context — leave the queue.
+                self.status_var.set(
+                    "Discover mode off — recommendations finished" if ended
+                    else "Discover mode off")
+        self._discover_chain_stop()
+        self._discover_cleanup_files(discover_paths)
+        # Preview rows revert to idle; promoted rows keep their library copy.
+        for key in list(self._discover_states):
+            st = self._discover_states[key]
+            if st.get("promoted"):
+                st["status"] = "saved"
+            elif st["status"] in ("ready", "saved", "waiting", "preparing",
+                                  "resolving"):
+                self._discover_states.pop(key, None)
+        self._discover_paths = []
+        self._discover_insert_pos = 0
+        self._discover_dest = None
+        self._discover_downloading = False
+        self._discover_discover_mode = False
+        self._discover_first_play_pending = False
+        self._discover_advance_armed = False
+        self._discover_notify_ui()
+
+    def _discover_delete_files(self, paths):
+        """Delete staged audio; a currently-playing file is deferred until
+        the next track change (mobile: a still-playing recommendation is
+        allowed to finish)."""
+        cur = self._discover_current_path()
+        now, later = [], []
+        for p in paths:
+            (later if p and p == cur else now).append(p)
+        for p in now:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        if later:
+            pending = self._discover_deferred_delete or []
+            self._discover_deferred_delete = pending + later
+
+    def _discover_cleanup_files(self, paths):
+        """Delete staged preview audio. The currently-playing file is deferred
+        until the next track change (mobile: a still-playing recommendation
+        is allowed to finish)."""
+        self._discover_delete_files(paths)
+        # Stale previews from previous sessions should not appear in history.
+        self._recently_played = [p for p in self._recently_played
+                                 if p not in paths]
+
+    def _discover_deferred_flush(self, current_path):
+        pending = getattr(self, "_discover_deferred_delete", None)
+        if not pending:
+            return
+        still = []
+        for p in pending:
+            if p == current_path:
+                still.append(p)
+                continue
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        self._discover_deferred_delete = still or None
+
+    # ── Promotion & row helpers (song page UI) ──────────────────────────────
+
+    def _discover_promote(self, key):
+        """Mobile saveToPlaylist parity: let the user pick a destination
+        playlist, then copy the staged preview there and refresh the library.
+        The staged preview copy stays until session cleanup so the queue
+        entry keeps working. The destination is always chosen explicitly —
+        previews are never dumped into Unsorted silently."""
+        if self._closing:
+            return
+        if key in self._discover_saving_keys or key in self._discover_queued_keys:
+            self.status_var.set("This recommendation is already being saved")
+            return
+        st = self._discover_states.get(key)
+        rec = st.get("rec") if st else None
+        saved_path = self._discover_saved_uris.get(key)
+        if saved_path:
+            # Mobile AddedToPlaylist parity: the local library copy already
+            # exists — only link it into the chosen playlist (a fast local
+            # copy on desktop, never a re-download).
+            def on_added(dest_dir, playlist_name):
+                if self._closing:
+                    return
+                self._refresh_library()
+                name = (rec.get("title") if rec else None) or os.path.basename(saved_path)
+                self.status_var.set(
+                    f"Added {name} to '{playlist_name}'")
+            self._show_add_to_playlist_dialog(
+                [saved_path],
+                "Add to playlist",
+                on_transfer=on_added,
+                subtitle="Already in your library — a copy is added to the chosen playlist",
+            )
+            return
+        path = st.get("path") if st else None
+        if path and os.path.isfile(path):
+            self._discover_promote_staged(key, st, rec, path)
+        else:
+            self._discover_download_new(
+                key, rec.get("artist", "") if rec else "",
+                rec.get("title", "") if rec else "")
+
+    def _discover_promote_staged(self, key, st, rec, path):
+        """Mobile saveToPlaylist promotion parity: pick a destination, then
+        copy the staged preview there on a worker thread ('Saving to
+        playlist...' while it runs). The staged copy stays until session
+        cleanup so the queue entry keeps working."""
+        title = rec.get("title", "") if rec else os.path.basename(path)
+
+        def on_transfer(dest_dir, playlist_name):
+            if self._closing:
+                return
+            self._discover_saving_keys.add(key)
+            self._discover_save_failures.pop(key, None)
+            self._discover_notify_ui()
+            dest_path = os.path.join(dest_dir, os.path.basename(path))
+
+            def copy():
+                try:
+                    shutil.copy2(path, dest_path)
+                    ok, err = True, None
+                except OSError as exc:
+                    ok, err = False, str(exc)
+                try:
+                    self.after(0, lambda: self._discover_promote_done(
+                        key, st, dest_path, playlist_name, ok, err))
+                except (RuntimeError, tk.TclError):
+                    pass
+
+            threading.Thread(target=copy, daemon=True,
+                             name="luno-promote").start()
+
+        self._show_add_to_playlist_dialog(
+            [],
+            "Download to playlist",
+            on_transfer=on_transfer,
+            subtitle="The preview will be copied into the chosen playlist",
+        )
+
+    def _discover_promote_done(self, key, st, dest_path, playlist_name, ok, err):
+        self._discover_saving_keys.discard(key)
+        if self._closing:
+            return
+        if ok:
+            st["promoted"] = True
+            st["status"] = "saved"
+            self._discover_saved_uris[key] = dest_path
+            self._discover_save_failures.pop(key, None)
+            self._refresh_library()
+            self.status_var.set(
+                f"Saved {os.path.basename(dest_path)} to '{playlist_name}'")
+        else:
+            self._discover_save_failures[key] = err or "Could not save recommendation"
+        self._discover_notify_ui()
+
+    def _discover_download_new(self, key, artist, title):
+        """Mobile saveToPlaylist parity for rows without a staged preview:
+        ask where to save first, then download directly into that playlist
+        folder (never silently Unsorted). The row flips to 'Download queued
+        for playlist' until the job completes — permanent save or an inline
+        saveFailure (mobile observeQueuedDownload parity)."""
+        if self._closing:
+            return
+        if key in self._discover_saving_keys or key in self._discover_queued_keys:
+            self.status_var.set("This recommendation is already being saved")
+            return
+
+        def on_transfer(dest_dir, playlist_name):
+            if self._closing:
+                return
+            st = self._discover_states.get(key)
+            if st is not None and st.get("path") and os.path.isfile(st["path"]):
+                # A staged asset arrived while the picker was open — promote
+                # it instead of downloading again (mobile promotion parity).
+                self._discover_promote_staged(key, st, st.get("rec"), st["path"])
+                return
+            self._discover_queued_keys[key] = dest_dir
+            self._discover_save_failures.pop(key, None)
+            self._discover_notify_ui()
+            self.status_var.set(f"Downloading {title} into '{playlist_name}'…")
+            self._download_track(
+                artist, title, dest=dest_dir,
+                on_finish=lambda ok, path: self._discover_download_observed(
+                    key, ok, path, playlist_name))
+
+        self._show_add_to_playlist_dialog(
+            [],
+            "Download to playlist",
+            on_transfer=on_transfer,
+            subtitle="The song will be downloaded into the chosen playlist",
+        )
+
+    def _discover_download_observed(self, key, ok, path, playlist_name):
+        """Mobile observeQueuedDownload parity: a queued playlist download
+        finished — record the permanent copy or surface the failure."""
+        if self._closing:
+            return
+        self._discover_queued_keys.pop(key, None)
+        if ok and path and os.path.isfile(path):
+            self._discover_saved_uris[key] = path
+            self._discover_save_failures.pop(key, None)
+            self.status_var.set(
+                f"Saved {os.path.basename(path)} to '{playlist_name}'")
+        else:
+            self._discover_save_failures[key] = "Download failed — see Download log"
+        st = self._discover_states.get(key)
+        if st is not None:
+            if ok and path:
+                st["status"] = "saved"
+                st["promoted"] = True
+        self._discover_notify_ui()
+
+    def _discover_play_rec(self, key):
+        """Mobile row-tap parity: start a temporary preview session at this
+        recommendation. The tapped row is prepared on demand (adopting any
+        cached asset) and plays as soon as it is ready; during an active
+        session the window restarts from the tapped row (Discover subtitle:
+        'tap a song to restart from there')."""
+        if self._closing or not (hasattr(self, "engine") and self.engine.queue):
+            return
+        if not self._discover_recs:
+            return
+        idx = next((i for i, r in enumerate(self._discover_recs)
+                    if self._discover_key(r) == key), -1)
+        if idx < 0:
+            return
+        if self._discover_active:
+            cur = self._discover_current_path()
+            if (cur is not None and
+                    self._discover_key_for_path(cur) == key):
+                return
+            self._discover_restart_session(self._discover_recs, idx)
+        else:
+            self._discover_start_session(
+                self._discover_recs, idx, discover_mode=False)
+            self._discover_refill()
+
+    def _discover_row_state(self, key):
+        st = self._discover_states.get(key)
+        if st is None:
+            saved = self._discover_saved_uris.get(key)
+            if saved is None:
+                return None
+            st = {"status": "saved", "path": saved, "error": None,
+                  "rec": None, "promoted": True, "source": None}
+        cur = self._discover_current_path()
+        return {
+            "status": st["status"],
+            "error": st.get("error"),
+            "path": st.get("path"),
+            "promoted": st.get("promoted", False),
+            "saving": key in self._discover_saving_keys,
+            "queued": key in self._discover_queued_keys,
+            "permanent": key in self._discover_saved_uris,
+            "saveFailure": self._discover_save_failures.get(key),
+            "playing": bool(st.get("path")) and st["path"] == cur,
+        }
+
+    def _discover_ready_count(self):
+        return sum(1 for s in self._discover_states.values()
+                   if s["status"] in ("ready", "saved"))
+
+    def _discover_busy_count(self):
+        return sum(1 for s in self._discover_states.values()
+                   if s["status"] in ("waiting", "preparing", "resolving"))
+
+    def _discover_chain_done(self):
+        return (self._discover_rec_pos >= self._discover_window_end
+                and not self._discover_downloading)
+
+    # ── Session routing & helpers (song page / transport / media keys) ──────
+
+    def _discover_current_path(self):
+        try:
+            if (hasattr(self, "engine") and self.engine.queue and
+                    0 <= self.engine.queue_idx < len(self.engine.queue)):
+                return self.engine.queue[self.engine.queue_idx]
+        except Exception:
+            pass
+        return None
+
+    def _is_discover_path(self, path):
+        """True for any transient preview path: inserted session paths or
+        anything staged in PREVIEW_DIR (mobile isTransient parity)."""
+        if not path:
+            return False
+        if path in self._discover_paths:
+            return True
+        return path.startswith(self.PREVIEW_DIR + os.sep)
+
+    def _discover_key_for_path(self, path):
+        for k, s in self._discover_states.items():
+            if s.get("path") == path:
+                return k
+        return None
+
+    def _discover_session_seed(self):
+        """(artist, title) of the seed song while a session is active, else
+        None — the song page keeps its list pinned to this seed instead of
+        re-fetching for every transient preview track (mobile seedUri
+        mismatch-display parity)."""
+        if self._discover_active and self._discover_seed is not None:
+            return self._discover_seed
+        return None
+
+    def _discover_current_key(self):
+        cur = self._discover_current_path()
+        if cur is None or not self._is_discover_path(cur):
+            return None
+        return self._discover_key_for_path(cur)
+
+    def _next_queued_is_preview(self):
+        try:
+            nxt = self.engine.queue[self.engine.queue_idx + 1]
+        except (IndexError, TypeError):
+            return False
+        return self._is_discover_path(nxt)
+
+    def _discover_preparing(self):
+        return self._discover_downloading or self._discover_chain_running
+
+    def _route_session_next(self):
+        """Mobile skipToNext parity: transport Next/Previous route through an
+        active preview session; returns True when the press was consumed."""
+        if not self._discover_active:
+            return False
+        cur = self._discover_current_path()
+        if cur is None:
+            return False
+        transient = self._is_discover_path(cur)
+        if not self._discover_discover_mode:
+            # Non-Discover preview: Next leaves the preview block and plays
+            # the physical successor (mobile parity). While the first preview
+            # is still preparing the seed is current — fall through to the
+            # player.
+            if not transient:
+                return False
+            return self._discover_leave_block(forward=True)
+        # Discover mode.
+        if not transient:
+            # Seed still current: if the first preview is already queued a
+            # normal skip walks into it; while the deferred block is still
+            # being prepared, the first press arms the auto-advance (mobile
+            # advanceToDeferredRecommendation), repeated presses fall
+            # through so the keys never feel dead.
+            if self._next_queued_is_preview():
+                return False
+            if self._discover_preparing():
+                if not self._discover_advance_armed:
+                    self._discover_advance_armed = True
+                    return True
+            return False
+        # A preview is current: a normal skip walks into the queued block.
+        # If the next item is not queued yet (preparation gap), re-anchor
+        # the window right behind the current preview instead of leaving the
+        # session (mobile startPreview at currentIndex+1); at the end of the
+        # loaded list the press falls through to the player.
+        if self._next_queued_is_preview() or \
+                self.engine.queue_idx + 1 >= len(self.engine.queue):
+            return False
+        return self._discover_restart_window_after_current()
+
+    def _route_session_prev(self):
+        if not self._discover_active:
+            return False
+        cur = self._discover_current_path()
+        if cur is None:
+            return False
+        transient = self._is_discover_path(cur)
+        if not self._discover_discover_mode:
+            if not transient:
+                return False
+            # Previous plays the captured physical track at the seed's index
+            # (mobile parity) and tears the session down.
+            return self._discover_leave_block(forward=False)
+        # Discover: a normal previous walks into the block when one exists;
+        # otherwise restart the session at the previous recommendation.
+        if self.engine.queue_idx - 1 >= 0:
+            if self._is_discover_path(self.engine.queue[self.engine.queue_idx - 1]):
+                return False
+        key = self._discover_current_key()
+        idx = -1
+        if key is not None:
+            idx = next((i for i, r in enumerate(self._discover_recs)
+                        if self._discover_key(r) == key), -1)
+        if idx > 0:
+            self._discover_restart_session(self._discover_recs, idx - 1)
+            return True
+        return False
+
+    def _user_next(self):
+        if (not hasattr(self, "engine") or self.engine is None or
+                not getattr(self.engine, "mixer_ready", False)):
+            return
+        if self._route_session_next():
+            return
+        self.engine.next_track()
+
+    def _user_prev(self):
+        if (not hasattr(self, "engine") or self.engine is None or
+                not getattr(self.engine, "mixer_ready", False)):
+            return
+        if self._route_session_prev():
+            return
+        self.engine.prev_track()
+
+    def _on_playback_failed(self, path):
+        """Mobile recoverFromPlaybackError parity: a preview that fails to
+        load marks its row failed, is removed (file + queue), and the
+        engine's automatic skip resumes the next item."""
+        if not self._discover_active:
+            return
+        if not self._is_discover_path(path):
+            return
+        key = self._discover_key_for_path(path)
+        st = self._discover_states.get(key) if key else None
+        if st is None:
+            return
+        st["status"] = "failed"
+        st["error"] = "This preview could not be played"
+        st["path"] = None
+        if path in self._discover_paths:
+            self._discover_paths.remove(path)
+        try:
+            if path in self.engine.queue:
+                self.engine.queue.remove(path)
+        except Exception:
+            pass
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        self._discover_notify_ui()
+
+    def _discover_maybe_auto_extend(self):
+        """Mobile Discover infinite-scroll parity: when playback reaches the
+        last loaded recommendation and the list is not exhausted, fetch the
+        next page automatically (the song page's load-more guards dedupe,
+        in-flight, and the 1,000 cap)."""
+        if not (self._discover_active and self._discover_discover_mode):
+            return
+        if not self._discover_recs:
+            return
+        cur = self._discover_current_path()
+        if cur is None or not self._is_discover_path(cur):
+            return
+        last = self._discover_key(self._discover_recs[-1])
+        if self._discover_key_for_path(cur) != last:
+            return
+        sp = self._frames.get("song_page")
+        if sp is not None and hasattr(sp, "_load_more_recs"):
+            try:
+                self.after(0, sp._load_more_recs)
+            except (RuntimeError, tk.TclError):
+                pass
+
+    def _find_downloaded_audio(self, artist, title, dest):
+        safe = re.sub(r'[<>:"/\\|?*]', '', f"{artist} - {title}").strip() or "Unknown"
+        for ext in self.PREVIEW_EXTS:
+            candidate = os.path.join(dest or "", f"{safe}{ext}")
+            if os.path.isfile(candidate):
+                return candidate
+        return None
+
+    def _download_track(self, artist, title, url=None, dest=None, on_finish=None):
+        """Standardized interface to bridge Discovery with the Downloader.
+
+        on_finish(success, path) runs on the UI thread after the job
+        completes (used by the song page's queued-save observation)."""
+        if dest is None:
+            dest = (self.dl_dest_var.get() or "").strip()
         if not dest or dest == "— choose playlist —":
             dest = self.MUSIC_ROOT
 
@@ -1895,6 +3292,10 @@ class LunoMusicPlayer(tk.Tk):
             dispatch_ui(lambda message=message: self.status_var.set(message))
 
         def on_complete():
+            # Runs in the downloader worker; resolve the produced file there
+            # so the UI thread never blocks on a filesystem walk.
+            result["path"] = self._find_downloaded_audio(artist, title, dest)
+
             def finish():
                 self._discovery_downloads = max(0, self._discovery_downloads - 1)
                 self._refresh_library(reset_track_scroll=True)
@@ -1903,6 +3304,11 @@ class LunoMusicPlayer(tk.Tk):
                     if result["success"]
                     else "Discovery download failed — see Download log"
                 )
+                if on_finish is not None:
+                    try:
+                        on_finish(result["success"], result.get("path"))
+                    except Exception:
+                        pass
             dispatch_ui(finish)
             
         from downloader import Downloader
@@ -2947,8 +4353,8 @@ class LunoMusicPlayer(tk.Tk):
     # ═══════════════════════════════════════════════════════════════════════════
     def _bind_keys(self):
         self.bind("<XF86AudioPlay>",         lambda e: self._media_toggle_play() if hasattr(self, 'engine') and self.engine is not None and getattr(self.engine, 'mixer_ready', False) else None)
-        self.bind("<XF86AudioNext>",         lambda e: self.engine.next_track() if hasattr(self, 'engine') and self.engine is not None and getattr(self.engine, 'mixer_ready', False) else None)
-        self.bind("<XF86AudioPrev>",         lambda e: self.engine.prev_track() if hasattr(self, 'engine') and self.engine is not None and getattr(self.engine, 'mixer_ready', False) else None)
+        self.bind("<XF86AudioNext>",         lambda e: self._user_next())
+        self.bind("<XF86AudioPrev>",         lambda e: self._user_prev())
         self.bind("<Up>",             lambda e: self._change_volume(0.05))
         self.bind("<Down>",           lambda e: self._change_volume(-0.05))
 
@@ -3083,8 +4489,8 @@ class LunoMusicPlayer(tk.Tk):
             "play": self._media_play,
             "pause": self._media_pause,
             "toggle": self._media_toggle_play,
-            "next": self.engine.next_track,
-            "previous": self.engine.prev_track,
+            "next": self._user_next,
+            "previous": self._user_prev,
             "stop": self.engine.stop,
             "volume_up": lambda: self._change_volume(0.05),
             "volume_down": lambda: self._change_volume(-0.05),
@@ -3324,6 +4730,12 @@ class LunoMusicPlayer(tk.Tk):
             pass
         if hasattr(self, "art_cache"):
             self.art_cache.shutdown()
+        if hasattr(self, "_preview_resolver_pool"):
+            try:
+                self._preview_resolver_pool.shutdown(
+                    wait=False, cancel_futures=True)
+            except Exception:
+                pass
         # Cancel scheduled poll callbacks
         if getattr(self, "_poll_after_id", None):
             try:

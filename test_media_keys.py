@@ -37,6 +37,11 @@ class MediaKeyLogicTest(unittest.TestCase):
         app._np_poll_counter = 0
         app._play_all = lambda: setattr(app, "play_all_calls", app.play_all_calls + 1)
         app._media_ready = types.MethodType(LunoMusicPlayer._media_ready, app)
+        app._discover_active = False
+        app._route_session_next = lambda: False
+        app._route_session_prev = lambda: False
+        app._user_next = types.MethodType(LunoMusicPlayer._user_next, app)
+        app._user_prev = types.MethodType(LunoMusicPlayer._user_prev, app)
         return app
 
     def test_play_starts_current_view_when_queue_empty(self):

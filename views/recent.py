@@ -16,6 +16,7 @@ class RecentView(tk.Frame):
         self._sel_indices = []
         self._sel_anchor = None
         self._pulse_frame = 0
+        self._pulse_items = []
         self.after(500, self._start_pulse)
 
         # Context menu
@@ -107,12 +108,31 @@ class RecentView(tk.Frame):
         has_playing = cur_path and cur_path in self.controller._recently_played
         if has_playing:
             self._pulse_frame = (self._pulse_frame + 1) % 100
-            self.redraw()
+            self._update_pulse()
         self.after(80, self._pulse_tick)
+
+    def _update_pulse(self):
+        """Animate only the equalizer bars on the playing row. The 80ms
+        heartbeat must never rebuild the whole canvas — that full redraw
+        every tick is what made the view flash and fidget."""
+        items = getattr(self, "_pulse_items", None)
+        if not items or not self.winfo_ismapped():
+            return
+        c = self.recent_canvas
+        pulse = self._pulse_frame
+        bar_h = 14
+        for (item, x0, cy, x1, bi) in items:
+            try:
+                h_off = int(abs(math.sin((pulse / 20.0) + bi * 1.5)) * (bar_h - 4) + 4)
+                c.coords(item, x0, cy - h_off // 2, x1, cy + h_off // 2)
+            except tk.TclError:
+                self._pulse_items = []
+                return
 
     def redraw(self):
         c = self.recent_canvas
         c.delete("all")
+        self._pulse_items = []
         w = c.winfo_width()
         if w < 10 or not self.controller._recently_played: return
         rh = 56
@@ -160,15 +180,16 @@ class RecentView(tk.Frame):
             # Playing indicator
             bar_x = art_x + art_half + 10
             if is_playing:
-                import math
                 pulse = getattr(self, '_pulse_frame', 0) or 0
                 bar_h = 14; bar_w = 3; gap = 2; n_bars = 4
+                cy = art_yc + bar_h // 2
                 for bi in range(n_bars):
                     h_off = int(abs(math.sin((pulse / 20.0) + bi * 1.5)) * (bar_h - 4) + 4)
-                    cy = art_yc + bar_h//2
-                    c.create_rectangle(bar_x + bi*(bar_w+gap), cy - h_off//2,
-                                       bar_x + bi*(bar_w+gap) + bar_w, cy + h_off//2,
-                                       fill=GREEN, outline="")
+                    x0 = bar_x + bi * (bar_w + gap)
+                    item = c.create_rectangle(x0, cy - h_off // 2,
+                                              x0 + bar_w, cy + h_off // 2,
+                                              fill=GREEN, outline="", tags="pulse")
+                    self._pulse_items.append((item, x0, cy, x0 + bar_w, bi))
 
             c.create_text(bar_x + 30, y0+rh//2-8, text=title[:55],
                           font=("Helvetica Neue",11,"bold"), fill=GREEN if is_playing else TEXT, anchor="w")

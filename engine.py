@@ -179,6 +179,13 @@ class LunoEngine:
             self.c._log_error("engine", f"Playback failed: {e}")
             self.consecutive_fails += 1
             self.playing = False
+            # Mobile recoverFromPlaybackError parity: let the controller mark
+            # a failed preview row and drop its file before the auto-skip.
+            if hasattr(self.c, "_on_playback_failed"):
+                try:
+                    self.c._on_playback_failed(path)
+                except Exception:
+                    pass
             self.c.after(100, self.next_track)
 
     def toggle_shuffle(self):

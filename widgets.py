@@ -2,6 +2,57 @@ import tkinter as tk
 from theme import PLAYER_BG, TEXT, TEXT2, TEXT3, SIDEBAR, BG4, GREEN, playlist_gradient
 from utils import draw_gradient_rect
 
+class Spinner(tk.Canvas):
+    """Indeterminate green loading spinner (mobile CircularProgressIndicator
+    parity): a rotating arc animated by a self-cancelling after loop. The
+    loop pauses while the widget is unmapped and cancels on destroy."""
+
+    def __init__(self, parent, size=20, color=GREEN, width=2.5, bg=None,
+                 step=15, interval=50):
+        super().__init__(parent, width=size, height=size,
+                         highlightthickness=0, bd=0,
+                         bg=bg if bg is not None else parent.cget("bg"))
+        self._size = size
+        self._color = color
+        self._arc_width = width
+        self._step = step
+        self._interval = interval
+        self._angle = 0
+        self._after_id = None
+        self._draw()
+        self._tick()
+
+    def _draw(self):
+        try:
+            self.delete("all")
+        except tk.TclError:
+            return
+        pad = 3
+        self.create_arc(pad, pad, self._size - pad, self._size - pad,
+                        start=self._angle, extent=280, style="arc",
+                        outline=self._color, width=self._arc_width)
+
+    def _tick(self):
+        try:
+            if self.winfo_exists() and self.winfo_ismapped():
+                self._angle = (self._angle - self._step) % 360
+                self._draw()
+        except tk.TclError:
+            return
+        try:
+            self._after_id = self.after(self._interval, self._tick)
+        except tk.TclError:
+            self._after_id = None
+
+    def destroy(self):
+        if self._after_id is not None:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+        super().destroy()
+
 class RoundButton(tk.Canvas):
     """Circular play/pause button drawn on canvas."""
     def __init__(self, parent, size, command, **kw):
@@ -95,37 +146,80 @@ class SlimSlider(tk.Canvas):
         return self._from + pct * (self._to - self._from)
 
     def _draw(self):
-        self.delete("all")
+        # Non-destructive redraw: create the track/fill/thumb items once and
+        # move them with coords() on later ticks. Rebuilding the whole canvas
+        # with delete("all") every 400 ms scrub tick leaks Tk canvas-item
+        # memory and grows the process for the whole session.
         w = self.winfo_width()
+        if w < 2:
+            return
         h = self._h
         pad = 8
-        cy  = h // 2
-        th  = 4 if self._hover else 3
-        r   = th // 2
+        cy = h // 2
+        th = 4 if self._hover else 3
+        r = th // 2
 
-        # Background track
-        self.create_rounded_rect = self._rrect
-        self._rrect(pad, cy-r, w-pad, cy+r, r, fill=self._track)
-
-        # Filled portion
+        fill_color = self._accent if self._hover else TEXT3
         fw = pad + int((w - 2*pad) * self._pct())
-        if fw > pad:
-            fill = self._accent if self._hover else TEXT3
-            self._rrect(pad, cy-r, fw, cy+r, r, fill=fill)
+        show_fill = fw > pad
+        show_thumb = self._hover or self._drag
+        tx = pad + int((w - 2*pad) * self._pct())
+        tr = 6
 
-        # Thumb (only on hover)
-        if self._hover or self._drag:
-            tr = 6
-            tx = pad + int((w - 2*pad) * self._pct())
-            self.create_oval(tx-tr, cy-tr, tx+tr, cy+tr,
-                             fill=TEXT, outline="")
+        items = getattr(self, "_slider_items", None)
+        if items is None:
+            items = {
+                "track": self._make_rrect(pad, cy - r, w - pad, cy + r, r, self._track),
+                "fill": [],
+                "thumb": None,
+            }
+            self._slider_items = items
+        else:
+            self._update_rrect(items["track"], pad, cy - r, w - pad, cy + r, r)
+            for it in items["track"]:
+                self.itemconfig(it, fill=self._track)
 
-    def _rrect(self, x1, y1, x2, y2, r, fill):
+        if show_fill:
+            if not items["fill"]:
+                items["fill"] = self._make_rrect(pad, cy - r, fw, cy + r, r, fill_color)
+            else:
+                self._update_rrect(items["fill"], pad, cy - r, fw, cy + r, r)
+                for it in items["fill"]:
+                    self.itemconfig(it, fill=fill_color)
+        else:
+            for it in items["fill"]:
+                self.delete(it)
+            items["fill"] = []
+
+        if show_thumb:
+            if items["thumb"] is None:
+                items["thumb"] = self.create_oval(
+                    tx - tr, cy - tr, tx + tr, cy + tr, fill=self._thumb, outline="")
+            else:
+                self.coords(items["thumb"], tx - tr, cy - tr, tx + tr, cy + tr)
+                self.itemconfig(items["thumb"], fill=self._thumb)
+        else:
+            if items["thumb"] is not None:
+                self.delete(items["thumb"])
+                items["thumb"] = None
+
+    def _make_rrect(self, x1, y1, x2, y2, r, fill):
         r = min(r, (y2-y1)//2, max((x2-x1)//2, 1))
-        self.create_rectangle(x1+r, y1, x2-r, y2, fill=fill, outline="")
-        self.create_rectangle(x1, y1+r, x2, y2-r, fill=fill, outline="")
+        ids = []
+        ids.append(self.create_rectangle(x1+r, y1, x2-r, y2, fill=fill, outline=""))
+        ids.append(self.create_rectangle(x1, y1+r, x2, y2-r, fill=fill, outline=""))
         for cx, cy in [(x1+r,y1+r),(x2-r,y1+r),(x1+r,y2-r),(x2-r,y2-r)]:
-            self.create_oval(cx-r, cy-r, cx+r, cy+r, fill=fill, outline="")
+            ids.append(self.create_oval(cx-r, cy-r, cx+r, cy+r, fill=fill, outline=""))
+        return ids
+
+    def _update_rrect(self, ids, x1, y1, x2, y2, r):
+        r = min(r, (y2-y1)//2, max((x2-x1)//2, 1))
+        self.coords(ids[0], x1+r, y1, x2-r, y2)
+        self.coords(ids[1], x1, y1+r, x2, y2-r)
+        self.coords(ids[2], x1, y1, x1+2*r, y1+2*r)
+        self.coords(ids[3], x2-2*r, y1, x2, y1+2*r)
+        self.coords(ids[4], x1, y2-2*r, x1+2*r, y2)
+        self.coords(ids[5], x2-2*r, y2-2*r, x2, y2)
 
     def _on_press(self, e):
         self._drag = True
