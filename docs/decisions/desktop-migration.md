@@ -92,7 +92,11 @@ The crossfade setting is removed rather than implemented or retained as a
 no-op. Migration must not carry forward the legacy preference or present
 crossfade controls. Existing playback transition semantics remain immediate;
 the target must include a migration test that rejects/clears the obsolete
-setting and confirms no fade is claimed.
+setting and confirms no fade is claimed. The Rust legacy config reader treats
+`crossfade` as an obsolete unknown field: it neither exposes nor persists the
+value, and it leaves the source config untouched for rollback. The target has
+no crossfade runtime API, so this is an approved removal rather than a
+crossfade parity claim.
 
 ### D9. Platform scope
 

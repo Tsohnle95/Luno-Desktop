@@ -237,7 +237,7 @@ When parsing YouTube names or filenames, the app looks for `" - "` to separate A
 Stores aggregated and folder-specific track paths. Now includes empty directories to support new playlist creation.
 
 ### 4. Global Settings (`~/.luno_config.json`)
-Persisted across sessions: `music_root`, `lastfm_key`, `auto_discovery`, `volume`, `crossfade`, `sleep_timer`, `global_keys` (media key toggle), and `favorite_songs` (normalized absolute paths for locally favorited tracks).
+Persisted across sessions: `music_root`, `lastfm_key`, `auto_discovery`, `volume`, `crossfade`, `sleep_timer`, `global_keys` (media key toggle), and `favorite_songs` (normalized absolute paths for locally favorited tracks). The Rust migration target intentionally ignores the legacy `crossfade` preference and does not persist or expose an equivalent setting.
 
 ### 5. Session State
 `LunoEngine` manages the live `queue`, `queue_idx`, `_original_queue` (for shuffle restore), and playback status (`playing`, `paused`).

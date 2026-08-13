@@ -12,7 +12,6 @@ pub struct LegacyConfig {
     pub lastfm_key: Option<String>,
     pub auto_discovery: Option<bool>,
     pub volume: Option<f64>,
-    pub crossfade: Option<Value>,
     pub sleep_timer: Option<Value>,
     pub global_keys: Option<bool>,
     pub favorite_songs: Option<Vec<String>>,
@@ -30,7 +29,10 @@ pub fn read_config(path: &Path) -> Result<LegacyConfig, String> {
     if let Some(v) = object.get("auto_discovery").and_then(Value::as_bool) { config.auto_discovery = Some(v); }
     if let Some(v) = object.get("global_keys").and_then(Value::as_bool) { config.global_keys = Some(v); }
     if let Some(v) = object.get("volume").and_then(Value::as_f64).filter(|v| v.is_finite()) { config.volume = Some(v); }
-    config.crossfade = object.get("crossfade").cloned(); config.sleep_timer = object.get("sleep_timer").cloned();
+    // `crossfade` was intentionally retired in the desktop migration. It is
+    // not represented in target state and is therefore ignored as an unknown
+    // legacy field.
+    config.sleep_timer = object.get("sleep_timer").cloned();
     if let Some(values) = object.get("favorite_songs").and_then(Value::as_array) {
         config.favorite_songs = Some(values.iter().filter_map(Value::as_str).map(str::to_owned).collect());
     }
