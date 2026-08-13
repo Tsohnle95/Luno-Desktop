@@ -28,10 +28,12 @@ pub mod download {
 }
 pub mod state;
 pub mod library {
+    pub mod favorites;
     pub mod duplicates;
     pub mod index;
     pub mod mutations;
     pub mod reconcile;
+    pub mod reference_repair;
     pub mod scanner;
     pub mod watch;
 }
