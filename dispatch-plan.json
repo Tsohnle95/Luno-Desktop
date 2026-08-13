@@ -13,7 +13,7 @@
     {"todo": "Audit tests, fixtures, and behavioral verification gaps", "files": ["migration-audit/11-verification-gaps.md"], "wave": 2, "dependsOn": [0]},
     {"todo": "Audit packaging, security, operations, and release behavior", "files": ["migration-audit/12-operations-release.md"], "wave": 2, "dependsOn": [0]},
     {"todo": "Trace cross-feature user journeys and integration dependencies", "files": ["migration-audit/13-user-journeys.md"], "wave": 2, "dependsOn": [0]},
-    {"todo": "Review all audit dossiers for evidence, omissions, and contradictions", "files": ["migration-audit/14-audit-review.md"], "wave": 3, "dependsOn": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]},
-    {"todo": "Synthesize the verified migration implementation plan", "files": ["migration-audit/15-synthesis.md", "migration-implementation-plan.md"], "wave": 4, "dependsOn": [14]}
+    {"todo": "Review all audit dossiers for evidence, omissions, and contradictions", "files": ["migration-audit/14-audit-review.md"], "wave": 3, "dependsOn": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]},
+    {"todo": "Synthesize the verified migration implementation plan", "files": ["migration-audit/15-synthesis.md", "migration-implementation-plan.md"], "wave": 4, "dependsOn": [13]}
   ]
 }
