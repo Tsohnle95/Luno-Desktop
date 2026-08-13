@@ -368,7 +368,7 @@ class SongPageView(tk.Frame):
         self.video_menu_auto.pack(fill="x", padx=4, pady=2)
         self.video_menu_status = tk.Label(
             self.video_menu, text="", font=("Helvetica Neue", 9), fg=TEXT3,
-            bg=BG3, anchor="w", justify="left", padx=10, pady=(2, 6))
+            bg=BG3, anchor="w", justify="left", padx=10, pady=4)
         self.video_menu_status.pack(fill="x")
         self.video_menu_spinner = tk.Label(self.video_menu, text="", fg=GREEN,
                                            bg=BG3, font=("Helvetica Neue", 11))
