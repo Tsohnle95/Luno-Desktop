@@ -57,6 +57,22 @@ fn keychain_failure_writes_no_target_state_or_version() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn keychain_failure_restores_preexisting_target_records() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    fs::create_dir_all(&p.target_root).unwrap();
+    fs::write(p.state_file(), "old-state").unwrap();
+    fs::write(p.version_record(), r#"{"migration":"old","version":9,"completed":false}"#).unwrap();
+    fs::write(p.legacy_root.join(".luno_config.json"), r#"{"lastfm_key":"secret"}"#).unwrap();
+    assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut FailingKeychain), Err(MigrationError::Keychain(_))));
+    assert_eq!(fs::read_to_string(p.state_file()).unwrap(), "old-state");
+    assert!(fs::read_to_string(p.version_record()).unwrap().contains("\"version\":9"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn orphaned_state_without_completed_record_is_recovered() {
     let root = tempdir();
     let p = paths(&root);
@@ -111,10 +127,70 @@ fn version_record_crash_rolls_back_state_and_version() {
     let root = tempdir();
     let p = paths(&root);
     fs::create_dir_all(&p.legacy_root).unwrap();
-    let result = migrate(&p, &MigrationOptions { crash_at: Some(CrashStage::VersionRecorded) }, &mut TestKeychain);
+    let result = migrate(&p, &MigrationOptions { crash_at: Some(CrashStage::VersionRecorded), ..Default::default() }, &mut TestKeychain);
     assert!(matches!(result, Err(MigrationError::InjectedCrash(CrashStage::VersionRecorded))));
     assert!(!p.state_file().exists());
     assert!(!p.version_record().exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn every_precommit_crash_restores_quarantined_records() {
+    for stage in [CrashStage::Preflight, CrashStage::Snapshotted, CrashStage::Converted, CrashStage::VersionRecorded, CrashStage::PreviewCleaned] {
+        let root = tempdir();
+        let p = paths(&root);
+        fs::create_dir_all(&p.legacy_root).unwrap();
+        fs::create_dir_all(&p.target_root).unwrap();
+        fs::write(p.state_file(), "old-state").unwrap();
+        fs::write(p.version_record(), "old-version").unwrap();
+        let result = migrate(&p, &MigrationOptions { crash_at: Some(stage), ..Default::default() }, &mut TestKeychain);
+        if stage == CrashStage::Preflight {
+            assert!(matches!(result, Err(MigrationError::InjectedCrash(CrashStage::Preflight))));
+        } else {
+            assert!(matches!(result, Err(MigrationError::InjectedCrash(_))));
+            assert_eq!(fs::read_to_string(p.state_file()).unwrap(), "old-state");
+            assert_eq!(fs::read_to_string(p.version_record()).unwrap(), "old-version");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn absent_preview_directory_is_a_noop() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    let receipt = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
+    assert!(receipt.removed_previews.is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn post_commit_quarantine_cleanup_is_only_a_warning() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    fs::create_dir_all(&p.target_root).unwrap();
+    fs::write(p.state_file(), "old-state").unwrap();
+    let receipt = migrate(&p, &MigrationOptions { fail_discard_quarantine: true, ..Default::default() }, &mut TestKeychain).unwrap();
+    assert!(receipt.warning_messages.iter().any(|message| message.contains("committed")));
+    assert!(p.state_file().is_file());
+    assert!(p.version_record().is_file());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(all(target_os = "macos", unix))]
+#[test]
+fn dangling_preview_symlink_is_rejected() {
+    use std::os::unix::fs::symlink;
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    symlink(root.join("missing-preview"), &p.preview_dir).unwrap();
+    assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain), Err(MigrationError::UnsafePath(_))));
     fs::remove_dir_all(root).unwrap();
 }
 

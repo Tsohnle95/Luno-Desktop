@@ -34,7 +34,7 @@ impl MigrationPaths {
 pub enum CrashStage { Preflight, Snapshotted, Converted, VersionRecorded, PreviewCleaned }
 
 #[derive(Debug, Clone, Default)]
-pub struct MigrationOptions { pub crash_at: Option<CrashStage> }
+pub struct MigrationOptions { pub crash_at: Option<CrashStage>, pub fail_discard_quarantine: bool }
 
 pub trait Keychain {
     fn import_lastfm_key(&mut self, key: &str) -> Result<(), String>;
@@ -66,6 +66,7 @@ pub struct MigrationReceipt {
     pub snapshot: PathBuf,
     pub removed_previews: Vec<PathBuf>,
     pub warnings: usize,
+    pub warning_messages: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,51 +87,58 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     }
     let quarantined_records = quarantine_records(paths)?;
     let snapshot = snapshot_legacy(paths)?;
-    crash(options, CrashStage::Snapshotted)?;
+    if let Err(error) = crash(options, CrashStage::Snapshotted) {
+        return Err(rollback(paths, snapshot, error, true, &quarantined_records));
+    }
     let legacy = read_legacy(&paths.legacy_root, Some(&paths.preview_dir));
     if let Some(key) = legacy.config.as_ref().and_then(|c| c.lastfm_key.as_deref()).filter(|k| !k.trim().is_empty()) {
         if let Err(error) = keychain.import_lastfm_key(key) {
-            return Err(match fs::remove_dir_all(&snapshot) {
-                Ok(()) => MigrationError::Keychain(error),
-                Err(cleanup) => MigrationError::Cleanup(format!("Keychain import failed: {error}; backup cleanup failed: {cleanup}")),
-            });
+            return Err(rollback(paths, snapshot, MigrationError::Keychain(error), true, &quarantined_records));
         }
     }
     let state = convert(&legacy);
-    crash(options, CrashStage::Converted)?;
+    if let Err(error) = crash(options, CrashStage::Converted) {
+        return Err(rollback(paths, snapshot, error, true, &quarantined_records));
+    }
     if let Err(error) = create_once(&paths.state_file(), &serde_json::to_vec_pretty(&state).map_err(|e| MigrationError::Io(e.to_string()))?) {
-        return Err(rollback(paths, snapshot, error, false, quarantined_records));
+        return Err(rollback(paths, snapshot, error, false, &quarantined_records));
     }
     let version = VersionRecord { migration: "desktop-first-run".into(), version: MIGRATION_VERSION, completed: true };
     if let Err(error) = create_once(&paths.version_record(), &serde_json::to_vec_pretty(&version).unwrap()) {
-        return Err(rollback(paths, snapshot, error, true, quarantined_records));
+        return Err(rollback(paths, snapshot, error, true, &quarantined_records));
     }
     if let Err(error) = crash(options, CrashStage::VersionRecorded) {
-        return Err(rollback(paths, snapshot, error, true, quarantined_records));
+        return Err(rollback(paths, snapshot, error, true, &quarantined_records));
     }
     let cleanup = match cleanup_previews(paths) {
         Ok(removed) => removed,
-        Err(error) => return Err(rollback(paths, snapshot, error, true, quarantined_records)),
+        Err(error) => return Err(rollback(paths, snapshot, error, true, &quarantined_records)),
     };
     if let Err(error) = crash(options, CrashStage::PreviewCleaned) {
-        cleanup.restore()?;
-        return Err(rollback(paths, snapshot, error, true, quarantined_records));
+        let restore_error = cleanup.restore().err();
+        return Err(rollback_with_extra(paths, snapshot, error, true, &quarantined_records, restore_error));
     }
     let removed_previews = match cleanup.commit() {
         Ok(removed) => removed,
         Err((cleanup, error)) => {
-            cleanup.restore()?;
-            return Err(rollback(paths, snapshot, error, true, quarantined_records));
+            let restore_error = cleanup.restore().err();
+            return Err(rollback_with_extra(paths, snapshot, error, true, &quarantined_records, restore_error));
         }
     };
-    discard_quarantine(quarantined_records)?;
-    Ok(MigrationReceipt { version: paths.version_record(), state: paths.state_file(), snapshot, removed_previews, warnings: legacy.warnings.len() })
+    let mut warning_messages: Vec<String> = legacy.warnings.iter().map(|warning| format!("{}: {}", warning.path.display(), warning.message)).collect();
+    if let Err(error) = discard_quarantine(quarantined_records, options.fail_discard_quarantine) {
+        warning_messages.push(format!("migration committed but recovery quarantine cleanup failed: {error}"));
+    }
+    Ok(MigrationReceipt { version: paths.version_record(), state: paths.state_file(), snapshot, removed_previews, warnings: warning_messages.len(), warning_messages })
 }
 
 fn preflight(p: &MigrationPaths) -> Result<(), MigrationError> {
     if p.legacy_root == p.target_root { return Err(MigrationError::UnsafePath("legacy and target roots must differ".into())); }
     if p.preview_dir == p.legacy_root || p.preview_dir.starts_with(&p.legacy_root) { return Err(MigrationError::UnsafePath("preview directory overlaps legacy data".into())); }
     if p.target_root.starts_with(&p.legacy_root) { return Err(MigrationError::UnsafePath("target cannot be inside legacy data".into())); }
+    if let Ok(metadata) = fs::symlink_metadata(&p.preview_dir) {
+        if metadata.file_type().is_symlink() { return Err(MigrationError::UnsafePath("preview directory must not be a symlink".into())); }
+    }
     fs::create_dir_all(&p.target_root)?;
     Ok(())
 }
@@ -184,21 +192,27 @@ fn convert(s: &LegacyState) -> MigratedSettings {
     MigratedSettings { schema_version: MIGRATION_VERSION, music_root: c.and_then(|x| x.music_root.clone()), auto_discovery: c.and_then(|x| x.auto_discovery), volume: c.and_then(|x| x.volume), sleep_timer: c.and_then(|x| x.sleep_timer.clone()), global_keys: c.and_then(|x| x.global_keys), favorites: s.favorite_paths.clone(), playlist_urls: s.playlist_urls.clone(), allowed_duplicate_keys: s.allowed_duplicate_keys.iter().cloned().collect(), downloaded_ids: s.downloaded_ids.iter().cloned().collect(), failed_ids: s.failed_ids.iter().cloned().collect(), history: Vec::new() }
 }
 
-struct PreviewCleanup { removed: Vec<PathBuf>, quarantine: PathBuf }
+struct PreviewCleanup { removed: Vec<PathBuf>, quarantine: Option<PathBuf> }
 impl PreviewCleanup {
     fn restore(&self) -> Result<(), MigrationError> {
-        for path in self.removed.iter().rev() { fs::rename(self.quarantine.join(path.file_name().unwrap()), path)?; }
-        fs::remove_dir(&self.quarantine)?;
+        let Some(quarantine) = &self.quarantine else { return Ok(()); };
+        for path in self.removed.iter().rev() { fs::rename(quarantine.join(path.file_name().unwrap()), path)?; }
+        fs::remove_dir(quarantine)?;
         Ok(())
     }
     fn commit(self) -> Result<Vec<PathBuf>, (Self, MigrationError)> {
-        if let Err(error) = fs::remove_dir_all(&self.quarantine) { return Err((self, MigrationError::Cleanup(format!("preview quarantine cleanup failed: {error}")))); }
+        let Some(quarantine) = &self.quarantine else { return Ok(self.removed); };
+        if let Err(error) = fs::remove_dir_all(quarantine) { return Err((self, MigrationError::Cleanup(format!("preview quarantine cleanup failed: {error}")))); }
         Ok(self.removed)
     }
 }
 fn cleanup_previews(p: &MigrationPaths) -> Result<PreviewCleanup, MigrationError> {
-    if !p.preview_dir.exists() { return Ok(PreviewCleanup { removed: Vec::new(), quarantine: p.preview_dir.clone() }); }
-    if !p.preview_dir.is_dir() || fs::symlink_metadata(&p.preview_dir)?.file_type().is_symlink() {
+    let metadata = match fs::symlink_metadata(&p.preview_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(PreviewCleanup { removed: Vec::new(), quarantine: None }),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(MigrationError::Cleanup("preview directory is not a real directory".into()));
     }
     let mut removed = Vec::new();
@@ -210,7 +224,7 @@ fn cleanup_previews(p: &MigrationPaths) -> Result<PreviewCleanup, MigrationError
         for path in entries {
             let metadata = fs::symlink_metadata(&path)?;
             if path.parent() != Some(p.preview_dir.as_path()) || metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
-                return Err(MigrationError::Cleanup(format!("unsafe preview entry: {}", path.display())));
+                return Err(MigrationError::Cleanup(format!("preview cleanup failed: unsafe preview entry: {}", path.display())));
             }
             if p.current_preview.iter().chain(p.promoted_assets.iter()).any(|keep| keep == &path) { continue; }
             candidates.push(path);
@@ -222,24 +236,30 @@ fn cleanup_previews(p: &MigrationPaths) -> Result<PreviewCleanup, MigrationError
         Ok(())
     })();
     if let Err(error) = result {
-        for path in &removed {
-            let _ = fs::rename(quarantine.join(path.file_name().unwrap()), path);
-        }
+        for path in &removed { let _ = fs::rename(quarantine.join(path.file_name().unwrap()), path); }
         let _ = fs::remove_dir(&quarantine);
         return Err(error);
     }
-    Ok(PreviewCleanup { removed, quarantine })
+    Ok(PreviewCleanup { removed, quarantine: Some(quarantine) })
 }
 fn read_dir_files(dir: &Path) -> Result<Vec<PathBuf>, MigrationError> { fs::read_dir(dir)?.map(|entry| entry.map(|e| e.path()).map_err(MigrationError::from)).collect() }
 fn read_json<T: for<'a> Deserialize<'a>>(p: &Path) -> Option<T> { fs::read(p).ok().and_then(|b| serde_json::from_slice(&b).ok()) }
-fn rollback(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: Vec<(PathBuf, PathBuf)>) -> MigrationError {
+fn rollback(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBuf)]) -> MigrationError {
     let mut paths = vec![(snapshot, true)];
     if records { paths.extend([(p.state_file(), false), (p.version_record(), false)]); }
     let mut result = rollback_paths(error, paths);
+    rollback_records(result, quarantined)
+}
+fn rollback_records(mut result: MigrationError, quarantined: &[(PathBuf, PathBuf)]) -> MigrationError {
+    let mut failures = Vec::new();
     for (original, backup) in quarantined.into_iter().rev() {
-        if let Err(error) = fs::rename(&backup, &original) { result = MigrationError::Cleanup(format!("migration rollback failed: {error}")); }
+        if let Err(error) = fs::rename(&backup, &original) { failures.push(format!("{}: {error}", original.display())); }
     }
-    result
+    if failures.is_empty() { result } else { result = MigrationError::Cleanup(format!("migration failed: {result:?}; record restoration failed: {}", failures.join("; "))); result }
+}
+fn rollback_with_extra(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBuf)], extra: Option<MigrationError>) -> MigrationError {
+    let result = rollback(p, snapshot, error, records, quarantined);
+    match extra { Some(extra) => MigrationError::Cleanup(format!("migration rollback failed: {result:?}; preview restoration failed: {extra:?}")), None => result }
 }
 fn rollback_paths(error: MigrationError, paths: impl IntoIterator<Item = (PathBuf, bool)>) -> MigrationError {
     let mut failures = Vec::new();
@@ -262,7 +282,8 @@ fn quarantine_records(p: &MigrationPaths) -> Result<Vec<(PathBuf, PathBuf)>, Mig
     }
     Ok(result)
 }
-fn discard_quarantine(items: Vec<(PathBuf, PathBuf)>) -> Result<(), MigrationError> {
+fn discard_quarantine(items: Vec<(PathBuf, PathBuf)>, injected_failure: bool) -> Result<(), MigrationError> {
+    if injected_failure { return Err(MigrationError::Cleanup("injected quarantine disposal failure".into())); }
     for (_, backup) in items { fs::remove_file(backup)?; }
     Ok(())
 }
