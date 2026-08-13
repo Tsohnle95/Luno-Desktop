@@ -24,8 +24,10 @@ pub mod process {
     pub mod supervisor;
 }
 pub mod download {
+    pub mod csv;
     pub mod coordinator;
     pub mod promotion;
+    pub mod workflows;
 }
 pub mod state;
 pub mod library {
@@ -55,5 +57,8 @@ pub mod playback {
 pub mod discovery {
     pub mod service;
     pub mod artwork;
+}
+pub mod preview {
+    pub mod assets;
 }
 pub mod platform { pub mod media_session; }
