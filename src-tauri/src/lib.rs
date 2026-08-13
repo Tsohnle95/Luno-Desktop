@@ -24,6 +24,7 @@ pub mod process {
     pub mod supervisor;
 }
 pub mod download {
+    pub mod coordinator;
     pub mod promotion;
 }
 pub mod state;
@@ -46,5 +47,7 @@ pub mod playback {
     pub mod backend;
     pub mod backend_adapter;
     pub mod crossfade;
+    pub mod clock;
     pub mod queue;
+    pub mod recovery;
 }
