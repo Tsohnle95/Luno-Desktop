@@ -336,7 +336,6 @@ class SongPageView(tk.Frame):
         self.video_menu_window.withdraw()
         self.video_menu_window.overrideredirect(True)
         self.video_menu_window.attributes("-topmost", False)
-        self.video_menu_window.transient(self)
         self.video_menu_window.configure(bg=BG3)
         self.video_menu = tk.Frame(self.video_menu_window, bg=BG3,
                                    bd=1, relief="solid")
@@ -1713,14 +1712,35 @@ class SongPageView(tk.Frame):
     def _run_video_menu_action(self, action):
         self._cancel_hide_video_menu()
         self._video_menu_visible = False
-        self.video_menu_window.withdraw()
         if self._video_menu_poll_after is not None:
             try:
                 self.after_cancel(self._video_menu_poll_after)
             except (RuntimeError, tk.TclError):
                 pass
             self._video_menu_poll_after = None
+        self._dismiss_video_menu()
         self.after(0, action)
+
+    def _dismiss_video_menu(self):
+        """Hide the popup without leaving its native window owning input."""
+        window = self.video_menu_window
+        if window is None:
+            return
+        try:
+            grab = window.grab_current()
+            if grab and str(grab).startswith(str(window)):
+                window.grab_release()
+        except (RuntimeError, tk.TclError):
+            pass
+        try:
+            window.focus_clear()
+            window.withdraw()
+        except (RuntimeError, tk.TclError):
+            pass
+        try:
+            self.controller.focus_set()
+        except (RuntimeError, tk.TclError):
+            pass
 
     def _cancel_hide_video_menu(self):
         if self._video_menu_hide_after is not None:
@@ -1753,7 +1773,7 @@ class SongPageView(tk.Frame):
                     self._poll_video_menu_pointer()
                     return
             self._video_menu_visible = False
-            self.video_menu_window.withdraw()
+            self._dismiss_video_menu()
         except (RuntimeError, tk.TclError):
             pass
 
@@ -1781,7 +1801,7 @@ class SongPageView(tk.Frame):
                 self._poll_video_menu_pointer()
             else:
                 self._video_menu_visible = False
-                self.video_menu_window.withdraw()
+                self._dismiss_video_menu()
         except (RuntimeError, tk.TclError):
             self._video_menu_visible = False
 
