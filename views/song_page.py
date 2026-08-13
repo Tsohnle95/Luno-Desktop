@@ -336,6 +336,7 @@ class SongPageView(tk.Frame):
         self.video_menu_window.withdraw()
         self.video_menu_window.overrideredirect(True)
         self.video_menu_window.attributes("-topmost", False)
+        self.video_menu_window.transient(self)
         self.video_menu_window.configure(bg=BG3)
         self.video_menu = tk.Frame(self.video_menu_window, bg=BG3,
                                    bd=1, relief="solid")
@@ -346,12 +347,29 @@ class SongPageView(tk.Frame):
                                         cursor="hand2")
         self.video_menu_play.pack(fill="x")
         self.video_menu_play.bind("<Button-1>", lambda e: self._run_video_menu_action(self._request_video))
-        self.video_menu_preload = tk.Checkbutton(
-            self.video_menu, text="Preload next", variable=self.video_preload_var,
-            command=lambda: self._run_video_menu_action(self._video_preload_changed), font=("Helvetica Neue", 10),
-            fg=TEXT, bg=BG3, activebackground=BG3, activeforeground=TEXT,
-            selectcolor=BG3, highlightthickness=0, borderwidth=0, anchor="w")
-        self.video_menu_preload.pack(fill="x", padx=4, pady=2)
+        self.video_menu_current = tk.Label(
+            self.video_menu, text="↓  Load current video", font=("Helvetica Neue", 10),
+            fg=TEXT, bg=BG3, anchor="w", padx=10, pady=6, cursor="hand2")
+        self.video_menu_current.pack(fill="x")
+        self.video_menu_current.bind(
+            "<Button-1>", lambda e: self._run_video_menu_action(self._load_current_video))
+        self.video_menu_next = tk.Label(
+            self.video_menu, text="→  Preload next video", font=("Helvetica Neue", 10),
+            fg=TEXT, bg=BG3, anchor="w", padx=10, pady=6, cursor="hand2")
+        self.video_menu_next.pack(fill="x")
+        self.video_menu_next.bind(
+            "<Button-1>", lambda e: self._run_video_menu_action(self._preload_next_video))
+        self.video_menu_auto = tk.Checkbutton(
+            self.video_menu, text="Auto-preload next", variable=self.video_preload_var,
+            command=lambda: self._run_video_menu_action(self._video_preload_changed),
+            font=("Helvetica Neue", 10), fg=TEXT, bg=BG3,
+            activebackground=BG3, activeforeground=TEXT, selectcolor=BG3,
+            highlightthickness=0, borderwidth=0, anchor="w")
+        self.video_menu_auto.pack(fill="x", padx=4, pady=2)
+        self.video_menu_status = tk.Label(
+            self.video_menu, text="", font=("Helvetica Neue", 9), fg=TEXT3,
+            bg=BG3, anchor="w", justify="left", padx=10, pady=(2, 6))
+        self.video_menu_status.pack(fill="x")
         self.video_menu_spinner = tk.Label(self.video_menu, text="", fg=GREEN,
                                            bg=BG3, font=("Helvetica Neue", 11))
         self.video_menu_spinner.place(relx=1.0, rely=0.5, anchor="e", x=-8)
@@ -364,7 +382,9 @@ class SongPageView(tk.Frame):
         self.video_btn = self.video_menu_play
         self.video_spinner = self.video_menu_spinner
         for widget in (self.video_menu, self.video_menu_play,
-                       self.video_menu_preload, self.video_menu_fullscreen):
+                       self.video_menu_current, self.video_menu_next,
+                       self.video_menu_auto, self.video_menu_status,
+                       self.video_menu_fullscreen):
             widget.bind("<Enter>", lambda e: self._cancel_hide_video_menu())
             widget.bind("<Leave>", lambda e: self._schedule_video_menu_check())
 
@@ -1231,6 +1251,7 @@ class SongPageView(tk.Frame):
                 artist = pl_ctx
         self.title_lbl.config(text=title)
         self.artist_lbl.config(text=artist or "Unknown Artist")
+        self._refresh_video_menu_status(path)
         if path != self._video_path:
             self._stop_video()
             self.art_container.update_idletasks()
@@ -1243,7 +1264,7 @@ class SongPageView(tk.Frame):
                 self._set_video_spinner(True)
             else:
                 self._set_video_spinner(False)
-                self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
+                self._set_video_controls("▷  Play current video", "No current video loaded")
         self._sync_favorite_button(path)
         self._ensure_recs_seed(title, artist or "")
         self._layout_page(w, h)
@@ -1387,10 +1408,10 @@ class SongPageView(tk.Frame):
         """Probe first, then ask before spending bandwidth on a video file."""
         if self._video_player is not None:
             self._stop_video()
-            self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
+            self._set_video_controls("▷  Play current video", "Current video stopped")
             return
         if not shutil.which("ffmpeg"):
-            self.video_btn.config(text="FFmpeg unavailable", cursor="arrow")
+            self._set_video_controls("FFmpeg unavailable", "FFmpeg is not installed")
             return
         if self._video_loading:
             return
@@ -1410,7 +1431,7 @@ class SongPageView(tk.Frame):
         self._video_loading = True
         self._video_probe_attempt += 1
         attempt = self._video_probe_attempt
-        self.video_btn.config(text="Checking video...", cursor="arrow")
+        self._set_video_controls("Checking current video...", "Checking whether a current-song video is available")
 
         def run():
             try:
@@ -1464,10 +1485,10 @@ class SongPageView(tk.Frame):
                 self._video_loading = False
                 self.after(250, self._request_video)
                 return
-            self.video_btn.config(text="No video found", fg=TEXT3, cursor="arrow")
+            self._set_video_controls("No current video found", error)
             self.controller.status_var.set(error)
             return
-        self.video_btn.config(text="Downloading video...", cursor="arrow")
+        self._set_video_controls("Downloading current video...", "Source found; downloading current-song video")
         target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
 
         def run():
@@ -1486,7 +1507,7 @@ class SongPageView(tk.Frame):
         if path != self._current_path():
             return
         if error or not video_path:
-            self.video_btn.config(text="Video unavailable", fg=TEXT3, cursor="arrow")
+            self._set_video_controls("Current video unavailable", error or "Video could not be downloaded")
             self.controller.status_var.set(error or "Video could not be downloaded")
             return
         self._video_path = path
@@ -1504,8 +1525,31 @@ class SongPageView(tk.Frame):
                          not self.controller.engine.paused))
         self._video_player.play()
         self._set_video_spinner(False)
-        self.video_btn.config(text="■ Video", fg=GREEN, cursor="hand2")
+        self._set_video_controls("■  Stop current video", "Current song video is ready and playing")
         self.controller.status_var.set("Playing song video over album art")
+
+    def _set_video_controls(self, current_text, status):
+        self.video_btn.config(text=current_text, fg=GREEN if self._video_player else TEXT3,
+                              cursor="hand2" if self._video_player or current_text.startswith(("▷", "Load")) else "arrow")
+        self.video_menu_play.config(text=current_text)
+        self.video_menu_current.config(text="↓  Load current video")
+        self.video_menu_status.config(text=status)
+
+    def _refresh_video_menu_status(self, path):
+        if self._video_loading:
+            self.video_menu_status.config(text="Current video: checking or downloading")
+            return
+        state = self._video_preload_states.get(path)
+        if self._video_player is not None and self._video_path == path:
+            self.video_menu_status.config(text="Current video: ready and playing")
+        elif state == "downloading":
+            self.video_menu_status.config(text="Current video: downloading")
+        elif state == "ready":
+            self.video_menu_status.config(text="Current video: ready to play")
+        elif state == "unavailable":
+            self.video_menu_status.config(text="Current video: unavailable")
+        else:
+            self.video_menu_status.config(text="Current video: not checked")
 
     def _start_current_staged_video(self, path):
         if not path or self._video_player is not None:
@@ -1530,22 +1574,46 @@ class SongPageView(tk.Frame):
             self._set_video_spinner(True)
             self._preload_current_video()
             self._preload_next_video()
+            self.video_menu_status.config(text="Auto-preload enabled; checking current and next songs")
         else:
             self._set_video_spinner(False)
+            self.video_menu_status.config(text="Auto-preload disabled")
 
     def _preload_current_video(self, path=None):
         path = path or self._current_path()
         if path:
             self._preload_video(path, start_current=True)
 
+    def _load_current_video(self):
+        path = self._current_path()
+        if not path:
+            self.video_menu_status.config(text="Current video: no song is playing")
+            return
+        title, artist = self._video_track_metadata(path)
+        target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
+        try:
+            from video_preview import find_video
+            staged = find_video(artist, title, target)
+        except Exception:
+            staged = None
+        if staged:
+            self._video_download_done(path, staged, None)
+        else:
+            self._request_video()
+
     def _preload_video(self, path, start_current=False):
         if not path or path in self._video_preload_paths:
             return
         if self._video_preload_states.get(path) in ("ready", "unavailable"):
+            if start_current and path == self._current_path() and self._video_player is None:
+                self._load_current_video()
             return
         self._video_preload_paths.add(path)
         self._video_preload_states[path] = "downloading"
         self._set_video_spinner(True)
+        self.video_menu_status.config(text=(
+            "Current video: checking and downloading" if path == self._current_path()
+            else "Next video: checking and downloading"))
         title, artist = self._video_track_metadata(path)
         target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
 
@@ -1560,8 +1628,6 @@ class SongPageView(tk.Frame):
                 message = f"Video preloaded: {title}"
             except Exception as exc:
                 message = f"Video preload failed: {exc}"
-            self._video_preload_paths.discard(path)
-            self._video_preload_states[path] = "ready" if video_path else "unavailable"
             try:
                 self.after(0, lambda: self._preload_video_done(
                     path, video_path, start_current, message))
@@ -1570,6 +1636,8 @@ class SongPageView(tk.Frame):
         threading.Thread(target=run, daemon=True, name="luno-video-preload").start()
 
     def _preload_video_done(self, path, video_path, start_current, message):
+        self._video_preload_paths.discard(path)
+        self._video_preload_states[path] = "ready" if video_path else "unavailable"
         if not video_path:
             title, artist = self._video_track_metadata(path)
             target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
@@ -1583,6 +1651,9 @@ class SongPageView(tk.Frame):
             self._video_download_done(path, video_path, None)
         if not self._video_preload_paths:
             self._set_video_spinner(False)
+        label = "Current" if path == self._current_path() else "Next"
+        self.video_menu_status.config(
+            text=f"{label} video: {'ready' if video_path else 'unavailable'}")
         self.controller.status_var.set(message)
 
     def _set_video_spinner(self, loading):
@@ -1621,6 +1692,7 @@ class SongPageView(tk.Frame):
             next_idx = engine.queue_idx + 1
             next_path = engine.queue[next_idx]
         except (AttributeError, IndexError):
+            self.video_menu_status.config(text="Next video: no next song in the queue")
             self.controller.status_var.set("No next song in the current queue")
             return
         self._preload_video(next_path)
@@ -1629,8 +1701,10 @@ class SongPageView(tk.Frame):
         self._cancel_hide_video_menu()
         self._video_menu_visible = True
         self.video_menu_window.update_idletasks()
-        x = self.video_menu_btn.winfo_rootx() - self.video_menu_window.winfo_reqwidth()
-        y = self.video_menu_btn.winfo_rooty() + self.video_menu_btn.winfo_height() + 4
+        x = self.video_menu_btn.winfo_rootx()
+        # Touch the icon's lower edge so diagonal pointer movement cannot cross
+        # a dead zone between the trigger and the borderless popup.
+        y = self.video_menu_btn.winfo_rooty() + self.video_menu_btn.winfo_height()
         self.video_menu_window.geometry(f"{self.video_menu_window.winfo_reqwidth()}x"
                                         f"{self.video_menu_window.winfo_reqheight()}+{x}+{y}")
         self.video_menu_window.deiconify()
@@ -1672,8 +1746,7 @@ class SongPageView(tk.Frame):
             return
         try:
             x, y = self.winfo_pointerxy()
-            for widget in (self.video_menu_btn, self.art_container,
-                           self.video_menu_window):
+            for widget in (self.video_menu_btn, self.video_menu_window):
                 left = widget.winfo_rootx()
                 top = widget.winfo_rooty()
                 if left <= x < left + widget.winfo_width() and top <= y < top + widget.winfo_height():
@@ -1698,8 +1771,7 @@ class SongPageView(tk.Frame):
             return
         try:
             x, y = self.winfo_pointerxy()
-            widgets = (self.video_menu_btn, self.art_container,
-                       self.video_menu_window)
+            widgets = (self.video_menu_btn, self.video_menu_window)
             inside = any(
                 widget.winfo_rootx() <= x < widget.winfo_rootx() + widget.winfo_width()
                 and widget.winfo_rooty() <= y < widget.winfo_rooty() + widget.winfo_height()
@@ -1780,7 +1852,7 @@ class SongPageView(tk.Frame):
             self._video_player = None
             self._video_file = None
             self._video_size = None
-            self.video_btn.config(text="▷ Video", fg=TEXT3, cursor="hand2")
+            self._set_video_controls("▷  Play current video", "No current video loaded")
 
 
     def _sync_favorite_button(self, path="__current__"):
