@@ -40,7 +40,8 @@ class _FFmpegVideoPlayer:
         vf = (f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
               f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black")
         self.process = subprocess.Popen([
-            "ffmpeg", "-loglevel", "error", "-i", self.path, "-vf", vf,
+            "ffmpeg", "-loglevel", "error", "-re", "-i", self.path, "-vf", vf,
+            "-r", "12", "-an",
             "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.running = True
@@ -50,7 +51,7 @@ class _FFmpegVideoPlayer:
     def _read_frames(self):
         frame_size = self.width * self.height * 3
         while self.running and self.process and self.process.stdout:
-            data = self.process.stdout.read(frame_size)
+            data = self._read_exact(frame_size)
             if len(data) != frame_size:
                 break
             image = self._image.frombytes("RGB", (self.width, self.height), data)
@@ -63,6 +64,17 @@ class _FFmpegVideoPlayer:
                 self.after(0, self.on_finished)
             except (RuntimeError, tk.TclError):
                 pass
+
+    def _read_exact(self, size):
+        chunks = []
+        remaining = size
+        while self.running and self.process and self.process.stdout and remaining:
+            chunk = self.process.stdout.read(remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
 
     def _show(self, image):
         if self.running:
