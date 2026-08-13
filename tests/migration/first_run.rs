@@ -117,3 +117,20 @@ fn version_record_crash_rolls_back_state_and_version() {
     assert!(!p.version_record().exists());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn preview_cleanup_failure_rolls_back_every_migration_artifact() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    fs::create_dir_all(p.preview_dir.join("unexpected-directory")).unwrap();
+
+    let result = migrate(&p, &MigrationOptions::default(), &mut TestKeychain);
+    let error = result.unwrap_err();
+    assert!(matches!(error, MigrationError::Cleanup(message) if message.contains("preview cleanup failed")));
+    assert!(!p.state_file().exists());
+    assert!(!p.version_record().exists());
+    assert!(fs::read_dir(&p.target_root).unwrap().next().is_none());
+    fs::remove_dir_all(root).unwrap();
+}

@@ -116,7 +116,10 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     if let Err(error) = crash(options, CrashStage::VersionRecorded) {
         return Err(rollback(paths, snapshot, error, true));
     }
-    let removed_previews = cleanup_previews(paths)?;
+    let removed_previews = match cleanup_previews(paths) {
+        Ok(removed) => removed,
+        Err(error) => return Err(rollback(paths, snapshot, error, true)),
+    };
     crash(options, CrashStage::PreviewCleaned)?;
     Ok(MigrationReceipt { version: paths.version_record(), state: paths.state_file(), snapshot, removed_previews, warnings: legacy.warnings.len() })
 }
@@ -181,13 +184,18 @@ fn convert(s: &LegacyState) -> MigratedSettings {
 fn cleanup_previews(p: &MigrationPaths) -> Result<Vec<PathBuf>, MigrationError> {
     if !p.preview_dir.is_dir() { return Ok(Vec::new()); }
     let mut removed = Vec::new();
+    let mut failures = Vec::new();
     for path in read_dir_files(&p.preview_dir)? {
         if p.current_preview.iter().chain(p.promoted_assets.iter()).any(|keep| keep == &path) { continue; }
-        fs::remove_file(&path)?; removed.push(path);
+        match fs::remove_file(&path) {
+            Ok(()) => removed.push(path),
+            Err(error) => failures.push(format!("{}: {error}", path.display())),
+        }
     }
+    if !failures.is_empty() { return Err(MigrationError::Cleanup(format!("preview cleanup failed: {}", failures.join("; ")))); }
     Ok(removed)
 }
-fn read_dir_files(dir: &Path) -> Result<Vec<PathBuf>, MigrationError> { Ok(fs::read_dir(dir)?.filter_map(Result::ok).filter_map(|e| e.file_type().ok().filter(|t| t.is_file()).map(|_| e.path())).collect()) }
+fn read_dir_files(dir: &Path) -> Result<Vec<PathBuf>, MigrationError> { Ok(fs::read_dir(dir)?.filter_map(Result::ok).map(|e| e.path()).collect()) }
 fn read_json<T: for<'a> Deserialize<'a>>(p: &Path) -> Option<T> { fs::read(p).ok().and_then(|b| serde_json::from_slice(&b).ok()) }
 fn cleanup_snapshot(snapshot: PathBuf, error: MigrationError) -> MigrationError {
     rollback_paths(error, [(snapshot, true)])

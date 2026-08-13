@@ -1,17 +1,24 @@
 //! macOS Keychain adapter for first-run secret migration.
 
 use super::first_run::{Keychain, MAX_LASTFM_KEY_LEN};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SERVICE: &str = "com.ty.luno";
 pub const LASTFM_ACCOUNT: &str = "lastfm-key";
 
 /// Store the legacy Last.fm key in the user's login Keychain.
-pub struct MacOsKeychain { service: &'static str, account: &'static str }
+pub struct MacOsKeychain { service: String, account: String }
 
 impl MacOsKeychain {
-    pub fn new() -> Self { Self { service: SERVICE, account: LASTFM_ACCOUNT } }
+    pub fn new() -> Self { Self { service: SERVICE.into(), account: LASTFM_ACCOUNT.into() } }
 
-    pub fn new_for_test() -> Self { Self { service: "com.ty.luno.test", account: "lastfm-key-test" } }
+    pub fn new_for_test() -> Self { Self { service: "com.ty.luno.test".into(), account: "lastfm-key-test".into() } }
+
+    /// Use a fresh namespace so an interactive test can never overwrite user data.
+    pub fn new_unique_for_test() -> Self {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        Self { service: format!("com.ty.luno.test.{nonce}"), account: "lastfm-key-test".into() }
+    }
 
     pub fn remove_lastfm_key(&mut self) -> Result<(), String> {
         #[cfg(target_os = "macos")]
@@ -169,24 +176,17 @@ impl Keychain for MacOsKeychain {
 mod tests {
     use super::*;
 
-    struct Cleanup;
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = MacOsKeychain::new_for_test().remove_lastfm_key();
-        }
-    }
-
     #[test]
     #[ignore = "requires an interactive macOS login Keychain; run explicitly"]
     fn real_keychain_round_trip() {
-        let mut keychain = MacOsKeychain::new_for_test();
-        let cleanup = Cleanup;
+        let mut keychain = MacOsKeychain::new_unique_for_test();
         let result = (|| {
             keychain.import_lastfm_key("luno-real-keychain-test")?;
             if keychain.read_lastfm_key()? != b"luno-real-keychain-test" { return Err("round-trip value mismatch".into()); }
             Ok(())
         })();
-        drop(cleanup);
+        let cleanup = keychain.remove_lastfm_key();
+        if let Err(error) = cleanup { return Err(format!("round-trip cleanup failed: {error}")); }
         result.expect("Keychain access unavailable or denied: real check is inconclusive");
     }
 }
