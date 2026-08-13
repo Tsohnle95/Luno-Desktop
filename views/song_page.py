@@ -309,8 +309,8 @@ class SongPageView(tk.Frame):
         self.art_lbl.pack(fill="both", expand=True)
         for widget in (self.art_container, self.art_lbl):
             widget.bind("<Enter>", lambda e: self._show_video_menu())
-            widget.bind("<Leave>", lambda e: self._hide_video_menu_later())
-            widget.bind("<Button-1>", lambda e: self._request_video())
+            widget.bind("<Leave>", lambda e: self._schedule_video_menu_check())
+            widget.bind("<Button-1>", lambda e: self._show_video_menu())
         for sequence, handler in (("<KeyPress-f>", self._handle_video_f_key),
                                   ("<KeyPress-F>", self._handle_video_f_key),
                                   ("<Escape>", self._handle_video_escape)):
@@ -321,7 +321,7 @@ class SongPageView(tk.Frame):
                                        fg=TEXT3, bg=BG, cursor="hand2")
         self.video_menu_btn.grid(row=2, column=0, sticky="e", padx=12, pady=(0, 8))
         self.video_menu_btn.bind("<Enter>", lambda e: self._show_video_menu())
-        self.video_menu_btn.bind("<Leave>", lambda e: self._hide_video_menu_later())
+        self.video_menu_btn.bind("<Leave>", lambda e: self._schedule_video_menu_check())
         self.video_menu_window = tk.Toplevel(self)
         self.video_menu_window.withdraw()
         self.video_menu_window.overrideredirect(True)
@@ -355,7 +355,7 @@ class SongPageView(tk.Frame):
         for widget in (self.video_menu, self.video_menu_play,
                        self.video_menu_preload, self.video_menu_fullscreen):
             widget.bind("<Enter>", lambda e: self._cancel_hide_video_menu())
-            widget.bind("<Leave>", lambda e: self._hide_video_menu_later())
+            widget.bind("<Leave>", lambda e: self._schedule_video_menu_check())
 
         # Typography
         self.title_lbl = tk.Label(self.main_f, text="Song Title",
@@ -1602,9 +1602,26 @@ class SongPageView(tk.Frame):
     def _hide_video_menu_later(self):
         self._cancel_hide_video_menu()
         try:
-            self._video_menu_hide_after = self.after(250, self.video_menu_window.withdraw)
+            self._video_menu_hide_after = self.after(180, self._hide_video_menu_if_outside)
         except (RuntimeError, tk.TclError):
             self._video_menu_hide_after = None
+
+    def _schedule_video_menu_check(self):
+        self._hide_video_menu_later()
+
+    def _hide_video_menu_if_outside(self):
+        self._video_menu_hide_after = None
+        try:
+            x, y = self.winfo_pointerxy()
+            for widget in (self.video_menu_btn, self.art_container,
+                           self.video_menu_window):
+                left = widget.winfo_rootx()
+                top = widget.winfo_rooty()
+                if left <= x < left + widget.winfo_width() and top <= y < top + widget.winfo_height():
+                    return
+            self.video_menu_window.withdraw()
+        except (RuntimeError, tk.TclError):
+            pass
 
     def on_audio_track_started(self, path):
         """Engine hook: preload independently of Song Page redraw timing."""
@@ -1656,13 +1673,16 @@ class SongPageView(tk.Frame):
         self._fullscreen_player = None
         window = self._fullscreen_window
         self._fullscreen_window = None
-        if player is not None:
-            player.stop()
         if window is not None:
             try:
                 window.destroy()
             except tk.TclError:
                 pass
+        if player is not None:
+            # Do not block Tk while terminating a decoder that may be blocked
+            # reading a raw frame. Its stop path is safe on a worker thread.
+            threading.Thread(target=player.stop, daemon=True,
+                             name="luno-fullscreen-stop").start()
 
     def _on_video_finished(self):
         self._close_fullscreen_video()
