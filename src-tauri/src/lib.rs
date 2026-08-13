@@ -50,4 +50,6 @@ pub mod playback {
     pub mod clock;
     pub mod queue;
     pub mod recovery;
+    pub mod sleep_timer;
 }
+pub mod platform { pub mod media_session; }
