@@ -311,7 +311,13 @@ class SongPageView(tk.Frame):
         self.video_menu_btn.grid(row=2, column=0, sticky="e", padx=12, pady=(0, 8))
         self.video_menu_btn.bind("<Enter>", lambda e: self._show_video_menu())
         self.video_menu_btn.bind("<Leave>", lambda e: self._hide_video_menu_later())
-        self.video_menu = tk.Frame(self.main_f, bg=BG3, bd=1, relief="solid")
+        self.video_menu_window = tk.Toplevel(self)
+        self.video_menu_window.withdraw()
+        self.video_menu_window.overrideredirect(True)
+        self.video_menu_window.configure(bg=BG3)
+        self.video_menu = tk.Frame(self.video_menu_window, bg=BG3,
+                                   bd=1, relief="solid")
+        self.video_menu.pack(fill="both", expand=True)
         self.video_menu_play = tk.Label(self.video_menu, text="▷  Play video",
                                         font=("Helvetica Neue", 10), fg=TEXT,
                                         bg=BG3, anchor="w", padx=10, pady=6,
@@ -1302,6 +1308,12 @@ class SongPageView(tk.Frame):
     def destroy(self):
         self._stop_video()
         self._close_fullscreen_video()
+        if self.video_menu_window is not None:
+            try:
+                self.video_menu_window.destroy()
+            except tk.TclError:
+                pass
+            self.video_menu_window = None
         if self._video_spinner_after is not None:
             try:
                 self.after_cancel(self._video_spinner_after)
@@ -1331,6 +1343,15 @@ class SongPageView(tk.Frame):
         if not path:
             return
         title, artist = self._video_track_metadata(path)
+        target = getattr(self.controller, "PREVIEW_DIR", os.path.expanduser("~/.luno_previews"))
+        try:
+            from video_preview import find_video
+            staged = find_video(artist, title, target)
+        except Exception:
+            staged = None
+        if staged:
+            self._video_download_done(path, staged, None)
+            return
         self._video_loading = True
         self.video_btn.config(text="Checking video...", cursor="arrow")
 
@@ -1527,10 +1548,13 @@ class SongPageView(tk.Frame):
 
     def _show_video_menu(self):
         self._cancel_hide_video_menu()
-        self.main_f.update_idletasks()
-        x = max(self.main_f.winfo_width() - self.video_menu.winfo_reqwidth() - 8, 0)
-        y = self.video_menu_btn.winfo_y() + self.video_menu_btn.winfo_height() + 4
-        self.video_menu.place(in_=self.main_f, x=x, y=y)
+        self.video_menu_window.update_idletasks()
+        x = self.video_menu_btn.winfo_rootx() - self.video_menu_window.winfo_reqwidth()
+        y = self.video_menu_btn.winfo_rooty() + self.video_menu_btn.winfo_height() + 4
+        self.video_menu_window.geometry(f"{self.video_menu_window.winfo_reqwidth()}x"
+                                        f"{self.video_menu_window.winfo_reqheight()}+{x}+{y}")
+        self.video_menu_window.deiconify()
+        self.video_menu_window.lift()
 
     def _cancel_hide_video_menu(self):
         if self._video_menu_hide_after is not None:
@@ -1543,7 +1567,7 @@ class SongPageView(tk.Frame):
     def _hide_video_menu_later(self):
         self._cancel_hide_video_menu()
         try:
-            self._video_menu_hide_after = self.after(250, self.video_menu.place_forget)
+            self._video_menu_hide_after = self.after(250, self.video_menu_window.withdraw)
         except (RuntimeError, tk.TclError):
             self._video_menu_hide_after = None
 
