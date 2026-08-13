@@ -57,6 +57,22 @@ fn keychain_failure_writes_no_target_state_or_version() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn orphaned_state_without_completed_record_is_recovered() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    fs::create_dir_all(&p.target_root).unwrap();
+    fs::write(p.state_file(), "orphaned").unwrap();
+
+    let result = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
+    assert_eq!(result.state, p.state_file());
+    assert!(p.state_file().is_file());
+    assert!(p.version_record().is_file());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn snapshot_redacts_key_and_invalid_record_is_recoverable() {
     let root = tempdir();
     let p = paths(&root);

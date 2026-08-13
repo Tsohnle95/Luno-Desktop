@@ -68,7 +68,7 @@ pub struct MigrationReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MigrationError { UnsupportedPlatform, UnsafePath(String), AlreadyComplete, Io(String), Keychain(String), InjectedCrash(CrashStage) }
+pub enum MigrationError { UnsupportedPlatform, UnsafePath(String), AlreadyComplete, Io(String), Keychain(String), Cleanup(String), InjectedCrash(CrashStage) }
 impl From<io::Error> for MigrationError { fn from(e: io::Error) -> Self { Self::Io(e.to_string()) } }
 
 /// Perform a complete first-run migration. `keychain` is injected so the real
@@ -77,31 +77,41 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     if !cfg!(target_os = "macos") { return Err(MigrationError::UnsupportedPlatform); }
     preflight(paths)?;
     crash(options, CrashStage::Preflight)?;
+    let valid_completed_record = read_json::<VersionRecord>(&paths.version_record()).filter(|record| {
+        record.migration == "desktop-first-run" && record.version == MIGRATION_VERSION && record.completed
+    });
+    if valid_completed_record.is_some() && paths.state_file().is_file() {
+        return Err(MigrationError::AlreadyComplete);
+    }
     if paths.version_record().exists() {
-        let record: Option<VersionRecord> = read_json(&paths.version_record());
-        if record.as_ref().is_some_and(|r| r.migration == "desktop-first-run" && r.version == MIGRATION_VERSION && r.completed && paths.state_file().is_file()) {
-            return Err(MigrationError::AlreadyComplete);
-        }
         // An interrupted or foreign record is not evidence of completion.
         fs::remove_file(paths.version_record())?;
-        if paths.state_file().exists() { fs::remove_file(paths.state_file())?; }
+    }
+    if paths.state_file().exists() {
+        // A state file without a valid completed record is an orphan from an
+        // interrupted attempt and must not block recovery.
+        fs::remove_file(paths.state_file())?;
     }
     let snapshot = snapshot_legacy(paths)?;
     crash(options, CrashStage::Snapshotted)?;
     let legacy = read_legacy(&paths.legacy_root, Some(&paths.preview_dir));
     if let Some(key) = legacy.config.as_ref().and_then(|c| c.lastfm_key.as_deref()).filter(|k| !k.trim().is_empty()) {
         if let Err(error) = keychain.import_lastfm_key(key) {
-            let _ = fs::remove_dir_all(&snapshot);
-            return Err(MigrationError::Keychain(error));
+            return Err(match fs::remove_dir_all(&snapshot) {
+                Ok(()) => MigrationError::Keychain(error),
+                Err(cleanup) => MigrationError::Cleanup(format!("Keychain import failed: {error}; backup cleanup failed: {cleanup}")),
+            });
         }
     }
     let state = convert(&legacy);
     crash(options, CrashStage::Converted)?;
-    create_once(&paths.state_file(), &serde_json::to_vec_pretty(&state).map_err(|e| MigrationError::Io(e.to_string()))?)?;
+    if let Err(error) = create_once(&paths.state_file(), &serde_json::to_vec_pretty(&state).map_err(|e| MigrationError::Io(e.to_string()))?) {
+        return Err(cleanup_snapshot(snapshot, error));
+    }
     let version = VersionRecord { migration: "desktop-first-run".into(), version: MIGRATION_VERSION, completed: true };
     if let Err(error) = create_once(&paths.version_record(), &serde_json::to_vec_pretty(&version).unwrap()) {
         let _ = fs::remove_file(paths.state_file());
-        return Err(error);
+        return Err(cleanup_snapshot(snapshot, error));
     }
     if let Err(error) = crash(options, CrashStage::VersionRecorded) {
         let _ = fs::remove_file(paths.state_file());
@@ -176,5 +186,11 @@ fn cleanup_previews(p: &MigrationPaths) -> Result<Vec<PathBuf>, MigrationError> 
 }
 fn read_dir_files(dir: &Path) -> Result<Vec<PathBuf>, MigrationError> { Ok(fs::read_dir(dir)?.filter_map(Result::ok).filter_map(|e| e.file_type().ok().filter(|t| t.is_file()).map(|_| e.path())).collect()) }
 fn read_json<T: for<'a> Deserialize<'a>>(p: &Path) -> Option<T> { fs::read(p).ok().and_then(|b| serde_json::from_slice(&b).ok()) }
+fn cleanup_snapshot(snapshot: PathBuf, error: MigrationError) -> MigrationError {
+    match fs::remove_dir_all(snapshot) {
+        Ok(()) => error,
+        Err(cleanup) => MigrationError::Cleanup(format!("migration failed: {error:?}; backup cleanup failed: {cleanup}")),
+    }
+}
 fn create_once(path: &Path, bytes: &[u8]) -> Result<(), MigrationError> { let mut f = OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| if e.kind() == io::ErrorKind::AlreadyExists { MigrationError::AlreadyComplete } else { e.into() })?; f.write_all(bytes)?; f.sync_all()?; if let Some(parent) = path.parent() { File::open(parent)?.sync_all()?; } Ok(()) }
 fn crash(o: &MigrationOptions, stage: CrashStage) -> Result<(), MigrationError> { if o.crash_at == Some(stage) { Err(MigrationError::InjectedCrash(stage)) } else { Ok(()) } }

@@ -10,6 +10,20 @@ pub struct MacOsKeychain;
 
 impl MacOsKeychain {
     pub fn new() -> Self { Self }
+
+    pub fn remove_lastfm_key(&mut self) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        { security::remove() }
+        #[cfg(not(target_os = "macos"))]
+        { Err("macOS Keychain is unavailable on this platform".into()) }
+    }
+
+    pub fn read_lastfm_key(&mut self) -> Result<Vec<u8>, String> {
+        #[cfg(target_os = "macos")]
+        { security::get() }
+        #[cfg(not(target_os = "macos"))]
+        { Err("macOS Keychain is unavailable on this platform".into()) }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -152,16 +166,24 @@ impl Keychain for MacOsKeychain {
 mod tests {
     use super::*;
 
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = MacOsKeychain::new().remove_lastfm_key();
+        }
+    }
+
     #[test]
     #[ignore = "requires an interactive macOS login Keychain; run explicitly"]
     fn real_keychain_round_trip() {
         let mut keychain = MacOsKeychain::new();
+        let cleanup = Cleanup;
         let result = (|| {
             keychain.import_lastfm_key("luno-real-keychain-test")?;
             if security::get()? != b"luno-real-keychain-test" { return Err("round-trip value mismatch".into()); }
-            security::remove()
+            Ok(())
         })();
-        let _ = security::remove();
+        drop(cleanup);
         result.expect("Keychain access unavailable or denied: real check is inconclusive");
     }
 }

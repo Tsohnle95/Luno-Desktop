@@ -20,6 +20,20 @@ fn adapter_fails_explicitly_off_macos() {
 #[ignore = "requires an interactive macOS login Keychain; run explicitly"]
 fn real_adapter_check_is_explicit() {
     let mut keychain = MacOsKeychain::new();
-    keychain.import_lastfm_key("luno-real-keychain-test")
-        .expect("Keychain access unavailable or denied: real check is inconclusive");
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = MacOsKeychain::new().remove_lastfm_key();
+        }
+    }
+    let cleanup = Cleanup;
+    let result = (|| {
+        keychain.import_lastfm_key("luno-real-keychain-test")?;
+        if keychain.read_lastfm_key()? != b"luno-real-keychain-test" {
+            return Err("round-trip value mismatch".to_owned());
+        }
+        Ok::<(), String>(())
+    })();
+    drop(cleanup);
+    result.expect("Keychain access unavailable or denied: real check is inconclusive");
 }
