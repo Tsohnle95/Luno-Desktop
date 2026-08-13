@@ -293,7 +293,7 @@ class SongPageView(tk.Frame):
         self.page_window = self.page_canvas.create_window(0, 0, window=self.page_inner,
                                                           anchor="nw", tags="pagewin")
         self.page_canvas.bind("<Configure>", lambda e: (
-            self.page_canvas.itemconfig("pagewin", width=max(e.width - PAGE_SB_WIDTH, 50)),
+            self.page_canvas.itemconfig("pagewin", width=max(e.width, 50)),
             self._resize_media_stage(e.width, e.height),
             self._schedule_layout(),
         ))
@@ -404,7 +404,7 @@ class SongPageView(tk.Frame):
         try:
             self.page_inner.update_idletasks()
             inner_h = self.page_inner.winfo_reqheight()
-            self.page_canvas.itemconfig("pagewin", width=max(w - PAGE_SB_WIDTH, 50))
+            self.page_canvas.itemconfig("pagewin", width=max(self.page_canvas.winfo_width(), 50))
             if inner_h <= h:
                 self.page_canvas.coords(self.page_window, 0, max((h - inner_h) // 2, 0))
                 self.page_canvas.yview_moveto(0.0)
