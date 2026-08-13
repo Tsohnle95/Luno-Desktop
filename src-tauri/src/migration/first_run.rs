@@ -81,18 +81,10 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     let valid_completed_record = read_json::<VersionRecord>(&paths.version_record()).filter(|record| {
         record.migration == "desktop-first-run" && record.version == MIGRATION_VERSION && record.completed
     });
-    if valid_completed_record.is_some() && paths.state_file().is_file() {
+    if valid_completed_record.is_some() {
         return Err(MigrationError::AlreadyComplete);
     }
-    if paths.version_record().exists() {
-        // An interrupted or foreign record is not evidence of completion.
-        fs::remove_file(paths.version_record())?;
-    }
-    if paths.state_file().exists() {
-        // A state file without a valid completed record is an orphan from an
-        // interrupted attempt and must not block recovery.
-        fs::remove_file(paths.state_file())?;
-    }
+    let quarantined_records = quarantine_records(paths)?;
     let snapshot = snapshot_legacy(paths)?;
     crash(options, CrashStage::Snapshotted)?;
     let legacy = read_legacy(&paths.legacy_root, Some(&paths.preview_dir));
@@ -107,20 +99,28 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     let state = convert(&legacy);
     crash(options, CrashStage::Converted)?;
     if let Err(error) = create_once(&paths.state_file(), &serde_json::to_vec_pretty(&state).map_err(|e| MigrationError::Io(e.to_string()))?) {
-        return Err(cleanup_snapshot(snapshot, error));
+        return Err(rollback(paths, snapshot, error, false, quarantined_records));
     }
     let version = VersionRecord { migration: "desktop-first-run".into(), version: MIGRATION_VERSION, completed: true };
     if let Err(error) = create_once(&paths.version_record(), &serde_json::to_vec_pretty(&version).unwrap()) {
-        return Err(rollback(paths, snapshot, error, true));
+        return Err(rollback(paths, snapshot, error, true, quarantined_records));
     }
     if let Err(error) = crash(options, CrashStage::VersionRecorded) {
-        return Err(rollback(paths, snapshot, error, true));
+        return Err(rollback(paths, snapshot, error, true, quarantined_records));
     }
-    let removed_previews = match cleanup_previews(paths) {
+    let cleanup = match cleanup_previews(paths) {
         Ok(removed) => removed,
-        Err(error) => return Err(rollback(paths, snapshot, error, true)),
+        Err(error) => return Err(rollback(paths, snapshot, error, true, quarantined_records)),
     };
-    crash(options, CrashStage::PreviewCleaned)?;
+    if let Err(error) = crash(options, CrashStage::PreviewCleaned) {
+        cleanup.restore()?;
+        return Err(rollback(paths, snapshot, error, true, quarantined_records));
+    }
+    let removed_previews = match cleanup.commit() {
+        Ok(removed) => removed,
+        Err(error) => return Err(rollback(paths, snapshot, error, true, quarantined_records)),
+    };
+    discard_quarantine(quarantined_records)?;
     Ok(MigrationReceipt { version: paths.version_record(), state: paths.state_file(), snapshot, removed_previews, warnings: legacy.warnings.len() })
 }
 
@@ -181,29 +181,59 @@ fn convert(s: &LegacyState) -> MigratedSettings {
     MigratedSettings { schema_version: MIGRATION_VERSION, music_root: c.and_then(|x| x.music_root.clone()), auto_discovery: c.and_then(|x| x.auto_discovery), volume: c.and_then(|x| x.volume), sleep_timer: c.and_then(|x| x.sleep_timer.clone()), global_keys: c.and_then(|x| x.global_keys), favorites: s.favorite_paths.clone(), playlist_urls: s.playlist_urls.clone(), allowed_duplicate_keys: s.allowed_duplicate_keys.iter().cloned().collect(), downloaded_ids: s.downloaded_ids.iter().cloned().collect(), failed_ids: s.failed_ids.iter().cloned().collect(), history: Vec::new() }
 }
 
-fn cleanup_previews(p: &MigrationPaths) -> Result<Vec<PathBuf>, MigrationError> {
-    if !p.preview_dir.is_dir() { return Ok(Vec::new()); }
-    let mut removed = Vec::new();
-    let mut failures = Vec::new();
-    for path in read_dir_files(&p.preview_dir)? {
-        if p.current_preview.iter().chain(p.promoted_assets.iter()).any(|keep| keep == &path) { continue; }
-        match fs::remove_file(&path) {
-            Ok(()) => removed.push(path),
-            Err(error) => failures.push(format!("{}: {error}", path.display())),
-        }
+struct PreviewCleanup { removed: Vec<PathBuf>, quarantine: PathBuf }
+impl PreviewCleanup {
+    fn restore(&self) -> Result<(), MigrationError> {
+        for path in self.removed.iter().rev() { fs::rename(self.quarantine.join(path.file_name().unwrap()), path)?; }
+        fs::remove_dir(&self.quarantine)?;
+        Ok(())
     }
-    if !failures.is_empty() { return Err(MigrationError::Cleanup(format!("preview cleanup failed: {}", failures.join("; ")))); }
-    Ok(removed)
+    fn commit(self) -> Result<Vec<PathBuf>, MigrationError> { fs::remove_dir_all(self.quarantine)?; Ok(self.removed) }
 }
-fn read_dir_files(dir: &Path) -> Result<Vec<PathBuf>, MigrationError> { Ok(fs::read_dir(dir)?.filter_map(Result::ok).map(|e| e.path()).collect()) }
+fn cleanup_previews(p: &MigrationPaths) -> Result<PreviewCleanup, MigrationError> {
+    if !p.preview_dir.exists() { return Ok(PreviewCleanup { removed: Vec::new(), quarantine: p.preview_dir.clone() }); }
+    if !p.preview_dir.is_dir() || fs::symlink_metadata(&p.preview_dir)?.file_type().is_symlink() {
+        return Err(MigrationError::Cleanup("preview directory is not a real directory".into()));
+    }
+    let mut removed = Vec::new();
+    let entries = read_dir_files(&p.preview_dir)?;
+    let quarantine = p.preview_dir.parent().unwrap_or(Path::new(".")).join(format!(".luno-preview-quarantine-{}", nonce()));
+    fs::create_dir(&quarantine)?;
+    let result = (|| -> Result<(), MigrationError> {
+        let mut candidates = Vec::new();
+        for path in entries {
+            let metadata = fs::symlink_metadata(&path)?;
+            if path.parent() != Some(p.preview_dir.as_path()) || metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                return Err(MigrationError::Cleanup(format!("unsafe preview entry: {}", path.display())));
+            }
+            if p.current_preview.iter().chain(p.promoted_assets.iter()).any(|keep| keep == &path) { continue; }
+            candidates.push(path);
+        }
+        for path in candidates {
+            fs::rename(&path, quarantine.join(path.file_name().unwrap()))?;
+            removed.push(path);
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        for path in &removed {
+            let _ = fs::rename(quarantine.join(path.file_name().unwrap()), path);
+        }
+        let _ = fs::remove_dir(&quarantine);
+        return Err(error);
+    }
+    Ok(PreviewCleanup { removed, quarantine })
+}
+fn read_dir_files(dir: &Path) -> Result<Vec<PathBuf>, MigrationError> { fs::read_dir(dir)?.map(|entry| entry.map(|e| e.path()).map_err(MigrationError::from)).collect() }
 fn read_json<T: for<'a> Deserialize<'a>>(p: &Path) -> Option<T> { fs::read(p).ok().and_then(|b| serde_json::from_slice(&b).ok()) }
-fn cleanup_snapshot(snapshot: PathBuf, error: MigrationError) -> MigrationError {
-    rollback_paths(error, [(snapshot, true)])
-}
-fn rollback(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool) -> MigrationError {
+fn rollback(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: Vec<(PathBuf, PathBuf)>) -> MigrationError {
     let mut paths = vec![(snapshot, true)];
     if records { paths.extend([(p.state_file(), false), (p.version_record(), false)]); }
-    rollback_paths(error, paths)
+    let mut result = rollback_paths(error, paths);
+    for (original, backup) in quarantined.into_iter().rev() {
+        if let Err(error) = fs::rename(&backup, &original) { result = MigrationError::Cleanup(format!("migration rollback failed: {error}")); }
+    }
+    result
 }
 fn rollback_paths(error: MigrationError, paths: impl IntoIterator<Item = (PathBuf, bool)>) -> MigrationError {
     let mut failures = Vec::new();
@@ -215,3 +245,18 @@ fn rollback_paths(error: MigrationError, paths: impl IntoIterator<Item = (PathBu
 }
 fn create_once(path: &Path, bytes: &[u8]) -> Result<(), MigrationError> { let mut f = OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| if e.kind() == io::ErrorKind::AlreadyExists { MigrationError::AlreadyComplete } else { e.into() })?; f.write_all(bytes)?; f.sync_all()?; if let Some(parent) = path.parent() { File::open(parent)?.sync_all()?; } Ok(()) }
 fn crash(o: &MigrationOptions, stage: CrashStage) -> Result<(), MigrationError> { if o.crash_at == Some(stage) { Err(MigrationError::InjectedCrash(stage)) } else { Ok(()) } }
+fn nonce() -> u128 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() }
+fn quarantine_records(p: &MigrationPaths) -> Result<Vec<(PathBuf, PathBuf)>, MigrationError> {
+    let mut result = Vec::new();
+    for original in [p.state_file(), p.version_record()] {
+        if !original.exists() { continue; }
+        let backup = p.target_root.join(format!(".migration-recovery-{}-{}", nonce(), original.file_name().unwrap().to_string_lossy()));
+        fs::rename(&original, &backup)?;
+        result.push((original, backup));
+    }
+    Ok(result)
+}
+fn discard_quarantine(items: Vec<(PathBuf, PathBuf)>) -> Result<(), MigrationError> {
+    for (_, backup) in items { fs::remove_file(backup)?; }
+    Ok(())
+}

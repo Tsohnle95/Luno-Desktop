@@ -25,7 +25,7 @@ fn oversized_key_is_rejected_before_keychain_access() {
 #[cfg(target_os = "macos")]
 #[test]
 #[ignore = "requires an interactive macOS login Keychain; run explicitly"]
-fn real_adapter_check_is_explicit() {
+fn real_adapter_check_is_explicit() -> Result<(), String> {
     let mut keychain = MacOsKeychain::new_unique_for_test();
     let result = (|| {
         keychain.import_lastfm_key("luno-real-keychain-test")?;
@@ -38,5 +38,5 @@ fn real_adapter_check_is_explicit() {
     if let Err(error) = cleanup {
         return Err(format!("round-trip cleanup failed: {error}"));
     }
-    result.expect("Keychain access unavailable or denied: real check is inconclusive");
+    result
 }

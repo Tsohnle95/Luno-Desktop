@@ -37,7 +37,6 @@ impl MacOsKeychain {
 
 #[cfg(target_os = "macos")]
 mod security {
-    use super::{LASTFM_ACCOUNT, SERVICE};
     use std::ffi::c_void;
     use std::ptr;
 
@@ -47,6 +46,7 @@ mod security {
 
     const ERR_SEC_ITEM_NOT_FOUND: OsStatus = -25300;
     const ERR_SEC_DUPLICATE_ITEM: OsStatus = -25299;
+    const ERR_SEC_CONFLICT: OsStatus = -25298;
 
     #[link(name = "Security", kind = "framework")]
     unsafe extern "C" {
@@ -97,17 +97,21 @@ mod security {
         let account_len = UInt32::try_from(account.len()).map_err(|_| "invalid Keychain account".to_owned())?;
         let value_len = UInt32::try_from(value.len()).map_err(|_| "Keychain value is too large".to_owned())?;
         let mut item = ptr::null_mut();
+        let mut existing_length = 0;
+        let mut existing_data = ptr::null_mut();
         let status = unsafe {
             SecKeychainFindGenericPassword(
                 ptr::null(), service_len, service.as_ptr(), account_len, account.as_ptr(),
-                ptr::null_mut(), ptr::null_mut(), &mut item,
+                &mut existing_length, &mut existing_data, &mut item,
             )
         };
 
         if status == 0 {
-            let modified = unsafe { SecKeychainItemModifyAttributesAndData(item, ptr::null(), value_len, value.as_ptr()) };
+            let existing = unsafe { std::slice::from_raw_parts(existing_data, existing_length as usize) };
+            let same = existing == value;
+            unsafe { SecKeychainItemFreeContent(ptr::null(), existing_data); }
             unsafe { CFRelease(item) };
-            return if modified == 0 { Ok(()) } else { Err(status_error(modified)) };
+            return if same { Ok(()) } else { Err(status_error(ERR_SEC_CONFLICT)) };
         }
         if status != ERR_SEC_ITEM_NOT_FOUND { return Err(status_error(status)); }
 
@@ -126,11 +130,14 @@ mod security {
             // The item was created between Find and Add. One re-read is enough
             // to converge without allowing an unbounded recursive retry.
             let mut existing = ptr::null_mut();
-            let found = unsafe { SecKeychainFindGenericPassword(ptr::null(), service_len, service.as_ptr(), account_len, account.as_ptr(), ptr::null_mut(), ptr::null_mut(), &mut existing) };
+            let mut existing_length = 0;
+            let mut existing_data = ptr::null_mut();
+            let found = unsafe { SecKeychainFindGenericPassword(ptr::null(), service_len, service.as_ptr(), account_len, account.as_ptr(), &mut existing_length, &mut existing_data, &mut existing) };
             if found != 0 || existing.is_null() { return Err(status_error(if found == 0 { added } else { found })); }
-            let modified = unsafe { SecKeychainItemModifyAttributesAndData(existing, ptr::null(), value_len, value.as_ptr()) };
+            let same = unsafe { std::slice::from_raw_parts(existing_data, existing_length as usize) == value };
+            unsafe { SecKeychainItemFreeContent(ptr::null(), existing_data); }
             unsafe { CFRelease(existing) };
-            return if modified == 0 { Ok(()) } else { Err(status_error(modified)) };
+            return if same { Ok(()) } else { Err(status_error(ERR_SEC_CONFLICT)) };
         }
         Err(status_error(added))
     }
@@ -178,7 +185,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires an interactive macOS login Keychain; run explicitly"]
-    fn real_keychain_round_trip() {
+    fn real_keychain_round_trip() -> Result<(), String> {
         let mut keychain = MacOsKeychain::new_unique_for_test();
         let result = (|| {
             keychain.import_lastfm_key("luno-real-keychain-test")?;
@@ -187,6 +194,6 @@ mod tests {
         })();
         let cleanup = keychain.remove_lastfm_key();
         if let Err(error) = cleanup { return Err(format!("round-trip cleanup failed: {error}")); }
-        result.expect("Keychain access unavailable or denied: real check is inconclusive");
+        result
     }
 }
