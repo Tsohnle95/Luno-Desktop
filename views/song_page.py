@@ -223,6 +223,7 @@ class SongPageView(tk.Frame):
         self._video_preload_paths = set()
         self._video_preload_states = {}
         self._video_spinner_after = None
+        self._video_menu_hide_after = None
         self._video_spinner_frame = 0
         self.video_preload_var = tk.BooleanVar(value=False)
 
@@ -304,26 +305,47 @@ class SongPageView(tk.Frame):
         self.art_lbl = tk.Label(self.art_container, text="♫", font=("Helvetica", 80),
                                  fg=TEXT3, bg=BG2)
         self.art_lbl.pack(fill="both", expand=True)
-        self.fullscreen_btn = tk.Label(self.art_container, text="⛶",
-                                       font=("Helvetica Neue", 18), fg=TEXT,
-                                       bg="#222222", cursor="hand2")
-        self.fullscreen_btn.place(relx=1.0, rely=1.0, anchor="se", x=-10, y=-10)
-        self.fullscreen_btn.bind("<Button-1>", lambda e: self._open_fullscreen_video())
-
-        # Deliberately quiet opt-in control: probing never starts a download.
+        # Video actions live in a hover menu beside the title.
         self.video_btn = tk.Label(self.main_f, text="▷ Video", font=("Helvetica Neue", 9),
                                   fg=TEXT3, bg=BG, cursor="hand2")
-        self.video_btn.grid(row=1, column=0, sticky="se", padx=8, pady=8)
         self.video_btn.bind("<Button-1>", lambda e: self._request_video())
         self.video_spinner = tk.Label(self.main_f, text=".", font=("Helvetica Neue", 12),
                                       fg=TEXT3, bg=BG)
-        self.video_spinner.grid(row=1, column=0, sticky="se", padx=(0, 76), pady=8)
         self.video_preload_chk = tk.Checkbutton(
             self.main_f, text="Preload next", variable=self.video_preload_var,
             command=self._video_preload_changed, font=("Helvetica Neue", 9),
             fg=TEXT3, bg=BG, activebackground=BG, activeforeground=TEXT,
             selectcolor=BG, highlightthickness=0, borderwidth=0)
-        self.video_preload_chk.grid(row=1, column=0, sticky="sw", padx=8, pady=8)
+        self.video_menu_btn = tk.Label(self.main_f, text="▣", font=("Helvetica Neue", 14),
+                                       fg=TEXT3, bg=BG, cursor="hand2")
+        self.video_menu_btn.grid(row=2, column=0, sticky="e", padx=12, pady=(0, 10))
+        self.video_menu_btn.bind("<Enter>", lambda e: self._show_video_menu())
+        self.video_menu_btn.bind("<Leave>", lambda e: self._hide_video_menu_later())
+        self.video_menu = tk.Frame(self.main_f, bg=BG3, bd=1, relief="solid")
+        self.video_menu_play = tk.Label(self.video_menu, text="▷  Play video",
+                                        font=("Helvetica Neue", 10), fg=TEXT,
+                                        bg=BG3, anchor="w", padx=10, pady=6,
+                                        cursor="hand2")
+        self.video_menu_play.pack(fill="x")
+        self.video_menu_play.bind("<Button-1>", lambda e: self._request_video())
+        self.video_menu_preload = tk.Checkbutton(
+            self.video_menu, text="Preload next", variable=self.video_preload_var,
+            command=self._video_preload_changed, font=("Helvetica Neue", 10),
+            fg=TEXT, bg=BG3, activebackground=BG3, activeforeground=TEXT,
+            selectcolor=BG3, highlightthickness=0, borderwidth=0, anchor="w")
+        self.video_menu_preload.pack(fill="x", padx=4, pady=2)
+        self.video_menu_spinner = tk.Label(self.video_menu, text="", fg=GREEN,
+                                           bg=BG3, font=("Helvetica Neue", 11))
+        self.video_menu_spinner.place(relx=1.0, rely=0.5, anchor="e", x=-8)
+        self.video_menu_fullscreen = tk.Label(
+            self.video_menu, text="⛶  Full screen", font=("Helvetica Neue", 10),
+            fg=TEXT, bg=BG3, anchor="w", padx=10, pady=6, cursor="hand2")
+        self.video_menu_fullscreen.pack(fill="x")
+        self.video_menu_fullscreen.bind("<Button-1>", lambda e: self._open_fullscreen_video())
+        for widget in (self.video_menu, self.video_menu_play,
+                       self.video_menu_preload, self.video_menu_fullscreen):
+            widget.bind("<Enter>", lambda e: self._cancel_hide_video_menu())
+            widget.bind("<Leave>", lambda e: self._hide_video_menu_later())
 
         # Typography
         self.title_lbl = tk.Label(self.main_f, text="Song Title",
@@ -1293,6 +1315,7 @@ class SongPageView(tk.Frame):
             except (RuntimeError, tk.TclError):
                 pass
             self._video_spinner_after = None
+        self._cancel_hide_video_menu()
         self._bg_generation += 1
         if self._bg_future and not self._bg_future.done():
             self._bg_future.cancel()
@@ -1474,6 +1497,7 @@ class SongPageView(tk.Frame):
             if self._video_spinner_after is not None:
                 return
             self.video_spinner.config(fg=GREEN)
+            self.video_menu_spinner.config(fg=GREEN)
             self._animate_video_spinner()
         else:
             if self._video_spinner_after is not None:
@@ -1483,6 +1507,7 @@ class SongPageView(tk.Frame):
                     pass
                 self._video_spinner_after = None
             self.video_spinner.config(text=".", fg=TEXT3)
+            self.video_menu_spinner.config(text="", fg=TEXT3)
 
     def _animate_video_spinner(self):
         if not self._video_preload_paths:
@@ -1490,6 +1515,7 @@ class SongPageView(tk.Frame):
             return
         frames = ("|", "/", "-", "\\")
         self.video_spinner.config(text=frames[self._video_spinner_frame % len(frames)])
+        self.video_menu_spinner.config(text=frames[self._video_spinner_frame % len(frames)])
         self._video_spinner_frame += 1
         try:
             self._video_spinner_after = self.after(120, self._animate_video_spinner)
@@ -1505,6 +1531,28 @@ class SongPageView(tk.Frame):
             self.controller.status_var.set("No next song in the current queue")
             return
         self._preload_video(next_path)
+
+    def _show_video_menu(self):
+        self._cancel_hide_video_menu()
+        self.main_f.update_idletasks()
+        x = max(self.main_f.winfo_width() - self.video_menu.winfo_reqwidth() - 8, 0)
+        y = self.video_menu_btn.winfo_y() + self.video_menu_btn.winfo_height() + 4
+        self.video_menu.place(in_=self.main_f, x=x, y=y)
+
+    def _cancel_hide_video_menu(self):
+        if self._video_menu_hide_after is not None:
+            try:
+                self.after_cancel(self._video_menu_hide_after)
+            except (RuntimeError, tk.TclError):
+                pass
+            self._video_menu_hide_after = None
+
+    def _hide_video_menu_later(self):
+        self._cancel_hide_video_menu()
+        try:
+            self._video_menu_hide_after = self.after(250, self.video_menu.place_forget)
+        except (RuntimeError, tk.TclError):
+            self._video_menu_hide_after = None
 
     def on_audio_track_started(self, path):
         """Engine hook: preload independently of Song Page redraw timing."""
@@ -1537,6 +1585,10 @@ class SongPageView(tk.Frame):
         window.attributes("-fullscreen", True)
         label = tk.Label(window, bg="black")
         label.pack(fill="both", expand=True)
+        window.focus_force()
+        window.bind("<Escape>", lambda e: self._close_fullscreen_video())
+        window.bind("<KeyPress-f>", lambda e: self._toggle_fullscreen_window())
+        window.bind("<KeyPress-F>", lambda e: self._toggle_fullscreen_window())
         self._fullscreen_window = window
         width = max(window.winfo_screenwidth(), 2)
         height = max(window.winfo_screenheight(), 2)
@@ -1549,6 +1601,12 @@ class SongPageView(tk.Frame):
         self._fullscreen_player.play()
         window.bind("<Escape>", lambda e: self._close_fullscreen_video())
         window.protocol("WM_DELETE_WINDOW", self._close_fullscreen_video)
+
+    def _toggle_fullscreen_window(self):
+        if self._fullscreen_window is not None:
+            self._close_fullscreen_video()
+        else:
+            self._open_fullscreen_video()
 
     def _close_fullscreen_video(self):
         player = self._fullscreen_player
