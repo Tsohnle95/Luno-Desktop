@@ -28,6 +28,7 @@ pub mod download {
 }
 pub mod state;
 pub mod library {
+    pub mod duplicates;
     pub mod index;
     pub mod reconcile;
     pub mod scanner;
