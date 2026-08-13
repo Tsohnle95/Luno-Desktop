@@ -53,6 +53,8 @@ mod security {
             length: UInt32,
             data: *const u8,
         ) -> OsStatus;
+        fn SecKeychainItemFreeContent(attr_list: *const c_void, data: *mut u8) -> OsStatus;
+        fn SecKeychainItemDelete(item_ref: SecKeychainItemRef) -> OsStatus;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -98,9 +100,41 @@ mod security {
         }
         // Another process may have created the stable item between Find and Add.
         if added == ERR_SEC_DUPLICATE_ITEM {
-            return set(value);
+            // The item was created between Find and Add. One re-read is enough
+            // to converge without allowing an unbounded recursive retry.
+            let mut existing = ptr::null_mut();
+            let found = unsafe { SecKeychainFindGenericPassword(ptr::null(), service_len, service.as_ptr(), account_len, account.as_ptr(), ptr::null_mut(), ptr::null_mut(), &mut existing) };
+            if found != 0 || existing.is_null() { return Err(status_error(if found == 0 { added } else { found })); }
+            let modified = unsafe { SecKeychainItemModifyAttributesAndData(existing, ptr::null(), value_len, value.as_ptr()) };
+            unsafe { CFRelease(existing) };
+            return if modified == 0 { Ok(()) } else { Err(status_error(modified)) };
         }
         Err(status_error(added))
+    }
+
+    pub fn get() -> Result<Vec<u8>, String> {
+        let service = SERVICE.as_bytes();
+        let account = LASTFM_ACCOUNT.as_bytes();
+        let mut length = 0;
+        let mut data = ptr::null_mut();
+        let mut item = ptr::null_mut();
+        let status = unsafe { SecKeychainFindGenericPassword(ptr::null(), service.len() as UInt32, service.as_ptr(), account.len() as UInt32, account.as_ptr(), &mut length, &mut data, &mut item) };
+        if status != 0 { return Err(status_error(status)); }
+        let result = std::slice::from_raw_parts(data, length as usize).to_vec();
+        unsafe { SecKeychainItemFreeContent(ptr::null(), data); CFRelease(item); }
+        Ok(result)
+    }
+
+    pub fn remove() -> Result<(), String> {
+        let service = SERVICE.as_bytes();
+        let account = LASTFM_ACCOUNT.as_bytes();
+        let mut item = ptr::null_mut();
+        let status = unsafe { SecKeychainFindGenericPassword(ptr::null(), service.len() as UInt32, service.as_ptr(), account.len() as UInt32, account.as_ptr(), ptr::null_mut(), ptr::null_mut(), &mut item) };
+        if status == ERR_SEC_ITEM_NOT_FOUND { return Ok(()); }
+        if status != 0 { return Err(status_error(status)); }
+        let deleted = unsafe { SecKeychainItemDelete(item) };
+        unsafe { CFRelease(item); }
+        if deleted == 0 { Ok(()) } else { Err(status_error(deleted)) }
     }
 }
 
@@ -122,7 +156,12 @@ mod tests {
     #[ignore = "requires an interactive macOS login Keychain; run explicitly"]
     fn real_keychain_round_trip() {
         let mut keychain = MacOsKeychain::new();
-        keychain.import_lastfm_key("luno-real-keychain-test")
-            .expect("Keychain access unavailable or denied: real check is inconclusive");
+        let result = (|| {
+            keychain.import_lastfm_key("luno-real-keychain-test")?;
+            if security::get()? != b"luno-real-keychain-test" { return Err("round-trip value mismatch".into()); }
+            security::remove()
+        })();
+        let _ = security::remove();
+        result.expect("Keychain access unavailable or denied: real check is inconclusive");
     }
 }

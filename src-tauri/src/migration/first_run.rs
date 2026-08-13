@@ -6,6 +6,7 @@
 
 use crate::migration::legacy_readers::{read_legacy, LegacyState};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -78,13 +79,21 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     crash(options, CrashStage::Preflight)?;
     if paths.version_record().exists() {
         let record: Option<VersionRecord> = read_json(&paths.version_record());
-        if record.is_some_and(|r| r.version == MIGRATION_VERSION && r.completed) { return Err(MigrationError::AlreadyComplete); }
+        if record.as_ref().is_some_and(|r| r.migration == "desktop-first-run" && r.version == MIGRATION_VERSION && r.completed && paths.state_file().is_file()) {
+            return Err(MigrationError::AlreadyComplete);
+        }
+        // An interrupted or foreign record is not evidence of completion.
+        fs::remove_file(paths.version_record())?;
+        if paths.state_file().exists() { fs::remove_file(paths.state_file())?; }
     }
     let snapshot = snapshot_legacy(paths)?;
     crash(options, CrashStage::Snapshotted)?;
     let legacy = read_legacy(&paths.legacy_root, Some(&paths.preview_dir));
     if let Some(key) = legacy.config.as_ref().and_then(|c| c.lastfm_key.as_deref()).filter(|k| !k.trim().is_empty()) {
-        keychain.import_lastfm_key(key).map_err(MigrationError::Keychain)?;
+        if let Err(error) = keychain.import_lastfm_key(key) {
+            let _ = fs::remove_dir_all(&snapshot);
+            return Err(MigrationError::Keychain(error));
+        }
     }
     let state = convert(&legacy);
     crash(options, CrashStage::Converted)?;
@@ -118,7 +127,7 @@ fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
     for root in [p.legacy_root.clone(), read_legacy(&p.legacy_root, None).config.and_then(|config| config.music_root.map(PathBuf::from)).unwrap_or_default()] {
         if root.as_os_str().is_empty() { continue; }
         for name in [".luno_config.json", ".luno_playlist_urls.json", ".luno_allowed_dups.json", ".downloaded_vids", ".sync_failed_vids", ".downloaded.txt"] {
-            let from = root.join(name); if from.is_file() { let destination = if root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } fs::copy(&from, destination)?; }
+            let from = root.join(name); if from.is_file() { let destination = if root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } if name == ".luno_config.json" { snapshot_config(&from, &destination)?; } else { fs::copy(&from, destination)?; } }
         }
         for path in walk_marker_files(&root) {
             if path == root.join(".downloaded_vids") || path == root.join(".sync_failed_vids") || path == root.join(".downloaded.txt") { continue; }
@@ -128,6 +137,17 @@ fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
         }
     }
     Ok(dir)
+}
+
+fn snapshot_config(source: &Path, destination: &Path) -> Result<(), MigrationError> {
+    let bytes = fs::read(source)?;
+    let mut value: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| serde_json::json!({"redacted": true, "reason": "invalid legacy config"}));
+    if let Some(object) = value.as_object_mut() {
+        object.remove("lastfm_key");
+        object.insert("lastfm_key".into(), Value::String("[REDACTED]".into()));
+    }
+    fs::write(destination, serde_json::to_vec_pretty(&value).map_err(|e| MigrationError::Io(e.to_string()))?)?;
+    Ok(())
 }
 
 fn walk_marker_files(root: &Path) -> Vec<PathBuf> {

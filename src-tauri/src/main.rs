@@ -16,6 +16,7 @@ fn backend_command(_state: tauri::State<'_, AppState>, envelope: CommandEnvelope
     Err(serde_json::to_string(&error).unwrap_or_else(|_| "unsupported command".into()))
 }
 
+#[cfg(target_os = "macos")]
 fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
     let legacy_root = dirs_fallback_home()?;
     let preview_dir = legacy_root.join(".luno_previews");
@@ -28,13 +29,15 @@ fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
         current_preview: Vec::new(),
         promoted_assets: Vec::new(),
     };
-    if paths.version_record().exists() { return Ok(()); }
     let mut keychain = MacOsKeychain::new();
     match migrate(&paths, &MigrationOptions::default(), &mut keychain) {
         Ok(_) => Ok(()),
         Err(error) => Err(format!("startup migration failed: {error:?}")),
     }
 }
+
+#[cfg(not(target_os = "macos"))]
+fn startup_migration(_app: &tauri::AppHandle) -> Result<(), String> { Ok(()) }
 
 fn dirs_fallback_home() -> Result<PathBuf, String> {
     std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| "HOME is not available".into())
