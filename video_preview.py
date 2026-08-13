@@ -1,8 +1,6 @@
 """Optional video lookup and staging for the desktop song page.
 
-Video files are temporary presentation assets, not library downloads.  The
-renderer is optional because Tk itself has no video widget; when ``tkvideo`` is
-not installed the lookup still reports that limitation without affecting audio.
+Video files are temporary presentation assets, not library downloads.
 """
 
 import os
@@ -27,10 +25,22 @@ def _safe_name(artist, title):
 
 
 def resolve_video_source(artist, title):
-    """Find a YouTube result that has both video and audio streams."""
+    """Find the best usable YouTube result across several search variants.
+
+    Filenames are not always ``artist - title`` and YouTube's flat search
+    entries do not consistently include ``webpage_url``, so search broadly and
+    always build the canonical watch URL from the result id.
+    """
     if yt_dlp is None:
         raise VideoPreviewError("yt-dlp is not available")
-    query = f"{artist} {title}".strip()
+    queries = []
+    for query in (f"{artist} - {title}", f"{title} {artist}", title):
+        query = query.strip()
+        if query and query not in queries:
+            queries.append(query)
+    entries = []
+    seen_ids = set()
+    errors = []
     try:
         with yt_dlp.YoutubeDL({
             "quiet": True,
@@ -38,19 +48,35 @@ def resolve_video_source(artist, title):
             "ignoreerrors": True,
             "socket_timeout": 30,
         }) as ydl:
-            info = ydl.extract_info(f"ytsearch5:{query}", download=False)
+            for query in queries:
+                try:
+                    info = ydl.extract_info(f"ytsearch10:{query}", download=False)
+                except Exception as exc:
+                    errors.append(str(exc))
+                    continue
+                for entry in (info or {}).get("entries") or []:
+                    video_id = entry.get("id") if entry else None
+                    if entry and video_id and video_id not in seen_ids:
+                        seen_ids.add(video_id)
+                        entries.append(entry)
     except Exception as exc:
         raise VideoPreviewError(f"Video search failed: {exc}") from exc
 
-    entries = [entry for entry in (info or {}).get("entries") or [] if entry]
-    for entry in entries:
-        if entry.get("id"):
-            return {
-                "url": entry.get("webpage_url")
-                or f"https://www.youtube.com/watch?v={entry['id']}",
-                "title": entry.get("title") or title,
-                "duration": entry.get("duration") or 0,
-            }
+    if entries:
+        wanted = f"{artist} {title}".lower()
+        entries.sort(key=lambda entry: (
+            wanted not in (entry.get("title") or "").lower(),
+            -(entry.get("duration") or 0) if entry.get("duration") else 0,
+        ))
+        entry = entries[0]
+        video_id = entry["id"]
+        return {
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "title": entry.get("title") or title,
+            "duration": entry.get("duration") or 0,
+        }
+    if errors:
+        raise VideoPreviewError(f"YouTube search failed: {errors[-1]}")
     raise VideoPreviewError("No video was found for this song")
 
 
