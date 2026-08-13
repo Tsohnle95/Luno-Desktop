@@ -1,4 +1,8 @@
 pub mod contracts;
+pub mod logging {
+    pub mod redaction;
+    pub mod service;
+}
 pub mod persistence {
     pub mod atomic_write;
     pub mod recovery;
