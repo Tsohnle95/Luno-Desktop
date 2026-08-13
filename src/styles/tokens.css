@@ -1,0 +1,42 @@
+:root {
+  color-scheme: dark;
+  --luno-bg: #121212;
+  --luno-bg-2: #181818;
+  --luno-bg-3: #282828;
+  --luno-bg-4: #3e3e3e;
+  --luno-sidebar: #000000;
+  --luno-player: #181818;
+  --luno-border: #282828;
+  --luno-green: #1db954;
+  --luno-green-hover: #1ed760;
+  --luno-text: #ffffff;
+  --luno-text-2: #b3b3b3;
+  --luno-text-3: #535353;
+  --luno-red: #e91429;
+  --luno-warning: #f59e0b;
+  --luno-blue: #4c8bf5;
+
+  --luno-sidebar-min: 240px;
+  --luno-content-min: 400px;
+  --luno-queue-min: 240px;
+  --luno-player-height: 94px;
+  --luno-row-height: 56px;
+  --luno-radius: 8px;
+  --luno-focus: 0 0 0 2px var(--luno-bg), 0 0 0 4px var(--luno-green);
+  --luno-font-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --luno-font-mono: Menlo, Monaco, Consolas, monospace;
+}
+
+/* The order is part of the Python playlist_gradient contract. */
+:root {
+  --luno-gradient-0: linear-gradient(135deg, #1db954, #158a3e);
+  --luno-gradient-1: linear-gradient(135deg, #4c8bf5, #2d46b9);
+  --luno-gradient-2: linear-gradient(135deg, #e91429, #a00d1c);
+  --luno-gradient-3: linear-gradient(135deg, #ff5500, #b33c00);
+  --luno-gradient-4: linear-gradient(135deg, #9b59b6, #6c3483);
+  --luno-gradient-5: linear-gradient(135deg, #1abc9c, #148f77);
+  --luno-gradient-6: linear-gradient(135deg, #f39c12, #b7770d);
+  --luno-gradient-7: linear-gradient(135deg, #e74c3c, #922b21);
+  --luno-gradient-8: linear-gradient(135deg, #2ecc71, #1a7a43);
+  --luno-gradient-9: linear-gradient(135deg, #3498db, #1a5276);
+}

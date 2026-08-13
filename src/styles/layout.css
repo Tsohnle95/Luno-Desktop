@@ -1,0 +1,46 @@
+:root { font-family: var(--luno-font-sans); background: var(--luno-bg); color: var(--luno-text); }
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+button, input { font: inherit; }
+button:focus-visible, a:focus-visible, input:focus-visible { outline: none; box-shadow: var(--luno-focus); }
+
+.luno-shell {
+  display: grid;
+  grid-template-columns: minmax(var(--luno-sidebar-min), 1fr) minmax(var(--luno-content-min), 2fr) minmax(var(--luno-queue-min), 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--luno-player-height);
+  width: 100%; height: 100%; min-width: calc(var(--luno-sidebar-min) + var(--luno-content-min) + var(--luno-queue-min));
+  background: var(--luno-bg); gap: 1px;
+}
+.luno-sidebar, .luno-main, .luno-queue { min-width: 0; min-height: 0; overflow: hidden; }
+.luno-sidebar { display: flex; flex-direction: column; background: var(--luno-sidebar); }
+.luno-brand { flex: 0 0 64px; display: flex; align-items: center; padding: 0 24px; font-size: 22px; font-weight: 700; letter-spacing: -.03em; }
+.luno-nav { flex: 0 0 235px; padding: 8px 12px; }
+.luno-nav-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.luno-nav-button { width: 100%; border: 0; border-radius: var(--luno-radius); padding: 12px; color: var(--luno-text-2); background: transparent; text-align: left; cursor: pointer; }
+.luno-nav-button:hover, .luno-nav-button[aria-current="page"] { color: var(--luno-text); background: var(--luno-bg-3); }
+.luno-playlists { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px 24px; }
+.luno-main { display: flex; flex-direction: column; background: var(--luno-bg-2); }
+.luno-main-content { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.luno-main-content > * { min-height: 100%; }
+.luno-queue { background: var(--luno-bg-2); overflow-y: auto; overscroll-behavior: contain; }
+.luno-player { grid-column: 1 / -1; display: flex; align-items: center; min-height: var(--luno-player-height); padding: 12px 20px; background: var(--luno-player); border-top: 1px solid var(--luno-border); }
+.luno-scroll { overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--luno-bg-4) transparent; }
+.luno-row { min-height: var(--luno-row-height); height: var(--luno-row-height); display: flex; align-items: center; }
+.luno-truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.luno-route-empty { display: grid; place-items: center; min-height: 100%; color: var(--luno-text-2); }
+
+@media (max-width: 1100px) {
+  .luno-shell { grid-template-columns: minmax(var(--luno-sidebar-min), 1fr) minmax(var(--luno-content-min), 3fr); min-width: 0; }
+  .luno-queue { display: none; }
+}
+@media (max-width: 720px) {
+  .luno-shell { display: flex; flex-direction: column; min-width: 0; }
+  .luno-sidebar { flex: 0 0 auto; }
+  .luno-brand { flex-basis: 52px; padding: 0 16px; }
+  .luno-nav { flex: 0 0 auto; padding: 4px 8px; }
+  .luno-nav-list { display: flex; overflow-x: auto; }
+  .luno-nav-button { white-space: nowrap; width: auto; padding: 9px 12px; }
+  .luno-playlists { display: none; }
+  .luno-main { flex: 1; min-height: 0; }
+  .luno-player { flex: 0 0 var(--luno-player-height); }
+}
