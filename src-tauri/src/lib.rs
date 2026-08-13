@@ -13,6 +13,7 @@ pub mod persistence {
     pub mod legacy;
 }
 pub mod migration {
+    pub mod first_run;
     pub mod legacy_readers;
 }
 pub mod runtime {
