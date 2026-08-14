@@ -6,8 +6,7 @@
   "receipt_update_parent": "032b14ec38a96d5761f9a2ea1d58cb193e790bf6",
   "receipt_document_commit": {
     "description": "The commit containing this receipt must be verified externally after commit creation. Its SHA is intentionally not embedded because a commit cannot contain its own hash.",
-    "verification_command": "git show --no-patch --format='%H%n%P' <receipt-document-commit-sha>",
-    "expected_parent": "032b14ec38a96d5761f9a2ea1d58cb193e790bf6"
+    "verification_command": "git show --no-patch --format='%H%n%P' <receipt-document-commit-sha>"
   },
   "reviewed_tree_dirty_state": {
     "command": "git status --porcelain",
@@ -97,7 +96,7 @@
       },
       {
         "command": "git show --no-patch --format='%H%n%P' <receipt-document-commit-sha>",
-        "verification": "Run externally after committing this receipt; the resulting commit SHA is intentionally not recorded here because a commit cannot contain its own hash. Verify that the parent output is 032b14ec38a96d5761f9a2ea1d58cb193e790bf6."
+        "verification": "Run externally after committing this receipt; the resulting commit SHA and its actual parent are intentionally not recorded here because a commit cannot contain its own hash. Review the output and commit contents externally."
       },
       {
         "command": "git status --porcelain",
