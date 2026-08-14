@@ -32,7 +32,7 @@ behavioral fallback.
 | AC-PERSIST-01 | INCONCLUSIVE | release_blocker: true | No target crash/recovery or marker recovery corpus receipt. |
 | AC-PERSIST-02 | INCONCLUSIVE | release_blocker: false | No target crash/recovery or marker recovery corpus receipt. |
 | AC-OPS-01 | INCONCLUSIVE | release_blocker: false | No browser accessibility/manual diagnostics receipt. |
-| AC-OPS-02 | BLOCKED | release_blocker: true | Explicit release blocker: no required packaged bundle/smoke artifact; managed binary inputs are absent and manifest SHA-256 values are placeholders. |
+| AC-OPS-02 | status: inconclusive | release_blocker: true | blocker_reason: no required packaged bundle/smoke artifact; managed binary inputs are absent and manifest SHA-256 values are placeholders. |
 | AC-OPS-03 | INCONCLUSIVE | release_blocker: false | Target shutdown/journey evidence is unavailable; U44 classifies the shutdown check as timed out/inconclusive. |
 | JRN-SCAN-PLAY, JRN-DISCOVER, JRN-DOWNLOAD, JRN-RENAME, JRN-TRANSFER, JRN-VIDEO | INCONCLUSIVE | release_blocker: false | Journey manifest exists, but no executed target journey receipts or artifacts exist. |
 
