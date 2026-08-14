@@ -89,6 +89,8 @@ impl AppState {
     pub fn root_statuses(&self) -> Vec<RootStatus> { self.root_statuses.lock().unwrap().clone() }
     pub fn set_scan_roots(&self, roots: Vec<PathBuf>) { *self.roots.lock().unwrap() = roots; }
     pub fn pending_events(&self) -> Vec<EventEnvelope> { self.events.lock().unwrap().clone() }
+    /// Test and integration accessor for the buffered event queue.
+    pub fn events(&self) -> Vec<EventEnvelope> { self.pending_events() }
     pub fn acknowledge_event(&self, event_id: &str) { self.events.lock().unwrap().retain(|event| event.event_id != event_id); }
     pub fn event(&self, generation: Generation, event: Event) -> EventEnvelope {
         let id = self.next_event.fetch_add(1, Ordering::Relaxed) + 1;

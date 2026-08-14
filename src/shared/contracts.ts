@@ -25,8 +25,10 @@ export type Command =
   | { type: "cancel_job"; payload: { job_id: JobId } }
   | { type: "shutdown"; payload: { reason: ShutdownReason } };
 export interface CommandEnvelope { version: ContractVersion; request_id: string; command: Command }
+export type RootStatus = "scanned" | "missing" | "inaccessible";
 export type Event =
   | { type: "library_snapshot"; payload: { snapshot: LibrarySnapshot } }
+  | { type: "library_root_status"; payload: { root_index: number; status: RootStatus } }
   | { type: "playback_snapshot"; payload: { snapshot: PlaybackSnapshot } }
   | { type: "track_started"; payload: { track_id: TrackId } }
   | { type: "queue_changed"; payload: { queue: TrackId[] } }
@@ -34,7 +36,7 @@ export type Event =
   | { type: "error"; payload: { error: ContractError } }
   | { type: "shutdown"; payload: { envelope: ShutdownEnvelope } };
 export interface EventEnvelope { version: ContractVersion; event_id: string; generation: Generation; job_id: JobId | null; session_id: SessionId | null; event: Event }
-export type ShutdownState = "requested" | "draining" | "complete";
+export type ShutdownState = "requested" | "draining" | "complete" | "timed_out" | "failed";
 export type ShutdownReason = "user_requested" | "system" | "fatal_error";
 export interface ShutdownEnvelope { version: ContractVersion; state: ShutdownState; reason: ShutdownReason }
 
@@ -52,9 +54,18 @@ function isCommand(v: unknown): v is Command {
 }
 function isEvent(v: unknown): v is Event {
   if (!object(v) || typeof v.type !== "string" || !exact(v, ["type", "payload"]) || !object(v.payload)) return false;
-  if (v.type === "track_started") return typeof v.payload.track_id === "string";
-  if (v.type === "queue_changed") return Array.isArray(v.payload.queue) && v.payload.queue.every(id => typeof id === "string");
-  return ["library_snapshot", "playback_snapshot", "job_updated", "error", "shutdown"].includes(v.type);
+  if (v.type === "track_started") return exact(v.payload, ["track_id"]) && typeof v.payload.track_id === "string";
+  if (v.type === "queue_changed") return exact(v.payload, ["queue"]) && Array.isArray(v.payload.queue) && v.payload.queue.every(id => typeof id === "string");
+  if (v.type === "library_root_status") return exact(v.payload, ["root_index", "status"]) && Number.isInteger(v.payload.root_index) && v.payload.root_index >= 0 && ["scanned", "missing", "inaccessible"].includes(String(v.payload.status));
+  if (v.type === "error") {
+    const error = v.payload.error;
+    return exact(v.payload, ["error"]) && object(error) && exact(error, ["code", "message", "retryable"]) && ["invalid_request", "unsupported_version", "not_found", "busy", "cancelled", "internal", "shutting_down"].includes(String(error.code)) && typeof error.message === "string" && typeof error.retryable === "boolean";
+  }
+  if (v.type === "shutdown") {
+    const shutdown = v.payload.envelope;
+    return exact(v.payload, ["envelope"]) && object(shutdown) && exact(shutdown, ["version", "state", "reason"]) && shutdown.version === CONTRACT_VERSION && ["requested", "draining", "complete", "timed_out", "failed"].includes(String(shutdown.state)) && ["user_requested", "system", "fatal_error"].includes(String(shutdown.reason));
+  }
+  return ["library_snapshot", "playback_snapshot", "job_updated"].includes(v.type);
 }
 export function isCommandEnvelope(v: unknown): v is CommandEnvelope { return exact(v, ["version", "request_id", "command"]) && isContractVersion(v.version) && typeof v.request_id === "string" && isCommand(v.command); }
 export function isEventEnvelope(v: unknown): v is EventEnvelope { return exact(v, ["version", "event_id", "generation", "job_id", "session_id", "event"]) && isContractVersion(v.version) && typeof v.event_id === "string" && typeof v.generation === "number" && (v.job_id === null || typeof v.job_id === "string") && (v.session_id === null || typeof v.session_id === "string") && isEvent(v.event); }

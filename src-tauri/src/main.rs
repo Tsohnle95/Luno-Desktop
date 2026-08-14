@@ -12,6 +12,21 @@ use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 const BACKEND_EVENT: &str = "backend-event";
 
+fn drain_pending_events(app: &tauri::AppHandle, state: &AppState) -> Result<(), String> {
+    let mut last_error = None;
+    for attempt in 0..3 {
+        for event in state.pending_events() {
+            match app.emit(BACKEND_EVENT, &event) {
+                Ok(()) => state.acknowledge_event(&event.event_id),
+                Err(error) => last_error = Some(error.to_string()),
+            }
+        }
+        if state.pending_events().is_empty() { return Ok(()); }
+        if attempt < 2 { std::thread::sleep(std::time::Duration::from_millis(10)); }
+    }
+    Err(last_error.unwrap_or_else(|| "buffered backend events could not be delivered".into()))
+}
+
 #[tauri::command]
 fn backend_command(app: tauri::AppHandle, state: tauri::State<'_, AppState>, payload: Value) -> Result<Value, String> {
     let envelope: CommandEnvelope = serde_json::from_value(payload.clone()).map_err(|error| {
@@ -21,10 +36,7 @@ fn backend_command(app: tauri::AppHandle, state: tauri::State<'_, AppState>, pay
         error_json(ContractError { code, message: format!("invalid command envelope: {error}"), retryable: false })
     })?;
     let result = state.dispatch(envelope);
-    for event in state.pending_events() {
-        app.emit(BACKEND_EVENT, &event).map_err(|error| error_json(ContractError { code: luno_desktop_lib::contracts::types::ErrorCode::Internal, message: error.to_string(), retryable: true }))?;
-        state.acknowledge_event(&event.event_id);
-    }
+    drain_pending_events(&app, &state).map_err(|error| error_json(ContractError { code: luno_desktop_lib::contracts::types::ErrorCode::Internal, message: error, retryable: true }))?;
     result.map_err(error_json)
 }
 
@@ -117,14 +129,18 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::CloseRequested { .. }) {
-                window.app_handle().state::<AppState>().shutdown_events(luno_desktop_lib::contracts::events::ShutdownReason::UserRequested, std::time::Duration::from_millis(500));
+                let state = window.app_handle().state::<AppState>();
+                state.shutdown_events(luno_desktop_lib::contracts::events::ShutdownReason::UserRequested, std::time::Duration::from_millis(500));
+                let _ = drain_pending_events(&window.app_handle(), &state);
             }
         })
         .build(tauri::generate_context!())
         .expect("error while building Luno")
         .run(|app, event| {
             if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
-                app.state::<AppState>().shutdown_events(luno_desktop_lib::contracts::events::ShutdownReason::System, std::time::Duration::from_millis(500));
+                let state = app.state::<AppState>();
+                state.shutdown_events(luno_desktop_lib::contracts::events::ShutdownReason::System, std::time::Duration::from_millis(500));
+                let _ = drain_pending_events(app, &state);
             }
         });
 }

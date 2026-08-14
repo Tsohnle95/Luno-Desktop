@@ -16,9 +16,10 @@ export const initialBackendProjection = (): BackendProjection => ({
 });
 
 export function reduceBackendProjection(state: BackendProjection, envelope: EventEnvelope): BackendProjection {
-  // Generation validity belongs to the backend; the UI never attempts to reconcile stale work.
-  if (envelope.generation < state.generation) return state;
-  const next = { ...state, generation: envelope.generation, lastEventId: envelope.event_id };
+  // Generation 0 is reserved for shutdown control events. They are lifecycle
+  // notifications, not work results, and must survive stale-work filtering.
+  if (envelope.event.type !== "shutdown" && envelope.generation < state.generation) return state;
+  const next = { ...state, generation: Math.max(state.generation, envelope.generation), lastEventId: envelope.event_id };
   switch (envelope.event.type) {
     case "library_snapshot": return { ...next, library: envelope.event.payload.snapshot };
     case "playback_snapshot": return { ...next, playback: envelope.event.payload.snapshot };

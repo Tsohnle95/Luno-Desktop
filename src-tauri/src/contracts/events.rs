@@ -56,6 +56,8 @@ pub struct ShutdownEnvelope {
     pub reason: ShutdownReason,
 }
 
+/// Shutdown events use generation 0 as a control-event generation. Consumers
+/// must not discard them as stale work results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ShutdownState { Requested, Draining, Complete, TimedOut, Failed }
