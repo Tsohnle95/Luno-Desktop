@@ -8,6 +8,7 @@ import {
   isCommandEnvelope,
   isEventEnvelope,
   type ShutdownReason,
+  type TrackId,
   parseEventEnvelope,
 } from "../shared/contracts";
 
@@ -25,7 +26,7 @@ const tauriTransport: BridgeTransport = {
 };
 
 let requestSequence = 0;
-type UnitCommand = "get_library" | "scan_library" | "pause";
+type UnitCommand = "get_library" | "scan_library" | "pause" | "video_play" | "video_pause";
 
 function envelope(command: Command | UnitCommand): CommandEnvelope {
   const request_id = `frontend-${Date.now()}-${requestSequence++}`;
@@ -52,6 +53,14 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
       if (!Number.isSafeInteger(position_ms) || position_ms < 0) return Promise.reject(new Error("position_ms must be a non-negative integer"));
       return send({ type: "seek", payload: { position_ms } });
     },
+    videoSource: (track_id: TrackId) => send({ type: "video_source", payload: { track_id } }),
+    videoStage: (track_id: TrackId) => send({ type: "video_stage", payload: { track_id } }),
+    videoPlay: () => send("video_play"),
+    videoPause: () => send("video_pause"),
+    videoSeek: (position_ms: number) => send({ type: "video_seek", payload: { position_ms } }),
+    videoResize: (width: number, height: number) => send({ type: "video_resize", payload: { width, height } }),
+    videoFullscreen: (fullscreen: boolean) => send({ type: "video_fullscreen", payload: { fullscreen } }),
+    migrationStatus: () => transport.invoke<unknown>("migration_status", null),
     cancelJob: (job_id: string) => send({ type: "cancel_job", payload: { job_id } }),
     shutdown: (reason: ShutdownReason) => send({ type: "shutdown", payload: { reason } }),
   subscribe: (handler: (event: EventEnvelope) => void) =>

@@ -19,6 +19,13 @@ pub enum Command {
     Play { track_id: TrackId },
     Pause,
     Seek { #[serde(deserialize_with = "super::types::safe_u64")] position_ms: u64 },
+    VideoSource { track_id: TrackId },
+    VideoStage { track_id: TrackId },
+    VideoPlay,
+    VideoPause,
+    VideoSeek { #[serde(deserialize_with = "super::types::safe_u64")] position_ms: u64 },
+    VideoResize { #[serde(deserialize_with = "super::types::safe_u64")] width: u64, #[serde(deserialize_with = "super::types::safe_u64")] height: u64 },
+    VideoFullscreen { fullscreen: bool },
     CancelJob { job_id: JobId },
     Shutdown { reason: ShutdownReason },
 }
@@ -64,12 +71,30 @@ pub enum Event {
     LibrarySnapshot { snapshot: LibrarySnapshot },
     LibraryRootStatus { #[serde(deserialize_with = "super::types::safe_usize")] root_index: usize, status: RootStatus },
     PlaybackSnapshot { snapshot: PlaybackSnapshot },
+    VideoState { state: VideoState },
     TrackStarted { track_id: TrackId },
     QueueChanged { queue: Vec<TrackId> },
     JobUpdated { job: DownloadJob },
     Error { error: ContractError },
     Shutdown { envelope: ShutdownEnvelope },
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VideoState {
+    pub track_id: Option<TrackId>,
+    pub source_url: Option<String>,
+    pub staged_path: Option<String>,
+    pub status: VideoStatus,
+    #[serde(deserialize_with = "super::types::safe_u64")]
+    pub position_ms: u64,
+    pub fullscreen: bool,
+    pub generation: Generation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoStatus { NotChecked, Loading, Ready, Playing, Paused, Ended, Unavailable, Error }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

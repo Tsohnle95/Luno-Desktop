@@ -17,7 +17,7 @@ const subscription = subscribeBackendProjection(bridge, projection)
 
 createRoot(root).render(
   <StrictMode>
-    <Shell player={<small>IPC contract v{CONTRACT_VERSION}</small>} backendProjection={projection} />
+    <Shell player={<small>IPC contract v{CONTRACT_VERSION}</small>} backendProjection={projection} bridge={bridge} />
   </StrictMode>,
 );
 

@@ -1,10 +1,11 @@
 import { isDeliveryErrorEventId } from "../shared/contracts";
-import type { EventEnvelope, LibrarySnapshot, PlaybackSnapshot, DownloadJob, ContractError, ShutdownEnvelope, TrackId } from "../shared/contracts";
+import type { EventEnvelope, LibrarySnapshot, PlaybackSnapshot, DownloadJob, ContractError, ShutdownEnvelope, TrackId, VideoState, Track } from "../shared/contracts";
 import type { Bridge } from "../app/bridge";
 
 export interface BackendProjection {
   library: LibrarySnapshot | null;
   playback: PlaybackSnapshot | null;
+  video: VideoState | null;
   jobs: Record<string, DownloadJob>;
   errors: ContractError[];
   shutdown: ShutdownEnvelope | null;
@@ -13,7 +14,7 @@ export interface BackendProjection {
 }
 
 export const initialBackendProjection = (): BackendProjection => ({
-  library: null, playback: null, jobs: {}, errors: [], shutdown: null, generation: -1, lastEventId: null,
+  library: null, playback: null, video: null, jobs: {}, errors: [], shutdown: null, generation: -1, lastEventId: null,
 });
 
 export function reduceBackendProjection(state: BackendProjection, envelope: EventEnvelope): BackendProjection {
@@ -29,6 +30,7 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
   switch (envelope.event.type) {
     case "library_snapshot": return { ...next, library: envelope.event.payload.snapshot };
     case "playback_snapshot": return { ...next, playback: envelope.event.payload.snapshot };
+    case "video_state": return { ...next, video: envelope.event.payload.state };
     case "track_started": {
       const playback = next.playback;
       if (!playback) return next;
@@ -40,6 +42,13 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
     case "error": return { ...next, errors: [...next.errors, envelope.event.payload.error] };
     case "shutdown": return { ...next, shutdown: envelope.event.payload.envelope };
   }
+}
+
+export function currentTrack(projection: Pick<BackendProjection, "library" | "playback">): Track | null {
+  const playback = projection.playback;
+  if (!playback || playback.current_index === null || !Number.isSafeInteger(playback.current_index) || playback.current_index < 0) return null;
+  const id = playback.queue[playback.current_index];
+  return id ? projection.library?.tracks.find((track) => track.id === id) ?? null : null;
 }
 
 function compareEventIds(left: string, right: string): number {

@@ -12,8 +12,12 @@ describe("typed IPC bridge and projection", () => {
     await bridge.play("track-1");
     expect(calls).toHaveLength(1);
     expect((calls[0] as { version: number }).version).toBe(1);
+    await bridge.videoStage("track-1");
+    await bridge.videoSeek(1200);
+    await bridge.videoFullscreen(true);
+    expect(calls).toHaveLength(4);
     await bridge.subscribe(() => {});
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(5);
     expect(() => callback(event({ type: "error", payload: { error: { code: "internal", message: "x", retryable: false } } }))).not.toThrow();
     expect(() => callback({})).toThrow();
     expect(() => callback(event({ type: "playback_snapshot", payload: { snapshot: { queue: [], current_index: null, position_ms: -1, duration_ms: null, status: "stopped", generation: 1 } } }))).toThrow();
@@ -27,6 +31,17 @@ describe("typed IPC bridge and projection", () => {
     expect(store.getSnapshot().errors).toHaveLength(1);
     store.apply({ ...event({ type: "shutdown", payload: { envelope: { version: 1, state: "complete", reason: "system" } } }, 2), event_id: "3" });
     expect(store.getSnapshot().shutdown?.state).toBe("complete");
+  });
+
+  it("projects video state and safely selects the current track", async () => {
+    const store = createBackendProjection();
+    store.apply(event({ type: "library_snapshot", payload: { snapshot: { version: 1, generation: 1, tracks: [{ id: "track-1", path: null, title: "Song", artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null }], playlists: [] } } }, 1));
+    store.apply({ ...event({ type: "playback_snapshot", payload: { snapshot: { queue: ["track-1"], current_index: 0, position_ms: 10, duration_ms: null, status: "playing", generation: 1 } } }, 1), event_id: "event-2" });
+    store.apply({ ...event({ type: "video_state", payload: { state: { track_id: "track-1", source_url: "https://example.test/video.mp4", staged_path: null, status: "ready", position_ms: 10, fullscreen: false, generation: 1 } } }, 1), event_id: "event-3" });
+    expect(store.getSnapshot().video?.status).toBe("ready");
+    expect(store.getSnapshot().library?.tracks.find((track) => track.id === store.getSnapshot().playback?.queue[0])?.title).toBe("Song");
+    store.apply({ ...event({ type: "playback_snapshot", payload: { snapshot: { queue: [], current_index: 3, position_ms: 0, duration_ms: null, status: "stopped", generation: 2 } } }, 2), event_id: "event-4" });
+    expect(store.getSnapshot().playback?.current_index).toBe(3);
   });
 
   it("rejects duplicate and older event IDs even when generations are newer", () => {

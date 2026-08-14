@@ -587,6 +587,7 @@ impl AppState {
                 else { Err(ContractError { code: ErrorCode::NotFound, message: "job not found".into(), retryable: false }) }
             }
             Command::Play { .. } | Command::Pause | Command::Seek { .. } => Err(ContractError { code: ErrorCode::Internal, message: "audio backend unavailable".into(), retryable: true }),
+            Command::VideoSource { .. } | Command::VideoStage { .. } | Command::VideoPlay | Command::VideoPause | Command::VideoSeek { .. } | Command::VideoResize { .. } | Command::VideoFullscreen { .. } => Err(ContractError { code: ErrorCode::Internal, message: "video backend unavailable".into(), retryable: true }),
             Command::Shutdown { reason } => {
                 let report = self.shutdown_events_locked(reason, Duration::from_millis(500), &admission);
                 if report.failed {
