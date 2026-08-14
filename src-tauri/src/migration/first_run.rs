@@ -4,7 +4,7 @@
 //! removed or rewritten. A migration can therefore be retried, or the Python
 //! release can be launched again, after any failure.
 
-use crate::migration::legacy_readers::{canonicalize_path, inventory_retry_files, marker_files_excluding, read_legacy_with_music_root, resolve_music_root, LegacyState};
+use crate::migration::legacy_readers::{inventory_retry_files, marker_files_excluding, read_legacy_with_music_root, resolve_music_root, validate_existing_path, LegacyState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -87,14 +87,14 @@ impl From<io::Error> for MigrationError { fn from(e: io::Error) -> Self { Self::
 pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mut dyn Keychain) -> Result<MigrationReceipt, MigrationError> {
     if !cfg!(target_os = "macos") { return Err(MigrationError::UnsupportedPlatform); }
     let paths = MigrationPaths {
-        legacy_root: canonicalize_path(&paths.legacy_root),
-        legacy_data_root: paths.legacy_data_root.as_deref().map(canonicalize_path),
+        legacy_root: validate_existing_path(&paths.legacy_root).map_err(MigrationError::UnsafePath)?,
+        legacy_data_root: paths.legacy_data_root.as_deref().map(validate_existing_path).transpose().map_err(MigrationError::UnsafePath)?,
         configured_music_root: resolve_music_root(&paths.legacy_root, paths.configured_music_root.as_deref())
             .map_err(MigrationError::UnsafePath)?,
-        target_root: canonicalize_path(&paths.target_root),
-        preview_dir: canonicalize_path(&paths.preview_dir),
-        current_preview: paths.current_preview.iter().map(|path| canonicalize_path(path)).collect(),
-        promoted_assets: paths.promoted_assets.iter().map(|path| canonicalize_path(path)).collect(),
+        target_root: validate_existing_path(&paths.target_root).map_err(MigrationError::UnsafePath)?,
+        preview_dir: validate_existing_path(&paths.preview_dir).map_err(MigrationError::UnsafePath)?,
+        current_preview: paths.current_preview.iter().map(validate_existing_path).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
+        promoted_assets: paths.promoted_assets.iter().map(validate_existing_path).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
     };
     preflight(&paths)?;
     crash(options, CrashStage::Preflight)?;
@@ -212,6 +212,11 @@ fn preflight(p: &MigrationPaths) -> Result<(), MigrationError> {
     }
     for (name, path) in [("legacy root", &p.legacy_root), ("target root", &p.target_root)] {
         if fs::symlink_metadata(path).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false) {
+            return Err(MigrationError::UnsafePath(format!("{name} must not be a symlink")));
+        }
+    }
+    for (name, path) in [("state record", p.state_file()), ("version record", p.version_record())] {
+        if fs::symlink_metadata(&path).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false) {
             return Err(MigrationError::UnsafePath(format!("{name} must not be a symlink")));
         }
     }

@@ -359,6 +359,31 @@ fn dangling_preview_symlink_is_rejected() {
 
 #[cfg(all(target_os = "macos", unix))]
 #[test]
+fn preexisting_target_record_symlinks_are_rejected_before_quarantine() {
+    use std::os::unix::fs::symlink;
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    fs::create_dir_all(&p.target_root).unwrap();
+    let outside = tempdir();
+    let outside_state = outside.join("state");
+    let outside_version = outside.join("version");
+    fs::write(&outside_state, "user state").unwrap();
+    fs::write(&outside_version, "user version").unwrap();
+    symlink(&outside_state, p.state_file()).unwrap();
+    symlink(&outside_version, p.version_record()).unwrap();
+
+    assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain), Err(MigrationError::UnsafePath(_))));
+    assert_eq!(fs::read_to_string(outside_state).unwrap(), "user state");
+    assert_eq!(fs::read_to_string(outside_version).unwrap(), "user version");
+    assert!(fs::symlink_metadata(p.state_file()).unwrap().file_type().is_symlink());
+    assert!(fs::symlink_metadata(p.version_record()).unwrap().file_type().is_symlink());
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[cfg(all(target_os = "macos", unix))]
+#[test]
 fn configured_music_root_symlink_is_rejected() {
     use std::os::unix::fs::symlink;
     let root = tempdir();

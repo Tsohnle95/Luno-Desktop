@@ -69,6 +69,28 @@ pub fn canonicalize_path(path: &Path) -> PathBuf {
     lexical_normalize(&result)
 }
 
+/// Reject symlinks in every existing component before resolving a path. This
+/// is intentionally strict for public readers: canonicalizing only the final
+/// directory would otherwise allow an intermediate link to escape the scope.
+pub fn validate_existing_path(path: &Path) -> Result<PathBuf, String> {
+    let normalized = lexical_normalize(path);
+    let mut current = PathBuf::new();
+    for component in normalized.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    return Err(format!("path component must not be a symlink: {}", current.display()));
+                }
+                fs::canonicalize(&current).map_err(|error| error.to_string())?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(canonicalize_path(&normalized))
+}
+
 fn contained(root: &Path, child: &Path) -> bool {
     let root = canonicalize_path(root);
     let child = canonicalize_path(child);
@@ -76,7 +98,8 @@ fn contained(root: &Path, child: &Path) -> bool {
 }
 
 pub fn read_preview_inventory(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    if !safe_directory(dir) { return Ok(Vec::new()); }
+    let dir = validate_existing_path(dir)?;
+    if !safe_directory(&dir) { return Ok(Vec::new()); }
     let mut files = Vec::new();
     let mut inspected = 0;
     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
@@ -86,9 +109,9 @@ pub fn read_preview_inventory(dir: &Path) -> Result<Vec<PathBuf>, String> {
         inspected += 1;
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
+        let path = validate_existing_path(&path)?;
         let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-        if metadata.file_type().is_symlink() { continue; }
-        if metadata.is_file() && contained(dir, &path) { files.push(path); }
+        if metadata.is_file() && contained(&dir, &path) { files.push(path); }
     }
     files.sort();
     Ok(files)
@@ -111,6 +134,7 @@ pub fn inventory_files(root: &Path, excluded_roots: &[&Path]) -> Result<Vec<Path
 /// Inspect only the bounded legacy surfaces that can contain preserved input.
 /// In particular, do not recursively treat HOME as a migration data root.
 pub fn inventory_retry_files(legacy_root: &Path, music_root: Option<&Path>, preview_dir: &Path, target_root: &Path) -> Result<Vec<PathBuf>, String> {
+    validate_existing_path(preview_dir)?;
     let legacy_root = canonicalize_path(legacy_root);
     let music_root = music_root.map(canonicalize_path);
     let preview_dir = canonicalize_path(preview_dir);
@@ -263,20 +287,21 @@ pub fn marker_files_excluding(root: &Path, excluded_roots: &[&Path]) -> Result<V
 /// Return whether any supported legacy surface contains data worth migrating.
 /// Empty marker files and an empty preview directory are not migration triggers.
 pub fn validated_music_root(root: &Path) -> Result<Option<PathBuf>, String> {
+    let root = validate_existing_path(root)?;
     let config_path = root.join(".luno_config.json");
-    if !safe_directory(root) { return Err("legacy discovery root is not a real directory".into()); }
+    if !safe_directory(&root) { return Err("legacy discovery root is not a real directory".into()); }
     let Some(config) = (if safe_file(&config_path) { legacy::read_config(&config_path).ok() } else { None }) else { return Ok(None); };
     let Some(raw) = config.music_root else { return Ok(None); };
-    resolve_music_root(root, Some(Path::new(&raw)))
+    resolve_music_root(&root, Some(Path::new(&raw)))
 }
 
 /// Resolve a configured root relative to the supplied legacy root and apply
 /// containment and symlink checks before callers scan it.
 pub fn resolve_music_root(legacy_root: &Path, configured: Option<&Path>) -> Result<Option<PathBuf>, String> {
-    let scope = canonicalize_path(legacy_root);
+    let scope = validate_existing_path(legacy_root)?;
     let Some(configured) = configured else { return Ok(None); };
     let candidate = if configured.is_absolute() { configured.to_path_buf() } else { scope.join(configured) };
-    let candidate = canonicalize_path(&candidate);
+    let candidate = validate_existing_path(&candidate)?;
     if !candidate.starts_with(&scope) { return Err("configured music root is outside the legacy discovery root".into()); }
     if fs::symlink_metadata(&candidate).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false) {
         return Err("configured music root must not be a symlink".into());
@@ -290,8 +315,10 @@ pub fn has_legacy_data(root: &Path, preview_dir: Option<&Path>) -> Result<bool, 
     let music_root = validated_music_root(root)?;
     if has_legacy_files(root, false) { return Ok(true); }
     if music_root.as_deref().is_some_and(|path| has_legacy_files(path, true)) { return Ok(true); }
-    Ok(preview_dir.is_some_and(|dir| fs::symlink_metadata(dir).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false))
-        || preview_dir.is_some_and(|dir| match read_preview_inventory(dir) {
+    if let Some(dir) = preview_dir {
+        validate_existing_path(dir)?;
+    }
+    Ok(preview_dir.is_some_and(|dir| match read_preview_inventory(dir) {
             Ok(files) => !files.is_empty(),
             Err(_) => true,
         }))

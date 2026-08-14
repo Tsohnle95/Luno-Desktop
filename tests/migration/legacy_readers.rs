@@ -35,6 +35,21 @@ fn preview_inventory_is_sorted_and_contained() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn preview_inventory_rejects_symlinked_intermediate_path() {
+    use std::os::unix::fs::symlink;
+    let root = tempdir();
+    let outside = tempdir();
+    fs::create_dir(root.join("preview")).unwrap();
+    fs::write(outside.join("escape.mp3"), b"outside").unwrap();
+    symlink(&outside, root.join("preview").join("nested")).unwrap();
+    let error = read_preview_inventory(&root.join("preview/nested")).unwrap_err();
+    assert!(error.contains("path component must not be a symlink"));
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
 #[test]
 fn legacy_detection_covers_configured_root_and_ignores_empty_surfaces() {
     let dir = tempdir();
@@ -148,7 +163,7 @@ fn dangling_preview_symlink_is_a_migration_trigger_for_main_gating() {
     let dir = tempdir();
     let preview = dir.join(".luno_previews");
     symlink(dir.join("missing"), &preview).unwrap();
-    assert!(has_legacy_data(&dir, Some(&preview)).unwrap());
+    assert!(has_legacy_data(&dir, Some(&preview)).is_err());
     fs::remove_dir_all(dir).unwrap();
 }
 
