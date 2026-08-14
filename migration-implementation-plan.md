@@ -180,9 +180,8 @@ used here.
 - TrackId versus filename/path identity; URL mapping on rename; per-record
   ambiguity; durable history; keychain import; video/audio backend; FFmpeg/yt-dlp
   distribution/licensing; supported OS/signing/update policy; fonts, breakpoints
-  and visual tolerances. Runtime IPC is not implemented, so frontend backend and
-  video availability remain explicitly unavailable. The shell geometry check is
-  a contract check, not rendered screenshot evidence.
+  and visual tolerances. Video commands remain explicitly unavailable. The shell
+  geometry check is a contract check, not rendered screenshot evidence.
 
 ## Definition Of Done
 
@@ -205,7 +204,7 @@ and rollback trial. Until then Python is the behavioral fallback.
   real-process corpus, packaged smoke receipt, crash corpus or rollback trial.
 - Status: complete, with blockers unresolved.
 
-## U45 Final Gate
+## Historical U45 Final Gate (Superseded)
 
 - Status: **BLOCKED** on 2026-08-13; no parity or release sign-off is claimed.
 - Final reviewer findings: production still uses `NoopKeychain`, so key-bearing
@@ -225,7 +224,7 @@ and rollback trial. Until then Python is the behavioral fallback.
   `docs/verification/final-parity.md` has no inconclusive or blocked acceptance
   and `docs/release/sign-off.md` is explicitly approved.
 
-## R07 Final Audit
+## Historical R07 Final Audit (Superseded)
 
 - Status: **BLOCKED** on 2026-08-14. The audited source HEAD is
   `cba3a17a1fce8cd4faed98f510da5039f1776702`; the audited worktree was dirty
@@ -247,3 +246,24 @@ and rollback trial. Until then Python is the behavioral fallback.
   checks remain inconclusive, not failed, where the required tool or manual
   run was unavailable. No binary, screenshot, user data, signature, or package
   was fabricated.
+
+## Current Release Evidence
+
+- Status: **BLOCKED** on 2026-08-14; no parity or release sign-off is claimed.
+- Audited source HEAD is
+  `e6d2372c43638e0f5f6163fe57b53e689458e7fd`. The exact first-parent command is
+  `git log --first-parent --format='%H %s' --reverse 93915b32^..HEAD`, covering
+  `93915b32`, `8343bfbf`, and `e6d2372c`.
+- Current receipts pass: `npm ci`, `npm run typecheck`, `npm run build`,
+  `npm test` (13 passed), `cargo test --manifest-path src-tauri/Cargo.toml`
+  (31 passed, 1 ignored), and `npm run tauri build` (unsigned local aarch64 DMG).
+- Video commands remain explicitly unavailable. Target runtime, visual,
+  accessibility, migration/rollback, shutdown/orphan-process, manual journey,
+  and real-user evidence remains inconclusive because no reviewed execution
+  receipt exists.
+- Release inputs remain incomplete: `release-input/bin/` is absent and
+  `release/desktop-binaries.json` retains placeholder checksums. No signing or
+  notarization evidence exists.
+- Keep the Python fallback and legacy data unchanged. Reopen sign-off only when
+  the required target and release evidence is reviewed and complete; this
+  document does not claim release readiness.
