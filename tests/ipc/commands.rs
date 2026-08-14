@@ -68,12 +68,40 @@ fn shutdown_emits_ordered_states_and_rejects_late_commands() {
 }
 
 #[test]
+fn shutdown_admission_mutex_blocks_a_non_shutdown_command_during_transition() {
+    let state = AppState::new(1);
+    let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let sink_entered = entered.clone();
+    let sink_release = release.clone();
+    state.set_event_sink(std::sync::Arc::new(move |event| {
+        if matches!(event.event, Event::Shutdown { envelope: luno_desktop_lib::contracts::events::ShutdownEnvelope { state: ShutdownState::Requested, .. } }) {
+            sink_entered.wait();
+            sink_release.wait();
+        }
+        Ok(())
+    }));
+    let shutdown_state = state.clone();
+    let shutdown = thread::spawn(move || shutdown_state.dispatch(envelope(Command::Shutdown { reason: ShutdownReason::System })));
+    entered.wait();
+    let command_state = state.clone();
+    let command = thread::spawn(move || command_state.dispatch(envelope(Command::Pause)));
+    thread::sleep(Duration::from_millis(10));
+    assert!(!command.is_finished(), "non-shutdown command crossed the shutdown admission barrier");
+    release.wait();
+    assert!(shutdown.join().unwrap().is_ok());
+    assert_eq!(command.join().unwrap().unwrap_err().code, luno_desktop_lib::contracts::types::ErrorCode::ShuttingDown);
+}
+
+#[test]
 fn event_ids_are_unique() {
     let state = AppState::new(1);
     state.dispatch(envelope(Command::GetLibrary)).unwrap();
     state.dispatch(envelope(Command::GetLibrary)).unwrap();
     let events = state.events();
     assert_ne!(events[0].event_id, events[1].event_id);
+    let ids: Vec<_> = events.iter().map(|event| event.event_id.strip_prefix("event-").unwrap().parse::<u64>().unwrap()).collect();
+    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]), "event IDs must follow delivery order");
 }
 
 #[test]
@@ -90,6 +118,16 @@ fn shutdown_timeout_never_emits_complete() {
     assert_eq!(states, vec![ShutdownState::Requested, ShutdownState::Draining, ShutdownState::TimedOut]);
     release.store(true, std::sync::atomic::Ordering::Release);
     state.tasks.shutdown(Duration::from_secs(1));
+}
+
+#[test]
+fn shutdown_reports_final_event_drain_timeout() {
+    let state = AppState::new(1);
+    state.set_event_sink(std::sync::Arc::new(|_| Err("offline".into())));
+    let report = state.shutdown_events(ShutdownReason::System, Duration::from_millis(20));
+    assert!(report.timed_out);
+    assert!(report.undelivered > 0);
+    assert!(state.events().len() >= report.undelivered);
 }
 
 #[test]

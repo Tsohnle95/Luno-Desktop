@@ -67,7 +67,7 @@ function isEvent(v: unknown): v is Event {
   const job = (value: unknown): value is DownloadJob => exact(value, ["id", "kind", "state", "track_id", "progress", "generation"]) && id(value.id) && ["single", "csv", "sync", "url_queue"].includes(String(value.kind)) && ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"].includes(String(value.state)) && (value.track_id === null || id(value.track_id)) && (value.progress === null || progress(value.progress)) && generation(value.generation);
   if (v.type === "track_started") return exact(v.payload, ["track_id"]) && id(v.payload.track_id);
   if (v.type === "queue_changed") return exact(v.payload, ["queue"]) && Array.isArray(v.payload.queue) && v.payload.queue.every(id);
-  if (v.type === "library_root_status") return exact(v.payload, ["root_index", "status"]) && Number.isInteger(v.payload.root_index) && v.payload.root_index >= 0 && ["scanned", "missing", "inaccessible"].includes(String(v.payload.status));
+  if (v.type === "library_root_status") return exact(v.payload, ["root_index", "status"]) && Number.isSafeInteger(v.payload.root_index) && v.payload.root_index >= 0 && ["scanned", "missing", "inaccessible"].includes(String(v.payload.status));
   if (v.type === "library_snapshot") return exact(v.payload, ["snapshot"]) && library(v.payload.snapshot);
   if (v.type === "playback_snapshot") return exact(v.payload, ["snapshot"]) && playback(v.payload.snapshot);
   if (v.type === "job_updated") return exact(v.payload, ["job"]) && job(v.payload.job);
@@ -81,7 +81,7 @@ function isEvent(v: unknown): v is Event {
   }
   return false;
 }
-export function isCommandEnvelope(v: unknown): v is CommandEnvelope { return exact(v, ["version", "request_id", "command"]) && isContractVersion(v.version) && typeof v.request_id === "string" && isCommand(v.command); }
+export function isCommandEnvelope(v: unknown): v is CommandEnvelope { return exact(v, ["version", "request_id", "command"]) && isContractVersion(v.version) && typeof v.request_id === "string" && v.request_id.trim().length > 0 && isCommand(v.command); }
 export function isEventEnvelope(v: unknown): v is EventEnvelope { return exact(v, ["version", "event_id", "generation", "job_id", "session_id", "event"]) && isContractVersion(v.version) && typeof v.event_id === "string" && v.event_id.length > 0 && Number.isSafeInteger(v.generation) && v.generation >= 0 && (v.job_id === null || (typeof v.job_id === "string" && v.job_id.length > 0)) && (v.session_id === null || (typeof v.session_id === "string" && v.session_id.length > 0)) && isEvent(v.event); }
 export function parseCommandEnvelope(json: string): CommandEnvelope { const value: unknown = JSON.parse(json); if (!isCommandEnvelope(value)) throw new Error("invalid or unsupported command envelope"); return value; }
 export function parseEventEnvelope(json: string): EventEnvelope { const value: unknown = JSON.parse(json); if (!isEventEnvelope(value)) throw new Error("invalid or unsupported event envelope"); return value; }

@@ -110,8 +110,8 @@ impl TaskRegistry {
         loop {
             let mut state = self.inner.lock().unwrap();
             joined += self.reap_finished(&mut state);
-            if state.entries.is_empty() { return ShutdownReport { joined, timed_out: false, failed: state.failed }; }
-            if started.elapsed() >= deadline { return ShutdownReport { joined, timed_out: true, failed: state.failed }; }
+            if state.entries.is_empty() { return ShutdownReport { joined, timed_out: false, failed: state.failed, undelivered: 0 }; }
+            if started.elapsed() >= deadline { return ShutdownReport { joined, timed_out: true, failed: state.failed, undelivered: 0 }; }
             drop(state);
             thread::sleep(Duration::from_millis(2));
         }
@@ -131,4 +131,4 @@ impl TaskRegistry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShutdownReport { pub joined: usize, pub timed_out: bool, pub failed: bool }
+pub struct ShutdownReport { pub joined: usize, pub timed_out: bool, pub failed: bool, pub undelivered: usize }
