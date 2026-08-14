@@ -4,7 +4,7 @@
 //! removed or rewritten. A migration can therefore be retried, or the Python
 //! release can be launched again, after any failure.
 
-use crate::migration::legacy_readers::{inventory_retry_files, marker_files, read_legacy, LegacyState};
+use crate::migration::legacy_readers::{inventory_retry_files, marker_files_excluding, read_legacy, LegacyState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -208,9 +208,10 @@ fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
     let result = (|| -> Result<(), MigrationError> { for root in [p.legacy_root.clone(), read_legacy(&p.legacy_root, None).config.and_then(|config| config.music_root.map(PathBuf::from)).unwrap_or_default()] {
         if root.as_os_str().is_empty() { continue; }
         for name in [".luno_config.json", ".luno_playlist_urls.json", ".luno_allowed_dups.json", ".downloaded_vids", ".sync_failed_vids", ".downloaded.txt"] {
-            let from = root.join(name); if from.is_file() { let destination = if root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } if name == ".luno_config.json" { snapshot_config(&from, &destination, &dir)?; } else { fs::copy(&from, destination)?; } }
+            let from = root.join(name); if regular_file(&from) { let destination = if root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } if name == ".luno_config.json" { snapshot_config(&from, &destination, &dir)?; } else { fs::copy(&from, destination)?; } }
         }
-        for path in marker_files(&root).map_err(MigrationError::Io)? {
+        let excluded = if p.legacy_root == root { vec![p.target_root.as_path()] } else { Vec::new() };
+        for path in marker_files_excluding(&root, &excluded).map_err(MigrationError::Io)? {
             if path == root.join(".downloaded_vids") || path == root.join(".sync_failed_vids") || path == root.join(".downloaded.txt") { continue; }
             let destination = dir.join(path.strip_prefix(&root).unwrap_or(&path));
             if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; }
@@ -219,6 +220,10 @@ fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
     } Ok(()) })();
     if let Err(error) = result { let _ = fs::remove_dir_all(&dir); return Err(error); }
     Ok(dir)
+}
+
+fn regular_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink()).unwrap_or(false)
 }
 
 fn snapshot_config(source: &Path, destination: &Path, backup: &Path) -> Result<(), MigrationError> {

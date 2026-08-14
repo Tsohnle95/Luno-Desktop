@@ -151,3 +151,28 @@ fn dangling_preview_symlink_is_a_migration_trigger_for_main_gating() {
     assert!(has_legacy_data(&dir, Some(&preview)));
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn legacy_readers_reject_symlinked_typed_files() {
+    use std::os::unix::fs::symlink;
+    let root = tempdir();
+    let outside = tempdir();
+    fs::write(outside.join("config"), r#"{"volume":0.5,"favorite_songs":["outside"]}"#).unwrap();
+    fs::write(outside.join("urls"), r#"{"playlist":"https://outside"}"#).unwrap();
+    fs::write(outside.join("dups"), r#"["outside"]"#).unwrap();
+    fs::write(outside.join("markers"), "OUTSIDE\n").unwrap();
+    symlink(outside.join("config"), root.join(".luno_config.json")).unwrap();
+    symlink(outside.join("urls"), root.join(".luno_playlist_urls.json")).unwrap();
+    symlink(outside.join("dups"), root.join(".luno_allowed_dups.json")).unwrap();
+    symlink(outside.join("markers"), root.join(".downloaded.txt")).unwrap();
+
+    let state = read_legacy(&root, None);
+    assert!(state.config.is_none());
+    assert!(state.playlist_urls.is_empty());
+    assert!(state.allowed_duplicate_keys.is_empty());
+    assert!(state.downloaded_ids.is_empty());
+
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}

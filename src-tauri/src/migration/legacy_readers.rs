@@ -92,7 +92,7 @@ pub fn inventory_retry_files(legacy_root: &Path, music_root: Option<&Path>, prev
         let mut budget = music_budget;
         inventory_direct(root, &[], &mut files, &mut budget)?;
         let mut marker_roots = Vec::new();
-        find_marker_roots(root, 0, &mut marker_roots, &mut budget)?;
+        find_marker_roots(root, &mut marker_roots, &mut budget)?;
         for marker_root in marker_roots {
             inventory_direct(&marker_root, &[], &mut files, &mut budget)?;
         }
@@ -132,23 +132,27 @@ fn inventory_direct(root: &Path, excluded: &[&Path], files: &mut BTreeSet<PathBu
     Ok(())
 }
 
-fn find_marker_roots(root: &Path, depth: usize, marker_roots: &mut Vec<PathBuf>, budget: &mut usize) -> Result<(), String> {
-    if depth > MAX_RETRY_DEPTH || !safe_directory(root) { return Ok(()); }
-    let mut has_marker = false;
-    let mut directories = Vec::new();
-    for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
-        if *budget == 0 { return Err(format!("retry inspection exceeded {} entries", MAX_RETRY_ENTRIES)); }
-        *budget -= 1;
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-        if metadata.file_type().is_symlink() { continue; }
-        if metadata.is_dir() { directories.push(path); }
-        else if matches!(path.file_name().and_then(|name| name.to_str()), Some(".downloaded_vids" | ".sync_failed_vids" | ".downloaded.txt")) { has_marker = true; }
+fn find_marker_roots(root: &Path, marker_roots: &mut Vec<PathBuf>, budget: &mut usize) -> Result<(), String> {
+    if !safe_directory(root) { return Ok(()); }
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
+    while let Some((directory, depth)) = pending.pop() {
+        if depth > MAX_RETRY_DEPTH { continue; }
+        let mut has_marker = false;
+        let mut directories = Vec::new();
+        for entry in fs::read_dir(&directory).map_err(|e| e.to_string())? {
+            if *budget == 0 { return Err(format!("retry inspection exceeded {} entries", MAX_RETRY_ENTRIES)); }
+            *budget -= 1;
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+            if metadata.file_type().is_symlink() { continue; }
+            if metadata.is_dir() { directories.push(path); }
+            else if matches!(path.file_name().and_then(|name| name.to_str()), Some(".downloaded_vids" | ".sync_failed_vids" | ".downloaded.txt")) { has_marker = true; }
+        }
+        if has_marker { marker_roots.push(directory); }
+        directories.sort();
+        for directory in directories { pending.push((directory, depth + 1)); }
     }
-    if has_marker { marker_roots.push(root.to_path_buf()); }
-    directories.sort();
-    for directory in directories { find_marker_roots(&directory, depth + 1, marker_roots, budget)?; }
     Ok(())
 }
 
@@ -169,7 +173,11 @@ fn inventory_files_inner(root: &Path, excluded_roots: &[&Path], files: &mut Vec<
 }
 
 fn has_data_file(path: &Path) -> bool {
-    path.is_file() && fs::metadata(path).map(|metadata| metadata.len() > 0).unwrap_or(false)
+    safe_file(path) && fs::metadata(path).map(|metadata| metadata.len() > 0).unwrap_or(false)
+}
+
+fn safe_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink()).unwrap_or(false)
 }
 
 fn has_legacy_files(root: &Path, recursive: bool) -> bool {
@@ -182,6 +190,10 @@ fn has_legacy_files(root: &Path, recursive: bool) -> bool {
 /// unbounded directory tree. The entry budget is consumed before inspecting
 /// each directory entry, so an oversized root fails deterministically.
 pub fn marker_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    marker_files_excluding(root, &[])
+}
+
+pub fn marker_files_excluding(root: &Path, excluded_roots: &[&Path]) -> Result<Vec<PathBuf>, String> {
     if !safe_directory(root) { return Ok(Vec::new()); }
     let mut pending = vec![root.to_path_buf()];
     let mut files = Vec::new();
@@ -196,6 +208,7 @@ pub fn marker_files(root: &Path) -> Result<Vec<PathBuf>, String> {
         entries.sort_by_key(|entry| entry.path());
         for entry in entries {
             let path = entry.path();
+            if excluded_roots.iter().any(|excluded| path == *excluded || path.starts_with(excluded)) { continue; }
             let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
             if metadata.file_type().is_symlink() || !contained(root, &path) { continue; }
             if metadata.is_dir() { pending.push(path); }
@@ -225,7 +238,7 @@ pub fn has_legacy_data(root: &Path, preview_dir: Option<&Path>) -> bool {
 /// warnings while valid portions remain available to the migration planner.
 pub fn read_legacy(root: &Path, preview_dir: Option<&Path>) -> LegacyState {
     let mut state = LegacyState::default();
-    macro_rules! read_file { ($path:expr, $reader:expr) => {{ let path = $path; if path.exists() { if let Err(message) = $reader(&path) { state.warnings.push(Warning { path, message }); } } }}; }
+    macro_rules! read_file { ($path:expr, $reader:expr) => {{ let path = $path; if safe_file(&path) { if let Err(message) = $reader(&path) { state.warnings.push(Warning { path, message }); } } }}; }
     let config_path = root.join(".luno_config.json");
     read_file!(config_path, |p: &Path| { state.config = Some(legacy::read_config(p)?); if let Some(c) = &state.config { if let Some(v) = &c.favorite_songs { state.favorite_paths.extend(v.clone()); } } Ok(()) });
     let roots = [Some(root.to_path_buf()), state.config.as_ref().and_then(|config| config.music_root.as_ref().map(PathBuf::from))];

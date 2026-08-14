@@ -297,6 +297,28 @@ fn dangling_preview_symlink_is_rejected() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(all(target_os = "macos", unix))]
+#[test]
+fn snapshot_excludes_target_descendants_when_legacy_root_is_home() {
+    let root = tempdir();
+    let legacy = root.join(".legacy-data");
+    let target = root.join("Library/Application Support/com.ty.luno");
+    let preview = root.join(".luno_previews");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::create_dir_all(&preview).unwrap();
+    fs::write(legacy.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, legacy.display())).unwrap();
+    fs::create_dir_all(target.join("nested-marker")).unwrap();
+    fs::write(target.join("nested-marker/.downloaded_vids"), "TARGET\n").unwrap();
+    let p = MigrationPaths { legacy_root: root.clone(), legacy_data_root: Some(legacy), target_root: target.clone(), preview_dir: preview, current_preview: Vec::new(), promoted_assets: Vec::new() };
+
+    let receipt = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
+    let snapshot = receipt.snapshot.unwrap();
+    assert!(!snapshot.join("Library/Application Support/com.ty.luno/nested-marker/.downloaded_vids").exists());
+    assert!(!target.join("nested-marker/.downloaded_vids").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn preview_cleanup_failure_rolls_back_every_migration_artifact() {
