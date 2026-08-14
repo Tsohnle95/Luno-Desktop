@@ -62,6 +62,8 @@ describe("typed IPC bridge and projection", () => {
 
   it("validates migration counters and catches rejected runtime commands", async () => {
     expect(() => parseMigrationStatus({ completed: { warnings: -1, snapshot_created: false, removed_previews: 0 } })).toThrow();
+    expect(() => parseMigrationStatus({ completed: { warnings: 1.5, snapshot_created: false, removed_previews: 0 } })).toThrow();
+    expect(() => parseMigrationStatus({ completed: { warnings: Number.MAX_SAFE_INTEGER + 1, snapshot_created: false, removed_previews: 0 } })).toThrow();
     expect(() => parseMigrationStatus({ completed: { warnings: 0, snapshot_created: false, removed_previews: -1 } })).toThrow();
     const messages: string[] = [];
     runBridgeCommand(Promise.reject(new Error("backend unavailable")), (message) => messages.push(message));

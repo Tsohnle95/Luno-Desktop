@@ -75,8 +75,8 @@ mod tests {
         state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned }));
         let ids: Vec<_> = state.pending_events().into_iter().map(|event| event.event_id).collect();
         assert_eq!(ids[0], "event-1");
-        assert!(ids[1].strip_prefix("event-").unwrap().parse::<u64>().is_ok());
-        assert_ne!(ids[1], "event-2");
+        assert!(ids[1].strip_prefix("delivery-error-").is_some_and(|id| id.parse::<u64>().is_ok()));
+        assert_ne!(ids[1], "delivery-error-2");
     }
 
     #[test]
