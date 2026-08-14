@@ -59,6 +59,49 @@ mod tests {
         state.acknowledge_event(&pending[0].event_id);
         assert_eq!(state.pending_events().len(), 1);
     }
+
+    #[test]
+    fn event_drain_has_one_consumer_and_requeues_failures() {
+        let state = AppState::new(1);
+        state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned }));
+        let worker_state = state.clone();
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = entered.clone();
+        let first = std::thread::spawn(move || worker_state.drain_events(|_| { release.wait(); std::thread::sleep(Duration::from_millis(20)); Ok(()) }).unwrap());
+        entered.wait();
+        assert_eq!(state.drain_events(|_| Ok(())).unwrap(), false);
+        assert_eq!(first.join().unwrap(), true);
+
+        state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 1, status: RootStatus::Scanned }));
+        assert!(state.drain_events(|_| Err("offline".into())).is_err());
+        assert_eq!(state.pending_events().len(), 1);
+    }
+
+    #[test]
+    fn panicking_worker_is_a_shutdown_failure() {
+        let state = AppState::new(1);
+        state.submit(TaskSpec::new("panic", Generation(1), None), |_| -> () { panic!("worker failure") }).unwrap();
+        let report = state.shutdown_events(crate::contracts::events::ShutdownReason::System, Duration::from_secs(1));
+        assert!(report.failed);
+        assert!(!report.timed_out);
+        assert!(state.events().iter().any(|event| matches!(event.event, Event::Shutdown { envelope: ShutdownEnvelope { state: ShutdownState::Failed, .. } })));
+    }
+
+    #[test]
+    fn shutdown_admission_barrier_is_active_before_requested_event() {
+        let state = AppState::new(1);
+        let observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed_sink = observed.clone();
+        let sink_state = state.clone();
+        state.set_event_sink(StdArc::new(move |event| {
+            if matches!(&event.event, Event::Shutdown { envelope: ShutdownEnvelope { state: ShutdownState::Requested, .. } }) {
+                observed_sink.store(sink_state.is_closing(), std::sync::atomic::Ordering::Release);
+            }
+            Ok(())
+        }));
+        state.shutdown_events(crate::contracts::events::ShutdownReason::System, Duration::from_secs(1));
+        assert!(observed.load(std::sync::atomic::Ordering::Acquire));
+    }
 }
 
 #[derive(Clone)]
@@ -69,6 +112,7 @@ pub struct AppState {
     roots: Arc<Mutex<Vec<PathBuf>>>,
     root_statuses: Arc<Mutex<Vec<RootStatus>>>,
     events: Arc<Mutex<Vec<EventEnvelope>>>,
+    event_draining: Arc<Mutex<bool>>,
     next_event: Arc<AtomicU64>,
     next_generation: Arc<AtomicU64>,
     event_sink: Arc<Mutex<Option<StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>>>>,
@@ -82,7 +126,7 @@ impl AppState {
     pub fn new(task_limit: usize) -> Self {
         Self { tasks: Arc::new(TaskRegistry::new(task_limit)), migration_status: Arc::new(Mutex::new(MigrationStatus::NotRun)),
             library: Arc::new(Mutex::new(LibrarySnapshot { version: CONTRACT_VERSION, generation: Generation(0), tracks: Vec::new(), playlists: Vec::new() })),
-            roots: Arc::new(Mutex::new(Vec::new())), root_statuses: Arc::new(Mutex::new(Vec::new())), events: Arc::new(Mutex::new(Vec::new())),
+            roots: Arc::new(Mutex::new(Vec::new())), root_statuses: Arc::new(Mutex::new(Vec::new())), events: Arc::new(Mutex::new(Vec::new())), event_draining: Arc::new(Mutex::new(false)),
             next_event: Arc::new(AtomicU64::new(0)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), shutdown_result: Arc::new(Mutex::new(None)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
     }
     pub fn library(&self) -> LibrarySnapshot { self.library.lock().unwrap().clone() }
@@ -92,6 +136,29 @@ impl AppState {
     /// Test and integration accessor for the buffered event queue.
     pub fn events(&self) -> Vec<EventEnvelope> { self.pending_events() }
     pub fn acknowledge_event(&self, event_id: &str) { self.events.lock().unwrap().retain(|event| event.event_id != event_id); }
+    /// Drain is single-consumer: events are claimed while holding the queue lock and
+    /// failed deliveries are returned atomically instead of being duplicated.
+    pub fn drain_events<F>(&self, deliver: F) -> Result<bool, String>
+    where F: Fn(&EventEnvelope) -> Result<(), String> {
+        {
+            let mut draining = self.event_draining.lock().unwrap();
+            if *draining { return Ok(false); }
+            *draining = true;
+        }
+        let claimed = { std::mem::take(&mut *self.events.lock().unwrap()) };
+        let mut failed = Vec::new();
+        let mut error = None;
+        for (index, event) in claimed.iter().enumerate() {
+            if let Err(message) = deliver(event) {
+                error = Some(message);
+                failed.extend_from_slice(&claimed[index..]);
+                break;
+            }
+        }
+        if !failed.is_empty() { self.events.lock().unwrap().splice(0..0, failed); }
+        *self.event_draining.lock().unwrap() = false;
+        error.map_or(Ok(true), Err)
+    }
     pub fn event(&self, generation: Generation, event: Event) -> EventEnvelope {
         let id = self.next_event.fetch_add(1, Ordering::Relaxed) + 1;
         EventEnvelope { version: CONTRACT_VERSION, event_id: format!("event-{id}"), generation, job_id: None, session_id: None, event }
@@ -196,7 +263,9 @@ impl AppState {
             Command::Play { .. } | Command::Pause | Command::Seek { .. } => Err(ContractError { code: ErrorCode::Internal, message: "audio backend unavailable".into(), retryable: true }),
             Command::Shutdown { reason } => {
                 let report = self.shutdown_events(reason, Duration::from_millis(500));
-                if report.timed_out {
+                if report.failed {
+                    Err(ContractError { code: ErrorCode::Internal, message: "shutdown failed because a worker panicked".into(), retryable: false })
+                } else if report.timed_out {
                     Err(ContractError { code: ErrorCode::Internal, message: "shutdown timed out; tasks remain active".into(), retryable: false })
                 } else { Ok(Value::Null) }
             }
@@ -206,6 +275,7 @@ impl AppState {
     pub fn shutdown_events(&self, reason: crate::contracts::events::ShutdownReason, deadline: Duration) -> ShutdownReport {
         let mut stored_result = self.shutdown_result.lock().unwrap();
         if let Some(report) = *stored_result { return report; }
+        self.tasks.begin_shutdown();
         self.publish(self.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state: ShutdownState::Requested, reason } }));
         self.publish(self.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state: ShutdownState::Draining, reason } }));
         let started = std::time::Instant::now();
@@ -215,10 +285,12 @@ impl AppState {
         let remaining = deadline.saturating_sub(started.elapsed());
         let download_report = self.downloads.shutdown(remaining);
         let timed_out = report.timed_out || !process_ok || download_report.timed_out;
-        let state = if timed_out { ShutdownState::TimedOut } else { ShutdownState::Complete };
+        let failed = report.failed;
+        let state = if failed { ShutdownState::Failed } else if timed_out { ShutdownState::TimedOut } else { ShutdownState::Complete };
         self.publish(self.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state, reason } }));
-        if timed_out { self.publish(self.event(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "shutdown timed out; workers remain active".into(), retryable: false } })); }
-        let result = ShutdownReport { joined: report.joined, timed_out };
+        if failed { self.publish(self.event(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "shutdown failed because a worker panicked".into(), retryable: false } })); }
+        else if timed_out { self.publish(self.event(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "shutdown timed out; workers remain active".into(), retryable: false } })); }
+        let result = ShutdownReport { joined: report.joined, timed_out, failed };
         *stored_result = Some(result);
         result
     }

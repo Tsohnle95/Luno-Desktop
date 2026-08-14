@@ -65,7 +65,7 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
     play: (track_id: string) => send({ type: "play", payload: { track_id } }),
     pause: () => send("pause"),
     seek: (position_ms: number) => {
-      if (!Number.isFinite(position_ms) || position_ms < 0) return Promise.reject(new Error("position_ms must be non-negative"));
+      if (!Number.isSafeInteger(position_ms) || position_ms < 0) return Promise.reject(new Error("position_ms must be a non-negative integer"));
       return send({ type: "seek", payload: { position_ms } });
     },
     cancelJob: (job_id: string) => send({ type: "cancel_job", payload: { job_id } }),

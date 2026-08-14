@@ -44,18 +44,19 @@ impl<T> TaskHandle<T> {
 }
 
 struct Entry { spec: TaskSpec, token: CancellationToken, join: JoinHandle<()> }
-struct Inner { closing: bool, next_id: u64, entries: HashMap<u64, Entry>, latest: HashMap<String, u64> }
+struct Inner { closing: bool, next_id: u64, entries: HashMap<u64, Entry>, latest: HashMap<String, u64>, failed: bool }
 
 pub struct TaskRegistry { limit: usize, inner: Mutex<Inner> }
 
 impl TaskRegistry {
     pub fn new(limit: usize) -> Self {
         assert!(limit > 0, "task limit must be positive");
-        Self { limit, inner: Mutex::new(Inner { closing: false, next_id: 0, entries: HashMap::new(), latest: HashMap::new() }) }
+        Self { limit, inner: Mutex::new(Inner { closing: false, next_id: 0, entries: HashMap::new(), latest: HashMap::new(), failed: false }) }
     }
 
     pub fn active_count(&self) -> usize { self.inner.lock().unwrap().entries.len() }
     pub fn is_closing(&self) -> bool { self.inner.lock().unwrap().closing }
+    pub fn begin_shutdown(&self) { self.inner.lock().unwrap().closing = true; }
 
     pub fn spawn<T, F>(&self, spec: TaskSpec, work: F) -> Result<TaskHandle<T>, SpawnError>
     where T: Send + 'static, F: FnOnce(CancellationToken) -> T + Send + 'static {
@@ -109,8 +110,8 @@ impl TaskRegistry {
         loop {
             let mut state = self.inner.lock().unwrap();
             self.reap_finished(&mut state);
-            if state.entries.is_empty() { return ShutdownReport { joined, timed_out: false }; }
-            if started.elapsed() >= deadline { return ShutdownReport { joined, timed_out: true }; }
+            if state.entries.is_empty() { return ShutdownReport { joined, timed_out: false, failed: state.failed }; }
+            if started.elapsed() >= deadline { return ShutdownReport { joined, timed_out: true, failed: state.failed }; }
             drop(state);
             thread::sleep(Duration::from_millis(2));
             joined += 1;
@@ -121,7 +122,7 @@ impl TaskRegistry {
         let done: Vec<u64> = state.entries.iter().filter_map(|(id, e)| e.join.is_finished().then_some(*id)).collect();
         for id in done {
             if let Some(entry) = state.entries.remove(&id) {
-                let _ = entry.join.join();
+                if entry.join.join().is_err() { state.failed = true; }
                 if state.latest.get(&entry.spec.key) == Some(&id) { state.latest.remove(&entry.spec.key); }
             }
         }
@@ -129,4 +130,4 @@ impl TaskRegistry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShutdownReport { pub joined: usize, pub timed_out: bool }
+pub struct ShutdownReport { pub joined: usize, pub timed_out: bool, pub failed: bool }

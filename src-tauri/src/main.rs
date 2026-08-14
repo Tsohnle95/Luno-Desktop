@@ -13,18 +13,7 @@ use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 const BACKEND_EVENT: &str = "backend-event";
 
 fn drain_pending_events(app: &tauri::AppHandle, state: &AppState) -> Result<(), String> {
-    let mut last_error = None;
-    for attempt in 0..3 {
-        for event in state.pending_events() {
-            match app.emit(BACKEND_EVENT, &event) {
-                Ok(()) => state.acknowledge_event(&event.event_id),
-                Err(error) => last_error = Some(error.to_string()),
-            }
-        }
-        if state.pending_events().is_empty() { return Ok(()); }
-        if attempt < 2 { std::thread::sleep(std::time::Duration::from_millis(10)); }
-    }
-    Err(last_error.unwrap_or_else(|| "buffered backend events could not be delivered".into()))
+    state.drain_events(|event| app.emit(BACKEND_EVENT, event).map_err(|error| error.to_string())).map(|_| ())
 }
 
 #[tauri::command]
@@ -124,6 +113,14 @@ fn main() {
                     "event delivery failed".to_string()
                 })
             }));
+            let retry_handle = app.handle().clone();
+            let retry_state = app.state::<AppState>().inner().clone();
+            std::thread::Builder::new().name("luno-event-delivery".into()).spawn(move || {
+                loop {
+                    let _ = drain_pending_events(&retry_handle, &retry_state);
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+            }).map_err(std::io::Error::other)?;
             startup_migration(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })

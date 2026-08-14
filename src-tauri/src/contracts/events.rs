@@ -22,6 +22,18 @@ pub enum Command {
     Shutdown { reason: ShutdownReason },
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seek_boundary_rejects_negative_and_fractional_positions() {
+        assert!(serde_json::from_str::<CommandEnvelope>(r#"{"version":1,"request_id":"x","command":{"type":"seek","payload":{"position_ms":0}}}"#).is_ok());
+        assert!(serde_json::from_str::<CommandEnvelope>(r#"{"version":1,"request_id":"x","command":{"type":"seek","payload":{"position_ms":-1}}}"#).is_err());
+        assert!(serde_json::from_str::<CommandEnvelope>(r#"{"version":1,"request_id":"x","command":{"type":"seek","payload":{"position_ms":1.5}}}"#).is_err());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventEnvelope {

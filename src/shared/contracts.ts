@@ -47,7 +47,7 @@ function isCommand(v: unknown): v is Command {
   if (!object(v) || typeof v.type !== "string") return false;
   if (["get_library", "scan_library", "pause"].includes(v.type)) return Object.keys(v).length === 1;
   if (v.type === "play") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.track_id === "string" && Object.keys(v.payload).length === 1;
-  if (v.type === "seek") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.position_ms === "number" && Object.keys(v.payload).length === 1;
+  if (v.type === "seek") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.position_ms === "number" && Number.isSafeInteger(v.payload.position_ms) && v.payload.position_ms >= 0 && Object.keys(v.payload).length === 1;
   if (v.type === "cancel_job") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.job_id === "string" && Object.keys(v.payload).length === 1;
   if (v.type === "shutdown") return exact(v, ["type", "payload"]) && object(v.payload) && ["user_requested", "system", "fatal_error"].includes(String(v.payload.reason)) && Object.keys(v.payload).length === 1;
   return false;
