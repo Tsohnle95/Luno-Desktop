@@ -2,7 +2,17 @@
   "receipt": "R05",
   "status": "BLOCKED",
   "timestamp": "2026-08-14",
-  "head": "bd3a726edf4610bc0616a372bc449ee4dc387cab",
+  "source_review_head": "d64da5c244752483d40b6e7558247e11c805f24b",
+  "receipt_update_commit": {
+    "description": "This receipt update is the next commit after source_review_head; its SHA is established only after that commit is created.",
+    "parent_source_commit": "d64da5c244752483d40b6e7558247e11c805f24b"
+  },
+  "reviewed_tree_dirty_state": {
+    "command": "git status --porcelain",
+    "exit_code": 0,
+    "output": " M TODO.md\n M dispatch-plan.json",
+    "note": "These pre-existing worktree changes were outside the reviewed R05 artifacts. The receipt files are updated by the next commit and are not part of source_review_head."
+  },
   "scope": "Packaging configuration and release machinery only",
   "workflow_bundle_path": "src-tauri/target/release/bundle/macos/Luno.app",
   "environment": {
@@ -70,12 +80,13 @@
     }
   ],
   "provenance": {
-    "reviewed_commit": "bd3a726edf4610bc0616a372bc449ee4dc387cab",
+    "source_review_head": "d64da5c244752483d40b6e7558247e11c805f24b",
+    "receipt_update": "The receipt update itself is the next commit, with parent/source commit d64da5c244752483d40b6e7558247e11c805f24b. Its SHA cannot be known until commit creation; resolve it afterward with git rev-parse HEAD.",
     "commands": [
       {
         "command": "git rev-parse HEAD",
         "exit_code": 0,
-        "output": "bd3a726edf4610bc0616a372bc449ee4dc387cab"
+        "output": "d64da5c244752483d40b6e7558247e11c805f24b"
       },
       {
         "command": "git status --porcelain",
@@ -83,7 +94,7 @@
         "output": " M TODO.md\n M dispatch-plan.json"
       }
     ],
-    "note": "The two worktree changes were pre-existing and outside the reviewed R05 artifacts."
+    "note": "The source review was performed at source_review_head. The receipt update files are not part of that source review head; they are the next commit, whose parent/source commit is d64da5c244752483d40b6e7558247e11c805f24b."
   },
   "unavailable_or_missing": [
     "release-input/bin/ffmpeg",
