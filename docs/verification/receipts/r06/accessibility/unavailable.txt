@@ -1,4 +1,4 @@
-status=TOOL_UNAVAILABLE
+status: inconclusive
 command=Browser accessibility runner with keyboard/focus checks
 exit_code=127
 result=TOOL_UNAVAILABLE

@@ -1,4 +1,4 @@
-status=TOOL_UNAVAILABLE
+status: inconclusive
 command=Browser screenshot runner at 960x660, 1180x800, 1600x1000
 exit_code=127
 result=TOOL_UNAVAILABLE

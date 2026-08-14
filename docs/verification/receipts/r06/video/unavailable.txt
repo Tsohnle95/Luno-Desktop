@@ -1,4 +1,4 @@
-status=MANUAL_NOT_RUN
+status: inconclusive
 command=Video staging/audio-clock/lifecycle checks against the packaged target
 exit_code=N/A
 result=MANUAL_NOT_RUN

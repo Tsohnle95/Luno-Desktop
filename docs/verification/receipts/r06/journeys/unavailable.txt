@@ -1,4 +1,4 @@
-status=MANUAL_NOT_RUN
+status: inconclusive
 command=Six R06 journey sequences from docs/verification/receipts/r06-manifest.json
 exit_code=N/A
 result=MANUAL_NOT_RUN

@@ -24,6 +24,6 @@ Runtime command check:
   command=npm run tauri -- --version
   exit_code=127
   result=tauri: command not found
-  status=INCONCLUSIVE; this does not supply a packaged artifact
+  status: inconclusive; this does not supply a packaged artifact
 
 Conclusion: BLOCKED. AC-OPS-02 requires a packaged Tauri artifact, reviewed binary inputs, and non-placeholder SHA-256 values before packaged smoke can run.
