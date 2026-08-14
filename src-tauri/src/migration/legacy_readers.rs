@@ -94,12 +94,19 @@ pub fn inventory_retry_files(legacy_root: &Path, music_root: Option<&Path>, prev
 }
 
 fn inventory_preview(root: &Path, files: &mut BTreeSet<PathBuf>, budget: &mut usize) -> Result<(), String> {
-    if !root.exists() { return Ok(()); }
-    for path in read_preview_inventory(root)? {
+    if !safe_directory(root) { return Ok(()); }
+    let mut discovered = Vec::new();
+    for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
         if *budget == 0 { return Err(format!("retry inspection exceeded {} entries", MAX_RETRY_ENTRIES)); }
         *budget -= 1;
-        files.insert(path);
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() { continue; }
+        if metadata.is_file() && contained(root, &path) { discovered.push(path); }
     }
+    discovered.sort();
+    files.extend(discovered);
     Ok(())
 }
 

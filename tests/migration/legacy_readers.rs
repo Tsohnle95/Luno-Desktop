@@ -80,6 +80,19 @@ fn retry_inventory_budget_is_reserved_for_preview_and_music_roots() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn retry_inventory_rejects_oversized_preview_without_unbounded_listing() {
+    let root = tempdir();
+    let preview = root.join(".luno_previews");
+    fs::create_dir_all(&preview).unwrap();
+    for index in 0..=(MAX_RETRY_ENTRIES / 2) {
+        fs::write(preview.join(format!("preview-{index}")), b"x").unwrap();
+    }
+    let error = inventory_retry_files(&root, None, &preview, &root.join("target")).unwrap_err();
+    assert!(error.contains("retry inspection exceeded"));
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn dangling_preview_symlink_is_a_migration_trigger_for_main_gating() {
