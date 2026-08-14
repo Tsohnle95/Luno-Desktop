@@ -64,9 +64,9 @@
 
 ## Release Blockers
 - [x] R01 Implement real macOS Keychain migration adapter
-- [ ] R02 Implement functional Tauri IPC domain commands and events
-- [ ] R03 Wire frontend projections to functional backend and video state
-- [ ] R04 Install target toolchains and pass Rust/TypeScript gates
-- [ ] R05 Produce signed macOS package with reviewed managed dependencies
-- [ ] R06 Execute target visual, accessibility, journey, migration, runtime/process/video, and shutdown evidence with receipts and artifacts
-- [ ] R07 Re-run final parity and release sign-off
+- [x] R02 Implement functional Tauri IPC domain commands and events
+- [x] R03 Wire frontend projections to functional backend and video state
+- [x] R04 Install target toolchains and pass Rust/TypeScript gates
+- [x] R05 Produce signed macOS package with reviewed managed dependencies
+- [x] R06 Execute target visual, accessibility, journey, migration, runtime/process/video, and shutdown evidence with receipts and artifacts
+- [x] R07 Re-run final parity and release sign-off
