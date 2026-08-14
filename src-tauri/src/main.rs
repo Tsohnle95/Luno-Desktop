@@ -113,10 +113,11 @@ fn main() {
                     "event delivery failed".to_string()
                 })
             }));
+            app.state::<AppState>().replay_latest();
             let retry_handle = app.handle().clone();
             let retry_state = app.state::<AppState>().inner().clone();
             std::thread::Builder::new().name("luno-event-delivery".into()).spawn(move || {
-                loop {
+                while !retry_state.event_delivery_stopped() {
                     let _ = drain_pending_events(&retry_handle, &retry_state);
                     std::thread::sleep(std::time::Duration::from_millis(25));
                 }
@@ -129,6 +130,7 @@ fn main() {
                 let state = window.app_handle().state::<AppState>();
                 state.shutdown_events(luno_desktop_lib::contracts::events::ShutdownReason::UserRequested, std::time::Duration::from_millis(500));
                 let _ = drain_pending_events(&window.app_handle(), &state);
+                state.stop_event_delivery();
             }
         })
         .build(tauri::generate_context!())
@@ -138,6 +140,7 @@ fn main() {
                 let state = app.state::<AppState>();
                 state.shutdown_events(luno_desktop_lib::contracts::events::ShutdownReason::System, std::time::Duration::from_millis(500));
                 let _ = drain_pending_events(app, &state);
+                state.stop_event_delivery();
             }
         });
 }

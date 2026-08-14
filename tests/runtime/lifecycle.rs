@@ -80,3 +80,13 @@ fn shutdown_deadline_is_bounded() {
     assert!(report.timed_out);
     assert!(start.elapsed() < Duration::from_millis(100));
 }
+
+#[test]
+fn shutdown_joined_counts_finished_tasks_not_poll_iterations() {
+    let registry = TaskRegistry::new(1);
+    let task = registry.spawn(TaskSpec::new("quick", Generation(0), None), |_| ()).unwrap();
+    task.recv().unwrap();
+    let report = registry.shutdown(Duration::from_secs(1));
+    assert_eq!(report.joined, 1);
+    assert!(!report.timed_out);
+}

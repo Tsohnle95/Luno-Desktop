@@ -13,8 +13,11 @@ describe("typed IPC bridge and projection", () => {
     expect(calls).toHaveLength(1);
     expect((calls[0] as { version: number }).version).toBe(1);
     await bridge.subscribe(() => {});
+    expect(calls).toHaveLength(2);
     expect(() => callback(event({ type: "error", payload: { error: { code: "internal", message: "x", retryable: false } } }))).not.toThrow();
     expect(() => callback({})).toThrow();
+    expect(() => callback(event({ type: "playback_snapshot", payload: { snapshot: { queue: [], current_index: null, position_ms: -1, duration_ms: null, status: "stopped", generation: 1 } } }))).toThrow();
+    expect(() => callback(event({ type: "job_updated", payload: { job: { id: "j", kind: "single", state: "running", track_id: null, progress: 2, generation: 1 } } }))).toThrow();
   });
 
   it("projects lifecycle events and rejects stale generations", () => {

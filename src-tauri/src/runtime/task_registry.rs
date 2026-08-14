@@ -109,23 +109,24 @@ impl TaskRegistry {
         let mut joined = 0;
         loop {
             let mut state = self.inner.lock().unwrap();
-            self.reap_finished(&mut state);
+            joined += self.reap_finished(&mut state);
             if state.entries.is_empty() { return ShutdownReport { joined, timed_out: false, failed: state.failed }; }
             if started.elapsed() >= deadline { return ShutdownReport { joined, timed_out: true, failed: state.failed }; }
             drop(state);
             thread::sleep(Duration::from_millis(2));
-            joined += 1;
         }
     }
 
-    fn reap_finished(&self, state: &mut Inner) {
+    fn reap_finished(&self, state: &mut Inner) -> usize {
         let done: Vec<u64> = state.entries.iter().filter_map(|(id, e)| e.join.is_finished().then_some(*id)).collect();
+        let count = done.len();
         for id in done {
             if let Some(entry) = state.entries.remove(&id) {
                 if entry.join.join().is_err() { state.failed = true; }
                 if state.latest.get(&entry.spec.key) == Some(&id) { state.latest.remove(&entry.spec.key); }
             }
         }
+        count
     }
 }
 

@@ -37,24 +37,8 @@ function envelope(command: Command | UnitCommand): CommandEnvelope {
 
 function validEvent(value: unknown): EventEnvelope {
   const result = typeof value === "string" ? parseEventEnvelope(value) : value;
-  if (!isEventEnvelope(result) || !validPayload(result)) throw new Error("invalid or unsupported event envelope");
+  if (!isEventEnvelope(result)) throw new Error("invalid or unsupported event envelope");
   return result;
-}
-
-function validPayload(value: EventEnvelope): boolean {
-  const payload = value.event.payload as Record<string, unknown>;
-  if (value.event.type === "library_snapshot") {
-    const snapshot = payload.snapshot as Record<string, unknown>;
-    return !!snapshot && snapshot.version === CONTRACT_VERSION && typeof snapshot.generation === "number" && Array.isArray(snapshot.tracks) && Array.isArray(snapshot.playlists);
-  }
-  if (value.event.type === "playback_snapshot") {
-    const snapshot = payload.snapshot as Record<string, unknown>;
-    return !!snapshot && Array.isArray(snapshot.queue) && typeof snapshot.position_ms === "number" && typeof snapshot.status === "string";
-  }
-  if (value.event.type === "job_updated") return !!payload.job && typeof (payload.job as Record<string, unknown>).id === "string";
-  if (value.event.type === "error") return !!payload.error && typeof (payload.error as Record<string, unknown>).message === "string";
-  if (value.event.type === "shutdown") return !!payload.envelope && (payload.envelope as Record<string, unknown>).version === CONTRACT_VERSION;
-  return true;
 }
 
 export function createBridge(transport: BridgeTransport = tauriTransport) {
@@ -70,8 +54,12 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
     },
     cancelJob: (job_id: string) => send({ type: "cancel_job", payload: { job_id } }),
     shutdown: (reason: ShutdownReason) => send({ type: "shutdown", payload: { reason } }),
-    subscribe: (handler: (event: EventEnvelope) => void) =>
-      transport.listen<unknown>(BACKEND_EVENT, (payload) => handler(validEvent(payload))),
+  subscribe: (handler: (event: EventEnvelope) => void) =>
+      transport.listen<unknown>(BACKEND_EVENT, (payload) => handler(validEvent(payload))).then((unlisten) => {
+        // Listening first makes the command a replay request, not a race with startup emission.
+        void send("get_library");
+        return unlisten;
+      }),
   };
 }
 

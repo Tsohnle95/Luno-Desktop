@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use serde::Serialize;
-use std::sync::{atomic::{AtomicU64, Ordering}, Mutex};
+use std::sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Mutex};
 use std::time::Duration;
 use crate::contracts::{events::{Command, CommandEnvelope, Event, EventEnvelope, RootStatus, ShutdownEnvelope, ShutdownState}, types::{ContractError, ErrorCode, Generation, JobId, LibrarySnapshot, Playlist, Track, TrackId, SessionId, CONTRACT_VERSION}};
 use serde_json::Value;
@@ -102,6 +102,52 @@ mod tests {
         state.shutdown_events(crate::contracts::events::ShutdownReason::System, Duration::from_secs(1));
         assert!(observed.load(std::sync::atomic::Ordering::Acquire));
     }
+
+    #[test]
+    fn publication_is_serialized_and_latest_events_replay() {
+        let state = AppState::new(1);
+        let delivered = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink_delivered = delivered.clone();
+        state.set_event_sink(StdArc::new(move |event| {
+            sink_delivered.lock().unwrap().push(event.event_id.clone());
+            Ok(())
+        }));
+        let snapshot = state.event(Generation(1), Event::LibrarySnapshot { snapshot: state.library() });
+        let shutdown = state.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state: ShutdownState::Complete, reason: crate::contracts::events::ShutdownReason::System } });
+        state.publish(snapshot.clone());
+        state.publish(shutdown.clone());
+        *delivered.lock().unwrap() = Vec::new();
+        state.replay_latest();
+        assert_eq!(*delivered.lock().unwrap(), vec![snapshot.event_id, shutdown.event_id]);
+    }
+
+    #[test]
+    fn newer_publication_waits_for_older_sink_delivery() {
+        let state = AppState::new(1);
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let delivered = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink_delivered = delivered.clone();
+        let sink_release = release.clone();
+        state.set_event_sink(StdArc::new(move |event| {
+            sink_delivered.lock().unwrap().push(event.event_id.clone());
+            if event.event_id == "event-1" { entered.wait(); sink_release.wait(); }
+            Ok(())
+        }));
+        let first = state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned });
+        let second = state.event(Generation(1), Event::LibraryRootStatus { root_index: 1, status: RootStatus::Scanned });
+        let worker_state = state.clone();
+        let first_thread = std::thread::spawn(move || worker_state.publish(first));
+        entered.wait();
+        let worker_state = state.clone();
+        let second_thread = std::thread::spawn(move || worker_state.publish(second));
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(delivered.lock().unwrap().len(), 1);
+        release.wait();
+        first_thread.join().unwrap();
+        second_thread.join().unwrap();
+        assert_eq!(delivered.lock().unwrap().len(), 2);
+    }
 }
 
 #[derive(Clone)]
@@ -116,6 +162,11 @@ pub struct AppState {
     next_event: Arc<AtomicU64>,
     next_generation: Arc<AtomicU64>,
     event_sink: Arc<Mutex<Option<StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>>>>,
+    publication: Arc<Mutex<()>>,
+    admission: Arc<Mutex<()>>,
+    latest_snapshot: Arc<Mutex<Option<EventEnvelope>>>,
+    latest_control: Arc<Mutex<Option<EventEnvelope>>>,
+    event_retry_stopped: Arc<AtomicBool>,
     shutdown_result: Arc<Mutex<Option<ShutdownReport>>>,
     supervisor: Arc<Supervisor>,
     downloads: Arc<DownloadCoordinator>,
@@ -127,7 +178,7 @@ impl AppState {
         Self { tasks: Arc::new(TaskRegistry::new(task_limit)), migration_status: Arc::new(Mutex::new(MigrationStatus::NotRun)),
             library: Arc::new(Mutex::new(LibrarySnapshot { version: CONTRACT_VERSION, generation: Generation(0), tracks: Vec::new(), playlists: Vec::new() })),
             roots: Arc::new(Mutex::new(Vec::new())), root_statuses: Arc::new(Mutex::new(Vec::new())), events: Arc::new(Mutex::new(Vec::new())), event_draining: Arc::new(Mutex::new(false)),
-            next_event: Arc::new(AtomicU64::new(0)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), shutdown_result: Arc::new(Mutex::new(None)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
+            next_event: Arc::new(AtomicU64::new(0)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), publication: Arc::new(Mutex::new(())), admission: Arc::new(Mutex::new(())), latest_snapshot: Arc::new(Mutex::new(None)), latest_control: Arc::new(Mutex::new(None)), event_retry_stopped: Arc::new(AtomicBool::new(false)), shutdown_result: Arc::new(Mutex::new(None)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
     }
     pub fn library(&self) -> LibrarySnapshot { self.library.lock().unwrap().clone() }
     pub fn root_statuses(&self) -> Vec<RootStatus> { self.root_statuses.lock().unwrap().clone() }
@@ -145,6 +196,7 @@ impl AppState {
             if *draining { return Ok(false); }
             *draining = true;
         }
+        let _publication = self.publication.lock().unwrap();
         let claimed = { std::mem::take(&mut *self.events.lock().unwrap()) };
         let mut failed = Vec::new();
         let mut error = None;
@@ -164,8 +216,21 @@ impl AppState {
         EventEnvelope { version: CONTRACT_VERSION, event_id: format!("event-{id}"), generation, job_id: None, session_id: None, event }
     }
     pub fn set_event_sink(&self, sink: StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>) { *self.event_sink.lock().unwrap() = Some(sink); }
+    /// Replay the latest state/control envelopes after a listener has started.
+    pub fn replay_latest(&self) {
+        let _publication = self.publication.lock().unwrap();
+        let Some(sink) = self.event_sink.lock().unwrap().clone() else { return; };
+        for envelope in [self.latest_snapshot.lock().unwrap().clone(), self.latest_control.lock().unwrap().clone()].into_iter().flatten() {
+            if sink(envelope.clone()).is_err() { self.events.lock().unwrap().push(envelope); }
+        }
+    }
+    pub fn stop_event_delivery(&self) { self.event_retry_stopped.store(true, Ordering::Release); }
+    pub fn event_delivery_stopped(&self) -> bool { self.event_retry_stopped.load(Ordering::Acquire) }
     pub fn set_provider_metadata(&self, path: PathBuf, metadata: TrackMetadata) { self.provider_metadata.lock().unwrap().insert(path, metadata); }
     pub fn publish(&self, envelope: EventEnvelope) {
+        let _publication = self.publication.lock().unwrap();
+        if matches!(&envelope.event, Event::LibrarySnapshot { .. }) { *self.latest_snapshot.lock().unwrap() = Some(envelope.clone()); }
+        if matches!(&envelope.event, Event::Shutdown { .. }) { *self.latest_control.lock().unwrap() = Some(envelope.clone()); }
         if let Some(sink) = self.event_sink.lock().unwrap().clone() {
             if sink(envelope.clone()).is_err() {
                 self.events.lock().unwrap().push(envelope);
@@ -245,7 +310,9 @@ impl AppState {
 
     pub fn dispatch(&self, envelope: CommandEnvelope) -> Result<Value, ContractError> {
         if envelope.request_id.trim().is_empty() { return Err(ContractError::invalid("request_id must not be empty")); }
+        let admission = self.admission.lock().unwrap();
         if !matches!(&envelope.command, Command::Shutdown { .. }) && self.is_closing() { return Err(ContractError { code: ErrorCode::ShuttingDown, message: "backend is shutting down".into(), retryable: false }); }
+        if matches!(&envelope.command, Command::Shutdown { .. }) { drop(admission); }
         match envelope.command {
             Command::GetLibrary => {
                 let snapshot = self.library();
@@ -275,9 +342,11 @@ impl AppState {
     pub fn shutdown_events(&self, reason: crate::contracts::events::ShutdownReason, deadline: Duration) -> ShutdownReport {
         let mut stored_result = self.shutdown_result.lock().unwrap();
         if let Some(report) = *stored_result { return report; }
+        let admission = self.admission.lock().unwrap();
         self.tasks.begin_shutdown();
         self.publish(self.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state: ShutdownState::Requested, reason } }));
         self.publish(self.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state: ShutdownState::Draining, reason } }));
+        drop(admission);
         let started = std::time::Instant::now();
         let report = self.shutdown(deadline);
         let remaining = deadline.saturating_sub(started.elapsed());

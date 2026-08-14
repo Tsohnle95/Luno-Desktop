@@ -54,9 +54,23 @@ function isCommand(v: unknown): v is Command {
 }
 function isEvent(v: unknown): v is Event {
   if (!object(v) || typeof v.type !== "string" || !exact(v, ["type", "payload"]) || !object(v.payload)) return false;
-  if (v.type === "track_started") return exact(v.payload, ["track_id"]) && typeof v.payload.track_id === "string";
-  if (v.type === "queue_changed") return exact(v.payload, ["queue"]) && Array.isArray(v.payload.queue) && v.payload.queue.every(id => typeof id === "string");
+  const id = (value: unknown): value is string => typeof value === "string" && value.length > 0;
+  const optionalString = (value: unknown): value is string | null => value === null || typeof value === "string";
+  const generation = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+  const nonNegativeInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+  const provider = (value: unknown): value is ProviderId => exact(value, ["provider", "id"]) && id(value.provider) && id(value.id);
+  const track = (value: unknown): value is Track => exact(value, ["id", "path", "title", "artist", "album", "duration_ms", "artwork_url", "favorite", "provider"]) && id(value.id) && optionalString(value.path) && typeof value.title === "string" && optionalString(value.artist) && optionalString(value.album) && (value.duration_ms === null || nonNegativeInt(value.duration_ms)) && optionalString(value.artwork_url) && typeof value.favorite === "boolean" && (value.provider === null || provider(value.provider));
+  const playlist = (value: unknown): value is Playlist => exact(value, ["id", "name", "path", "url", "ordered_track_ids"]) && id(value.id) && typeof value.name === "string" && optionalString(value.path) && optionalString(value.url) && Array.isArray(value.ordered_track_ids) && value.ordered_track_ids.every(id);
+  const library = (value: unknown): value is LibrarySnapshot => exact(value, ["version", "generation", "tracks", "playlists"]) && value.version === CONTRACT_VERSION && generation(value.generation) && Array.isArray(value.tracks) && value.tracks.every(track) && Array.isArray(value.playlists) && value.playlists.every(playlist);
+  const playback = (value: unknown): value is PlaybackSnapshot => exact(value, ["queue", "current_index", "position_ms", "duration_ms", "status", "generation"]) && Array.isArray(value.queue) && value.queue.every(id) && (value.current_index === null || nonNegativeInt(value.current_index)) && nonNegativeInt(value.position_ms) && (value.duration_ms === null || nonNegativeInt(value.duration_ms)) && ["stopped", "playing", "paused", "failed"].includes(String(value.status)) && generation(value.generation);
+  const progress = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+  const job = (value: unknown): value is DownloadJob => exact(value, ["id", "kind", "state", "track_id", "progress", "generation"]) && id(value.id) && ["single", "csv", "sync", "url_queue"].includes(String(value.kind)) && ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"].includes(String(value.state)) && (value.track_id === null || id(value.track_id)) && (value.progress === null || progress(value.progress)) && generation(value.generation);
+  if (v.type === "track_started") return exact(v.payload, ["track_id"]) && id(v.payload.track_id);
+  if (v.type === "queue_changed") return exact(v.payload, ["queue"]) && Array.isArray(v.payload.queue) && v.payload.queue.every(id);
   if (v.type === "library_root_status") return exact(v.payload, ["root_index", "status"]) && Number.isInteger(v.payload.root_index) && v.payload.root_index >= 0 && ["scanned", "missing", "inaccessible"].includes(String(v.payload.status));
+  if (v.type === "library_snapshot") return exact(v.payload, ["snapshot"]) && library(v.payload.snapshot);
+  if (v.type === "playback_snapshot") return exact(v.payload, ["snapshot"]) && playback(v.payload.snapshot);
+  if (v.type === "job_updated") return exact(v.payload, ["job"]) && job(v.payload.job);
   if (v.type === "error") {
     const error = v.payload.error;
     return exact(v.payload, ["error"]) && object(error) && exact(error, ["code", "message", "retryable"]) && ["invalid_request", "unsupported_version", "not_found", "busy", "cancelled", "internal", "shutting_down"].includes(String(error.code)) && typeof error.message === "string" && typeof error.retryable === "boolean";
@@ -65,9 +79,9 @@ function isEvent(v: unknown): v is Event {
     const shutdown = v.payload.envelope;
     return exact(v.payload, ["envelope"]) && object(shutdown) && exact(shutdown, ["version", "state", "reason"]) && shutdown.version === CONTRACT_VERSION && ["requested", "draining", "complete", "timed_out", "failed"].includes(String(shutdown.state)) && ["user_requested", "system", "fatal_error"].includes(String(shutdown.reason));
   }
-  return ["library_snapshot", "playback_snapshot", "job_updated"].includes(v.type);
+  return false;
 }
 export function isCommandEnvelope(v: unknown): v is CommandEnvelope { return exact(v, ["version", "request_id", "command"]) && isContractVersion(v.version) && typeof v.request_id === "string" && isCommand(v.command); }
-export function isEventEnvelope(v: unknown): v is EventEnvelope { return exact(v, ["version", "event_id", "generation", "job_id", "session_id", "event"]) && isContractVersion(v.version) && typeof v.event_id === "string" && typeof v.generation === "number" && (v.job_id === null || typeof v.job_id === "string") && (v.session_id === null || typeof v.session_id === "string") && isEvent(v.event); }
+export function isEventEnvelope(v: unknown): v is EventEnvelope { return exact(v, ["version", "event_id", "generation", "job_id", "session_id", "event"]) && isContractVersion(v.version) && typeof v.event_id === "string" && v.event_id.length > 0 && Number.isSafeInteger(v.generation) && v.generation >= 0 && (v.job_id === null || (typeof v.job_id === "string" && v.job_id.length > 0)) && (v.session_id === null || (typeof v.session_id === "string" && v.session_id.length > 0)) && isEvent(v.event); }
 export function parseCommandEnvelope(json: string): CommandEnvelope { const value: unknown = JSON.parse(json); if (!isCommandEnvelope(value)) throw new Error("invalid or unsupported command envelope"); return value; }
 export function parseEventEnvelope(json: string): EventEnvelope { const value: unknown = JSON.parse(json); if (!isEventEnvelope(value)) throw new Error("invalid or unsupported event envelope"); return value; }
