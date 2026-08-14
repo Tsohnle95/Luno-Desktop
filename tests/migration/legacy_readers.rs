@@ -165,6 +165,30 @@ fn configured_music_root_outside_scope_is_rejected_before_scan() {
 }
 
 #[test]
+fn read_legacy_resolves_relative_configured_root() {
+    let root = tempdir();
+    let music = root.join("Music");
+    fs::create_dir_all(&music).unwrap();
+    fs::write(root.join(".luno_config.json"), r#"{"music_root":"Music"}"#).unwrap();
+    fs::write(music.join(".luno_allowed_dups.json"), r#"["relative"]"#).unwrap();
+    let state = read_legacy(&root, None);
+    assert!(state.allowed_duplicate_keys.contains("relative"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn public_reader_rejects_unsafe_music_root_before_scanning() {
+    let root = tempdir();
+    let outside = tempdir();
+    fs::write(outside.join(".luno_allowed_dups.json"), r#"["outside"]"#).unwrap();
+    let state = read_legacy_with_music_root(&root, None, Some(&outside));
+    assert!(state.allowed_duplicate_keys.is_empty());
+    assert!(state.warnings.iter().any(|warning| warning.message.contains("outside the legacy discovery root")));
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[test]
 fn marker_traversal_stops_at_max_depth() {
     let root = tempdir();
     let mut current = root.clone();

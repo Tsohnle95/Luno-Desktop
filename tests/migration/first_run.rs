@@ -323,7 +323,7 @@ fn relative_music_root_is_resolved_once_against_legacy_scope() {
     let p = MigrationPaths {
         legacy_root: root.clone(),
         legacy_data_root: Some(root.clone()),
-        configured_music_root: Some(music.clone()),
+        configured_music_root: Some(std::path::PathBuf::from("Music")),
         target_root: root.join("target"),
         preview_dir: root.join(".luno_previews"),
         current_preview: Vec::new(),
@@ -333,10 +333,14 @@ fn relative_music_root_is_resolved_once_against_legacy_scope() {
     fs::write(root.join(".luno_config.json"), r#"{"music_root":"Music"}"#).unwrap();
     fs::create_dir_all(music.join("playlist")).unwrap();
     fs::write(music.join("playlist/.downloaded_vids"), "MUSIC-ID\n").unwrap();
+    fs::write(music.join(".luno_playlist_urls.json"), r#"{"Playlist":"https://example.test"}"#).unwrap();
+    fs::write(music.join(".luno_allowed_dups.json"), r#"["music-duplicate"]"#).unwrap();
 
     let receipt = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
     let snapshot = receipt.snapshot.unwrap();
     assert!(snapshot.join("music-root/playlist/.downloaded_vids").is_file());
+    assert!(snapshot.join("music-root/.luno_playlist_urls.json").is_file());
+    assert!(snapshot.join("music-root/.luno_allowed_dups.json").is_file());
     assert!(!snapshot.join("playlist/.downloaded_vids").exists());
     fs::remove_dir_all(root).unwrap();
 }

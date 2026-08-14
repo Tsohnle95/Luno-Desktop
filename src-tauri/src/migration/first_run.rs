@@ -4,7 +4,7 @@
 //! removed or rewritten. A migration can therefore be retried, or the Python
 //! release can be launched again, after any failure.
 
-use crate::migration::legacy_readers::{canonicalize_path, inventory_retry_files, marker_files_excluding, read_legacy_with_music_root, LegacyState};
+use crate::migration::legacy_readers::{canonicalize_path, inventory_retry_files, marker_files_excluding, read_legacy_with_music_root, resolve_music_root, LegacyState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -89,7 +89,8 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     let paths = MigrationPaths {
         legacy_root: canonicalize_path(&paths.legacy_root),
         legacy_data_root: paths.legacy_data_root.as_deref().map(canonicalize_path),
-        configured_music_root: paths.configured_music_root.clone(),
+        configured_music_root: resolve_music_root(&paths.legacy_root, paths.configured_music_root.as_deref())
+            .map_err(MigrationError::UnsafePath)?,
         target_root: canonicalize_path(&paths.target_root),
         preview_dir: canonicalize_path(&paths.preview_dir),
         current_preview: paths.current_preview.iter().map(|path| canonicalize_path(path)).collect(),
@@ -228,7 +229,7 @@ fn roots_overlap(left: &Path, right: &Path) -> bool { left.starts_with(right) ||
 
 fn validated_music_root(p: &MigrationPaths) -> Result<Option<PathBuf>, MigrationError> {
     let Some(candidate) = &p.configured_music_root else { return Ok(None); };
-    let scope = p.legacy_data_root.as_deref().unwrap_or(&p.legacy_root);
+    let scope = &p.legacy_root;
     if !candidate.starts_with(scope) { return Err(MigrationError::UnsafePath("configured music root is outside the permitted legacy scope".into())); }
     if roots_overlap(candidate, &p.target_root) { return Err(MigrationError::UnsafePath("configured music root overlaps the target root".into())); }
     if fs::symlink_metadata(candidate).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false) {
@@ -246,7 +247,15 @@ fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
         for name in [".luno_config.json", ".luno_playlist_urls.json", ".luno_allowed_dups.json", ".downloaded_vids", ".sync_failed_vids", ".downloaded.txt"] {
             let from = root.join(name); if regular_file(&from) { let destination = if root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } if name == ".luno_config.json" { snapshot_config(&from, &destination, &dir)?; } else { fs::copy(&from, destination)?; } }
         }
-        if let Some(root) = music_root {
+        if let Some(root) = music_root.filter(|root| *root != p.legacy_root) {
+            for name in [".luno_playlist_urls.json", ".luno_allowed_dups.json"] {
+                let from = root.join(name);
+                if regular_file(&from) {
+                    let destination = dir.join("music-root").join(name);
+                    fs::create_dir_all(destination.parent().expect("music snapshot has a parent"))?;
+                    fs::copy(from, destination)?;
+                }
+            }
             let excluded = [p.target_root.as_path()];
             for path in marker_files_excluding(&root, &excluded).map_err(MigrationError::Io)? {
                 let destination = dir.join("music-root").join(path.strip_prefix(&root).unwrap_or(&path));

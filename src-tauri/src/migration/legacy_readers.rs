@@ -267,9 +267,16 @@ pub fn validated_music_root(root: &Path) -> Result<Option<PathBuf>, String> {
     if !safe_directory(root) { return Err("legacy discovery root is not a real directory".into()); }
     let Some(config) = (if safe_file(&config_path) { legacy::read_config(&config_path).ok() } else { None }) else { return Ok(None); };
     let Some(raw) = config.music_root else { return Ok(None); };
-    let scope = canonicalize_path(root);
-    let candidate = PathBuf::from(&raw);
-    let candidate = canonicalize_path(if candidate.is_absolute() { candidate } else { scope.join(candidate) }.as_path());
+    resolve_music_root(root, Some(Path::new(&raw)))
+}
+
+/// Resolve a configured root relative to the supplied legacy root and apply
+/// containment and symlink checks before callers scan it.
+pub fn resolve_music_root(legacy_root: &Path, configured: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    let scope = canonicalize_path(legacy_root);
+    let Some(configured) = configured else { return Ok(None); };
+    let candidate = if configured.is_absolute() { configured.to_path_buf() } else { scope.join(configured) };
+    let candidate = canonicalize_path(&candidate);
     if !candidate.starts_with(&scope) { return Err("configured music root is outside the legacy discovery root".into()); }
     if fs::symlink_metadata(&candidate).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false) {
         return Err("configured music root must not be a symlink".into());
@@ -304,9 +311,14 @@ pub fn read_legacy(root: &Path, preview_dir: Option<&Path>) -> LegacyState {
 pub fn read_legacy_with_music_root(root: &Path, preview_dir: Option<&Path>, music_root: Option<&Path>) -> LegacyState {
     let mut state = LegacyState::default();
     macro_rules! read_file { ($path:expr, $reader:expr) => {{ let path = $path; if safe_file(&path) { if let Err(message) = $reader(&path) { state.warnings.push(Warning { path, message }); } } }}; }
+    let root = canonicalize_path(root);
+    let music_root = match resolve_music_root(&root, music_root) {
+        Ok(root) => root,
+        Err(message) => { state.warnings.push(Warning { path: root.clone(), message }); None }
+    };
     let config_path = root.join(".luno_config.json");
     read_file!(config_path, |p: &Path| { state.config = Some(legacy::read_config(p)?); if let Some(c) = &state.config { if let Some(v) = &c.favorite_songs { state.favorite_paths.extend(v.clone()); } } Ok(()) });
-    let roots = [Some(root.to_path_buf()), music_root.map(PathBuf::from)];
+    let roots = [Some(root.to_path_buf()), music_root];
     for data_root in roots.into_iter().flatten().filter(|candidate| candidate != root) {
         read_file!(data_root.join(".luno_playlist_urls.json"), |p: &Path| { state.playlist_urls.extend(legacy::read_string_map(p)?); Ok(()) });
         read_file!(data_root.join(".luno_allowed_dups.json"), |p: &Path| { state.allowed_duplicate_keys.extend(legacy::read_string_set(p)?.into_iter()); Ok(()) });
