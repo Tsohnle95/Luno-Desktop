@@ -8,14 +8,26 @@ use luno_desktop_lib::state::{AppState, MigrationStatus};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+
+const BACKEND_EVENT: &str = "backend-event";
 
 #[tauri::command]
-fn backend_command(_state: tauri::State<'_, AppState>, envelope: CommandEnvelope) -> Result<Value, String> {
-    let command = serde_json::to_value(&envelope.command).map_err(|error| error.to_string())?;
-    let error = ContractError::invalid(format!("command is not implemented by the target shell: {command}"));
-    Err(serde_json::to_string(&error).unwrap_or_else(|_| "unsupported command".into()))
+fn backend_command(app: tauri::AppHandle, state: tauri::State<'_, AppState>, payload: Value) -> Result<Value, String> {
+    let envelope: CommandEnvelope = serde_json::from_value(payload.clone()).map_err(|error| {
+        let code = payload.get("version").and_then(Value::as_u64).filter(|version| *version != 1)
+            .map(|_| luno_desktop_lib::contracts::types::ErrorCode::UnsupportedVersion)
+            .unwrap_or(luno_desktop_lib::contracts::types::ErrorCode::InvalidRequest);
+        error_json(ContractError { code, message: format!("invalid command envelope: {error}"), retryable: false })
+    })?;
+    let result = state.dispatch(envelope);
+    for event in state.events() {
+        app.emit(BACKEND_EVENT, event).map_err(|error| error_json(ContractError { code: luno_desktop_lib::contracts::types::ErrorCode::Internal, message: error.to_string(), retryable: true }))?;
+    }
+    result.map_err(error_json)
 }
+
+fn error_json(error: ContractError) -> String { serde_json::to_string(&error).unwrap_or_else(|_| "{\"code\":\"internal\",\"message\":\"internal error\",\"retryable\":false}".into()) }
 
 #[tauri::command]
 fn migration_status(state: tauri::State<'_, AppState>) -> Result<MigrationStatus, String> {
@@ -80,6 +92,10 @@ fn main() {
         .manage(AppState::new(32))
         .invoke_handler(tauri::generate_handler![backend_command, migration_status])
         .setup(|app| {
+            let handle = app.handle().clone();
+            app.state::<AppState>().set_event_sink(std::sync::Arc::new(move |event| {
+                let _ = handle.emit(BACKEND_EVENT, event);
+            }));
             startup_migration(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })

@@ -1,0 +1,128 @@
+{
+  "items": [
+    {
+      "todo": "R01 Implement real macOS Keychain migration adapter",
+      "files": [
+        "src-tauri/Cargo.toml",
+        "src-tauri/src/migration/keychain.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/main.rs",
+        "tests/migration/first_run.rs",
+        "tests/migration/keychain.rs",
+        "docs/migration/decision-checklist.md",
+        "docs/migration/keychain-receipt.md"
+      ],
+      "wave": 1,
+      "dependsOn": [],
+      "handoff": "R01 owns keychain implementation/startup wiring and produces docs/migration/keychain-receipt.md. R02 consumes committed baseline 4e251ef plus the R01 commit for main.rs integration. Receipt baseline: repository commit 4e251ef plus the R01 commit."
+    },
+    {
+      "todo": "R02 Implement functional Tauri IPC domain commands and events",
+      "files": [
+        "src-tauri/src/main.rs",
+        "src-tauri/src/state.rs",
+        "src-tauri/src/contracts/events.rs",
+        "tests/ipc/commands.rs"
+      ],
+      "wave": 2,
+      "dependsOn": [
+        0
+      ],
+      "handoff": "R02 owns main.rs after R01 and integrates commands/events without reverting keychain startup behavior."
+    },
+    {
+      "todo": "R03 Wire frontend projections to functional backend and video state",
+      "files": [
+        "src/main.tsx",
+        "src/app/Shell.tsx",
+        "src/app/bridge.ts",
+        "src/state/backend_projection.ts",
+        "src/views/SongPageView.tsx",
+        "src/components/VideoStage.tsx",
+        "src/test/bridge.test.ts",
+        "src/test/views/video_stage.test.tsx"
+      ],
+      "wave": 3,
+      "dependsOn": [
+        1
+      ]
+    },
+    {
+      "todo": "R04 Install target toolchains and pass Rust/TypeScript gates",
+      "files": [
+        "docs/verification/toolchains.md"
+      ],
+      "wave": 4,
+      "dependsOn": [
+        2
+      ]
+    },
+    {
+      "todo": "R05 Produce signed macOS package with reviewed managed dependencies",
+      "files": [
+        "src-tauri/tauri.conf.json",
+        ".github/workflows/desktop-tauri-release.yml",
+        "release/desktop-binaries.json",
+        "release-input/README.md",
+        "release/THIRD_PARTY_NOTICES.md",
+        "scripts/provision-desktop-binaries.sh",
+        "scripts/verify-desktop-bundle.sh",
+        "docs/release/desktop.md",
+        "docs/release/artifacts/"
+      ],
+      "wave": 5,
+      "dependsOn": [
+        3
+      ]
+    },
+    {
+      "todo": "R06 Execute target visual, accessibility, journey, migration, runtime/process/video, and shutdown evidence with receipts and artifacts",
+      "files": [
+        "tests/differential/",
+        "tests/journeys/",
+        "tests/migration/receipts/",
+        "tests/runtime/receipts/",
+        "tests/process/receipts/",
+        "tests/video/receipts/",
+        "src/test/visual/",
+        "src/test/accessibility/",
+        "docs/verification/desktop.md",
+        "docs/verification/receipts/",
+        "docs/verification/receipts/r06-manifest.json",
+        "docs/verification/receipts/r06-summary.md"
+      ],
+      "wave": 6,
+      "dependsOn": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "handoff": "R06 consumes R01 docs/migration/keychain-receipt.md and uses docs/migration/acceptance-catalog.md plus tests/reference/manifest.json from U01 as the frozen acceptance-ID authority (source baseline 4e251ef and prior commits). It must produce r06-manifest.json mapping every acceptance ID to a named receipt/artifact, and r06-summary.md; unavailable/skipped/timeout/inconclusive remains BLOCKED.",
+      "baseline": "Receipt baseline is the ordered repository history starting at 4e251ef and ending at the latest committed blocker change included before the receipt; record the exact HEAD SHA in r06-manifest.json.",
+      "prerequisites": [
+        "U01 frozen acceptance authority at commit f1c65b6: docs/migration/acceptance-catalog.md and tests/reference/manifest.json"
+      ]
+    },
+    {
+      "todo": "R07 Re-run final parity and release sign-off",
+      "files": [
+        "docs/verification/final-parity.md",
+        "docs/release/sign-off.md",
+        "migration-implementation-plan.md"
+      ],
+      "wave": 7,
+      "dependsOn": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "handoff": "R07 owns and finalizes docs/verification/final-parity.md, docs/release/sign-off.md, and migration-implementation-plan.md. It consumes docs/verification/receipts/r06-manifest.json and r06-summary.md using baseline 4e251ef plus all blocker commits. It may mark release PASS only when every required receipt is pass and artifacts exist; otherwise it records BLOCKED.",
+      "baseline": "Audit baseline is the ordered repository history starting at 4e251ef and ending at the latest blocker commit; record the exact audited HEAD SHA. Every required receipt must be pass with its artifact present."
+    }
+  ]
+}

@@ -61,3 +61,12 @@
 - [x] U43 Implement Tauri packaging and dependency provisioning
 - [x] U44 Add differential, visual, accessibility, and journey verification suites
 - [x] U45 Complete final parity, shutdown, migration, and release sign-off
+
+## Release Blockers
+- [x] R01 Implement real macOS Keychain migration adapter
+- [ ] R02 Implement functional Tauri IPC domain commands and events
+- [ ] R03 Wire frontend projections to functional backend and video state
+- [ ] R04 Install target toolchains and pass Rust/TypeScript gates
+- [ ] R05 Produce signed macOS package with reviewed managed dependencies
+- [ ] R06 Execute target visual, accessibility, journey, migration, runtime/process/video, and shutdown evidence with receipts and artifacts
+- [ ] R07 Re-run final parity and release sign-off
