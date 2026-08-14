@@ -150,9 +150,10 @@ fn malformed_or_non_object_config_is_not_snapshotted() {
         fs::create_dir_all(&p.legacy_root).unwrap();
         fs::write(p.legacy_root.join(".luno_config.json"), contents).unwrap();
         let result = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
-        let backup = fs::read_to_string(result.snapshot.unwrap().join("config-snapshot-omitted.txt")).unwrap();
+        let snapshot = result.snapshot.as_ref().unwrap();
+        let backup = fs::read_to_string(snapshot.join("config-snapshot-omitted.txt")).unwrap();
         assert!(backup.contains("snapshot omitted"));
-        assert!(!fs::read_to_string(result.snapshot.unwrap().join(".luno_config.json")).is_ok());
+        assert!(!fs::read_to_string(snapshot.join(".luno_config.json")).is_ok());
         fs::remove_dir_all(root).unwrap();
     }
 }
