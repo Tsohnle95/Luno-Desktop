@@ -1,16 +1,18 @@
 # Desktop Verification Receipts
 
-Status: U44 harness committed on 2026-08-13. A receipt is `pass` only when the
-command completed successfully without skips, unavailable dependencies,
-timeouts, truncation, or collection errors. Anything else is `inconclusive`.
+Status: R05 verification recorded on 2026-08-14. A receipt is `pass` only when
+the command completed successfully without skips, unavailable dependencies,
+timeouts, truncation, or collection errors. A command that ran and returned a
+failure exit code is `FAILED`; a command that could not start because its tool
+is unavailable is `INCONCLUSIVE`.
 
 ## Commands
 
 | Gate | Command | Evidence policy |
 |---|---|---|
 | Python differential/fake tools | `python3 -m pytest tests/differential/test_harness.py tests/differential/test_u44_receipts.py -q` | Required automated receipt; `python` vs `python3` differences are recorded. |
-| TypeScript compile | `npm run typecheck` | Required automated receipt; unavailable `npm`/dependencies is inconclusive. |
-| Rust unit | `cargo test --manifest-path src-tauri/Cargo.toml` | Required automated receipt; timeout or missing toolchain is inconclusive. |
+| TypeScript compile | `npm run typecheck` | Required automated receipt; compiler errors are FAILED, while unavailable npm/compiler/dependencies are INCONCLUSIVE. |
+| Rust unit | `cargo test --manifest-path src-tauri/Cargo.toml` | Required automated receipt; test/build errors are FAILED, while an unavailable cargo toolchain is INCONCLUSIVE. |
 | Visual | Browser screenshot runner at 960x660, 1180x800, 1600x1000 | Geometry is exact; colors use the declared perceptual threshold. No screenshot is a pass without an artifact. |
 | Accessibility | Browser accessibility runner with keyboard/focus checks | Source inspection is not a pass. |
 | Manual | `tests/journeys/manifest.json` sequences | Record OS, window size, fixture IDs, artifact path, and terminal state. |
@@ -70,8 +72,10 @@ from the current run below rather than inferring success from source presence.
 - `python3 -m pytest tests/differential/test_harness.py tests/differential/test_u44_receipts.py -q`: exit `0`, `6 passed in 0.64s`.
 - `python3 -m pytest -q`: exit `0`, `109 passed in 7.15s`.
 - `python -m pytest -q`: exit `127`, `zsh:1: command not found: python` (inconclusive).
-- `npm run typecheck`: exit `127`, `sh: tsc: command not found` (inconclusive).
-- `cargo test --manifest-path src-tauri/Cargo.toml`: exit `127`, `zsh:1: command not found: cargo` (inconclusive).
+- `npm run typecheck`: exit `2`, TypeScript compiler present and compilation diagnostics reported (FAILED).
+- `cargo test --manifest-path src-tauri/Cargo.toml`: exit `101`, Cargo present and the Rust build script failed because `resources/bin` is absent (FAILED).
+- Missing-tool example: npm exit `127` with `tsc: command not found` is INCONCLUSIVE; it does not establish TypeScript errors.
+- Missing-tool example: cargo exit `127` with `cargo: command not found` is INCONCLUSIVE; it does not establish Rust test failure.
 - `python3 -m json.tool tests/journeys/manifest.json >/dev/null`: exit `0`.
 - `git diff --check`: exit `0`.
 - Browser visual/accessibility, packaged smoke, manual journeys, and target

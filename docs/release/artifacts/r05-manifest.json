@@ -13,7 +13,7 @@
     "npm": "10.9.8",
     "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)",
     "cargo": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)",
-    "typescript": "unavailable: local tsc executable was not available in the current workspace",
+    "typescript": "compiler present; npm run typecheck exited 2 with TypeScript diagnostics (version not separately recorded)",
     "vite": "unavailable: local Vite executable was not available in the current workspace",
     "tauri": "unavailable: local Tauri CLI executable was not available in the current workspace"
   },
@@ -74,6 +74,7 @@
     "release-input/bin/ffprobe",
     "release-input/bin/yt-dlp",
     "reviewed SHA-256 values in release/desktop-binaries.json",
+    "architecture inspection of absent managed binaries",
     "exact upstream license notices/build configuration",
     "APPLE_SIGNING_IDENTITY and Apple notarization credentials",
     "signed/notarized DMG and Luno.app"

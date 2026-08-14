@@ -8,11 +8,29 @@ dest=${LUNO_BINARY_DEST_DIR:-src-tauri/resources/bin}
 manifest=${LUNO_BINARY_MANIFEST:-release/desktop-binaries.json}
 
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
+command -v file >/dev/null 2>&1 || { echo "file is required for architecture inspection" >&2; exit 2; }
 mkdir -p "$dest"
 for name in ffmpeg ffprobe yt-dlp; do
   file="$src/$name"
   [ -f "$file" ] || { echo "missing reviewed binary: $file" >&2; exit 1; }
   install -m 755 "$file" "$dest/$name"
+done
+
+for name in ffmpeg ffprobe yt-dlp; do
+  binary="$dest/$name"
+  description=$(file -b "$binary") || { echo "architecture inspection failed for $name" >&2; exit 1; }
+  actual_arches=""
+  case "$description" in *arm64*) actual_arches="arm64";; esac
+  case "$description" in *x86_64*) actual_arches="${actual_arches:+$actual_arches }x86_64";; esac
+  [ -n "$actual_arches" ] || { echo "unable to determine architecture for $name: $description" >&2; exit 1; }
+  for actual in $actual_arches; do
+    normalized=$actual
+    [ "$actual" = arm64 ] && normalized=aarch64
+    jq -e --arg arch "$normalized" '.architectures | index($arch) != null' "$manifest" >/dev/null || {
+      echo "incompatible architecture for $name: $actual" >&2
+      exit 1
+    }
+  done
 done
 
 for name in ffmpeg ffprobe yt-dlp; do

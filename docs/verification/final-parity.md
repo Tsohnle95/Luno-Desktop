@@ -35,10 +35,10 @@ behavioral fallback.
 - `python3 -m pytest tests/differential/test_harness.py tests/differential/test_u44_receipts.py -q`: exit `0`, `6 passed in 0.49s`.
 - `python3 -m pytest -q`: exit `0`, `109 passed in 6.60s`.
 - `python -m pytest -q`: exit `127`, `zsh:1: command not found: python` (inconclusive).
-- `npm run typecheck`: exit `127`, `sh: tsc: command not found` (inconclusive).
-- `cargo test --manifest-path src-tauri/Cargo.toml`: exit `127`, `zsh:1: command not found: cargo` (inconclusive).
-- `npm run typecheck` (final-review rerun): exit `127`, `sh: tsc: command not found` (inconclusive).
-- `cargo test --manifest-path src-tauri/Cargo.toml` (final-review rerun): exit `127`, `zsh:1: command not found: cargo` (inconclusive).
+- `npm run typecheck`: exit `2`, TypeScript compiler present and compilation diagnostics reported (FAILED).
+- `cargo test --manifest-path src-tauri/Cargo.toml`: exit `101`, Cargo present and the Rust build script failed because `resources/bin` is absent (FAILED).
+- Missing-tool example: npm exit `127` with `tsc: command not found` is INCONCLUSIVE; it does not establish TypeScript errors.
+- Missing-tool example: cargo exit `127` with `cargo: command not found` is INCONCLUSIVE; it does not establish Rust test failure.
 - `python3 -m pytest -q` (final-review rerun): exit `0`, `109 passed in 6.61s`.
 - `python3 -m json.tool tests/journeys/manifest.json >/dev/null`: exit `0`.
 - `python3 -m json.tool tests/reference/manifest.json >/dev/null`: exit `0`.
@@ -56,7 +56,7 @@ behavioral fallback.
 
 - No target-vs-reference adapter receipt, browser screenshot artifacts, accessibility run, or executed manual journey receipts.
 - No clean-machine packaged smoke receipt, signed/notarized DMG, or macOS release artifact.
-- `release/desktop-binaries.json` still contains `REPLACE_WITH_REVIEWED_SHA256`; `release-input/bin/` is absent, so provisioning and integrity checks cannot pass.
+- `release/desktop-binaries.json` still contains `REPLACE_WITH_REVIEWED_SHA256`; `release-input/bin/` is absent, so provisioning and integrity checks cannot pass. When inputs exist, both gates also inspect every executable's architecture with `file` and require it to match the manifest matrix; missing inspection tools are inconclusive and never pass.
 - No real-user-data migration corpus/crash-at-each-stage receipt or rollback rehearsal receipt.
 - No target shutdown/orphan-process receipt for audio, yt-dlp, FFmpeg, video, and worker tasks.
 - Production still uses `NoopKeychain`; any key-bearing legacy migration must block until a real macOS Keychain adapter is wired.

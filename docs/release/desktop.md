@@ -9,7 +9,9 @@ FFmpeg/ffprobe `7.1.1` and yt-dlp `2025.08.11` are pinned in
 `release/desktop-binaries.json`. Release input must contain executable files in
 `release-input/bin/`; run `LUNO_BINARY_SOURCE_DIR=release-input/bin
 ./scripts/provision-desktop-binaries.sh`. The script refuses placeholder or
-mismatched SHA-256 values. Never download an unreviewed binary during a build.
+mismatched SHA-256 values and checks each input's architecture with macOS `file`
+against the manifest architecture matrix. Never download an unreviewed binary
+during a build.
 
 Each update requires a reviewed release commit containing the new version,
 architecture-specific checksums, upstream license notices, and explicit human
@@ -21,9 +23,10 @@ verification are blocked until the release owner supplies those reviewed inputs.
 ## Gates
 
 Run `./scripts/verify-desktop-bundle.sh <Luno.app>` after building. It checks
-the bundle manifest, notices, executable bits, checksums, tool versions, and a
-clean-machine smoke with developer `PATH` unavailable. Missing or tampered
-tools fail closed; application services must surface degraded media behavior.
+the bundle manifest, notices, executable bits, checksums, tool versions,
+architecture, and a clean-machine smoke with developer `PATH` unavailable.
+Missing or tampered tools, or missing inspection tools, are blocked/inconclusive
+and never pass; application services must surface degraded media behavior.
 
 Signing and notarization are CI hooks. The release workflow fails without
 `APPLE_SIGNING_IDENTITY`; certificate, Apple ID, team, and notarization secrets
