@@ -1,6 +1,8 @@
 # Final Desktop Parity Gate
 
-Status: **BLOCKED** (R06, 2026-08-14; source commit `c208950f34bbc3fcc053e1b5d2cd49d593715c57`).
+Status: **BLOCKED** (R06, 2026-08-14; source-run HEAD `b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc`; receipt-generation HEAD `c208950f34bbc3fcc053e1b5d2cd49d593715c57`).
+
+Receipt-document chain: `c208950f34bbc3fcc053e1b5d2cd49d593715c57` -> `65cabe686f32125849c3d13b0ffce8b814396f27` -> current tip. Verify the current tip externally with `git log --format='%H %s' -n 5 -- docs/verification/receipts/r06-manifest.json docs/verification/receipts/r06-summary.md docs/verification/toolchains.md`; no current self-SHA is claimed here.
 
 This is a fan-in receipt, not a claim that the React/Tauri/Rust application is
 at parity. A required gate is `pass` only when its configured command or manual

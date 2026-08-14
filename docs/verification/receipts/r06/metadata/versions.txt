@@ -1,6 +1,7 @@
 SOURCE-RUN HEAD (captured before R06 receipt generation; command: git rev-parse HEAD) b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc
-R06 SOURCE/RECEIPT HEAD (receipt generation commit; command: git rev-parse c208950) c208950f34bbc3fcc053e1b5d2cd49d593715c57
-RECEIPT/FINAL HEAD (after receipt correction; command: git rev-parse HEAD) 65cabe686f32125849c3d13b0ffce8b814396f27
+RECEIPT-GENERATION HEAD (R06 receipt-generation commit; external command: git rev-parse c208950) c208950f34bbc3fcc053e1b5d2cd49d593715c57
+CURRENT RECEIPT-DOCUMENT CHAIN (verify externally; current containing-commit SHA intentionally not self-claimed) c208950f34bbc3fcc053e1b5d2cd49d593715c57 -> 65cabe686f32125849c3d13b0ffce8b814396f27 -> current tip
+EXTERNAL VERIFICATION: git log --format='%H %s' -n 5 -- docs/verification/receipts/r06-manifest.json docs/verification/receipts/r06-summary.md docs/verification/toolchains.md
 python3 Python 3.14.7
 node v22.23.2
 npm 10.9.8
