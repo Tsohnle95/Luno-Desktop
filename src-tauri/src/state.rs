@@ -127,7 +127,7 @@ impl AppState {
 
     pub fn dispatch(&self, envelope: CommandEnvelope) -> Result<Value, ContractError> {
         if envelope.request_id.trim().is_empty() { return Err(ContractError::invalid("request_id must not be empty")); }
-        if !matches!(envelope.command, Command::Shutdown { .. }) && self.is_closing() { return Err(ContractError { code: ErrorCode::ShuttingDown, message: "backend is shutting down".into(), retryable: false }); }
+        if !matches!(&envelope.command, Command::Shutdown { .. }) && self.is_closing() { return Err(ContractError { code: ErrorCode::ShuttingDown, message: "backend is shutting down".into(), retryable: false }); }
         match envelope.command {
             Command::GetLibrary => {
                 let snapshot = self.library();
