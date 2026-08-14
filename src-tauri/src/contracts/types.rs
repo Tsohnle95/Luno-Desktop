@@ -170,7 +170,7 @@ pub struct ContractError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ErrorCode { InvalidRequest, UnsupportedVersion, NotFound, Busy, Cancelled, Internal, ShuttingDown }
+pub enum ErrorCode { InvalidRequest, UnsupportedVersion, NotFound, Busy, Cancelled, Unavailable, Internal, ShuttingDown }
 
 impl ContractError {
     pub fn invalid(message: impl Into<String>) -> Self { Self { code: ErrorCode::InvalidRequest, message: message.into(), retryable: false } }

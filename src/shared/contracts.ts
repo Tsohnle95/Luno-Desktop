@@ -18,7 +18,7 @@ export interface VideoState { track_id: TrackId | null; source_url: string | nul
 export type DownloadKind = "single" | "csv" | "sync" | "url_queue";
 export type JobState = "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
 export interface DownloadJob { id: JobId; kind: DownloadKind; state: JobState; track_id: TrackId | null; progress: number | null; generation: Generation }
-export type ErrorCode = "invalid_request" | "unsupported_version" | "not_found" | "busy" | "cancelled" | "internal" | "shutting_down";
+export type ErrorCode = "invalid_request" | "unsupported_version" | "not_found" | "busy" | "cancelled" | "unavailable" | "internal" | "shutting_down";
 export interface ContractError { code: ErrorCode; message: string; retryable: boolean }
 
 export type Command =
@@ -86,7 +86,7 @@ function isEvent(v: unknown): v is Event {
   if (v.type === "job_updated") return exact(v.payload, ["job"]) && job(v.payload.job);
   if (v.type === "error") {
     const error = v.payload.error;
-    return exact(v.payload, ["error"]) && object(error) && exact(error, ["code", "message", "retryable"]) && ["invalid_request", "unsupported_version", "not_found", "busy", "cancelled", "internal", "shutting_down"].includes(String(error.code)) && typeof error.message === "string" && typeof error.retryable === "boolean";
+     return exact(v.payload, ["error"]) && object(error) && exact(error, ["code", "message", "retryable"]) && ["invalid_request", "unsupported_version", "not_found", "busy", "cancelled", "unavailable", "internal", "shutting_down"].includes(String(error.code)) && typeof error.message === "string" && typeof error.retryable === "boolean";
   }
   if (v.type === "shutdown") {
     const shutdown = v.payload.envelope;

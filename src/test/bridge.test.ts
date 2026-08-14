@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createBridge } from "../app/bridge";
+import { createBridge, parseMigrationStatus } from "../app/bridge";
 import { createBackendProjection } from "../state/backend_projection";
-import { safeVideoSource } from "../app/Shell";
+import { playRecentTrack, runBridgeCommand, safeVideoSource } from "../app/Shell";
 
 const event = (event: unknown, generation = 1) => ({ version: 1 as const, event_id: `event-${generation}`, generation, job_id: null, session_id: null, event });
 
@@ -43,14 +43,33 @@ describe("typed IPC bridge and projection", () => {
     expect(store.getSnapshot().playback?.queue).toEqual(["track-1"]);
   });
 
+  it("rejects snapshots whose payload generation disagrees with the envelope", () => {
+    const store = createBackendProjection();
+    store.apply(event({ type: "library_snapshot", payload: { snapshot: { version: 1, generation: 2, tracks: [], playlists: [] } } }, 1));
+    expect(store.getSnapshot().library).toBeNull();
+  });
+
   it("ignores video state belonging to another current track at the shell boundary", () => {
     const store = createBackendProjection();
     store.apply(event({ type: "video_state", payload: { state: { track_id: "old", source_url: "https://example.test/old.mp4", staged_path: null, status: "ready", position_ms: 10, fullscreen: false, generation: 8 } } }, 8));
     store.apply({ ...event({ type: "playback_snapshot", payload: { snapshot: { queue: ["new"], current_index: 0, position_ms: 0, duration_ms: null, status: "playing", generation: 1 } } }, 1), event_id: "event-1" });
     expect(store.getSnapshot().video?.track_id).toBe("old");
     expect(store.getSnapshot().playback?.queue[0]).toBe("new");
-    expect(safeVideoSource("not-a-url", "/tmp/preview.mp4")).toContain("preview.mp4");
+    expect(safeVideoSource("https://example.test/video.mp4", "/tmp/preview.mp4")).toContain("preview.mp4");
     expect(safeVideoSource("javascript:alert(1)", null)).toBeNull();
+    expect(safeVideoSource("https://example.test/video.mp4", "/tmp/../outside.mp4")).toBe("https://example.test/video.mp4");
+  });
+
+  it("validates migration counters and catches rejected runtime commands", async () => {
+    expect(() => parseMigrationStatus({ completed: { warnings: -1, snapshot_created: false, removed_previews: 0 } })).toThrow();
+    expect(() => parseMigrationStatus({ completed: { warnings: 0, snapshot_created: false, removed_previews: -1 } })).toThrow();
+    const messages: string[] = [];
+    runBridgeCommand(Promise.reject(new Error("backend unavailable")), (message) => messages.push(message));
+    await Promise.resolve();
+    expect(messages).toEqual(["backend unavailable"]);
+    const played: string[] = [];
+    playRecentTrack({ play: (id) => { played.push(id); return Promise.resolve(null); } }, { id: "recent-1" } as never, () => {});
+    expect(played).toEqual(["recent-1"]);
   });
 
   it("projects video state and safely selects the current track", async () => {

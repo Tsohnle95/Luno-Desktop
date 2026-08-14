@@ -81,16 +81,16 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
   };
 }
 
-function parseMigrationStatus(value: unknown): MigrationStatus {
+export function parseMigrationStatus(value: unknown): MigrationStatus {
   if (value === "not_run") return { status: "not_run" };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid migration status");
   const [status, details] = Object.entries(value as Record<string, unknown>);
   if (!details || typeof details !== "object" || Array.isArray(details) || !status) throw new Error("invalid migration status");
   const item = details as Record<string, unknown>;
   if ((status === "skipped" || status === "failed") && typeof item.reason === "string" && Object.keys(item).length === 1) return { status: status as "skipped" | "failed", reason: item.reason };
-  if (status === "completed" && typeof item.warnings === "number" && Number.isSafeInteger(item.warnings)
+  if (status === "completed" && typeof item.warnings === "number" && Number.isSafeInteger(item.warnings) && item.warnings >= 0
     && typeof item.snapshot_created === "boolean" && typeof item.removed_previews === "number"
-    && Number.isSafeInteger(item.removed_previews) && Object.keys(item).length === 3) return { status: "completed", warnings: item.warnings, snapshot_created: item.snapshot_created, removed_previews: item.removed_previews };
+    && Number.isSafeInteger(item.removed_previews) && item.removed_previews >= 0 && Object.keys(item).length === 3) return { status: "completed", warnings: item.warnings, snapshot_created: item.snapshot_created, removed_previews: item.removed_previews };
   throw new Error("invalid migration status");
 }
 

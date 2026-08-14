@@ -13,10 +13,10 @@ pub enum LogLevel { Debug, Info, Warn, Error }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ErrorKind { InvalidRequest, NotFound, Busy, Cancelled, Internal, ShuttingDown, Worker }
+pub enum ErrorKind { InvalidRequest, NotFound, Busy, Cancelled, Unavailable, Internal, ShuttingDown, Worker }
 
 impl From<ErrorCode> for ErrorKind {
-    fn from(code: ErrorCode) -> Self { match code { ErrorCode::InvalidRequest => Self::InvalidRequest, ErrorCode::UnsupportedVersion => Self::InvalidRequest, ErrorCode::NotFound => Self::NotFound, ErrorCode::Busy => Self::Busy, ErrorCode::Cancelled => Self::Cancelled, ErrorCode::Internal => Self::Internal, ErrorCode::ShuttingDown => Self::ShuttingDown } }
+    fn from(code: ErrorCode) -> Self { match code { ErrorCode::InvalidRequest => Self::InvalidRequest, ErrorCode::UnsupportedVersion => Self::InvalidRequest, ErrorCode::NotFound => Self::NotFound, ErrorCode::Busy => Self::Busy, ErrorCode::Cancelled => Self::Cancelled, ErrorCode::Unavailable => Self::Unavailable, ErrorCode::Internal => Self::Internal, ErrorCode::ShuttingDown => Self::ShuttingDown } }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

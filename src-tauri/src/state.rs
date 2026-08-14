@@ -29,6 +29,14 @@ mod tests {
     }
 
     #[test]
+    fn playback_commands_report_explicit_backend_unavailability() {
+        let state = AppState::new(1);
+        let error = state.dispatch(CommandEnvelope { version: 1, request_id: "play-test".into(), command: Command::Play { track_id: TrackId("track".into()) } }).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unavailable);
+        assert!(!error.retryable);
+    }
+
+    #[test]
     fn provider_metadata_is_used_by_scan_publication_path() {
         let state = AppState::new(1);
         let path = PathBuf::from("/music/song.mp3");
@@ -586,8 +594,8 @@ impl AppState {
                 if self.tasks.cancel_key(&job_id.0) { Ok(Value::Null) }
                 else { Err(ContractError { code: ErrorCode::NotFound, message: "job not found".into(), retryable: false }) }
             }
-            Command::Play { .. } | Command::Pause | Command::Seek { .. } => Err(ContractError { code: ErrorCode::Internal, message: "audio backend unavailable".into(), retryable: true }),
-            Command::VideoSource { .. } | Command::VideoStage { .. } | Command::VideoPlay | Command::VideoPause | Command::VideoSeek { .. } | Command::VideoResize { .. } | Command::VideoFullscreen { .. } => Err(ContractError { code: ErrorCode::Internal, message: "video backend unavailable".into(), retryable: true }),
+            Command::Play { .. } | Command::Pause | Command::Seek { .. } => Err(ContractError { code: ErrorCode::Unavailable, message: "audio backend unavailable".into(), retryable: false }),
+            Command::VideoSource { .. } | Command::VideoStage { .. } | Command::VideoPlay | Command::VideoPause | Command::VideoSeek { .. } | Command::VideoResize { .. } | Command::VideoFullscreen { .. } => Err(ContractError { code: ErrorCode::Unavailable, message: "video backend unavailable".into(), retryable: false }),
             Command::Shutdown { reason } => {
                 let report = self.shutdown_events_locked(reason, Duration::from_millis(500), &admission);
                 if report.failed {

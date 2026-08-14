@@ -35,6 +35,12 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
     return { ...state, errors: [...state.errors, envelope.event.payload.error] };
   }
   const domain = domainOf(envelope.event.type);
+  const payloadGeneration = domain === "library" && envelope.event.type === "library_snapshot" ? envelope.event.payload.snapshot.generation
+    : domain === "playback" && envelope.event.type === "playback_snapshot" ? envelope.event.payload.snapshot.generation
+    : domain === "video" && envelope.event.type === "video_state" ? envelope.event.payload.state.generation
+    : domain === "jobs" && envelope.event.type === "job_updated" ? envelope.event.payload.job.generation
+    : null;
+  if (payloadGeneration !== null && payloadGeneration !== envelope.generation) return state;
   const lastEventId = state.lastEventIds[domain];
   if (lastEventId !== undefined && compareEventIds(envelope.event_id, lastEventId) <= 0) return state;
   // Generation 0 is reserved for shutdown control events. They are lifecycle
