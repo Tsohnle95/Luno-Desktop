@@ -46,12 +46,19 @@ fn contained(root: &Path, child: &Path) -> bool {
 }
 
 pub fn read_preview_inventory(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    if !dir.exists() { return Ok(Vec::new()); }
+    if !safe_directory(dir) { return Ok(Vec::new()); }
     let mut files = Vec::new();
+    let mut inspected = 0;
     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+        if inspected >= MAX_RETRY_ENTRIES {
+            return Err(format!("preview inventory exceeded {} entries", MAX_RETRY_ENTRIES));
+        }
+        inspected += 1;
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        if entry.file_type().map_err(|e| e.to_string())?.is_file() && contained(dir, &path) { files.push(path); }
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() { continue; }
+        if metadata.is_file() && contained(dir, &path) { files.push(path); }
     }
     files.sort();
     Ok(files)
@@ -194,7 +201,10 @@ pub fn has_legacy_data(root: &Path, preview_dir: Option<&Path>) -> bool {
     let music_root = config.and_then(|config| config.music_root).map(PathBuf::from);
     if music_root.as_deref().is_some_and(|path| has_legacy_files(path, true)) { return true; }
     preview_dir.is_some_and(|dir| fs::symlink_metadata(dir).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false))
-        || preview_dir.and_then(|dir| read_preview_inventory(dir).ok()).is_some_and(|files| !files.is_empty())
+        || preview_dir.is_some_and(|dir| match read_preview_inventory(dir) {
+            Ok(files) => !files.is_empty(),
+            Err(_) => true,
+        })
 }
 
 /// Best-effort aggregate read. Missing files are normal; corrupt files produce

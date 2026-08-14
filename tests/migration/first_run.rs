@@ -255,6 +255,23 @@ fn completed_migration_is_idempotent_and_preserves_target_state() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn completed_retry_rejects_oversized_preview_inventory() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.target_root).unwrap();
+    fs::create_dir_all(&p.preview_dir).unwrap();
+    fs::write(p.version_record(), r#"{"migration":"desktop-first-run","version":1,"completed":true}"#).unwrap();
+    for index in 0..=luno_desktop_lib::migration::legacy_readers::MAX_RETRY_ENTRIES {
+        fs::write(p.preview_dir.join(format!("preview-{index}")), b"x").unwrap();
+    }
+    let error = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap_err();
+    assert!(matches!(error, MigrationError::Io(message) if message.contains("legacy input inventory failed") && message.contains("retry inspection exceeded")));
+    assert!(p.version_record().is_file());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn migration_warning_paths_are_relative_to_their_explicit_root() {
     let root = tempdir();
     let music = root.join("music");

@@ -93,6 +93,21 @@ fn retry_inventory_rejects_oversized_preview_without_unbounded_listing() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn legacy_detection_rejects_oversized_preview_without_unbounded_listing() {
+    let root = tempdir();
+    let preview = root.join(".luno_previews");
+    fs::create_dir_all(&preview).unwrap();
+    for index in 0..=MAX_RETRY_ENTRIES {
+        fs::write(preview.join(format!("preview-{index}")), b"x").unwrap();
+    }
+    assert!(has_legacy_data(&root, Some(&preview)));
+    let state = read_legacy(&root, Some(&preview));
+    assert_eq!(state.preview_files, Vec::<std::path::PathBuf>::new());
+    assert!(state.warnings.iter().any(|warning| warning.message.contains("preview inventory exceeded")));
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn dangling_preview_symlink_is_a_migration_trigger_for_main_gating() {
