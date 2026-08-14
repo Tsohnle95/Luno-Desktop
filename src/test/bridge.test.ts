@@ -2,14 +2,17 @@ import { describe, expect, it } from "vitest";
 import { createBridge, parseMigrationStatus } from "../app/bridge";
 import { createBackendProjection } from "../state/backend_projection";
 import { currentVideoForTrack, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled } from "../app/Shell";
+import type { BridgeTransport } from "../app/bridge";
+import type { Event, EventEnvelope } from "../shared/contracts";
 
-const event = (event: unknown, generation = 1) => ({ version: 1 as const, event_id: `event-${generation}`, generation, job_id: null, session_id: null, event });
+const event = (event: Event, generation = 1): EventEnvelope => ({ version: 1, event_id: `event-${generation}`, generation, job_id: null, session_id: null, event });
 
 describe("typed IPC bridge and projection", () => {
   it("wraps commands and validates subscriptions", async () => {
     const calls: unknown[] = [];
-    let callback = (_payload: unknown) => {};
-    const bridge = createBridge({ invoke: async (_name, payload) => { calls.push(payload); return null; }, listen: async (_name, handler) => { callback = handler; return () => {}; } });
+    let callback: (payload: unknown) => void = () => {};
+    const transport: BridgeTransport = { invoke: async <T>(_name: string, payload: unknown) => { calls.push(payload); return null as T; }, listen: async <T>(_name: string, handler: (payload: T) => void) => { callback = (payload) => handler(payload as T); return () => {}; } };
+    const bridge = createBridge(transport);
     await bridge.play("track-1");
     expect(calls).toHaveLength(1);
     expect((calls[0] as { version: number }).version).toBe(1);

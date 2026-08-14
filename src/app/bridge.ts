@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import {
   CONTRACT_VERSION,
   type Command,
@@ -27,8 +27,8 @@ export interface BridgeTransport {
 }
 
 const tauriTransport: BridgeTransport = {
-  invoke: (command, payload) => tauriInvoke(command, payload),
-  listen: <T>(event, handler) => listen<T>(event, (message) => handler(message.payload)),
+  invoke: <T>(command: string, payload: unknown) => tauriInvoke<T>(command, payload as InvokeArgs),
+  listen: <T>(event: string, handler: (payload: T) => void) => listen<T>(event, (message) => handler(message.payload)),
 };
 
 let requestSequence = 0;
@@ -84,7 +84,9 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
 export function parseMigrationStatus(value: unknown): MigrationStatus {
   if (value === "not_run") return { status: "not_run" };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid migration status");
-  const [status, details] = Object.entries(value as Record<string, unknown>);
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length !== 1) throw new Error("invalid migration status");
+  const [status, details] = entries[0];
   if (!details || typeof details !== "object" || Array.isArray(details) || !status) throw new Error("invalid migration status");
   const item = details as Record<string, unknown>;
   if ((status === "skipped" || status === "failed") && typeof item.reason === "string" && Object.keys(item).length === 1) return { status: status as "skipped" | "failed", reason: item.reason };

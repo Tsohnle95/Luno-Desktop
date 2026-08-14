@@ -7,7 +7,7 @@ const track: Track = { id: "seed", path: null, title: "Seed", artist: "Artist", 
 const recommendation: Recommendation = { id: "rec", title: "Similar", artist: "Other" };
 
 export const songPageChecks = {
-  page: Boolean(SongPageView && Recommendations),
+  page: Boolean(SongPageView) && Boolean(Recommendations),
   mediaRatio: "16 / 9",
   pageSize: 25,
   cap: 1000,

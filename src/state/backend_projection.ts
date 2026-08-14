@@ -47,22 +47,24 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
   // notifications, not work results, and must survive stale-work filtering.
   if (domain !== "control" && envelope.generation < state.generations[domain]) return state;
   const next = { ...state, generations: domain === "control" ? state.generations : { ...state.generations, [domain]: Math.max(state.generations[domain], envelope.generation) }, lastEventIds: { ...state.lastEventIds, [domain]: envelope.event_id } };
-  switch (envelope.event.type) {
-    case "library_snapshot": return { ...next, library: envelope.event.payload.snapshot };
-    case "playback_snapshot": return { ...next, playback: envelope.event.payload.snapshot };
-    case "video_state": return { ...next, video: envelope.event.payload.state };
+  const event = envelope.event;
+  switch (event.type) {
+    case "library_snapshot": return { ...next, library: event.payload.snapshot };
+    case "playback_snapshot": return { ...next, playback: event.payload.snapshot };
+    case "video_state": return { ...next, video: event.payload.state };
     case "track_started": {
       const playback = next.playback;
-      const recentHistory = [envelope.event.payload.track_id, ...next.recentHistory.filter((id) => id !== envelope.event.payload.track_id)].slice(0, 100);
+      const recentHistory = [event.payload.track_id, ...next.recentHistory.filter((id) => id !== event.payload.track_id)].slice(0, 100);
       if (!playback) return { ...next, recentHistory };
-      const index = playback.queue.indexOf(envelope.event.payload.track_id as TrackId);
+      const index = playback.queue.indexOf(event.payload.track_id as TrackId);
       return { ...next, recentHistory, playback: { ...playback, current_index: index < 0 ? playback.current_index : index } };
     }
-    case "queue_changed": return next.playback ? { ...next, playback: { ...next.playback, queue: envelope.event.payload.queue } } : next;
-    case "job_updated": return { ...next, jobs: { ...next.jobs, [envelope.event.payload.job.id]: envelope.event.payload.job } };
-    case "error": return { ...next, errors: [...next.errors, envelope.event.payload.error] };
-    case "shutdown": return { ...next, shutdown: envelope.event.payload.envelope };
+    case "queue_changed": return next.playback ? { ...next, playback: { ...next.playback, queue: event.payload.queue } } : next;
+    case "job_updated": return { ...next, jobs: { ...next.jobs, [event.payload.job.id]: event.payload.job } };
+    case "error": return { ...next, errors: [...next.errors, event.payload.error] };
+    case "shutdown": return { ...next, shutdown: event.payload.envelope };
   }
+  throw new Error(`unhandled backend event: ${event.type}`);
 }
 
 export function currentTrack(projection: Pick<BackendProjection, "library" | "playback">): Track | null {
