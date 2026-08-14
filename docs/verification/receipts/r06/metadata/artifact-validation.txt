@@ -1,4 +1,4 @@
-receipt_count= 16
+receipt_count= 17
 receipt_count_definition=Count of keys in the manifest's top-level receipts object: each key is one gate category; acceptance IDs, journey IDs, and unique artifact paths are not counted.
 acceptance_count= 37
 journey_count= 6
