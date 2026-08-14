@@ -201,6 +201,9 @@ fn preflight(p: &MigrationPaths) -> Result<(), MigrationError> {
     if p.legacy_data_root.as_ref().is_some_and(|root| roots_overlap(root, &p.target_root)) {
         return Err(MigrationError::UnsafePath("legacy data and target roots must not overlap".into()));
     }
+    if p.legacy_data_root.as_ref().is_some_and(|root| !root.starts_with(&p.legacy_root)) {
+        return Err(MigrationError::UnsafePath("legacy data root must be contained by the legacy discovery root".into()));
+    }
     if let Ok(metadata) = fs::symlink_metadata(&p.preview_dir) {
         if metadata.file_type().is_symlink() { return Err(MigrationError::UnsafePath("preview directory must not be a symlink".into())); }
     }

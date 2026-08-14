@@ -42,9 +42,9 @@ fn legacy_detection_covers_configured_root_and_ignores_empty_surfaces() {
     fs::create_dir_all(&music).unwrap();
     fs::write(dir.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, music.display())).unwrap();
     fs::write(music.join(".downloaded_vids"), "").unwrap();
-    assert!(!has_legacy_data(&dir, Some(&dir.join(".luno_previews"))));
+    assert!(!has_legacy_data(&dir, Some(&dir.join(".luno_previews"))).unwrap());
     fs::write(music.join(".luno_allowed_dups.json"), "[\"track\"]").unwrap();
-    assert!(has_legacy_data(&dir, None));
+    assert!(has_legacy_data(&dir, None).unwrap());
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -101,7 +101,7 @@ fn legacy_detection_rejects_oversized_preview_without_unbounded_listing() {
     for index in 0..=MAX_RETRY_ENTRIES {
         fs::write(preview.join(format!("preview-{index}")), b"x").unwrap();
     }
-    assert!(has_legacy_data(&root, Some(&preview)));
+    assert!(has_legacy_data(&root, Some(&preview)).unwrap());
     let state = read_legacy(&root, Some(&preview));
     assert_eq!(state.preview_files, Vec::<std::path::PathBuf>::new());
     assert!(state.warnings.iter().any(|warning| warning.message.contains("preview inventory exceeded")));
@@ -120,7 +120,7 @@ fn nested_marker_inventory_is_bounded_sorted_and_reports_overflow() {
         fs::write(directory.join(if index == MAX_RETRY_ENTRIES / 2 { ".downloaded.txt" } else { ".downloaded_vids" }), if index == MAX_RETRY_ENTRIES / 2 { "old title VID1\n" } else { "VID2\n" }).unwrap();
     }
     assert!(marker_files(&root).unwrap_err().contains("legacy marker inspection exceeded"));
-    assert!(has_legacy_data(&root, None));
+    assert!(has_legacy_data(&root, None).unwrap());
     let state = read_legacy(&root, None);
     assert!(state.downloaded_ids.contains("VID1"));
     assert!(state.warnings.iter().any(|warning| warning.message.contains("legacy marker inspection exceeded")));
@@ -136,7 +136,7 @@ fn nested_marker_inventory_does_not_follow_symlink_directories() {
     fs::write(outside.join(".downloaded_vids"), "OUTSIDE\n").unwrap();
     symlink(&outside, root.join("linked")).unwrap();
     assert!(marker_files(&root).unwrap().is_empty());
-    assert!(!has_legacy_data(&root, None));
+    assert!(!has_legacy_data(&root, None).unwrap());
     fs::remove_dir_all(root).unwrap();
     fs::remove_dir_all(outside).unwrap();
 }
@@ -148,8 +148,33 @@ fn dangling_preview_symlink_is_a_migration_trigger_for_main_gating() {
     let dir = tempdir();
     let preview = dir.join(".luno_previews");
     symlink(dir.join("missing"), &preview).unwrap();
-    assert!(has_legacy_data(&dir, Some(&preview)));
+    assert!(has_legacy_data(&dir, Some(&preview)).unwrap());
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn configured_music_root_outside_scope_is_rejected_before_scan() {
+    let root = tempdir();
+    let outside = tempdir();
+    fs::write(outside.join(".downloaded_vids"), "OUTSIDE\n").unwrap();
+    fs::write(root.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, outside.display())).unwrap();
+    let error = has_legacy_data(&root, None).unwrap_err();
+    assert!(error.contains("outside the legacy discovery root"));
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[test]
+fn marker_traversal_stops_at_max_depth() {
+    let root = tempdir();
+    let mut current = root.clone();
+    for _ in 0..=MAX_RETRY_DEPTH {
+        current.push("nested");
+        fs::create_dir(&current).unwrap();
+    }
+    fs::write(current.join(".downloaded_vids"), "TOO-DEEP\n").unwrap();
+    assert!(marker_files(&root).unwrap().is_empty());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(unix)]

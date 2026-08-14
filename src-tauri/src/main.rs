@@ -3,9 +3,8 @@
 use luno_desktop_lib::contracts::{CommandEnvelope, ContractError};
 use luno_desktop_lib::migration::first_run::{migrate, MigrationOptions, MigrationPaths};
 use luno_desktop_lib::migration::keychain::MacOsKeychain;
-use luno_desktop_lib::migration::legacy_readers::has_legacy_data;
-use luno_desktop_lib::state::AppState;
-use serde_json::Value;
+use luno_desktop_lib::migration::legacy_readers::{has_legacy_data, validated_music_root};
+use luno_desktop_lib::state::{AppState, MigrationStatus};
 use std::fs;
 use std::path::PathBuf;
 use tauri::Manager;
@@ -15,6 +14,11 @@ fn backend_command(_state: tauri::State<'_, AppState>, envelope: CommandEnvelope
     let command = serde_json::to_value(&envelope.command).map_err(|error| error.to_string())?;
     let error = ContractError::invalid(format!("command is not implemented by the target shell: {command}"));
     Err(serde_json::to_string(&error).unwrap_or_else(|_| "unsupported command".into()))
+}
+
+#[tauri::command]
+fn migration_status(state: tauri::State<'_, AppState>) -> Result<MigrationStatus, String> {
+    state.migration_status.lock().map(|status| status.clone()).map_err(|_| "migration status unavailable".into())
 }
 
 #[cfg(target_os = "macos")]
@@ -27,11 +31,18 @@ fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
         .and_then(|value| Some(value.get("migration")?.as_str()? == "desktop-first-run"
             && value.get("version")?.as_u64()? == 1 && value.get("completed")?.as_bool()?))
         .unwrap_or(false);
-    if !completed && !has_legacy_data(&legacy_root, Some(&preview_dir)) { return Ok(()); }
-    let legacy_data_root = fs::read_to_string(legacy_root.join(".luno_config.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|value| value.get("music_root").and_then(Value::as_str).map(PathBuf::from));
+    if !completed {
+        match has_legacy_data(&legacy_root, Some(&preview_dir)) {
+            Ok(false) => return Ok(()),
+            Err(error) => {
+                app.state::<AppState>().migration_status.lock().map_err(|_| "migration status unavailable".to_string())
+                    .map(|mut status| *status = MigrationStatus::Failed { reason: error.clone() })?;
+                return Err(format!("unsafe legacy migration input: {error}"));
+            }
+            Ok(true) => {}
+        }
+    }
+    let legacy_data_root = validated_music_root(&legacy_root)?;
     let paths = MigrationPaths {
         legacy_root,
         legacy_data_root,
@@ -42,8 +53,16 @@ fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
     };
     let mut keychain = MacOsKeychain::new();
     match migrate(&paths, &MigrationOptions::default(), &mut keychain) {
-        Ok(_) => Ok(()),
-        Err(error) => Err(format!("startup migration failed: {error:?}")),
+        Ok(receipt) => {
+            let status = MigrationStatus::Completed { warnings: receipt.warnings, snapshot_created: receipt.snapshot.is_some(), removed_previews: receipt.removed_previews.len() };
+            *app.state::<AppState>().migration_status.lock().map_err(|_| "migration status unavailable".to_string())? = status;
+            Ok(())
+        }
+        Err(error) => {
+            let status = MigrationStatus::Failed { reason: "migration failed".into() };
+            *app.state::<AppState>().migration_status.lock().map_err(|_| "migration status unavailable".to_string())? = status;
+            Err(format!("startup migration failed: {error:?}"))
+        }
     }
 }
 
@@ -57,7 +76,7 @@ fn dirs_fallback_home() -> Result<PathBuf, String> {
 fn main() {
     tauri::Builder::default()
         .manage(AppState::new(32))
-        .invoke_handler(tauri::generate_handler![backend_command])
+        .invoke_handler(tauri::generate_handler![backend_command, migration_status])
         .setup(|app| {
             startup_migration(app.handle()).map_err(std::io::Error::other)?;
             Ok(())

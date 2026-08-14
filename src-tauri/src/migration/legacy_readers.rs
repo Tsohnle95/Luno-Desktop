@@ -235,10 +235,11 @@ pub fn marker_files_excluding(root: &Path, excluded_roots: &[&Path]) -> Result<V
     let excluded: Vec<PathBuf> = excluded_roots.iter().map(|path| canonicalize_path(path)).collect();
     let excluded: Vec<&Path> = excluded.iter().map(PathBuf::as_path).collect();
     if !safe_directory(&root) { return Ok(Vec::new()); }
-    let mut pending = vec![root.to_path_buf()];
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
     let mut files = Vec::new();
     let mut inspected = 0;
-    while let Some(directory) = pending.pop() {
+    while let Some((directory, depth)) = pending.pop() {
+        if depth > MAX_RETRY_DEPTH { continue; }
         let mut entries = Vec::new();
         for entry in fs::read_dir(&directory).map_err(|e| e.to_string())? {
             if inspected >= MAX_RETRY_ENTRIES { return Err(format!("legacy marker inspection exceeded {} entries", MAX_RETRY_ENTRIES)); }
@@ -251,7 +252,7 @@ pub fn marker_files_excluding(root: &Path, excluded_roots: &[&Path]) -> Result<V
             if excluded.iter().any(|excluded| path == *excluded || path.starts_with(excluded)) { continue; }
             let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
             if metadata.file_type().is_symlink() || !contained(root, &path) { continue; }
-            if metadata.is_dir() { pending.push(path); }
+            if metadata.is_dir() && depth < MAX_RETRY_DEPTH { pending.push((path, depth + 1)); }
             else if matches!(path.file_name().and_then(|name| name.to_str()), Some(".downloaded_vids" | ".sync_failed_vids" | ".downloaded.txt")) { files.push(path); }
         }
     }
@@ -261,17 +262,32 @@ pub fn marker_files_excluding(root: &Path, excluded_roots: &[&Path]) -> Result<V
 
 /// Return whether any supported legacy surface contains data worth migrating.
 /// Empty marker files and an empty preview directory are not migration triggers.
-pub fn has_legacy_data(root: &Path, preview_dir: Option<&Path>) -> bool {
+pub fn validated_music_root(root: &Path) -> Result<Option<PathBuf>, String> {
     let config_path = root.join(".luno_config.json");
-    let config = legacy::read_config(&config_path).ok();
-    if has_legacy_files(root, false) { return true; }
-    let music_root = config.and_then(|config| config.music_root).map(PathBuf::from);
-    if music_root.as_deref().is_some_and(|path| has_legacy_files(path, true)) { return true; }
-    preview_dir.is_some_and(|dir| fs::symlink_metadata(dir).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false))
+    if !safe_directory(root) { return Err("legacy discovery root is not a real directory".into()); }
+    let Some(config) = (if safe_file(&config_path) { legacy::read_config(&config_path).ok() } else { None }) else { return Ok(None); };
+    let Some(raw) = config.music_root else { return Ok(None); };
+    let scope = canonicalize_path(root);
+    let candidate = PathBuf::from(&raw);
+    let candidate = canonicalize_path(if candidate.is_absolute() { candidate } else { scope.join(candidate) }.as_path());
+    if !candidate.starts_with(&scope) { return Err("configured music root is outside the legacy discovery root".into()); }
+    if fs::symlink_metadata(&candidate).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false) {
+        return Err("configured music root must not be a symlink".into());
+    }
+    if candidate.exists() && !safe_directory(&candidate) { return Err("configured music root is not a directory".into()); }
+    Ok(Some(candidate))
+}
+
+/// Validate all discovery inputs before inspecting a configured music root.
+pub fn has_legacy_data(root: &Path, preview_dir: Option<&Path>) -> Result<bool, String> {
+    let music_root = validated_music_root(root)?;
+    if has_legacy_files(root, false) { return Ok(true); }
+    if music_root.as_deref().is_some_and(|path| has_legacy_files(path, true)) { return Ok(true); }
+    Ok(preview_dir.is_some_and(|dir| fs::symlink_metadata(dir).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false))
         || preview_dir.is_some_and(|dir| match read_preview_inventory(dir) {
             Ok(files) => !files.is_empty(),
             Err(_) => true,
-        })
+        }))
 }
 
 /// Best-effort aggregate read. Missing files are normal; corrupt files produce
