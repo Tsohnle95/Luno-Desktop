@@ -42,19 +42,20 @@ export interface ShutdownEnvelope { version: ContractVersion; state: ShutdownSta
 
 const object = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const exact = (v: unknown, keys: string[]): v is Record<string, unknown> => object(v) && Object.keys(v).length === keys.length && Object.keys(v).every(k => keys.includes(k));
+const nonEmptyId = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
 export function isContractVersion(v: unknown): v is ContractVersion { return v === CONTRACT_VERSION; }
 function isCommand(v: unknown): v is Command {
   if (!object(v) || typeof v.type !== "string") return false;
   if (["get_library", "scan_library", "pause"].includes(v.type)) return Object.keys(v).length === 1;
-  if (v.type === "play") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.track_id === "string" && Object.keys(v.payload).length === 1;
+   if (v.type === "play") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && Object.keys(v.payload).length === 1;
   if (v.type === "seek") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.position_ms === "number" && Number.isSafeInteger(v.payload.position_ms) && v.payload.position_ms >= 0 && Object.keys(v.payload).length === 1;
-  if (v.type === "cancel_job") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.job_id === "string" && Object.keys(v.payload).length === 1;
+   if (v.type === "cancel_job") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && Object.keys(v.payload).length === 1;
   if (v.type === "shutdown") return exact(v, ["type", "payload"]) && object(v.payload) && ["user_requested", "system", "fatal_error"].includes(String(v.payload.reason)) && Object.keys(v.payload).length === 1;
   return false;
 }
 function isEvent(v: unknown): v is Event {
   if (!object(v) || typeof v.type !== "string" || !exact(v, ["type", "payload"]) || !object(v.payload)) return false;
-  const id = (value: unknown): value is string => typeof value === "string" && value.length > 0;
+   const id = nonEmptyId;
   const optionalString = (value: unknown): value is string | null => value === null || typeof value === "string";
   const generation = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
   const nonNegativeInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
@@ -81,7 +82,7 @@ function isEvent(v: unknown): v is Event {
   }
   return false;
 }
-export function isCommandEnvelope(v: unknown): v is CommandEnvelope { return exact(v, ["version", "request_id", "command"]) && isContractVersion(v.version) && typeof v.request_id === "string" && v.request_id.trim().length > 0 && isCommand(v.command); }
+export function isCommandEnvelope(v: unknown): v is CommandEnvelope { return exact(v, ["version", "request_id", "command"]) && isContractVersion(v.version) && nonEmptyId(v.request_id) && isCommand(v.command); }
 export function isDeliveryErrorEventId(value: unknown): value is string { return typeof value === "string" && /^delivery-error-[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value.slice(15))); }
 export function isDomainEventId(value: unknown): value is string { return typeof value === "string" && /^event-[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value.slice(6))); }
 export function isEventEnvelope(v: unknown): v is EventEnvelope { return exact(v, ["version", "event_id", "generation", "job_id", "session_id", "event"]) && isContractVersion(v.version) && (isDomainEventId(v.event_id) || isDeliveryErrorEventId(v.event_id)) && Number.isSafeInteger(v.generation) && v.generation >= 0 && (v.job_id === null || (typeof v.job_id === "string" && v.job_id.length > 0)) && (v.session_id === null || (typeof v.session_id === "string" && v.session_id.length > 0)) && isEvent(v.event); }

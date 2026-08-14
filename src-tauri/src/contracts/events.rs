@@ -6,6 +6,7 @@ use super::types::*;
 pub struct CommandEnvelope {
     #[serde(deserialize_with = "super::types::version")]
     pub version: u16,
+    #[serde(deserialize_with = "super::types::non_empty_string")]
     pub request_id: String,
     pub command: Command,
 }
@@ -17,7 +18,7 @@ pub enum Command {
     ScanLibrary,
     Play { track_id: TrackId },
     Pause,
-    Seek { position_ms: u64 },
+    Seek { #[serde(deserialize_with = "super::types::safe_u64")] position_ms: u64 },
     CancelJob { job_id: JobId },
     Shutdown { reason: ShutdownReason },
 }
@@ -61,7 +62,7 @@ pub struct EventEnvelope {
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum Event {
     LibrarySnapshot { snapshot: LibrarySnapshot },
-    LibraryRootStatus { root_index: usize, status: RootStatus },
+    LibraryRootStatus { #[serde(deserialize_with = "super::types::safe_usize")] root_index: usize, status: RootStatus },
     PlaybackSnapshot { snapshot: PlaybackSnapshot },
     TrackStarted { track_id: TrackId },
     QueueChanged { queue: Vec<TrackId> },
