@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createBridge } from "../app/bridge";
 import { createBackendProjection } from "../state/backend_projection";
 
-const event = (event: unknown, generation = 1) => ({ version: 1 as const, event_id: `${generation}`, generation, job_id: null, session_id: null, event });
+const event = (event: unknown, generation = 1) => ({ version: 1 as const, event_id: `event-${generation}`, generation, job_id: null, session_id: null, event });
 
 describe("typed IPC bridge and projection", () => {
   it("wraps commands and validates subscriptions", async () => {

@@ -13,6 +13,8 @@ use crate::download::coordinator::DownloadCoordinator;
 use crate::domain::identity::TrackMetadata;
 use crate::runtime::task_registry::{CancellationToken, ShutdownReport, SpawnError, TaskHandle, TaskRegistry, TaskSpec};
 
+const DELIVERY_ERROR_ID_BASE: u64 = 9_000_000_000_000_000;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MigrationStatus { NotRun, Skipped { reason: String }, Completed { warnings: usize, snapshot_created: bool, removed_previews: usize }, Failed { reason: String } }
@@ -58,6 +60,17 @@ mod tests {
 
         state.acknowledge_event(&pending[0].event_id);
         assert_eq!(state.pending_events().len(), 1);
+    }
+
+    #[test]
+    fn delivery_error_id_is_outside_domain_sequence() {
+        let state = AppState::new(1);
+        state.set_event_sink(StdArc::new(|_| Err("offline".into())));
+        state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned }));
+        let ids: Vec<_> = state.pending_events().into_iter().map(|event| event.event_id).collect();
+        assert_eq!(ids[0], "event-1");
+        assert!(ids[1].strip_prefix("event-").unwrap().parse::<u64>().is_ok());
+        assert_ne!(ids[1], "event-2");
     }
 
     #[test]
@@ -237,6 +250,31 @@ mod tests {
         assert!(state.drain_events(|_| panic!("sink panic")).is_err());
         assert_eq!(state.drain_events(|_| Ok(())), Ok(true));
     }
+
+    #[test]
+    fn panicking_batch_retries_only_undelivered_suffix() {
+        let state = AppState::new(1);
+        for index in 0..3 { state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: index, status: RootStatus::Scanned })); }
+        let delivered = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let seen = delivered.clone();
+        assert!(state.drain_events(|event| {
+            seen.lock().unwrap().push(event.event_id.clone());
+            if event.event_id == "event-2" { panic!("sink panic"); }
+            Ok(())
+        }).is_err());
+        assert_eq!(*delivered.lock().unwrap(), vec!["event-1", "event-2"]);
+        assert_eq!(state.pending_events().iter().map(|event| event.event_id.as_str()).collect::<Vec<_>>(), vec!["event-2", "event-3"]);
+    }
+
+    #[test]
+    fn discarded_event_id_does_not_block_later_publication() {
+        let state = AppState::new(1);
+        let orphan = state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned });
+        let later = state.event(Generation(1), Event::LibraryRootStatus { root_index: 1, status: RootStatus::Scanned });
+        state.discard_event(&orphan.event_id);
+        state.publish(later);
+        assert_eq!(state.pending_events().iter().map(|event| event.event_id.as_str()).collect::<Vec<_>>(), vec!["event-2"]);
+    }
 }
 
 #[derive(Clone)]
@@ -250,6 +288,7 @@ pub struct AppState {
     event_draining: Arc<Mutex<bool>>,
     event_in_flight: Arc<Mutex<usize>>,
     next_event: Arc<AtomicU64>,
+    next_delivery_error: Arc<AtomicU64>,
     next_publish: Arc<AtomicU64>,
     next_generation: Arc<AtomicU64>,
     event_sink: Arc<Mutex<Option<StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>>>>,
@@ -272,7 +311,7 @@ impl AppState {
         Self { tasks: Arc::new(TaskRegistry::new(task_limit)), migration_status: Arc::new(Mutex::new(MigrationStatus::NotRun)),
             library: Arc::new(Mutex::new(LibrarySnapshot { version: CONTRACT_VERSION, generation: Generation(0), tracks: Vec::new(), playlists: Vec::new() })),
             roots: Arc::new(Mutex::new(Vec::new())), root_statuses: Arc::new(Mutex::new(Vec::new())), events: Arc::new(Mutex::new(Vec::new())), event_draining: Arc::new(Mutex::new(false)), event_in_flight: Arc::new(Mutex::new(0)),
-            next_event: Arc::new(AtomicU64::new(0)), next_publish: Arc::new(AtomicU64::new(1)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), publication: Arc::new(Mutex::new(())), unpublished: Arc::new(Mutex::new(BTreeMap::new())), skipped_publications: Arc::new(Mutex::new(BTreeSet::new())), admission: Arc::new(Mutex::new(())), latest_snapshot: Arc::new(Mutex::new(None)), latest_control: Arc::new(Mutex::new(None)), replayed_events: Arc::new(Mutex::new(BTreeSet::new())), event_retry_stopped: Arc::new(AtomicBool::new(false)), shutdown_result: Arc::new(Mutex::new(None)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
+            next_event: Arc::new(AtomicU64::new(0)), next_delivery_error: Arc::new(AtomicU64::new(0)), next_publish: Arc::new(AtomicU64::new(1)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), publication: Arc::new(Mutex::new(())), unpublished: Arc::new(Mutex::new(BTreeMap::new())), skipped_publications: Arc::new(Mutex::new(BTreeSet::new())), admission: Arc::new(Mutex::new(())), latest_snapshot: Arc::new(Mutex::new(None)), latest_control: Arc::new(Mutex::new(None)), replayed_events: Arc::new(Mutex::new(BTreeSet::new())), event_retry_stopped: Arc::new(AtomicBool::new(false)), shutdown_result: Arc::new(Mutex::new(None)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
     }
     pub fn library(&self) -> LibrarySnapshot { self.library.lock().unwrap().clone() }
     pub fn root_statuses(&self) -> Vec<RootStatus> { self.root_statuses.lock().unwrap().clone() }
@@ -301,23 +340,33 @@ impl AppState {
         let _publication = self.publication.lock().unwrap();
         let claimed = { std::mem::take(&mut *self.events.lock().unwrap()) };
         *self.event_in_flight.lock().unwrap() = claimed.len();
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            for (index, event) in claimed.iter().enumerate() {
-                if let Err(message) = deliver(event) { return Err((index, message)); }
+        let mut failed_at = None;
+        let mut error = None;
+        for (index, event) in claimed.iter().enumerate() {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| deliver(event)));
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(message)) => { failed_at = Some(index); error = Some(message); break; }
+                Err(_) => { failed_at = Some(index); error = Some("event delivery panicked".into()); break; }
             }
-            Ok(())
-        }));
-        let (failed, error) = match outcome {
-            Ok(Ok(())) => (Vec::new(), None),
-            Ok(Err((index, message))) => (claimed[index..].to_vec(), Some(message)),
-            Err(_) => (claimed.clone(), Some("event delivery panicked".into())),
-        };
+        }
+        let failed = failed_at.map_or_else(Vec::new, |index| claimed[index..].to_vec());
         if !failed.is_empty() { self.events.lock().unwrap().splice(0..0, failed); }
         error.map_or(Ok(true), Err)
     }
     pub fn event(&self, generation: Generation, event: Event) -> EventEnvelope {
         let _publication = self.publication.lock().unwrap();
         self.event_locked(generation, event)
+    }
+
+    /// Releases an allocated ID when an event is abandoned before publication.
+    pub fn discard_event(&self, event_id: &str) {
+        let Some(id) = event_id.strip_prefix("event-").and_then(|value| value.parse::<u64>().ok()) else { return; };
+        let _publication = self.publication.lock().unwrap();
+        if id >= self.next_publish.load(Ordering::Acquire) {
+            self.skipped_publications.lock().unwrap().insert(id);
+            self.publish_ready_locked();
+        }
     }
 
     fn event_locked(&self, generation: Generation, event: Event) -> EventEnvelope {
@@ -377,12 +426,12 @@ impl AppState {
             || *self.event_draining.lock().unwrap();
         if !has_delivery_work {
             if let Some(sink) = self.event_sink.lock().unwrap().clone() {
-                if sink(envelope.clone()).is_err() {
+                let delivery = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(envelope.clone())));
+                if !matches!(delivery, Ok(Ok(()))) {
                     self.queue_event_locked(envelope);
-                    let failure = self.event_locked(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "backend event delivery failed".into(), retryable: true } });
-                    let failure_id = failure.event_id.strip_prefix("event-").and_then(|value| value.parse::<u64>().ok()).expect("internal event IDs are numeric");
+                    let failure_id = DELIVERY_ERROR_ID_BASE - self.next_delivery_error.fetch_add(1, Ordering::Relaxed);
+                    let failure = EventEnvelope { version: CONTRACT_VERSION, event_id: format!("event-{failure_id}"), generation: Generation(0), job_id: None, session_id: None, event: Event::Error { error: ContractError { code: ErrorCode::Internal, message: "backend event delivery failed".into(), retryable: true } } };
                     self.queue_event_locked(failure);
-                    self.skipped_publications.lock().unwrap().insert(failure_id);
                 }
             } else {
                 self.queue_event_locked(envelope);
@@ -515,15 +564,16 @@ impl AppState {
         let download_report = self.downloads.shutdown(remaining);
         let remaining = deadline.saturating_sub(started.elapsed());
         let pending_before_terminal = self.retry_event_delivery(remaining);
-        let timed_out = report.timed_out || !process_ok || download_report.timed_out || pending_before_terminal > 0;
+        let terminal_timed_out = report.timed_out || !process_ok || download_report.timed_out || pending_before_terminal > 0;
         let failed = report.failed;
-        let state = if failed { ShutdownState::Failed } else if timed_out { ShutdownState::TimedOut } else { ShutdownState::Complete };
+        let state = if failed { ShutdownState::Failed } else if terminal_timed_out { ShutdownState::TimedOut } else { ShutdownState::Complete };
         self.publish(self.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state, reason } }));
         if failed { self.publish(self.event(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "shutdown failed because a worker panicked".into(), retryable: false } })); }
-        else if timed_out { self.publish(self.event(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "shutdown timed out; workers remain active".into(), retryable: false } })); }
+        else if terminal_timed_out { self.publish(self.event(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "shutdown timed out; workers remain active".into(), retryable: false } })); }
         let remaining = deadline.saturating_sub(started.elapsed());
         let undelivered = self.retry_event_delivery(remaining);
-        let result = ShutdownReport { joined: report.joined, timed_out, failed, undelivered };
+        // The terminal drain is the final authority for the shutdown report.
+        let result = ShutdownReport { joined: report.joined, timed_out: terminal_timed_out || undelivered > 0, failed, undelivered };
         *stored_result = Some(result);
         result
     }
