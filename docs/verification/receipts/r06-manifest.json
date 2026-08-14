@@ -70,7 +70,7 @@
     "AC-PERSIST-01":{"status":"INCONCLUSIVE","receipt":"migration","artifact":"docs/verification/receipts/r06/migration/unavailable.txt"},
     "AC-PERSIST-02":{"status":"INCONCLUSIVE","receipt":"migration","artifact":"docs/verification/receipts/r06/migration/unavailable.txt"},
     "AC-OPS-01":{"status":"INCONCLUSIVE","receipt":"accessibility","artifact":"docs/verification/receipts/r06/accessibility/unavailable.txt"},
-    "AC-OPS-02":{"status":"BLOCKED","receipt":"runtime_smoke","artifact":"docs/verification/receipts/r06/smoke/unavailable.txt"},
+    "AC-OPS-02":{"status":"BLOCKED","receipt":"artifact_validation","artifact":"docs/verification/receipts/r06/packaging/ac-ops-02-artifact.txt"},
     "AC-OPS-03":{"status":"INCONCLUSIVE","receipt":"shutdown","artifact":"docs/verification/receipts/r06/shutdown/unavailable.txt"}
   },
   "journeys": {

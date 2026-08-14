@@ -1,0 +1,28 @@
+R06 acceptance receipt: AC-OPS-02
+receipt_type=packaged-artifact-validation
+status=BLOCKED
+
+Required artifact:
+  expected=src-tauri/target/release/bundle/macos/Luno.app
+  check=test -e src-tauri/target/release/bundle/macos/Luno.app
+  exit_code=1
+  result=missing; no packaged Tauri application artifact exists
+
+Reviewed binary inputs:
+  check=test -d release-input/bin
+  exit_code=1
+  result=missing; release-input/bin is absent
+
+Manifest checksum checks:
+  check=jq -r '.artifacts[] | [.name, .sha256] | @tsv' release/desktop-binaries.json
+  exit_code=0
+  result=ffmpeg REPLACE_WITH_REVIEWED_SHA256; ffprobe REPLACE_WITH_REVIEWED_SHA256; yt-dlp REPLACE_WITH_REVIEWED_SHA256
+  status=BLOCKED; all three SHA-256 values are placeholders, not reviewed checksums
+
+Runtime command check:
+  command=npm run tauri -- --version
+  exit_code=127
+  result=tauri: command not found
+  status=INCONCLUSIVE; this does not supply a packaged artifact
+
+Conclusion=BLOCKED. AC-OPS-02 requires a packaged Tauri artifact, reviewed binary inputs, and non-placeholder SHA-256 values before packaged smoke can run.

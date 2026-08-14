@@ -25,11 +25,11 @@ Receipt timestamp: `2026-08-14T09:19:38Z`
 | `npm ci` | `0` | PASS | `added 72 packages, and audited 73 packages in 1s`; `found 0 vulnerabilities` |
 | `npm run typecheck` | `2` | PRIOR HISTORICAL RUN: FAILED | TypeScript compilation failed. This is not the authoritative R06 result. |
 | `npm run build` | `2` | PRIOR HISTORICAL RUN: FAILED | The command's `tsc --noEmit` phase failed; this is not the authoritative R06 result. |
-| `cargo test --manifest-path src-tauri/Cargo.toml` | `101` | FAILED | Dependencies compiled/downloaded, then the `luno-desktop` build script failed: `resource path \`resources/bin\` doesn't exist`. |
+| `cargo test --manifest-path src-tauri/Cargo.toml` | `101` | PRIOR HISTORICAL RUN: FAILED | Dependencies compiled/downloaded, then the `luno-desktop` build script failed: `resource path \`resources/bin\` doesn't exist`. This is not the authoritative R06 result. |
 
 ## Installation Notes
 
-`npm ci` installed the locked JavaScript dependencies successfully. Rust was installed with `brew install rust` because `rustc`, `cargo`, and `rustup` were initially unavailable. The Rust test gate reached project compilation; its failure is a missing repository resource, not an unavailable Rust toolchain. No application implementation was modified.
+`npm ci` installed the locked JavaScript dependencies successfully. Rust was installed with `brew install rust` because `rustc`, `cargo`, and `rustup` were initially unavailable. The historical Cargo row records an older missing-`resources/bin` failure. The authoritative R06 Cargo run reached concrete Rust compilation and failed with exit `101` and 43 library plus 48 library-test errors; it was not a missing-tool result. No application implementation was modified.
 
 The exit-2 TypeScript rows above are prior historical runs. They must not override R06's recorded npm exit `127` results, which are INCONCLUSIVE because `tsc` was unavailable.
 
@@ -39,3 +39,9 @@ The exit-2 TypeScript rows above are prior historical runs. They must not overri
 |---|---:|---|---|
 | `npm run typecheck` | `127` | INCONCLUSIVE | `docs/verification/receipts/r06/typescript/typecheck.txt` (`sh: tsc: command not found`) |
 | `npm run build` | `127` | INCONCLUSIVE | `docs/verification/receipts/r06/typescript/build.txt` (`sh: tsc: command not found`) |
+
+## R06 Authoritative Rust Receipt
+
+| Command | Exit | Status | Receipt |
+|---|---:|---|---|
+| `cargo test --manifest-path src-tauri/Cargo.toml` | `101` | FAILED | `docs/verification/receipts/r06/rust/cargo-test.txt` (concrete compilation failure: 43 library errors and 48 library-test errors) |
