@@ -2,7 +2,7 @@
 
 Status: **BLOCKED**.
 
-Executed in order on 2026-08-14 from reviewed commit `02b1be8ed13c39d1d8ad7b7ee797310f3f2ee05c` on Darwin 25.5.0 (macOS, arm64). The workflow bundle path is `src-tauri/target/release/bundle/macos/Luno.app`.
+Executed in order on 2026-08-14 from reviewed commit `58bd9c1e1e592ad8ac903c608624168872d1f68f` on Darwin 25.5.0 (macOS, arm64). The workflow bundle path is `src-tauri/target/release/bundle/macos/Luno.app`.
 
 Toolchain receipt: Node `v22.23.2`, npm `10.9.8`, Rust `rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)`, Cargo `1.97.1 (c980f4866 2026-06-30) (Homebrew)`. The TypeScript compiler was present and reported errors (exit `2`); its version was not separately recorded. Vite and the Tauri CLI were unavailable because their local executables were unavailable in the current workspace.
 
