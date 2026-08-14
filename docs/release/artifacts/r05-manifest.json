@@ -3,15 +3,13 @@
   "status": "BLOCKED",
   "timestamp": "2026-08-14",
   "source_review_head": "d64da5c244752483d40b6e7558247e11c805f24b",
-  "receipt_update_commit": {
-    "description": "This receipt update is the next commit after source_review_head; its SHA is established only after that commit is created.",
-    "parent_source_commit": "d64da5c244752483d40b6e7558247e11c805f24b"
-  },
+  "receipt_update_commit": "032b14ec38a96d5761f9a2ea1d58cb193e790bf6",
+  "receipt_update_parent": "d64da5c244752483d40b6e7558247e11c805f24b",
   "reviewed_tree_dirty_state": {
     "command": "git status --porcelain",
     "exit_code": 0,
     "output": " M TODO.md\n M dispatch-plan.json",
-    "note": "These pre-existing worktree changes were outside the reviewed R05 artifacts. The receipt files are updated by the next commit and are not part of source_review_head."
+    "note": "These pre-existing worktree changes were outside the reviewed R05 artifacts. The receipt files are a separate receipt update and are not part of source_review_head."
   },
   "scope": "Packaging configuration and release machinery only",
   "workflow_bundle_path": "src-tauri/target/release/bundle/macos/Luno.app",
@@ -81,10 +79,10 @@
   ],
   "provenance": {
     "source_review_head": "d64da5c244752483d40b6e7558247e11c805f24b",
-    "receipt_update": "The receipt update itself is the next commit, with parent/source commit d64da5c244752483d40b6e7558247e11c805f24b. Its SHA cannot be known until commit creation; resolve it afterward with git rev-parse HEAD.",
+    "receipt_update": "The source review is recorded at source_review_head; the receipt files are a separate receipt update committed at 032b14ec38a96d5761f9a2ea1d58cb193e790bf6, whose parent is the source commit d64da5c244752483d40b6e7558247e11c805f24b.",
     "commands": [
       {
-        "command": "git rev-parse HEAD",
+        "command": "git rev-parse 032b14ec^",
         "exit_code": 0,
         "output": "d64da5c244752483d40b6e7558247e11c805f24b"
       },
@@ -94,7 +92,7 @@
         "output": " M TODO.md\n M dispatch-plan.json"
       }
     ],
-    "note": "The source review was performed at source_review_head. The receipt update files are not part of that source review head; they are the next commit, whose parent/source commit is d64da5c244752483d40b6e7558247e11c805f24b."
+    "note": "The source review was performed at source_review_head d64da5c244752483d40b6e7558247e11c805f24b. The receipt update files are separate from the reviewed source and are recorded by receipt_update_commit 032b14ec38a96d5761f9a2ea1d58cb193e790bf6; git rev-parse 032b14ec^ confirms that its source parent is d64da5c244752483d40b6e7558247e11c805f24b."
   },
   "unavailable_or_missing": [
     "release-input/bin/ffmpeg",
