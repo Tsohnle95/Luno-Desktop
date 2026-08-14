@@ -70,7 +70,7 @@ pub struct MigratedSettings {
 pub struct MigrationReceipt {
     pub version: PathBuf,
     pub state: PathBuf,
-    pub snapshot: PathBuf,
+    pub snapshot: Option<PathBuf>,
     pub removed_previews: Vec<PathBuf>,
     pub warnings: usize,
     pub warning_messages: Vec<String>,
@@ -90,11 +90,11 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
         record.migration == "desktop-first-run" && record.version == MIGRATION_VERSION && record.completed
     });
     if valid_completed_record.is_some() {
-        let mut warning_messages = reconcile_recovery_quarantine(&paths.target_root);
+        let mut warning_messages = Vec::new();
         let legacy = read_legacy(&paths.legacy_root, Some(&paths.preview_dir));
         let preserved_files = match inventory_retry_files(&paths.legacy_root, paths.legacy_data_root.as_deref(), &paths.preview_dir, &paths.target_root) {
             Ok(files) => files,
-            Err(error) => { warning_messages.push(format!("legacy input inventory failed: {error}")); Vec::new() }
+            Err(error) => return Err(MigrationError::Io(format!("legacy input inventory failed: {error}"))),
         };
         if !legacy.warnings.is_empty() || !legacy.preview_files.is_empty() || legacy.config.is_some()
             || !legacy.playlist_urls.is_empty() || !legacy.allowed_duplicate_keys.is_empty()
@@ -106,7 +106,7 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
         return Ok(MigrationReceipt {
             version: paths.version_record(),
             state: paths.state_file(),
-            snapshot: paths.target_root.clone(),
+            snapshot: None,
             removed_previews: Vec::new(),
             warnings: warning_messages.len(),
             warning_messages,
@@ -160,7 +160,7 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
             return Err(rollback_with_extra(paths, snapshot, error, true, &quarantined_records, restore_error, keychain, keychain_import));
         }
     };
-    let mut warning_messages: Vec<String> = legacy.warnings.iter().map(|warning| format!("{}: {}", warning.path.display(), warning.message)).collect();
+    let mut warning_messages: Vec<String> = legacy.warnings.iter().map(|warning| format_warning(warning.path.as_path(), &paths.legacy_root, paths.legacy_data_root.as_deref(), &paths.preview_dir, &warning.message)).collect();
     if let Err(error) = discard_quarantine(quarantined_records, options.fail_discard_quarantine) {
         warning_messages.push(format!("migration committed but recovery quarantine cleanup failed: {error}"));
     }
@@ -169,6 +169,17 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
 
 fn relative_display(path: &Path, root: &Path) -> String {
     path.strip_prefix(root).unwrap_or(path).to_string_lossy().into_owned()
+}
+
+fn format_warning(path: &Path, legacy_root: &Path, music_root: Option<&Path>, preview_root: &Path, message: &str) -> String {
+    let root = if path.starts_with(preview_root) {
+        preview_root
+    } else if music_root.is_some_and(|candidate| path.starts_with(candidate)) {
+        music_root.unwrap()
+    } else {
+        legacy_root
+    };
+    format!("{}: {}", relative_display(path, root), message)
 }
 
 fn preflight(p: &MigrationPaths) -> Result<(), MigrationError> {
@@ -381,17 +392,4 @@ fn discard_quarantine(items: Vec<(PathBuf, PathBuf)>, injected_failure: bool) ->
     if injected_failure { return Err(MigrationError::Cleanup("injected quarantine disposal failure".into())); }
     for (_, backup) in items { fs::remove_file(backup)?; }
     Ok(())
-}
-
-fn reconcile_recovery_quarantine(target: &Path) -> Vec<String> {
-    let mut warnings = Vec::new();
-    let entries = match fs::read_dir(target) { Ok(entries) => entries, Err(error) => { warnings.push(format!("recovery quarantine scan failed: {error}")); return warnings; } };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with(".migration-recovery-")) {
-            if let Err(error) = fs::remove_file(&path) { warnings.push(format!("recovery quarantine cleanup failed for {}: {error}", path.display())); }
-            else { warnings.push(format!("discarded leftover recovery quarantine {} after completed migration", path.display())); }
-        }
-    }
-    warnings
 }

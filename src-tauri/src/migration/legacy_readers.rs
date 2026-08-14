@@ -72,10 +72,17 @@ pub fn inventory_files(root: &Path, excluded_roots: &[&Path]) -> Result<Vec<Path
 /// In particular, do not recursively treat HOME as a migration data root.
 pub fn inventory_retry_files(legacy_root: &Path, music_root: Option<&Path>, preview_dir: &Path, target_root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = BTreeSet::new();
-    let mut budget = MAX_RETRY_ENTRIES;
+    // Reserve half the inspection budget for each explicit discovery surface so
+    // a large HOME envelope cannot starve the configured music root (or vice versa).
+    let discovery_budget = MAX_RETRY_ENTRIES / 2;
+    let music_budget = MAX_RETRY_ENTRIES - discovery_budget;
     let excluded = [preview_dir, target_root];
-    inventory_direct(legacy_root, &excluded, &mut files, &mut budget)?;
+    let mut envelope_budget = discovery_budget / 2;
+    let mut preview_budget = discovery_budget - envelope_budget;
+    inventory_direct(legacy_root, &excluded, &mut files, &mut envelope_budget)?;
+    inventory_preview(preview_dir, &mut files, &mut preview_budget)?;
     if let Some(root) = music_root.filter(|root| *root != legacy_root) {
+        let mut budget = music_budget;
         inventory_direct(root, &[], &mut files, &mut budget)?;
         let mut marker_roots = Vec::new();
         find_marker_roots(root, 0, &mut marker_roots, &mut budget)?;
@@ -83,8 +90,17 @@ pub fn inventory_retry_files(legacy_root: &Path, music_root: Option<&Path>, prev
             inventory_direct(&marker_root, &[], &mut files, &mut budget)?;
         }
     }
-    for path in read_preview_inventory(preview_dir)? { files.insert(path); }
     Ok(files.into_iter().collect())
+}
+
+fn inventory_preview(root: &Path, files: &mut BTreeSet<PathBuf>, budget: &mut usize) -> Result<(), String> {
+    if !root.exists() { return Ok(()); }
+    for path in read_preview_inventory(root)? {
+        if *budget == 0 { return Err(format!("retry inspection exceeded {} entries", MAX_RETRY_ENTRIES)); }
+        *budget -= 1;
+        files.insert(path);
+    }
+    Ok(())
 }
 
 fn inventory_direct(root: &Path, excluded: &[&Path], files: &mut BTreeSet<PathBuf>, budget: &mut usize) -> Result<(), String> {

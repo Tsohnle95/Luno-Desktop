@@ -15,3 +15,7 @@ Preview cleanup is the only deletion performed. It is limited to files in the
 configured temporary preview directory and preserves explicitly current or
 promoted assets. A receipt records the snapshot, target files, warning count,
 and removed preview paths.
+
+An already completed retry has no snapshot (`snapshot: None`); it preserves all
+target state. Recovery quarantine files are deleted only when their paths were
+recorded by the current migration transaction, never by filename pattern.

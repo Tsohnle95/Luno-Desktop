@@ -63,6 +63,23 @@ fn retry_inventory_reports_unknown_files_without_recursing_home() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn retry_inventory_budget_is_reserved_for_preview_and_music_roots() {
+    let root = tempdir();
+    let music = root.join("music");
+    let preview = root.join(".luno_previews");
+    fs::create_dir_all(&music).unwrap();
+    fs::create_dir_all(&preview).unwrap();
+    for index in 0..(MAX_RETRY_ENTRIES / 4) {
+        fs::write(music.join(format!("track-{index}")), b"x").unwrap();
+        fs::write(preview.join(format!("preview-{index}")), b"x").unwrap();
+    }
+    let files = inventory_retry_files(&root, Some(&music), &preview, &root.join("target")).unwrap();
+    assert!(files.iter().any(|path| path.starts_with(&music)));
+    assert!(files.iter().any(|path| path.starts_with(&preview)));
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn dangling_preview_symlink_is_a_migration_trigger_for_main_gating() {

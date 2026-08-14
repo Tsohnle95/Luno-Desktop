@@ -134,7 +134,7 @@ fn snapshot_redacts_key_and_invalid_record_is_recoverable() {
     fs::write(p.version_record(), r#"{"migration":"desktop-first-run","version":1,"completed":false}"#).unwrap();
 
     let result = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
-    let snapshot = fs::read_to_string(result.snapshot).unwrap();
+    let snapshot = fs::read_to_string(result.snapshot.unwrap()).unwrap();
     assert!(snapshot.contains("[REDACTED]"));
     assert!(!snapshot.contains("secret"));
     assert_eq!(fs::read_to_string(p.legacy_root.join(".luno_config.json")).unwrap(), r#"{"lastfm_key":"secret","volume":0.5}"#);
@@ -150,9 +150,9 @@ fn malformed_or_non_object_config_is_not_snapshotted() {
         fs::create_dir_all(&p.legacy_root).unwrap();
         fs::write(p.legacy_root.join(".luno_config.json"), contents).unwrap();
         let result = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
-        let backup = fs::read_to_string(result.snapshot.join("config-snapshot-omitted.txt")).unwrap();
+        let backup = fs::read_to_string(result.snapshot.unwrap().join("config-snapshot-omitted.txt")).unwrap();
         assert!(backup.contains("snapshot omitted"));
-        assert!(!fs::read_to_string(result.snapshot.join(".luno_config.json")).is_ok());
+        assert!(!fs::read_to_string(result.snapshot.unwrap().join(".luno_config.json")).is_ok());
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -220,7 +220,7 @@ fn post_commit_quarantine_cleanup_is_only_a_warning() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn completed_retry_discards_leftover_recovery_quarantine_with_warning() {
+fn completed_retry_does_not_delete_unowned_recovery_quarantine() {
     let root = tempdir();
     let p = paths(&root);
     fs::create_dir_all(&p.target_root).unwrap();
@@ -228,8 +228,10 @@ fn completed_retry_discards_leftover_recovery_quarantine_with_warning() {
     let leftover = p.target_root.join(".migration-recovery-leftover");
     fs::write(&leftover, "old").unwrap();
     let result = migrate(&p, &MigrationOptions::default(), &mut TestKeychain);
-    assert!(matches!(result, Ok(receipt) if receipt.warning_messages.iter().any(|warning| warning.contains("discarded leftover"))));
-    assert!(!leftover.exists());
+    let receipt = result.unwrap();
+    assert!(receipt.snapshot.is_none());
+    assert!(receipt.warning_messages.is_empty());
+    assert!(leftover.exists());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -247,6 +249,21 @@ fn completed_migration_is_idempotent_and_preserves_target_state() {
     assert_eq!(fs::read_to_string(p.state_file()).unwrap(), "user-owned target");
     assert_eq!(first.version, second.version);
     assert!(second.warning_messages.iter().any(|warning| warning.contains("already complete") && warning.contains("unknown-subdirectory/new-legacy-input")));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn migration_warning_paths_are_relative_to_their_explicit_root() {
+    let root = tempdir();
+    let music = root.join("music");
+    let p = MigrationPaths { legacy_root: root.clone(), legacy_data_root: Some(music.clone()), target_root: root.join("target"), preview_dir: root.join(".luno_previews"), current_preview: Vec::new(), promoted_assets: Vec::new() };
+    fs::create_dir_all(&music).unwrap();
+    fs::write(root.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, music.display())).unwrap();
+    fs::write(music.join(".luno_playlist_urls.json"), "not-json").unwrap();
+    let receipt = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
+    assert!(receipt.warning_messages.iter().any(|warning| warning.starts_with(".luno_playlist_urls.json: ")));
+    assert!(receipt.warning_messages.iter().all(|warning| !warning.contains(root.to_str().unwrap())));
     fs::remove_dir_all(root).unwrap();
 }
 
