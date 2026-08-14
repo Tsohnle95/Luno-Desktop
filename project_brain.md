@@ -144,7 +144,7 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 3. Live queue/history/favorite path references are updated, then the generation-tagged library scan refreshes search, ordering, and the Unsorted view
 
 ### Playback
-1. User clicks track → `engine.play_with_context(path, context_list)`; the Rust migration surface currently reports playback/video commands as explicitly unavailable until native backends are connected, and the Shell keeps runtime controls visibly unavailable.
+1. User clicks track → `engine.play_with_context(path, context_list)` in the legacy desktop path; the Rust macOS migration surface resolves the track ID to its scanned local path, decodes through Symphonia, and streams normalized 44.1 kHz stereo samples through cpal. Rust non-macOS audio and all Rust video commands remain explicitly unavailable.
 2. Sets `queue` to `context_list` (or the playlist containing `path`)
 3. Sets `queue_idx` to track's position
 4. Calls `play_current()` → clears stale scrub position/time, loads `pygame.mixer.music`, starts playback, records mixer-clock base state plus monotonic fallback state, probes duration via `mutagen.File` (supports mp3/m4a/flac/etc.)

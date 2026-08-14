@@ -4,66 +4,127 @@ pub const CONTRACT_VERSION: u16 = 1;
 pub const MAX_SAFE_EVENT_ID: u64 = 9_007_199_254_740_991;
 
 pub(crate) fn non_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>,
+{
     let value = String::deserialize(deserializer)?;
-    if value.trim().is_empty() { Err(serde::de::Error::custom("identifier must not be empty")) } else { Ok(value) }
+    if value.trim().is_empty() {
+        Err(serde::de::Error::custom("identifier must not be empty"))
+    } else {
+        Ok(value)
+    }
 }
 
 pub(crate) fn safe_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>,
+{
     let value = u64::deserialize(deserializer)?;
-    if value <= MAX_SAFE_EVENT_ID { Ok(value) } else { Err(serde::de::Error::custom("number exceeds JavaScript safe integer range")) }
+    if value <= MAX_SAFE_EVENT_ID {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(
+            "number exceeds JavaScript safe integer range",
+        ))
+    }
 }
 
 pub(crate) fn safe_usize<'de, D>(deserializer: D) -> Result<usize, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>,
+{
     let value = safe_u64(deserializer)?;
     usize::try_from(value).map_err(|_| serde::de::Error::custom("number exceeds platform range"))
 }
 
 pub(crate) fn safe_option_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>,
+{
     Option::<u64>::deserialize(deserializer)?.map_or(Ok(None), |value| {
-        if value <= MAX_SAFE_EVENT_ID { Ok(Some(value)) } else { Err(serde::de::Error::custom("number exceeds JavaScript safe integer range")) }
+        if value <= MAX_SAFE_EVENT_ID {
+            Ok(Some(value))
+        } else {
+            Err(serde::de::Error::custom(
+                "number exceeds JavaScript safe integer range",
+            ))
+        }
     })
 }
 
 pub(crate) fn progress<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>,
+{
     let value = Option::<f32>::deserialize(deserializer)?;
-    if value.map_or(true, |value| value.is_finite() && (0.0..=1.0).contains(&value)) { Ok(value) } else { Err(serde::de::Error::custom("progress must be finite and between zero and one")) }
+    if value.map_or(true, |value| {
+        value.is_finite() && (0.0..=1.0).contains(&value)
+    }) {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(
+            "progress must be finite and between zero and one",
+        ))
+    }
 }
 
 pub(crate) fn event_id<'de, D>(deserializer: D) -> Result<String, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>,
+{
     let value = String::deserialize(deserializer)?;
-    let digits = value.strip_prefix("event-").or_else(|| value.strip_prefix("delivery-error-"));
-    let valid = digits.is_some_and(|digits| !digits.is_empty() && !digits.starts_with('0') && digits.bytes().all(|byte| byte.is_ascii_digit()) && digits.parse::<u64>().is_ok_and(|id| id <= MAX_SAFE_EVENT_ID));
-    if valid { Ok(value) } else { Err(serde::de::Error::custom("invalid event ID")) }
+    let digits = value
+        .strip_prefix("event-")
+        .or_else(|| value.strip_prefix("delivery-error-"));
+    let valid = digits.is_some_and(|digits| {
+        !digits.is_empty()
+            && !digits.starts_with('0')
+            && digits.bytes().all(|byte| byte.is_ascii_digit())
+            && digits
+                .parse::<u64>()
+                .is_ok_and(|id| id <= MAX_SAFE_EVENT_ID)
+    });
+    if valid {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom("invalid event ID"))
+    }
 }
 
 pub(crate) fn version<'de, D>(deserializer: D) -> Result<u16, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>,
+{
     let value = u16::deserialize(deserializer)?;
-    if value == CONTRACT_VERSION { Ok(value) } else {
-        Err(serde::de::Error::custom(format!("unsupported contract version {value}")))
+    if value == CONTRACT_VERSION {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "unsupported contract version {value}"
+        )))
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractVersion(#[serde(deserialize_with = "version")] pub u16);
 
-impl Default for ContractVersion { fn default() -> Self { Self(CONTRACT_VERSION) } }
+impl Default for ContractVersion {
+    fn default() -> Self {
+        Self(CONTRACT_VERSION)
+    }
+}
 
 macro_rules! id_type {
     ($name:ident) => {
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
         #[serde(transparent)]
         pub struct $name(#[serde(deserialize_with = "non_empty_string")] pub String);
         impl $name {
             pub fn new(value: impl Into<String>) -> Result<Self, ContractError> {
                 let value = value.into();
-                if value.trim().is_empty() { return Err(ContractError::invalid("identifier must not be empty")); }
+                if value.trim().is_empty() {
+                    return Err(ContractError::invalid("identifier must not be empty"));
+                }
                 Ok(Self(value))
             }
         }
@@ -138,7 +199,12 @@ pub struct PlaybackSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PlaybackStatus { Stopped, Playing, Paused, Failed }
+pub enum PlaybackStatus {
+    Stopped,
+    Playing,
+    Paused,
+    Failed,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,11 +220,23 @@ pub struct DownloadJob {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DownloadKind { Single, Csv, Sync, UrlQueue }
+pub enum DownloadKind {
+    Single,
+    Csv,
+    Sync,
+    UrlQueue,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum JobState { Queued, Running, Cancelling, Succeeded, Failed, Cancelled }
+pub enum JobState {
+    Queued,
+    Running,
+    Cancelling,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -170,10 +248,25 @@ pub struct ContractError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ErrorCode { InvalidRequest, UnsupportedVersion, NotFound, Busy, Cancelled, Unavailable, Internal, ShuttingDown }
+pub enum ErrorCode {
+    InvalidRequest,
+    UnsupportedVersion,
+    NotFound,
+    Busy,
+    Cancelled,
+    Unavailable,
+    Internal,
+    ShuttingDown,
+}
 
 impl ContractError {
-    pub fn invalid(message: impl Into<String>) -> Self { Self { code: ErrorCode::InvalidRequest, message: message.into(), retryable: false } }
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            code: ErrorCode::InvalidRequest,
+            message: message.into(),
+            retryable: false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -181,12 +274,14 @@ mod tests {
     use super::*;
     #[test]
     fn rejects_unknown_version() {
-        let result: Result<LibrarySnapshot, _> = serde_json::from_str(r#"{"version":2,"generation":0,"tracks":[],"playlists":[]}"#);
+        let result: Result<LibrarySnapshot, _> =
+            serde_json::from_str(r#"{"version":2,"generation":0,"tracks":[],"playlists":[]}"#);
         assert!(result.is_err());
     }
     #[test]
     fn rejects_unknown_fields() {
-        let result: Result<ProviderId, _> = serde_json::from_str(r#"{"provider":"x","id":"y","extra":true}"#);
+        let result: Result<ProviderId, _> =
+            serde_json::from_str(r#"{"provider":"x","id":"y","extra":true}"#);
         assert!(result.is_err());
     }
     #[test]
