@@ -56,7 +56,7 @@ is unavailable is `INCONCLUSIVE`.
 | AC-PERSIST-01 | differential + shutdown | target crash/recovery receipt pending |
 | AC-PERSIST-02 | differential + shutdown | target marker recovery receipt pending |
 | AC-OPS-01 | accessibility/manual | target diagnostics/redaction receipt pending |
-| AC-OPS-02 | manual/package | target packaged smoke receipt pending |
+| AC-OPS-02 | manual/package | `status: inconclusive`; `release_blocker: true`; blocker reason: required packaged Tauri artifact and reviewed managed binary inputs are missing, and checksum placeholders remain |
 | AC-OPS-03 | shutdown + journey | `tests/differential/test_u44_receipts.py` timeout classification; target shutdown receipt pending |
 
 ## Non-Pass Receipts

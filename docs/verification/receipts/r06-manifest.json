@@ -9,7 +9,7 @@
   "overall": "inconclusive",
   "release_blocker": true,
   "release_blocker_count": 5,
-  "release_blocker_reason": "AC-OPS-02 is blocked because the packaged Tauri artifact and reviewed managed binary inputs are absent; see the packaging receipt artifact.",
+  "release_blocker_reason": "AC-OPS-02 is an inconclusive release blocker because the packaged Tauri artifact and reviewed managed binary inputs are absent; see the packaging receipt artifact.",
   "provenance": {
     "source_run_head": "b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc",
     "receipt_generation_head": "c208950f34bbc3fcc053e1b5d2cd49d593715c57",
