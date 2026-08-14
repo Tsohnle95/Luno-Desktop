@@ -224,3 +224,26 @@ and rollback trial. Until then Python is the behavioral fallback.
 - Keep the Python fallback and legacy data unchanged. Reopen sign-off only when
   `docs/verification/final-parity.md` has no inconclusive or blocked acceptance
   and `docs/release/sign-off.md` is explicitly approved.
+
+## R07 Final Audit
+
+- Status: **BLOCKED** on 2026-08-14. The audited source HEAD is
+  `cba3a17a1fce8cd4faed98f510da5039f1776702`; the audited worktree was dirty
+  only in pre-existing `TODO.md` and `dispatch-plan.json`.
+- The R06 manifest mechanically contains 37 feature IDs and 6 journey IDs;
+  all 43 referenced artifacts exist. Results are 2 reference-only feature
+  passes, 35 inconclusive feature IDs, 6 inconclusive journeys, 1 failed
+  receipt (`rust_cargo`, exit 101), and 5 release-blocker IDs. R05 remains
+  BLOCKED with no package, managed binaries, reviewed checksums, signing
+  credentials, or signed/notarized artifact. No standalone R04 receipt file
+  is present under `docs/`.
+- R07 ran `python3 -m pytest -q` (`109 passed`), parsed the R05/R06 and test
+  manifests, mechanically checked every referenced R06 artifact, and ran
+  `git diff --check`. All available checks passed; they do not convert
+  target-unavailable or reference-only evidence into parity.
+- The release remains blocked by unavailable target migration rejection,
+  download workflow, transfer handoff, persistence recovery, and packaging
+  evidence, plus the failed Rust gate. Browser/runtime/journey/video/shutdown
+  checks remain inconclusive, not failed, where the required tool or manual
+  run was unavailable. No binary, screenshot, user data, signature, or package
+  was fabricated.

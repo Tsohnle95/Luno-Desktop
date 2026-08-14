@@ -1,8 +1,18 @@
 # Final Desktop Parity Gate
 
-Status: **BLOCKED** (R06, 2026-08-14; source-run HEAD `b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc`; receipt-generation HEAD `c208950f34bbc3fcc053e1b5d2cd49d593715c57`).
+Status: **BLOCKED** (R07, 2026-08-14; audited source HEAD `cba3a17a1fce8cd4faed98f510da5039f1776702`; worktree dirty).
 
-Receipt-document chain: `c208950f34bbc3fcc053e1b5d2cd49d593715c57` -> `65cabe686f32125849c3d13b0ffce8b814396f27` -> current tip. Verify the current tip externally with `git log --format='%H %s' -n 5 -- docs/verification/receipts/r06-manifest.json docs/verification/receipts/r06-summary.md docs/verification/toolchains.md`; no current self-SHA is claimed here.
+R07 is a mechanical fan-in audit of the R06 and R05 receipts. The audited
+worktree state was exactly ` M TODO.md` and ` M dispatch-plan.json`; no R04
+receipt document exists under `docs/`. R04's toolchain result is therefore
+consumed only through the later R05/R06 receipts, not treated as new evidence.
+
+Audit counts: 37 feature acceptance IDs, 6 journey IDs, 17 R06 receipts, 0
+missing referenced R06 artifacts, 2 reference-only feature passes, 35
+inconclusive feature IDs, 6 inconclusive journeys, 1 failed receipt, and 5
+release-blocker acceptance IDs. The release rule is not met.
+
+Receipt-document chain: R06 source-run HEAD is `b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc`, receipt-generation HEAD is `c208950f34bbc3fcc053e1b5d2cd49d593715c57`, and its correction chain begins `c208950f34bbc3fcc053e1b5d2cd49d593715c57` -> `65cabe686f32125849c3d13b0ffce8b814396f27` -> current tip. R05 source review HEAD is `d64da5c244752483d40b6e7558247e11c805f24b`, source-chain anchor `032b14ec38a96d5761f9a2ea1d58cb193e790bf6`, and its receipt chain ends `0e9c1ca5e3e56d5dbcba7fd88add64f4640bd5ac`. These are provenance references, not claims about the containing commit. Verify current history externally with `git log --format='%H %s' -n 8 -- docs/verification/receipts/r06-manifest.json docs/verification/receipts/r06-summary.md docs/release/artifacts/r05-manifest.json docs/release/artifacts/r05-summary.md` and `git status --porcelain`.
 
 This is a fan-in receipt, not a claim that the React/Tauri/Rust application is
 at parity. A required gate is `pass` only when its configured command or manual
@@ -57,6 +67,25 @@ failed and required release artifacts are missing.
 - `git diff --check`: exit `0`.
 
 ## Release-Critical Gaps
+
+Machine-readable blocker records:
+
+```json
+[
+  {"id":"AC-PLAY-06","status":"inconclusive","reason":"target_migration_rejection_evidence_unavailable"},
+  {"id":"AC-DL-02","status":"inconclusive","reason":"target_fake_subprocess_workflow_receipts_unavailable"},
+  {"id":"AC-XFER-04","status":"inconclusive","reason":"target_planner_provider_handoff_evidence_unavailable"},
+  {"id":"AC-PERSIST-01","status":"inconclusive","reason":"target_crash_recovery_marker_receipt_unavailable"},
+  {"id":"AC-OPS-02","status":"inconclusive","reason":"required_packaged_tauri_artifact_and_reviewed_managed_binary_inputs_missing; checksum_placeholders_remain"},
+  {"id":"rust_cargo","status":"fail","exit_code":101,"reason":"R06 Cargo compilation reported concrete errors"}
+]
+```
+
+Reference-only Python receipts and the R07 Python run do not establish target
+parity. Missing browser, target runtime, migration, shutdown, journey,
+signing, and package evidence remains `INCONCLUSIVE`; the Rust compilation
+receipt is an explicit `FAILED` gate. No artifact, binary, screenshot, user
+data, signature, or package was fabricated.
 
 ## Integration Blockers (U45)
 

@@ -1,11 +1,30 @@
 # Desktop Release Sign-Off
 
-Status: **BLOCKED**. U45 fan-in review on 2026-08-13.
+Status: **BLOCKED**. R07 final parity audit on 2026-08-14, audited source HEAD
+`cba3a17a1fce8cd4faed98f510da5039f1776702`.
+
+Audited worktree state: ` M TODO.md` and ` M dispatch-plan.json`. R07's focused
+documentation changes are not included in that pre-edit state. There is no
+standalone R04 receipt document in `docs/`; R04 evidence is represented by the
+later R05/R06 receipts and is not promoted to PASS independently.
 
 The macOS Tauri release is not approved. The Python/PyInstaller release and
 legacy user data must remain available as rollback fallback.
 
 ## Blocking Conditions
+
+Machine-readable release blockers:
+
+```json
+[
+  {"id":"AC-PLAY-06","status":"INCONCLUSIVE","reason":"target_migration_rejection_evidence_unavailable"},
+  {"id":"AC-DL-02","status":"INCONCLUSIVE","reason":"target_fake_subprocess_workflow_receipts_unavailable"},
+  {"id":"AC-XFER-04","status":"INCONCLUSIVE","reason":"target_planner_provider_handoff_evidence_unavailable"},
+  {"id":"AC-PERSIST-01","status":"INCONCLUSIVE","reason":"target_crash_recovery_marker_receipt_unavailable"},
+  {"id":"AC-OPS-02","status":"INCONCLUSIVE","reason":"packaged_tauri_artifact_and_reviewed_managed_binary_inputs_missing; checksum_placeholders_remain"},
+  {"id":"rust_cargo","status":"FAILED","exit_code":101,"reason":"R06 Rust compilation reported concrete diagnostics"}
+]
+```
 
 - U45 integration blockers are source-resolved: Tauri bootstrap/unsupported command errors, startup projection, typed Song Page video fallback, Discover placeholder, and seven-route shell contract. Their target build and runtime receipts remain inconclusive.
 
