@@ -3,8 +3,12 @@
   "status": "BLOCKED",
   "timestamp": "2026-08-14",
   "source_review_head": "d64da5c244752483d40b6e7558247e11c805f24b",
-  "receipt_update_commit": "032b14ec38a96d5761f9a2ea1d58cb193e790bf6",
-  "receipt_update_parent": "d64da5c244752483d40b6e7558247e11c805f24b",
+  "receipt_update_parent": "032b14ec38a96d5761f9a2ea1d58cb193e790bf6",
+  "receipt_document_commit": {
+    "description": "The commit containing this receipt must be verified externally after commit creation. Its SHA is intentionally not embedded because a commit cannot contain its own hash.",
+    "verification_command": "git show --no-patch --format='%H%n%P' <receipt-document-commit-sha>",
+    "expected_parent": "032b14ec38a96d5761f9a2ea1d58cb193e790bf6"
+  },
   "reviewed_tree_dirty_state": {
     "command": "git status --porcelain",
     "exit_code": 0,
@@ -79,12 +83,21 @@
   ],
   "provenance": {
     "source_review_head": "d64da5c244752483d40b6e7558247e11c805f24b",
-    "receipt_update": "The source review is recorded at source_review_head; the receipt files are a separate receipt update committed at 032b14ec38a96d5761f9a2ea1d58cb193e790bf6, whose parent is the source commit d64da5c244752483d40b6e7558247e11c805f24b.",
+    "receipt_update": "The source review is recorded at source_review_head. The previous receipt update is receipt_update_parent 032b14ec38a96d5761f9a2ea1d58cb193e790bf6; this receipt document is committed afterward and its SHA is intentionally verified externally because a commit cannot contain its own hash.",
     "commands": [
       {
-        "command": "git rev-parse 032b14ec^",
+        "command": "git rev-parse 032b14ec38a96d5761f9a2ea1d58cb193e790bf6^",
         "exit_code": 0,
         "output": "d64da5c244752483d40b6e7558247e11c805f24b"
+      },
+      {
+        "command": "git show --no-patch --format='%H%n%P' 032b14ec38a96d5761f9a2ea1d58cb193e790bf6",
+        "exit_code": 0,
+        "output": "032b14ec38a96d5761f9a2ea1d58cb193e790bf6\nd64da5c244752483d40b6e7558247e11c805f24b"
+      },
+      {
+        "command": "git show --no-patch --format='%H%n%P' <receipt-document-commit-sha>",
+        "verification": "Run externally after committing this receipt; the resulting commit SHA is intentionally not recorded here because a commit cannot contain its own hash. Verify that the parent output is 032b14ec38a96d5761f9a2ea1d58cb193e790bf6."
       },
       {
         "command": "git status --porcelain",
@@ -92,7 +105,7 @@
         "output": " M TODO.md\n M dispatch-plan.json"
       }
     ],
-    "note": "The source review was performed at source_review_head d64da5c244752483d40b6e7558247e11c805f24b. The receipt update files are separate from the reviewed source and are recorded by receipt_update_commit 032b14ec38a96d5761f9a2ea1d58cb193e790bf6; git rev-parse 032b14ec^ confirms that its source parent is d64da5c244752483d40b6e7558247e11c805f24b."
+    "note": "The source review was performed at source_review_head d64da5c244752483d40b6e7558247e11c805f24b. The exact previous receipt commit is receipt_update_parent 032b14ec38a96d5761f9a2ea1d58cb193e790bf6, whose parent is d64da5c244752483d40b6e7558247e11c805f24b. The commit containing this receipt is receipt_document_commit and must be verified externally with git show/review; its SHA is not self-embedded because a commit cannot contain its own hash."
   },
   "unavailable_or_missing": [
     "release-input/bin/ffmpeg",
