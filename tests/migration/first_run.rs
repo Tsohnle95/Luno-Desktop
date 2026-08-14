@@ -241,7 +241,8 @@ fn completed_migration_is_idempotent_and_preserves_target_state() {
     fs::create_dir_all(&p.legacy_root).unwrap();
     let first = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
     fs::write(p.state_file(), "user-owned target").unwrap();
-    fs::write(p.legacy_root.join("new-legacy-input"), "preserved").unwrap();
+    fs::create_dir_all(p.legacy_root.join("unknown-subdirectory")).unwrap();
+    fs::write(p.legacy_root.join("unknown-subdirectory/new-legacy-input"), "preserved").unwrap();
     let second = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
     assert_eq!(fs::read_to_string(p.state_file()).unwrap(), "user-owned target");
     assert_eq!(first.version, second.version);

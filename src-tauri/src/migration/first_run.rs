@@ -4,7 +4,7 @@
 //! removed or rewritten. A migration can therefore be retried, or the Python
 //! release can be launched again, after any failure.
 
-use crate::migration::legacy_readers::{read_legacy, LegacyState};
+use crate::migration::legacy_readers::{inventory_files, read_legacy, LegacyState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -92,9 +92,21 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     if valid_completed_record.is_some() {
         let mut warning_messages = reconcile_recovery_quarantine(&paths.target_root);
         let legacy = read_legacy(&paths.legacy_root, Some(&paths.preview_dir));
+        let mut preserved_files = Vec::new();
+        let mut inventory_errors = Vec::new();
+        let mut roots = vec![paths.legacy_root.as_path()];
+        if let Some(root) = paths.legacy_data_root.as_deref().filter(|root| *root != paths.legacy_root) { roots.push(root); }
+        for root in roots {
+            match inventory_files(root, &[paths.preview_dir.as_path(), paths.target_root.as_path()]) {
+                Ok(files) => preserved_files.extend(files),
+                Err(error) => inventory_errors.push(format!("{}: {error}", root.display())),
+            }
+        }
+        warning_messages.extend(inventory_errors.into_iter().map(|error| format!("legacy input inventory failed: {error}")));
         if !legacy.warnings.is_empty() || !legacy.preview_files.is_empty() || legacy.config.is_some()
             || !legacy.playlist_urls.is_empty() || !legacy.allowed_duplicate_keys.is_empty()
             || !legacy.favorite_paths.is_empty() || !legacy.downloaded_ids.is_empty() || !legacy.failed_ids.is_empty()
+            || !preserved_files.is_empty()
         {
             warning_messages.push("migration already complete; detected preserved or newly added legacy inputs and did not overwrite target state".into());
         }

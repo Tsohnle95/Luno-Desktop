@@ -54,6 +54,29 @@ pub fn read_preview_inventory(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
+/// Inventory files under a supported legacy root without interpreting their
+/// names. Completed migrations use this to notice preserved inputs that the
+/// typed readers do not understand.
+pub fn inventory_files(root: &Path, excluded_roots: &[&Path]) -> Result<Vec<PathBuf>, String> {
+    if !root.exists() { return Ok(Vec::new()); }
+    let mut files = Vec::new();
+    inventory_files_inner(root, excluded_roots, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn inventory_files_inner(root: &Path, excluded_roots: &[&Path], files: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if excluded_roots.iter().any(|excluded| path == *excluded || path.starts_with(excluded)) { continue; }
+        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        if kind.is_dir() { inventory_files_inner(&path, excluded_roots, files)?; }
+        else { files.push(path); }
+    }
+    Ok(())
+}
+
 fn has_data_file(path: &Path) -> bool {
     path.is_file() && fs::metadata(path).map(|metadata| metadata.len() > 0).unwrap_or(false)
 }
