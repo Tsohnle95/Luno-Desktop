@@ -44,6 +44,7 @@ impl ProcessSpec { pub fn new(program: impl Into<PathBuf>, args: Vec<String>, de
 pub struct Supervisor { pub registry: ProcessRegistry }
 impl Supervisor {
     pub fn new(registry: ProcessRegistry) -> Self { Self { registry } }
+    pub fn shutdown(&self, deadline: Duration) -> bool { self.registry.shutdown(deadline) }
     pub fn run(&self, spec: ProcessSpec) -> Result<ProcessOutput, SuperviseError> {
         let (id, token) = self.registry.register();
         let result = run_process(&spec, &token);

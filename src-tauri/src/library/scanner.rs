@@ -35,6 +35,14 @@ pub enum RootStatus { Scanned, Missing, Inaccessible }
 pub struct ScanOutcome {
     pub playlists: BTreeMap<String, Vec<PathBuf>>,
     pub roots: Vec<(PathBuf, RootStatus)>,
+    pub errors: Vec<ScanError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanError {
+    pub root_index: usize,
+    pub playlist: Option<String>,
+    pub message: String,
 }
 
 fn supported(path: &Path) -> bool {
@@ -50,12 +58,14 @@ fn filename_key(path: &Path) -> String {
 pub fn scan_library<F: FileSystem>(roots: &[PathBuf], fs: &F) -> ScanOutcome {
     let mut playlists = BTreeMap::new();
     let mut statuses = Vec::with_capacity(roots.len());
-    for root in roots {
+    let mut errors = Vec::new();
+    for (root_index, root) in roots.iter().enumerate() {
         let entries = match fs.read_dir(root) {
             Ok(entries) => entries,
             Err(error) => {
                 let status = if error.to_ascii_lowercase().contains("not found") { RootStatus::Missing } else { RootStatus::Inaccessible };
                 statuses.push((root.clone(), status));
+                errors.push(ScanError { root_index, playlist: None, message: error });
                 continue;
             }
         };
@@ -64,9 +74,15 @@ pub fn scan_library<F: FileSystem>(roots: &[PathBuf], fs: &F) -> ScanOutcome {
         let mut folders: Vec<Entry> = entries.iter().filter(|e| e.is_dir && !preview_dir(&e.name)).cloned().collect();
         folders.sort_by_key(|e| (e.name.to_lowercase(), e.name.clone()));
         for folder in folders {
-            // An unreadable child remains an empty playlist, matching the
-            // desktop's folder-derived playlist model without fabricating files.
-            let mut songs = fs.read_dir(&folder.path).unwrap_or_default().into_iter()
+            let child_entries = match fs.read_dir(&folder.path) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    errors.push(ScanError { root_index, playlist: Some(folder.name.clone()), message: error });
+                    playlists.insert(folder.name.clone(), Vec::new());
+                    continue;
+                }
+            };
+            let mut songs = child_entries.into_iter()
                 .filter(|e| !e.is_dir && supported(&e.path)).map(|e| e.path).collect::<Vec<_>>();
             songs.sort_by_key(|p| (filename_key(p), p.clone()));
             playlists.insert(folder.name, songs);
@@ -76,8 +92,8 @@ pub fn scan_library<F: FileSystem>(roots: &[PathBuf], fs: &F) -> ScanOutcome {
         }
         if !unsorted.is_empty() {
             unsorted.sort_by(|a, b| {
-                let am = fs.modified(a).unwrap_or(SystemTime::UNIX_EPOCH);
-                let bm = fs.modified(b).unwrap_or(SystemTime::UNIX_EPOCH);
+                let am = fs.modified(a).unwrap_or_else(|error| { errors.push(ScanError { root_index, playlist: Some("Unsorted".into()), message: error }); SystemTime::UNIX_EPOCH });
+                let bm = fs.modified(b).unwrap_or_else(|error| { errors.push(ScanError { root_index, playlist: Some("Unsorted".into()), message: error }); SystemTime::UNIX_EPOCH });
                 bm.cmp(&am).then_with(|| filename_key(a).cmp(&filename_key(b))).then_with(|| a.cmp(b))
             });
             let existing = playlists.entry("Unsorted".into()).or_insert_with(Vec::new);
@@ -86,5 +102,5 @@ pub fn scan_library<F: FileSystem>(roots: &[PathBuf], fs: &F) -> ScanOutcome {
             }
         }
     }
-    ScanOutcome { playlists, roots: statuses }
+    ScanOutcome { playlists, roots: statuses, errors }
 }

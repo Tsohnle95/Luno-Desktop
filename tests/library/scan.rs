@@ -50,6 +50,20 @@ fn reports_missing_and_inaccessible_roots_without_content() {
     let result = scan_library(&[missing.clone(), denied.clone()], &fs);
     assert_eq!(result.roots, vec![(missing, RootStatus::Missing), (denied, RootStatus::Inaccessible)]);
     assert!(result.playlists.is_empty());
+    assert_eq!(result.errors.len(), 2);
+}
+
+#[test]
+fn preserves_child_scan_errors_instead_of_emptying_playlist_silently() {
+    let root = PathBuf::from("/music");
+    let playlist = root.join("Broken");
+    let mut fs = FakeFs::default();
+    fs.dirs.insert(root.clone(), Ok(vec![entry(&root, "Broken", true)]));
+    fs.dirs.insert(playlist, Err("permission denied".into()));
+    let result = scan_library(&[root], &fs);
+    assert_eq!(result.playlists["Broken"], Vec::<PathBuf>::new());
+    assert_eq!(result.errors[0].playlist.as_deref(), Some("Broken"));
+    assert!(result.errors[0].message.contains("permission"));
 }
 
 #[test]

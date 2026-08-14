@@ -8,6 +8,9 @@ use crate::contracts::{events::{Command, CommandEnvelope, Event, EventEnvelope, 
 use serde_json::Value;
 use std::sync::Arc as StdArc;
 use crate::library::scanner::{scan_library, OsFileSystem};
+use crate::process::supervisor::{ProcessRegistry, Supervisor};
+use crate::download::coordinator::DownloadCoordinator;
+use crate::domain::identity::TrackMetadata;
 use crate::runtime::task_registry::{CancellationToken, ShutdownReport, SpawnError, TaskHandle, TaskRegistry, TaskSpec};
 
 #[derive(Debug, Clone, Serialize)]
@@ -38,6 +41,9 @@ pub struct AppState {
     next_generation: Arc<AtomicU64>,
     event_sink: Arc<Mutex<Option<StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>>>>,
     shutdown_started: Arc<AtomicBool>,
+    supervisor: Arc<Supervisor>,
+    downloads: Arc<DownloadCoordinator>,
+    provider_metadata: Arc<Mutex<BTreeMap<PathBuf, TrackMetadata>>>,
 }
 
 impl AppState {
@@ -45,7 +51,7 @@ impl AppState {
         Self { tasks: Arc::new(TaskRegistry::new(task_limit)), migration_status: Arc::new(Mutex::new(MigrationStatus::NotRun)),
             library: Arc::new(Mutex::new(LibrarySnapshot { version: CONTRACT_VERSION, generation: Generation(0), tracks: Vec::new(), playlists: Vec::new() })),
             roots: Arc::new(Mutex::new(Vec::new())), root_statuses: Arc::new(Mutex::new(Vec::new())), events: Arc::new(Mutex::new(Vec::new())),
-            next_event: Arc::new(AtomicU64::new(0)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), shutdown_started: Arc::new(AtomicBool::new(false)) }
+            next_event: Arc::new(AtomicU64::new(0)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), shutdown_started: Arc::new(AtomicBool::new(false)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
     }
     pub fn library(&self) -> LibrarySnapshot { self.library.lock().unwrap().clone() }
     pub fn root_statuses(&self) -> Vec<RootStatus> { self.root_statuses.lock().unwrap().clone() }
@@ -56,9 +62,11 @@ impl AppState {
         EventEnvelope { version: CONTRACT_VERSION, event_id: format!("event-{id}"), generation, job_id: None, session_id: None, event }
     }
     pub fn set_event_sink(&self, sink: StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>) { *self.event_sink.lock().unwrap() = Some(sink); }
+    pub fn set_provider_metadata(&self, path: PathBuf, metadata: TrackMetadata) { self.provider_metadata.lock().unwrap().insert(path, metadata); }
     pub fn publish(&self, envelope: EventEnvelope) {
         if let Some(sink) = self.event_sink.lock().unwrap().clone() {
-            if sink(envelope).is_err() {
+            if sink(envelope.clone()).is_err() {
+                self.events.lock().unwrap().push(envelope);
                 let failure = self.event(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "backend event delivery failed".into(), retryable: true } });
                 self.events.lock().unwrap().push(failure);
             }
@@ -89,6 +97,14 @@ impl AppState {
                     state.publish(error);
                 }
             }
+            for issue in outcome.errors {
+                let scope = issue.playlist.map_or_else(|| "root".into(), |playlist| format!("playlist {playlist}"));
+                let root_path = outcome.roots.get(issue.root_index).map(|(path, _)| path.to_string_lossy().into_owned()).unwrap_or_default();
+                let detail = issue.message.replace(&root_path, "<root>");
+                let mut error = state.event(generation, Event::Error { error: ContractError { code: ErrorCode::Internal, message: format!("library scan failed for root {} ({scope}): {detail}"), retryable: true } });
+                error.job_id = Some(JobId("library-scan".into()));
+                state.publish(error);
+            }
             let snapshot = state.replace_library(generation, outcome.playlists);
             let mut event = state.event(generation, Event::LibrarySnapshot { snapshot });
             event.job_id = Some(JobId("library-scan".into()));
@@ -104,9 +120,9 @@ impl AppState {
             let mut ids = Vec::new();
             for path in files {
                 let id = paths.entry(path.clone()).or_insert_with(|| {
-                    let metadata = crate::domain::identity::filename_metadata(&path.to_string_lossy());
+                    let metadata = state.provider_metadata.lock().unwrap().get(&path).cloned().unwrap_or_else(|| crate::domain::identity::filename_metadata(&path.to_string_lossy()));
                     let id = TrackId(crate::domain::identity::track_id(&metadata));
-                    tracks.push(Track { id: id.clone(), path: None, title: metadata.title, artist: (!metadata.artist.is_empty()).then_some(metadata.artist), album: None, duration_ms: None, artwork_url: None, favorite: false, provider: None });
+                    tracks.push(Track { id: id.clone(), path: None, title: metadata.title, artist: (!metadata.artist.is_empty()).then_some(metadata.artist), album: None, duration_ms: (metadata.duration_ms != 0).then_some(metadata.duration_ms), artwork_url: None, favorite: false, provider: metadata.provider.map(|provider| crate::contracts::types::ProviderId { provider: provider.provider, id: provider.id }) });
                     id
                 }).clone();
                 ids.push(id);
@@ -156,10 +172,16 @@ impl AppState {
         if self.shutdown_started.swap(true, Ordering::AcqRel) { return ShutdownReport { joined: 0, timed_out: false }; }
         self.publish(self.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state: ShutdownState::Requested, reason } }));
         self.publish(self.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state: ShutdownState::Draining, reason } }));
+        let started = std::time::Instant::now();
         let report = self.shutdown(deadline);
-        let state = if report.timed_out { ShutdownState::TimedOut } else { ShutdownState::Complete };
+        let remaining = deadline.saturating_sub(started.elapsed());
+        let process_ok = self.supervisor.shutdown(remaining);
+        let remaining = deadline.saturating_sub(started.elapsed());
+        let download_report = self.downloads.shutdown(remaining);
+        let timed_out = report.timed_out || !process_ok || download_report.timed_out;
+        let state = if timed_out { ShutdownState::TimedOut } else { ShutdownState::Complete };
         self.publish(self.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state, reason } }));
-        if report.timed_out { self.publish(self.event(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "shutdown timed out; tasks remain active".into(), retryable: false } })); }
-        report
+        if timed_out { self.publish(self.event(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "shutdown timed out; workers remain active".into(), retryable: false } })); }
+        ShutdownReport { joined: report.joined, timed_out }
     }
 }
