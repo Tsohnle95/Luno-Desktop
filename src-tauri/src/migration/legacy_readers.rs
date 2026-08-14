@@ -3,7 +3,7 @@
 use crate::persistence::legacy::{self, LegacyConfig};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub const MAX_RETRY_ENTRIES: usize = 4096;
 pub const MAX_RETRY_DEPTH: usize = 32;
@@ -39,9 +39,39 @@ pub fn read_markers(path: &Path, legacy: bool) -> Result<BTreeSet<String>, Strin
     Ok(result)
 }
 
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => { normalized.pop(); }
+            Component::Normal(value) => normalized.push(value),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+/// Canonicalize existing ancestors while retaining a final symlink for the
+/// callers that explicitly reject symlink roots. This also resolves `..` in
+/// a not-yet-created suffix before containment checks.
+pub fn canonicalize_path(path: &Path) -> PathBuf {
+    let path = lexical_normalize(path);
+    let mut parent = path.clone();
+    let final_name = parent.file_name().map(|name| name.to_owned());
+    if final_name.is_some() { parent.pop(); }
+    while !parent.exists() {
+        if parent.pop() { continue; }
+        return path;
+    }
+    let mut result = fs::canonicalize(&parent).unwrap_or(parent);
+    if let Some(name) = final_name { result.push(name); }
+    lexical_normalize(&result)
+}
+
 fn contained(root: &Path, child: &Path) -> bool {
-    let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let child = fs::canonicalize(child).unwrap_or_else(|_| child.to_path_buf());
+    let root = canonicalize_path(root);
+    let child = canonicalize_path(child);
     child.starts_with(root)
 }
 
@@ -69,8 +99,11 @@ pub fn read_preview_inventory(dir: &Path) -> Result<Vec<PathBuf>, String> {
 /// typed readers do not understand.
 pub fn inventory_files(root: &Path, excluded_roots: &[&Path]) -> Result<Vec<PathBuf>, String> {
     if !root.exists() { return Ok(Vec::new()); }
+    let root = canonicalize_path(root);
+    let excluded: Vec<PathBuf> = excluded_roots.iter().map(|path| canonicalize_path(path)).collect();
+    let excluded: Vec<&Path> = excluded.iter().map(PathBuf::as_path).collect();
     let mut files = Vec::new();
-    inventory_files_inner(root, excluded_roots, &mut files)?;
+    inventory_files_inner(&root, &excluded, &mut files)?;
     files.sort();
     Ok(files)
 }
@@ -78,16 +111,20 @@ pub fn inventory_files(root: &Path, excluded_roots: &[&Path]) -> Result<Vec<Path
 /// Inspect only the bounded legacy surfaces that can contain preserved input.
 /// In particular, do not recursively treat HOME as a migration data root.
 pub fn inventory_retry_files(legacy_root: &Path, music_root: Option<&Path>, preview_dir: &Path, target_root: &Path) -> Result<Vec<PathBuf>, String> {
+    let legacy_root = canonicalize_path(legacy_root);
+    let music_root = music_root.map(canonicalize_path);
+    let preview_dir = canonicalize_path(preview_dir);
+    let target_root = canonicalize_path(target_root);
     let mut files = BTreeSet::new();
     // Reserve half the inspection budget for each explicit discovery surface so
     // a large HOME envelope cannot starve the configured music root (or vice versa).
     let discovery_budget = MAX_RETRY_ENTRIES / 2;
     let music_budget = MAX_RETRY_ENTRIES - discovery_budget;
-    let excluded = [preview_dir, target_root];
+    let excluded = [&preview_dir, &target_root];
     let mut envelope_budget = discovery_budget / 2;
     let mut preview_budget = discovery_budget - envelope_budget;
-    inventory_direct(legacy_root, &excluded, &mut files, &mut envelope_budget)?;
-    inventory_preview(preview_dir, &mut files, &mut preview_budget)?;
+    inventory_direct(&legacy_root, &excluded, &mut files, &mut envelope_budget)?;
+    inventory_preview(&preview_dir, &mut files, &mut preview_budget)?;
     if let Some(root) = music_root.filter(|root| *root != legacy_root) {
         let mut budget = music_budget;
         inventory_direct(root, &[], &mut files, &mut budget)?;
@@ -194,7 +231,10 @@ pub fn marker_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 pub fn marker_files_excluding(root: &Path, excluded_roots: &[&Path]) -> Result<Vec<PathBuf>, String> {
-    if !safe_directory(root) { return Ok(Vec::new()); }
+    let root = canonicalize_path(root);
+    let excluded: Vec<PathBuf> = excluded_roots.iter().map(|path| canonicalize_path(path)).collect();
+    let excluded: Vec<&Path> = excluded.iter().map(PathBuf::as_path).collect();
+    if !safe_directory(&root) { return Ok(Vec::new()); }
     let mut pending = vec![root.to_path_buf()];
     let mut files = Vec::new();
     let mut inspected = 0;
@@ -208,7 +248,7 @@ pub fn marker_files_excluding(root: &Path, excluded_roots: &[&Path]) -> Result<V
         entries.sort_by_key(|entry| entry.path());
         for entry in entries {
             let path = entry.path();
-            if excluded_roots.iter().any(|excluded| path == *excluded || path.starts_with(excluded)) { continue; }
+            if excluded.iter().any(|excluded| path == *excluded || path.starts_with(excluded)) { continue; }
             let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
             if metadata.file_type().is_symlink() || !contained(root, &path) { continue; }
             if metadata.is_dir() { pending.push(path); }

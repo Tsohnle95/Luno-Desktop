@@ -52,6 +52,17 @@ fn preflight_rejects_overlapping_data_roots() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn preflight_rejects_lexical_parent_alias_of_target() {
+    let root = tempdir();
+    let mut p = paths(&root);
+    p.target_root = p.legacy_root.join("child/../target");
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain), Err(MigrationError::UnsafePath(_))));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn home_discovery_root_allows_home_app_data_target() {
     let root = tempdir();
     let legacy = root.join(".legacy-data");

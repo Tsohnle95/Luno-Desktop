@@ -4,7 +4,7 @@
 //! removed or rewritten. A migration can therefore be retried, or the Python
 //! release can be launched again, after any failure.
 
-use crate::migration::legacy_readers::{inventory_retry_files, marker_files_excluding, read_legacy, LegacyState};
+use crate::migration::legacy_readers::{canonicalize_path, inventory_retry_files, marker_files_excluding, read_legacy, LegacyState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -84,7 +84,15 @@ impl From<io::Error> for MigrationError { fn from(e: io::Error) -> Self { Self::
 /// macOS adapter and a deterministic test adapter share the same safety path.
 pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mut dyn Keychain) -> Result<MigrationReceipt, MigrationError> {
     if !cfg!(target_os = "macos") { return Err(MigrationError::UnsupportedPlatform); }
-    preflight(paths)?;
+    let paths = MigrationPaths {
+        legacy_root: canonicalize_path(&paths.legacy_root),
+        legacy_data_root: paths.legacy_data_root.as_deref().map(canonicalize_path),
+        target_root: canonicalize_path(&paths.target_root),
+        preview_dir: canonicalize_path(&paths.preview_dir),
+        current_preview: paths.current_preview.iter().map(|path| canonicalize_path(path)).collect(),
+        promoted_assets: paths.promoted_assets.iter().map(|path| canonicalize_path(path)).collect(),
+    };
+    preflight(&paths)?;
     crash(options, CrashStage::Preflight)?;
     let valid_completed_record = read_json::<VersionRecord>(&paths.version_record()).filter(|record| {
         record.migration == "desktop-first-run" && record.version == MIGRATION_VERSION && record.completed
