@@ -93,6 +93,29 @@ fn shutdown_timeout_never_emits_complete() {
 }
 
 #[test]
+fn repeated_shutdown_preserves_the_initial_timeout_result() {
+    let state = AppState::new(1);
+    let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_release = release.clone();
+    state.submit(TaskSpec::new("slow", luno_desktop_lib::contracts::types::Generation(1), None), move |_| {
+        while !worker_release.load(std::sync::atomic::Ordering::Acquire) { thread::yield_now(); }
+    }).unwrap();
+
+    let first = state.shutdown_events(ShutdownReason::System, Duration::from_millis(1));
+    assert!(first.timed_out);
+    let second = state.shutdown_events(ShutdownReason::UserRequested, Duration::from_secs(1));
+    assert_eq!(second, first);
+    let error = state.dispatch(envelope(Command::Shutdown { reason: ShutdownReason::UserRequested })).unwrap_err();
+    assert_eq!(error.code, luno_desktop_lib::contracts::types::ErrorCode::Internal);
+    assert!(error.message.contains("timed out"));
+    let states: Vec<_> = state.events().into_iter().filter_map(|event| match event.event { Event::Shutdown { envelope } => Some(envelope.state), _ => None }).collect();
+    assert_eq!(states, vec![ShutdownState::Requested, ShutdownState::Draining, ShutdownState::TimedOut]);
+
+    release.store(true, std::sync::atomic::Ordering::Release);
+    state.tasks.shutdown(Duration::from_secs(1));
+}
+
+#[test]
 fn scan_errors_are_structured_and_paths_are_private() {
     let state = AppState::new(1);
     let missing = std::env::temp_dir().join(format!("luno-missing-{}", std::process::id()));

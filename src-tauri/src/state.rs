@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use serde::Serialize;
-use std::sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Mutex};
+use std::sync::{atomic::{AtomicU64, Ordering}, Mutex};
 use std::time::Duration;
 use crate::contracts::{events::{Command, CommandEnvelope, Event, EventEnvelope, RootStatus, ShutdownEnvelope, ShutdownState}, types::{ContractError, ErrorCode, Generation, JobId, LibrarySnapshot, Playlist, Track, TrackId, SessionId, CONTRACT_VERSION}};
 use serde_json::Value;
@@ -72,7 +72,7 @@ pub struct AppState {
     next_event: Arc<AtomicU64>,
     next_generation: Arc<AtomicU64>,
     event_sink: Arc<Mutex<Option<StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>>>>,
-    shutdown_started: Arc<AtomicBool>,
+    shutdown_result: Arc<Mutex<Option<ShutdownReport>>>,
     supervisor: Arc<Supervisor>,
     downloads: Arc<DownloadCoordinator>,
     provider_metadata: Arc<Mutex<BTreeMap<PathBuf, TrackMetadata>>>,
@@ -83,7 +83,7 @@ impl AppState {
         Self { tasks: Arc::new(TaskRegistry::new(task_limit)), migration_status: Arc::new(Mutex::new(MigrationStatus::NotRun)),
             library: Arc::new(Mutex::new(LibrarySnapshot { version: CONTRACT_VERSION, generation: Generation(0), tracks: Vec::new(), playlists: Vec::new() })),
             roots: Arc::new(Mutex::new(Vec::new())), root_statuses: Arc::new(Mutex::new(Vec::new())), events: Arc::new(Mutex::new(Vec::new())),
-            next_event: Arc::new(AtomicU64::new(0)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), shutdown_started: Arc::new(AtomicBool::new(false)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
+            next_event: Arc::new(AtomicU64::new(0)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), shutdown_result: Arc::new(Mutex::new(None)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
     }
     pub fn library(&self) -> LibrarySnapshot { self.library.lock().unwrap().clone() }
     pub fn root_statuses(&self) -> Vec<RootStatus> { self.root_statuses.lock().unwrap().clone() }
@@ -202,7 +202,8 @@ impl AppState {
     }
 
     pub fn shutdown_events(&self, reason: crate::contracts::events::ShutdownReason, deadline: Duration) -> ShutdownReport {
-        if self.shutdown_started.swap(true, Ordering::AcqRel) { return ShutdownReport { joined: 0, timed_out: false }; }
+        let mut stored_result = self.shutdown_result.lock().unwrap();
+        if let Some(report) = *stored_result { return report; }
         self.publish(self.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state: ShutdownState::Requested, reason } }));
         self.publish(self.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state: ShutdownState::Draining, reason } }));
         let started = std::time::Instant::now();
@@ -215,6 +216,8 @@ impl AppState {
         let state = if timed_out { ShutdownState::TimedOut } else { ShutdownState::Complete };
         self.publish(self.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state, reason } }));
         if timed_out { self.publish(self.event(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "shutdown timed out; workers remain active".into(), retryable: false } })); }
-        ShutdownReport { joined: report.joined, timed_out }
+        let result = ShutdownReport { joined: report.joined, timed_out };
+        *stored_result = Some(result);
+        result
     }
 }
