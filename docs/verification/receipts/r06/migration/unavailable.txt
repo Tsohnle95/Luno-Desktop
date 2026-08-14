@@ -1,6 +1,6 @@
 status: inconclusive
 command=Migration, crash-recovery, and rollback corpus against the packaged target
-acceptance_ids=AC-PLAY-06,AC-PERSIST-01,AC-PERSIST-02
+acceptance_ids=AC-PERSIST-01,AC-PERSIST-02
 exit_code=N/A
 result=MANUAL_NOT_RUN
 reason=Cargo compilation failed before target tests could run, and no real-user-data corpus was used.

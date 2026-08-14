@@ -14,11 +14,10 @@
     "source_run_head": "b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc",
     "receipt_generation_head": "c208950f34bbc3fcc053e1b5d2cd49d593715c57",
     "receipt_generation_state": "Receipts were generated from the source-run HEAD; the receipt-generation commit is recorded separately from later receipt-document corrections.",
-    "receipt_document_chain": ["c208950f34bbc3fcc053e1b5d2cd49d593715c57", "65cabe686f32125849c3d13b0ffce8b814396f27"],
     "audited_source_head": "b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc",
     "receipt_document_chain": ["c208950f34bbc3fcc053e1b5d2cd49d593715c57", "65cabe686f32125849c3d13b0ffce8b814396f27", "cba3a17a1fce8cd4faed98f510da5039f1776702"],
-    "current_chain_verification": "Verify the receipt-document chain externally with git log --format='%H %s' -n 8 -- docs/verification/receipts/r06-manifest.json docs/verification/receipts/r06-summary.md docs/verification/toolchains.md and git status --porcelain; this manifest does not claim the SHA of its containing correction commit.",
-    "convention": "The audited source-run HEAD, receipt-generation commit, and receipt-document correction chain are distinct; no receipt document claims the SHA of its containing correction commit."
+    "current_chain_verification": "The listed receipt-document SHAs are selected provenance anchors, not a contiguous chain. Verify first-parent history with git log --first-parent --format='%H %s' --reverse b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc..25e5ba7c0e627222ea50a4f5301162715a1a64ee and git status --porcelain.",
+    "convention": "The audited source-run HEAD, receipt-generation commit, and selected receipt-document anchors are distinct; no receipt document claims the SHA of its containing correction commit."
   },
   "policy": "PASS requires completed, non-skipped, non-timeout, non-truncated evidence with its artifact. Reference PASS does not establish target parity. Missing or unavailable gates are BLOCKED or INCONCLUSIVE, never PASS.",
   "receipts": {
@@ -60,7 +59,7 @@
     "AC-PLAY-03":{"status":"inconclusive","receipt":"playback","artifact":"docs/verification/receipts/r06/playback/unavailable.txt"},
     "AC-PLAY-04":{"status":"inconclusive","receipt":"playback","artifact":"docs/verification/receipts/r06/playback/unavailable.txt"},
     "AC-PLAY-05":{"status":"inconclusive","receipt":"playback","artifact":"docs/verification/receipts/r06/playback/unavailable.txt"},
-    "AC-PLAY-06":{"status":"inconclusive","release_blocker":true,"blocker_reason":"target_migration_rejection_evidence_unavailable","receipt":"migration","artifact":"docs/verification/receipts/r06/migration/unavailable.txt"},
+    "AC-PLAY-06":{"status":"inconclusive","release_blocker":true,"blocker_reason":"target_playback_audible_envelope_evidence_unavailable","receipt":"playback","artifact":"docs/verification/receipts/r06/playback/unavailable.txt"},
     "AC-DL-01":{"status":"inconclusive","receipt":"download","artifact":"docs/verification/receipts/r06/download/unavailable.txt"},
     "AC-DL-02":{"status":"inconclusive","release_blocker":true,"blocker_reason":"target_fake_subprocess_workflow_receipts_unavailable","receipt":"download","artifact":"docs/verification/receipts/r06/download/unavailable.txt"},
     "AC-DL-03":{"status":"inconclusive","receipt":"download","artifact":"docs/verification/receipts/r06/download/unavailable.txt"},

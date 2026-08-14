@@ -19,7 +19,7 @@ Machine-readable release blockers:
 
 ```json
 [
-  {"id":"AC-PLAY-06","status":"INCONCLUSIVE","reason":"target_migration_rejection_evidence_unavailable"},
+  {"id":"AC-PLAY-06","status":"INCONCLUSIVE","reason":"target_playback_audible_envelope_evidence_unavailable"},
   {"id":"AC-DL-02","status":"INCONCLUSIVE","reason":"target_fake_subprocess_workflow_receipts_unavailable"},
   {"id":"AC-XFER-04","status":"INCONCLUSIVE","reason":"target_planner_provider_handoff_evidence_unavailable"},
   {"id":"AC-PERSIST-01","status":"INCONCLUSIVE","reason":"target_crash_recovery_marker_receipt_unavailable"},

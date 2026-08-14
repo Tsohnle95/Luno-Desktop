@@ -34,7 +34,7 @@ is unavailable is `INCONCLUSIVE`.
 | AC-PLAY-03 | differential | target differential adapter receipt required |
 | AC-PLAY-04 | differential | target differential adapter receipt required |
 | AC-PLAY-05 | differential | target differential adapter receipt required |
-| AC-PLAY-06 | manual/audible | approved removal decision; audible receipt is not applicable, migration rejection test remains target-owned |
+| AC-PLAY-06 | playback/audible-envelope | approved removal decision; target playback/audible-envelope receipt remains unavailable |
 | AC-DL-01 | fake-subprocess + journey | deterministic fake-tool suite; target integration receipt pending |
 | AC-DL-02 | fake-subprocess | fake missing/partial/valid output cases; target promotion receipt pending |
 | AC-DL-03 | fake-subprocess + journey | target marker workflow receipt pending |

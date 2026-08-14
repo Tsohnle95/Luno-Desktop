@@ -12,7 +12,7 @@ missing referenced R06 artifacts, 2 reference-only feature passes, 35
 inconclusive feature IDs, 6 inconclusive journeys, 1 failed receipt, and 5
 release-blocker acceptance IDs. The release rule is not met.
 
-Receipt-document chain: R06 source-run HEAD is `b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc`, receipt-generation HEAD is `c208950f34bbc3fcc053e1b5d2cd49d593715c57`, and its correction chain is `c208950f34bbc3fcc053e1b5d2cd49d593715c57` -> `65cabe686f32125849c3d13b0ffce8b814396f27` -> audited receipt-document tip `cba3a17a1fce8cd4faed98f510da5039f1776702` (parent `7bd95fcbcef30240db93065b6143980f17075cda`). R05 source review HEAD is `d64da5c244752483d40b6e7558247e11c805f24b`, source-chain anchor `032b14ec38a96d5761f9a2ea1d58cb193e790bf6`, and its receipt chain ends `0e9c1ca5e3e56d5dbcba7fd88add64f4640bd5ac`. These are provenance references, not claims about the containing commit; the R07 audit document is committed separately. Verify current history externally with `git log --format='%H %s' -n 8 -- docs/verification/receipts/r06-manifest.json docs/verification/receipts/r06-summary.md docs/release/artifacts/r05-manifest.json docs/release/artifacts/r05-summary.md` and `git status --porcelain`.
+Receipt-document provenance uses selected anchors, not a claimed contiguous chain. R06 source-run anchor is `b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc`; selected R06 receipt anchors are receipt-generation `c208950f34bbc3fcc053e1b5d2cd49d593715c57`, correction `65cabe686f32125849c3d13b0ffce8b814396f27`, and audited receipt-document `cba3a17a1fce8cd4faed98f510da5039f1776702`. R05 source review anchor is `d64da5c244752483d40b6e7558247e11c805f24b`, source-chain anchor `032b14ec38a96d5761f9a2ea1d58cb193e790bf6`, and selected receipt anchor `0e9c1ca5e3e56d5dbcba7fd88add64f4640bd5ac`. Exact first-parent verification command at the audited R07 HEAD: `git log --first-parent --format='%H %s' --reverse b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc..25e5ba7c0e627222ea50a4f5301162715a1a64ee`; its output is the first-parent commit history from the source-run anchor through the audited receipt commits. The R07 audit document is committed separately. Verify worktree state with `git status --porcelain`.
 
 This is a fan-in receipt, not a claim that the React/Tauri/Rust application is
 at parity. A required gate is `pass` only when its configured command or manual
@@ -29,7 +29,7 @@ behavioral fallback.
 | AC-LIB-04, AC-LIB-05, AC-LIB-06 | INCONCLUSIVE | release_blocker: false | Target generation, journey, and rename/reference-repair receipts unavailable. |
 | AC-PLAY-01, AC-PLAY-02 | INCONCLUSIVE | release_blocker: false | Pure reference coverage exists; target/shell journey receipt unavailable. |
 | AC-PLAY-03, AC-PLAY-04, AC-PLAY-05 | INCONCLUSIVE | release_blocker: false | Target playback/differential receipts are unavailable; the separate Rust compilation failure does not establish these acceptance gates. |
-| AC-PLAY-06 | INCONCLUSIVE | release_blocker: true | Decision D8 approves removal, but the target migration rejection test evidence is unavailable. |
+| AC-PLAY-06 | INCONCLUSIVE | release_blocker: true | Decision D8 approves removal, but the target playback/audible-envelope receipt is unavailable. |
 | AC-DL-01 | INCONCLUSIVE | release_blocker: false | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
 | AC-DL-02 | INCONCLUSIVE | release_blocker: true | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
 | AC-DL-03, AC-DL-04 | INCONCLUSIVE | release_blocker: false | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
@@ -72,7 +72,7 @@ Machine-readable blocker records:
 
 ```json
 [
-  {"id":"AC-PLAY-06","status":"inconclusive","reason":"target_migration_rejection_evidence_unavailable"},
+  {"id":"AC-PLAY-06","status":"inconclusive","reason":"target_playback_audible_envelope_evidence_unavailable"},
   {"id":"AC-DL-02","status":"inconclusive","reason":"target_fake_subprocess_workflow_receipts_unavailable"},
   {"id":"AC-XFER-04","status":"inconclusive","reason":"target_planner_provider_handoff_evidence_unavailable"},
   {"id":"AC-PERSIST-01","status":"inconclusive","reason":"target_crash_recovery_marker_receipt_unavailable"},

@@ -1,6 +1,6 @@
 status: inconclusive
-command=Target playback queue, clock, seek, and failure-recovery acceptance gates
-acceptance_ids=AC-PLAY-01,AC-PLAY-02,AC-PLAY-03,AC-PLAY-04,AC-PLAY-05
+command=Target playback queue, clock, seek, failure-recovery, and audible-envelope acceptance gates
+acceptance_ids=AC-PLAY-01,AC-PLAY-02,AC-PLAY-03,AC-PLAY-04,AC-PLAY-05,AC-PLAY-06
 exit_code=N/A
 result=TARGET_NOT_RUN
-reason=No packaged target or target playback/differential receipt was available; the Rust compilation receipt does not establish these gates.
+reason=No packaged target or target playback/audible-envelope receipt was available; the Rust compilation receipt does not establish these gates. AC-PLAY-06 requires the approved crossfade-removal decision plus a target audible-envelope receipt, which was not run.

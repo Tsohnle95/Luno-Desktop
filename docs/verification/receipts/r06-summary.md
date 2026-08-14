@@ -2,7 +2,7 @@
 
 Status: **INCONCLUSIVE RELEASE BLOCKER**. Run date: 2026-08-14. Source-run HEAD: `b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc`.
 
-Receipt provenance: R06 was run from source-run HEAD `b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc`. Receipt-generation HEAD is `c208950f34bbc3fcc053e1b5d2cd49d593715c57`; subsequent receipt-document commits are `c208950f34bbc3fcc053e1b5d2cd49d593715c57` and `65cabe686f32125849c3d13b0ffce8b814396f27`. Verify the current receipt-document chain externally with `git log --format='%H %s' -n 5 -- docs/verification/receipts/r06-manifest.json docs/verification/receipts/r06-summary.md docs/verification/toolchains.md`; this summary does not claim the SHA of its containing commit.
+Receipt provenance: R06 was run from source-run HEAD `b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc`. The listed receipt-document SHAs are selected anchors, not a contiguous chain: receipt-generation anchor `c208950f34bbc3fcc053e1b5d2cd49d593715c57`, correction anchors `65cabe686f32125849c3d13b0ffce8b814396f27` and `cba3a17a1fce8cd4faed98f510da5039f1776702`. Exact first-parent verification command at the audited R07 HEAD: `git log --first-parent --format='%H %s' --reverse b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc..25e5ba7c0e627222ea50a4f5301162715a1a64ee`; its output is the first-parent commit history from the source-run anchor through the audited receipt commits. This summary does not claim the SHA of its containing commit.
 
 ## Results
 
