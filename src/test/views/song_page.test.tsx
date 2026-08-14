@@ -1,3 +1,4 @@
+import { renderToStaticMarkup } from "react-dom/server";
 import type { Track } from "../../shared/contracts";
 import { Recommendations, type Recommendation } from "../../components/Recommendations";
 import { SongPageView } from "../../views/SongPageView";
@@ -11,6 +12,7 @@ export const songPageChecks = {
   pageSize: 25,
   cap: 1000,
   seedIdentity: track.id === "seed" && recommendation.id !== track.id,
+  favoriteUnavailable: renderToStaticMarkup(<SongPageView track={track} backendAvailable={false} />).includes('disabled=""') && renderToStaticMarkup(<SongPageView track={track} backendAvailable={false} />).includes("Favorites are unavailable"),
 };
 
-if (!songPageChecks.page || songPageChecks.pageSize !== 25 || songPageChecks.cap !== 1000 || !songPageChecks.seedIdentity) throw new Error("Song page contract failed");
+if (!songPageChecks.page || songPageChecks.pageSize !== 25 || songPageChecks.cap !== 1000 || !songPageChecks.seedIdentity || !songPageChecks.favoriteUnavailable) throw new Error("Song page contract failed");

@@ -30,13 +30,13 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
 
   useEffect(() => {
     const stage = stageRef.current;
-    if (!stage || !onResize) return;
+    if (!stage || !onResize || !showVideo) return;
     const report = () => onResize({ width: stage.clientWidth, height: stage.clientHeight });
     report();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(report);
     observer?.observe(stage);
     return () => observer?.disconnect();
-  }, [onResize]);
+  }, [onResize, showVideo]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -63,11 +63,11 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
   };
   const time = () => (videoRef.current?.currentTime ?? positionMs / 1000) * 1000;
   const handleError = () => onError?.();
-  const handleSeeked = () => onSeek?.(time());
-  const handlePause = () => onPause?.(time());
-  const handlePlay = () => onResume?.(time());
-  const handleEnded = () => onEnded?.();
-  const onVideoError = (event: SyntheticEvent<HTMLVideoElement>) => { event.currentTarget.pause(); handleError(); };
+  const handleSeeked = () => { if (showVideo) onSeek?.(time()); };
+  const handlePause = () => { if (showVideo) onPause?.(time()); };
+  const handlePlay = () => { if (showVideo) onResume?.(time()); };
+  const handleEnded = () => { if (showVideo) onEnded?.(); };
+  const onVideoError = (event: SyntheticEvent<HTMLVideoElement>) => { event.currentTarget.pause(); if (showVideo) handleError(); };
 
   return <div ref={stageRef} className="luno-video-stage" data-testid="video-stage" aria-label="Song video preview">
     {showVideo ? <video ref={videoRef} src={src!} preload="metadata" playsInline aria-label="Song video" onError={onVideoError} onSeeked={handleSeeked} onPause={handlePause} onPlay={handlePlay} onEnded={handleEnded} /> : <Artwork src={artworkUrl} alt={artworkAlt} size="100%" />}

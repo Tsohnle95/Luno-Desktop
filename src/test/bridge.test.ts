@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createBridge, parseMigrationStatus } from "../app/bridge";
 import { createBackendProjection } from "../state/backend_projection";
-import { playRecentTrack, runBridgeCommand, safeVideoSource } from "../app/Shell";
+import { currentVideoForTrack, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled } from "../app/Shell";
 
 const event = (event: unknown, generation = 1) => ({ version: 1 as const, event_id: `event-${generation}`, generation, job_id: null, session_id: null, event });
 
@@ -58,6 +58,17 @@ describe("typed IPC bridge and projection", () => {
     expect(safeVideoSource("https://example.test/video.mp4", "/tmp/preview.mp4")).toContain("preview.mp4");
     expect(safeVideoSource("javascript:alert(1)", null)).toBeNull();
     expect(safeVideoSource("https://example.test/video.mp4", "/tmp/../outside.mp4")).toBe("https://example.test/video.mp4");
+  });
+
+  it("ignores video state from an older playback generation when returning to a track", () => {
+    const stale = { track_id: "track-1", source_url: "https://example.test/old.mp4", staged_path: null, status: "ready" as const, position_ms: 10, fullscreen: false, generation: 1 };
+    expect(currentVideoForTrack({ playback: { queue: ["track-1"], current_index: 0, position_ms: 0, duration_ms: null, status: "playing", generation: 2 }, video: stale }, "track-1")).toBeNull();
+    expect(currentVideoForTrack({ playback: { queue: ["track-1"], current_index: 0, position_ms: 0, duration_ms: null, status: "playing", generation: 2 }, video: { ...stale, generation: 2 } }, "track-1")?.source_url).toContain("old.mp4");
+  });
+
+  it("does not enable video commands for artwork fallback", () => {
+    expect(videoCommandsEnabled(true, true, "https://example.test/video.mp4", "unavailable")).toBe(false);
+    expect(videoCommandsEnabled(true, true, null, "ready")).toBe(false);
   });
 
   it("validates migration counters and catches rejected runtime commands", async () => {
