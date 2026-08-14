@@ -2,7 +2,7 @@
   "receipt": "R05",
   "status": "BLOCKED",
   "timestamp": "2026-08-14",
-  "head": "58bd9c1e1e592ad8ac903c608624168872d1f68f",
+  "head": "bd3a726edf4610bc0616a372bc449ee4dc387cab",
   "scope": "Packaging configuration and release machinery only",
   "workflow_bundle_path": "src-tauri/target/release/bundle/macos/Luno.app",
   "environment": {
@@ -14,8 +14,8 @@
     "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)",
     "cargo": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)",
     "typescript": "compiler present; npm run typecheck exited 2 with TypeScript diagnostics (version not separately recorded)",
-    "vite": "unavailable: local Vite executable was not available in the current workspace",
-    "tauri": "unavailable: local Tauri CLI executable was not available in the current workspace"
+    "vite": "not reached: npm run build failed during the TypeScript prerequisite (exit 2)",
+    "tauri": "invoked through npm run tauri; DMG build reached the frontend prerequisite and exited 1"
   },
   "inputs": {
     "managed_binary_directory": "release-input/bin",
@@ -69,6 +69,22 @@
       "output": "bundle manifest missing: src-tauri/target/release/bundle/macos/Luno.app/Contents/Resources/desktop-binaries.json"
     }
   ],
+  "provenance": {
+    "reviewed_commit": "bd3a726edf4610bc0616a372bc449ee4dc387cab",
+    "commands": [
+      {
+        "command": "git rev-parse HEAD",
+        "exit_code": 0,
+        "output": "bd3a726edf4610bc0616a372bc449ee4dc387cab"
+      },
+      {
+        "command": "git status --porcelain",
+        "exit_code": 0,
+        "output": " M TODO.md\n M dispatch-plan.json"
+      }
+    ],
+    "note": "The two worktree changes were pre-existing and outside the reviewed R05 artifacts."
+  },
   "unavailable_or_missing": [
     "release-input/bin/ffmpeg",
     "release-input/bin/ffprobe",
