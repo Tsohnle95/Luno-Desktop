@@ -1,6 +1,6 @@
 # Final Desktop Parity Gate
 
-Status: **BLOCKED** (U45, 2026-08-13).
+Status: **BLOCKED** (R06, 2026-08-14; source commit `c208950f34bbc3fcc053e1b5d2cd49d593715c57`).
 
 This is a fan-in receipt, not a claim that the React/Tauri/Rust application is
 at parity. A required gate is `pass` only when its configured command or manual
@@ -38,14 +38,14 @@ missing required release artifact; it does not mean that an unrun evidence
 receipt failed. The overall gate remains `BLOCKED` because required build gates
 failed and required release artifacts are missing.
 
-- `python3 -m pytest tests/differential/test_harness.py tests/differential/test_u44_receipts.py -q`: exit `0`, `6 passed in 0.49s`.
-- `python3 -m pytest -q`: exit `0`, `109 passed in 6.60s`.
-- `python -m pytest -q`: exit `127`, `zsh:1: command not found: python` (inconclusive).
-- `npm run typecheck`: exit `2`, TypeScript compiler present and compilation diagnostics reported (FAILED).
-- `cargo test --manifest-path src-tauri/Cargo.toml`: exit `101`, Cargo present and the Rust build script failed because `resources/bin` is absent (FAILED).
-- Missing-tool example: npm exit `127` with `tsc: command not found` is INCONCLUSIVE; it does not establish TypeScript errors.
-- Missing-tool example: cargo exit `127` with `cargo: command not found` is INCONCLUSIVE; it does not establish Rust test failure.
-- `python3 -m pytest -q` (final-review rerun): exit `0`, `109 passed in 6.61s`.
+- `python3 -m pytest tests/differential/test_harness.py tests/differential/test_u44_receipts.py -q`: exit `0`, `6 passed in 0.64s` (reference only).
+- `python3 -m pytest -q`: exit `0`, `109 passed in 13.16s` (reference only).
+- `python -m pytest -q`: exit `127`, `zsh:1: command not found: python` (INCONCLUSIVE; unavailable command).
+- `npm run typecheck`: exit `127`, `sh: tsc: command not found` (INCONCLUSIVE; TypeScript compiler unavailable).
+- `npm run build`: exit `127`, `sh: tsc: command not found` (INCONCLUSIVE; TypeScript compiler unavailable before Vite).
+- `npm test`: exit `1`, `npm error Missing script: "test"` (INCONCLUSIVE; no test script).
+- `cargo test --manifest-path src-tauri/Cargo.toml`: exit `101`, Rust compilation failed with concrete diagnostics (FAILED; `luno-desktop` library and test targets reported errors).
+- `npm run tauri -- --version`: exit `127`, `sh: tauri: command not found` (INCONCLUSIVE; Tauri CLI unavailable).
 - `python3 -m json.tool tests/journeys/manifest.json >/dev/null`: exit `0`.
 - `python3 -m json.tool tests/reference/manifest.json >/dev/null`: exit `0`.
 - `git diff --check`: exit `0`.
@@ -54,8 +54,8 @@ failed and required release artifacts are missing.
 
 ## Integration Blockers (U45)
 
-- **Tauri runtime:** resolved in source: managed `AppState`, registered bridge command, explicit unsupported-command errors, and startup migration invocation are now present. The recorded Cargo build receipt is FAILED (exit `101`); a missing `cargo` executable would instead be INCONCLUSIVE.
-- **Frontend projection:** runtime IPC is not implemented, so backend availability remains explicitly unavailable; startup subscription and library/scan projection source contracts do not provide a target runtime receipt. The recorded TypeScript receipt is FAILED (exit `2`); an unavailable compiler would instead be INCONCLUSIVE.
+- **Tauri runtime:** resolved in source: managed `AppState`, registered bridge command, explicit unsupported-command errors, and startup migration invocation are now present. The R06 Cargo receipt is FAILED (exit `101`); a missing `cargo` executable would instead be INCONCLUSIVE.
+- **Frontend projection:** runtime IPC is not implemented, so backend availability remains explicitly unavailable; startup subscription and library/scan projection source contracts do not provide a target runtime receipt. R06 TypeScript typecheck/build are INCONCLUSIVE (exit `127`) because `tsc` is unavailable.
 - **Song Page video:** video availability remains explicitly unavailable because runtime IPC is not implemented; the page's typed disconnected state and artwork fallback are not backend video evidence.
 - **Discover route and shell contract:** resolved in source: a Discover placeholder is rendered and the visual contract asserts seven routes.
 - These source resolutions do not change the blocked status: required target build, runtime, visual, migration, shutdown, and release receipts remain unresolved below.

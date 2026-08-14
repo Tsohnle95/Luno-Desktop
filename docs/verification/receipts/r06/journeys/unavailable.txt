@@ -1,1 +1,5 @@
-The six journey sequences were not executed: no packaged target, browser runner, or target harness is available.
+status=MANUAL_NOT_RUN
+command=Six R06 journey sequences from docs/verification/receipts/r06-manifest.json
+exit_code=N/A
+result=MANUAL_NOT_RUN
+reason=No packaged target, browser runner, or target harness is available.

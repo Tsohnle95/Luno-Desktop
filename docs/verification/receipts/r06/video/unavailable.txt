@@ -1,1 +1,5 @@
-Video staging/audio-clock/lifecycle checks were not executed. No runnable target, browser runner, or video lifecycle harness was available.
+status=MANUAL_NOT_RUN
+command=Video staging/audio-clock/lifecycle checks against the packaged target
+exit_code=N/A
+result=MANUAL_NOT_RUN
+reason=No runnable target, browser runner, or video lifecycle harness was available.

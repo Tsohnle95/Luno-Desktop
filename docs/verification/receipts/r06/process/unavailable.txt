@@ -1,1 +1,5 @@
-Process lifecycle and orphan-process checks were not executed: no runnable target binary or lifecycle harness was available.
+status=MANUAL_NOT_RUN
+command=Process lifecycle and orphan-process checks against the packaged target
+exit_code=N/A
+result=MANUAL_NOT_RUN
+reason=No runnable target binary or lifecycle harness was available.

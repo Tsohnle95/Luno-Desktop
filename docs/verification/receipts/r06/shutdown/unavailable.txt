@@ -1,1 +1,5 @@
-Shutdown, cancellation, bounded join, cleanup, and orphan-process checks were not executed: target compilation failed and no packaged binary exists.
+status=MANUAL_NOT_RUN
+command=Shutdown, cancellation, bounded join, cleanup, and orphan-process checks against the packaged target
+exit_code=N/A
+result=MANUAL_NOT_RUN
+reason=Target compilation failed and no packaged binary exists.

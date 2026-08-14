@@ -1,1 +1,5 @@
-Migration, crash-recovery, and rollback corpus were not executed. Cargo compilation failed before target tests could run, and no real-user-data corpus was used.
+status=MANUAL_NOT_RUN
+command=Migration, crash-recovery, and rollback corpus against the packaged target
+exit_code=N/A
+result=MANUAL_NOT_RUN
+reason=Cargo compilation failed before target tests could run, and no real-user-data corpus was used.

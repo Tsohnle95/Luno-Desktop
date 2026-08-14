@@ -1,1 +1,5 @@
-No browser accessibility runner or packaged target is installed. Keyboard/focus behavior was not executed.
+status=TOOL_UNAVAILABLE
+command=Browser accessibility runner with keyboard/focus checks
+exit_code=127
+result=TOOL_UNAVAILABLE
+reason=No browser accessibility runner or packaged target is installed; keyboard/focus behavior was not executed.

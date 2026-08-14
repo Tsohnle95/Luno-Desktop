@@ -1,1 +1,5 @@
-No browser screenshot runner or Chromium executable is installed. Required sizes: 960x660, 1180x800, 1600x1000. No screenshot artifact produced.
+status=TOOL_UNAVAILABLE
+command=Browser screenshot runner at 960x660, 1180x800, 1600x1000
+exit_code=127
+result=TOOL_UNAVAILABLE
+reason=No browser screenshot runner or Chromium executable is installed. No screenshot artifact produced.
