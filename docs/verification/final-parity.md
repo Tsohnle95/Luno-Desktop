@@ -12,25 +12,29 @@ behavioral fallback.
 
 ## Acceptance Audit
 
-| IDs | Result | Evidence or blocker |
-|---|---|---|
-| AC-SHELL-01, AC-SHELL-02 | INCONCLUSIVE | The shell geometry check is a browser-independent contract check, not rendered screenshot evidence; browser screenshots and manual receipts are unavailable. |
-| AC-LIB-01, AC-LIB-02, AC-LIB-03 | INCONCLUSIVE | Python/reference differential surface only; no target conformance receipt. |
-| AC-LIB-04, AC-LIB-05, AC-LIB-06 | INCONCLUSIVE | Target generation, journey, and rename/reference-repair receipts unavailable. |
-| AC-PLAY-01, AC-PLAY-02 | INCONCLUSIVE | Pure reference coverage exists; target/shell journey receipt unavailable. |
-| AC-PLAY-03, AC-PLAY-04, AC-PLAY-05 | INCONCLUSIVE | Target differential/audio backend receipts are not available; the recorded Cargo build receipt itself is FAILED (exit `101`). |
-| AC-PLAY-06 | INCONCLUSIVE | Decision D8 approves removal, but the target migration rejection test evidence is unavailable. |
-| AC-DL-01, AC-DL-02, AC-DL-03, AC-DL-04 | INCONCLUSIVE | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
-| AC-DISC-01, AC-DISC-02, AC-DISC-03, AC-DISC-04, AC-DISC-05, AC-DISC-06 | INCONCLUSIVE | Target provider, preview, save, journey, and shutdown receipts unavailable. |
-| AC-ART-01 | INCONCLUSIVE | Target artwork/cache and visual receipt unavailable. |
-| AC-VIDEO-01, AC-VIDEO-02, AC-VIDEO-03 | INCONCLUSIVE | Frontend backend/video availability remains explicitly unavailable because runtime IPC is not implemented; target staging/audio-clock lifecycle, visual, manual, and shutdown evidence is unavailable. |
-| AC-XFER-01, AC-XFER-02 | PASS (reference only) | Frozen v1 codec/rejection coverage and manifest validation pass; this does not prove packaged target parity. |
-| AC-XFER-03, AC-XFER-04 | INCONCLUSIVE | Target planner receipt and provider-index/controller handoff evidence unavailable. |
-| AC-PERSIST-01, AC-PERSIST-02 | INCONCLUSIVE | No target crash/recovery or marker recovery corpus receipt. |
-| AC-OPS-01 | INCONCLUSIVE | No browser accessibility/manual diagnostics receipt. |
-| AC-OPS-02 | BLOCKED | Explicit release blocker: no required packaged bundle/smoke artifact; managed binary inputs are absent and manifest SHA-256 values are placeholders. |
-| AC-OPS-03 | INCONCLUSIVE | Target shutdown/journey evidence is unavailable; U44 classifies the shutdown check as timed out/inconclusive. |
-| JRN-SCAN-PLAY, JRN-DISCOVER, JRN-DOWNLOAD, JRN-RENAME, JRN-TRANSFER, JRN-VIDEO | INCONCLUSIVE | Journey manifest exists, but no executed target journey receipts or artifacts exist. |
+| IDs | Result | release_blocker | Evidence or blocker |
+|---|---|---|---|
+| AC-SHELL-01, AC-SHELL-02 | INCONCLUSIVE | release_blocker: false | The shell geometry check is a browser-independent contract check, not rendered screenshot evidence; browser screenshots and manual receipts are unavailable. |
+| AC-LIB-01, AC-LIB-02, AC-LIB-03 | INCONCLUSIVE | release_blocker: false | Python/reference differential surface only; no target conformance receipt. |
+| AC-LIB-04, AC-LIB-05, AC-LIB-06 | INCONCLUSIVE | release_blocker: false | Target generation, journey, and rename/reference-repair receipts unavailable. |
+| AC-PLAY-01, AC-PLAY-02 | INCONCLUSIVE | release_blocker: false | Pure reference coverage exists; target/shell journey receipt unavailable. |
+| AC-PLAY-03, AC-PLAY-04, AC-PLAY-05 | INCONCLUSIVE | release_blocker: false | Target differential/audio backend receipts are not available; the recorded Cargo build receipt itself is FAILED (exit `101`). |
+| AC-PLAY-06 | INCONCLUSIVE | release_blocker: true | Decision D8 approves removal, but the target migration rejection test evidence is unavailable. |
+| AC-DL-01 | INCONCLUSIVE | release_blocker: false | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
+| AC-DL-02 | INCONCLUSIVE | release_blocker: true | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
+| AC-DL-03, AC-DL-04 | INCONCLUSIVE | release_blocker: false | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
+| AC-DISC-01, AC-DISC-02, AC-DISC-03, AC-DISC-04, AC-DISC-05, AC-DISC-06 | INCONCLUSIVE | release_blocker: false | Target provider, preview, save, journey, and shutdown receipts unavailable. |
+| AC-ART-01 | INCONCLUSIVE | release_blocker: false | Target artwork/cache and visual receipt unavailable. |
+| AC-VIDEO-01, AC-VIDEO-02, AC-VIDEO-03 | INCONCLUSIVE | release_blocker: false | Frontend backend/video availability remains explicitly unavailable because runtime IPC is not implemented; target staging/audio-clock lifecycle, visual, manual, and shutdown evidence is unavailable. |
+| AC-XFER-01, AC-XFER-02 | PASS (reference only) | release_blocker: false | Frozen v1 codec/rejection coverage and manifest validation pass; this does not prove packaged target parity. |
+| AC-XFER-03 | INCONCLUSIVE | release_blocker: false | Target planner receipt and provider-index/controller handoff evidence unavailable. |
+| AC-XFER-04 | INCONCLUSIVE | release_blocker: true | Target planner receipt and provider-index/controller handoff evidence unavailable. |
+| AC-PERSIST-01 | INCONCLUSIVE | release_blocker: true | No target crash/recovery or marker recovery corpus receipt. |
+| AC-PERSIST-02 | INCONCLUSIVE | release_blocker: false | No target crash/recovery or marker recovery corpus receipt. |
+| AC-OPS-01 | INCONCLUSIVE | release_blocker: false | No browser accessibility/manual diagnostics receipt. |
+| AC-OPS-02 | BLOCKED | release_blocker: true | Explicit release blocker: no required packaged bundle/smoke artifact; managed binary inputs are absent and manifest SHA-256 values are placeholders. |
+| AC-OPS-03 | INCONCLUSIVE | release_blocker: false | Target shutdown/journey evidence is unavailable; U44 classifies the shutdown check as timed out/inconclusive. |
+| JRN-SCAN-PLAY, JRN-DISCOVER, JRN-DOWNLOAD, JRN-RENAME, JRN-TRANSFER, JRN-VIDEO | INCONCLUSIVE | release_blocker: false | Journey manifest exists, but no executed target journey receipts or artifacts exist. |
 
 ## Exact Receipts
 
