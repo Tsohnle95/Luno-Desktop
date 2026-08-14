@@ -277,11 +277,20 @@ pub fn has_legacy_data(root: &Path, preview_dir: Option<&Path>) -> bool {
 /// Best-effort aggregate read. Missing files are normal; corrupt files produce
 /// warnings while valid portions remain available to the migration planner.
 pub fn read_legacy(root: &Path, preview_dir: Option<&Path>) -> LegacyState {
+    let configured_root = fs::symlink_metadata(root.join(".luno_config.json"))
+        .ok()
+        .filter(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        .and_then(|_| legacy::read_config(&root.join(".luno_config.json")).ok())
+        .and_then(|config| config.music_root.map(PathBuf::from));
+    read_legacy_with_music_root(root, preview_dir, configured_root.as_deref())
+}
+
+pub fn read_legacy_with_music_root(root: &Path, preview_dir: Option<&Path>, music_root: Option<&Path>) -> LegacyState {
     let mut state = LegacyState::default();
     macro_rules! read_file { ($path:expr, $reader:expr) => {{ let path = $path; if safe_file(&path) { if let Err(message) = $reader(&path) { state.warnings.push(Warning { path, message }); } } }}; }
     let config_path = root.join(".luno_config.json");
     read_file!(config_path, |p: &Path| { state.config = Some(legacy::read_config(p)?); if let Some(c) = &state.config { if let Some(v) = &c.favorite_songs { state.favorite_paths.extend(v.clone()); } } Ok(()) });
-    let roots = [Some(root.to_path_buf()), state.config.as_ref().and_then(|config| config.music_root.as_ref().map(PathBuf::from))];
+    let roots = [Some(root.to_path_buf()), music_root.map(PathBuf::from)];
     for data_root in roots.into_iter().flatten().filter(|candidate| candidate != root) {
         read_file!(data_root.join(".luno_playlist_urls.json"), |p: &Path| { state.playlist_urls.extend(legacy::read_string_map(p)?); Ok(()) });
         read_file!(data_root.join(".luno_allowed_dups.json"), |p: &Path| { state.allowed_duplicate_keys.extend(legacy::read_string_set(p)?.into_iter()); Ok(()) });

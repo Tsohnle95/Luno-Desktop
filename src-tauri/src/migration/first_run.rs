@@ -4,7 +4,8 @@
 //! removed or rewritten. A migration can therefore be retried, or the Python
 //! release can be launched again, after any failure.
 
-use crate::migration::legacy_readers::{canonicalize_path, inventory_retry_files, marker_files_excluding, read_legacy, LegacyState};
+use crate::migration::legacy_readers::{canonicalize_path, inventory_retry_files, marker_files_excluding, read_legacy_with_music_root, LegacyState};
+use crate::persistence::legacy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -99,7 +100,8 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     });
     if valid_completed_record.is_some() {
         let mut warning_messages = Vec::new();
-        let legacy = read_legacy(&paths.legacy_root, Some(&paths.preview_dir));
+        let music_root = validated_music_root(&paths)?;
+        let legacy = read_legacy_with_music_root(&paths.legacy_root, Some(&paths.preview_dir), music_root.as_deref());
         let preserved_files = match inventory_retry_files(&paths.legacy_root, paths.legacy_data_root.as_deref(), &paths.preview_dir, &paths.target_root) {
             Ok(files) => files,
             Err(error) => return Err(MigrationError::Io(format!("legacy input inventory failed: {error}"))),
@@ -131,7 +133,8 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     if let Err(error) = crash(options, CrashStage::Snapshotted) {
         return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, None));
     }
-    let legacy = read_legacy(&paths.legacy_root, Some(&paths.preview_dir));
+    let music_root = validated_music_root(&paths)?;
+    let legacy = read_legacy_with_music_root(&paths.legacy_root, Some(&paths.preview_dir), music_root.as_deref());
     let mut keychain_import = None;
     if let Some(key) = legacy.config.as_ref().and_then(|c| c.lastfm_key.as_deref()).filter(|k| !k.trim().is_empty()) {
         match keychain.import_lastfm_key(key) {
@@ -195,8 +198,8 @@ fn preflight(p: &MigrationPaths) -> Result<(), MigrationError> {
     if !p.preview_dir.starts_with(&p.legacy_root) || p.preview_dir == p.legacy_root {
         return Err(MigrationError::UnsafePath("preview directory must be explicitly contained by the legacy discovery root".into()));
     }
-    if p.legacy_data_root.as_ref().is_some_and(|root| p.target_root.starts_with(root)) {
-        return Err(MigrationError::UnsafePath("target cannot be inside legacy data".into()));
+    if p.legacy_data_root.as_ref().is_some_and(|root| roots_overlap(root, &p.target_root)) {
+        return Err(MigrationError::UnsafePath("legacy data and target roots must not overlap".into()));
     }
     if let Ok(metadata) = fs::symlink_metadata(&p.preview_dir) {
         if metadata.file_type().is_symlink() { return Err(MigrationError::UnsafePath("preview directory must not be a symlink".into())); }
@@ -206,19 +209,45 @@ fn preflight(p: &MigrationPaths) -> Result<(), MigrationError> {
             return Err(MigrationError::UnsafePath(format!("{name} must not be a symlink")));
         }
     }
+    if let Some(root) = &p.legacy_data_root {
+        if fs::symlink_metadata(root).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false) {
+            return Err(MigrationError::UnsafePath("legacy data root must not be a symlink".into()));
+        }
+    }
+    validated_music_root(p)?;
     fs::create_dir_all(&p.target_root)?;
     Ok(())
+}
+
+fn roots_overlap(left: &Path, right: &Path) -> bool { left.starts_with(right) || right.starts_with(left) }
+
+fn validated_music_root(p: &MigrationPaths) -> Result<Option<PathBuf>, MigrationError> {
+    let config_path = p.legacy_root.join(".luno_config.json");
+    if !regular_file(&config_path) { return Ok(None); }
+    let config = match legacy::read_config(&config_path) { Ok(config) => config, Err(_) => return Ok(None) };
+    let Some(raw) = config.music_root else { return Ok(None); };
+    let scope = p.legacy_data_root.as_deref().unwrap_or(&p.legacy_root);
+    let candidate = PathBuf::from(&raw);
+    let candidate = canonicalize_path(if candidate.is_absolute() { candidate } else { scope.join(candidate) }.as_path());
+    if !candidate.starts_with(scope) { return Err(MigrationError::UnsafePath("configured music root is outside the permitted legacy scope".into())); }
+    if roots_overlap(&candidate, &p.target_root) { return Err(MigrationError::UnsafePath("configured music root overlaps the target root".into())); }
+    if fs::symlink_metadata(&candidate).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false) {
+        return Err(MigrationError::UnsafePath("configured music root must not be a symlink".into()));
+    }
+    Ok(Some(candidate))
 }
 
 fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
     let dir = p.target_root.join(format!("migration-backup-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()));
     fs::create_dir_all(&dir)?;
-    let result = (|| -> Result<(), MigrationError> { for root in [p.legacy_root.clone(), read_legacy(&p.legacy_root, None).config.and_then(|config| config.music_root.map(PathBuf::from)).unwrap_or_default()] {
+    let music_root = validated_music_root(p)?;
+    let result = (|| -> Result<(), MigrationError> { for root in [Some(p.legacy_root.clone()), music_root] {
+        let Some(root) = root else { continue; };
         if root.as_os_str().is_empty() { continue; }
         for name in [".luno_config.json", ".luno_playlist_urls.json", ".luno_allowed_dups.json", ".downloaded_vids", ".sync_failed_vids", ".downloaded.txt"] {
             let from = root.join(name); if regular_file(&from) { let destination = if root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } if name == ".luno_config.json" { snapshot_config(&from, &destination, &dir)?; } else { fs::copy(&from, destination)?; } }
         }
-        let excluded = if p.legacy_root == root { vec![p.target_root.as_path()] } else { Vec::new() };
+        let excluded = [p.target_root.as_path()];
         for path in marker_files_excluding(&root, &excluded).map_err(MigrationError::Io)? {
             if path == root.join(".downloaded_vids") || path == root.join(".sync_failed_vids") || path == root.join(".downloaded.txt") { continue; }
             let destination = dir.join(path.strip_prefix(&root).unwrap_or(&path));

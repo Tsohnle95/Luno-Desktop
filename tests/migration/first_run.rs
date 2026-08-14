@@ -50,6 +50,15 @@ fn preflight_rejects_overlapping_data_roots() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn preflight_rejects_legacy_root_inside_target_root() {
+    let root = tempdir();
+    let mut p = paths(&root);
+    p.legacy_data_root = Some(p.target_root.join("legacy"));
+    assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain), Err(MigrationError::UnsafePath(_))));
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn preflight_rejects_lexical_parent_alias_of_target() {
@@ -304,6 +313,47 @@ fn dangling_preview_symlink_is_rejected() {
     let p = paths(&root);
     fs::create_dir_all(&p.legacy_root).unwrap();
     symlink(root.join("missing-preview"), &p.preview_dir).unwrap();
+    assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain), Err(MigrationError::UnsafePath(_))));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(all(target_os = "macos", unix))]
+#[test]
+fn configured_music_root_symlink_is_rejected() {
+    use std::os::unix::fs::symlink;
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    let outside = tempdir();
+    symlink(&outside, root.join("music-link")).unwrap();
+    fs::write(p.legacy_root.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, root.join("music-link").display())).unwrap();
+    assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain), Err(MigrationError::UnsafePath(_))));
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn configured_music_root_parent_alias_is_rejected() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    let outside = root.join("outside");
+    fs::create_dir(&outside).unwrap();
+    let alias = p.legacy_root.join("../outside");
+    fs::write(p.legacy_root.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, alias.display())).unwrap();
+    assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain), Err(MigrationError::UnsafePath(_))));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn configured_music_root_target_overlap_is_rejected() {
+    let root = tempdir();
+    let mut p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    let music = p.target_root.join("music");
+    fs::write(p.legacy_root.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, music.display())).unwrap();
     assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain), Err(MigrationError::UnsafePath(_))));
     fs::remove_dir_all(root).unwrap();
 }
