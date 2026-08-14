@@ -9,7 +9,7 @@ legacy user data must remain available as rollback fallback.
 
 - U45 integration blockers are source-resolved: Tauri bootstrap/unsupported command errors, startup projection, typed Song Page video fallback, Discover placeholder, and seven-route shell contract. Their target build and runtime receipts remain inconclusive.
 
-- Required target TypeScript and Rust gates are FAILED: `npm run typecheck` exited `2`, and `cargo test --manifest-path src-tauri/Cargo.toml` exited `101`. Missing-tool checks remain INCONCLUSIVE where the tool itself is unavailable.
+- Required target TypeScript is INCONCLUSIVE: `npm run typecheck` exited `127` because `tsc` was unavailable. The Rust gate is FAILED: `cargo test --manifest-path src-tauri/Cargo.toml` exited `101`. Missing-tool checks remain INCONCLUSIVE where the tool itself is unavailable.
 - Visual screenshots, accessibility checks, and all manual journeys have no executed receipts or artifacts.
 - Target differential, migration-corpus, crash-recovery, shutdown/orphan, and clean-machine smoke gates are unavailable or inconclusive.
 - No signed/notarized bundle exists. Binary provisioning cannot pass because `release-input/bin/` is absent and the release manifest contains placeholder SHA-256 values.
