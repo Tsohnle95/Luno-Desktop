@@ -300,10 +300,14 @@ mod tests {
         let state = AppState::new(1);
         state.set_event_sink(StdArc::new(|_| Err("offline".into())));
         state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned }));
-        for event in state.events() { state.acknowledge_event(&event.event_id); }
+        let first_ids: Vec<_> = state.events().into_iter().map(|event| event.event_id).collect();
+        assert_eq!(first_ids, vec!["event-1", "delivery-error-1"]);
+        state.acknowledge_event("delivery-error-1");
+        assert!(state.events().iter().all(|event| event.event_id != "delivery-error-1"));
+        state.acknowledge_event("event-1");
         state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 1, status: RootStatus::Scanned }));
         let errors: Vec<_> = state.events().into_iter().filter(|event| matches!(event.event, Event::Error { .. })).map(|event| event.event_id).collect();
-        assert_eq!(errors, vec!["delivery-error-1", "delivery-error-2"]);
+        assert_eq!(errors, vec!["delivery-error-2"]);
     }
 
     #[test]
