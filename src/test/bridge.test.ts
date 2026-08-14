@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createBridge } from "../app/bridge";
 import { createBackendProjection } from "../state/backend_projection";
+import { safeVideoSource } from "../app/Shell";
 
 const event = (event: unknown, generation = 1) => ({ version: 1 as const, event_id: `event-${generation}`, generation, job_id: null, session_id: null, event });
 
@@ -33,6 +34,25 @@ describe("typed IPC bridge and projection", () => {
     expect(store.getSnapshot().shutdown?.state).toBe("complete");
   });
 
+  it("keeps generation watermarks independent and projects history separately from queue", () => {
+    const store = createBackendProjection();
+    store.apply(event({ type: "library_snapshot", payload: { snapshot: { version: 1, generation: 9, tracks: [], playlists: [] } } }, 9));
+    store.apply({ ...event({ type: "playback_snapshot", payload: { snapshot: { queue: ["track-1"], current_index: 0, position_ms: 0, duration_ms: null, status: "playing", generation: 1 } } }, 1), event_id: "event-1" });
+    store.apply({ ...event({ type: "track_started", payload: { track_id: "track-1" } }, 1), event_id: "event-2" });
+    expect(store.getSnapshot().recentHistory).toEqual(["track-1"]);
+    expect(store.getSnapshot().playback?.queue).toEqual(["track-1"]);
+  });
+
+  it("ignores video state belonging to another current track at the shell boundary", () => {
+    const store = createBackendProjection();
+    store.apply(event({ type: "video_state", payload: { state: { track_id: "old", source_url: "https://example.test/old.mp4", staged_path: null, status: "ready", position_ms: 10, fullscreen: false, generation: 8 } } }, 8));
+    store.apply({ ...event({ type: "playback_snapshot", payload: { snapshot: { queue: ["new"], current_index: 0, position_ms: 0, duration_ms: null, status: "playing", generation: 1 } } }, 1), event_id: "event-1" });
+    expect(store.getSnapshot().video?.track_id).toBe("old");
+    expect(store.getSnapshot().playback?.queue[0]).toBe("new");
+    expect(safeVideoSource("not-a-url", "/tmp/preview.mp4")).toContain("preview.mp4");
+    expect(safeVideoSource("javascript:alert(1)", null)).toBeNull();
+  });
+
   it("projects video state and safely selects the current track", async () => {
     const store = createBackendProjection();
     store.apply(event({ type: "library_snapshot", payload: { snapshot: { version: 1, generation: 1, tracks: [{ id: "track-1", path: null, title: "Song", artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null }], playlists: [] } } }, 1));
@@ -60,6 +80,6 @@ describe("typed IPC bridge and projection", () => {
     store.apply({ ...deliveryError, event_id: "delivery-error-2" });
     store.apply({ ...event({ type: "error", payload: { error: { code: "internal", message: "next", retryable: false } } }, 2), event_id: "event-2" });
     expect(store.getSnapshot().errors.map((error) => error.message)).toEqual(["domain", "delivery", "delivery", "next"]);
-    expect(store.getSnapshot().lastEventId).toBe("event-2");
+    expect(store.getSnapshot().lastEventIds.errors).toBe("event-2");
   });
 });
