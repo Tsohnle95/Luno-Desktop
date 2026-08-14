@@ -16,7 +16,7 @@ behavioral fallback.
 | AC-LIB-01, AC-LIB-02, AC-LIB-03 | INCONCLUSIVE | Python/reference differential surface only; no target conformance receipt. |
 | AC-LIB-04, AC-LIB-05, AC-LIB-06 | INCONCLUSIVE | Target generation, journey, and rename/reference-repair receipts unavailable. |
 | AC-PLAY-01, AC-PLAY-02 | INCONCLUSIVE | Pure reference coverage exists; target/shell journey receipt unavailable. |
-| AC-PLAY-03, AC-PLAY-04, AC-PLAY-05 | INCONCLUSIVE | Target differential/audio backend receipts unavailable (`cargo` missing). |
+| AC-PLAY-03, AC-PLAY-04, AC-PLAY-05 | INCONCLUSIVE | Target differential/audio backend receipts are not available; the recorded Cargo build receipt itself is FAILED (exit `101`). |
 | AC-PLAY-06 | BLOCKED | Decision D8 approves removal, but the target migration rejection test is not evidenced. |
 | AC-DL-01, AC-DL-02, AC-DL-03, AC-DL-04 | INCONCLUSIVE | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
 | AC-DISC-01, AC-DISC-02, AC-DISC-03, AC-DISC-04, AC-DISC-05, AC-DISC-06 | INCONCLUSIVE | Target provider, preview, save, journey, and shutdown receipts unavailable. |
@@ -48,8 +48,8 @@ behavioral fallback.
 
 ## Integration Blockers (U45)
 
-- **Tauri runtime:** resolved in source: managed `AppState`, registered bridge command, explicit unsupported-command errors, and startup migration invocation are now present. Target `cargo` verification remains inconclusive.
-- **Frontend projection:** runtime IPC is not implemented, so backend availability remains explicitly unavailable; startup subscription and library/scan projection source contracts do not provide a target runtime receipt. Target `tsc` verification remains inconclusive.
+- **Tauri runtime:** resolved in source: managed `AppState`, registered bridge command, explicit unsupported-command errors, and startup migration invocation are now present. The recorded Cargo build receipt is FAILED (exit `101`); a missing `cargo` executable would instead be INCONCLUSIVE.
+- **Frontend projection:** runtime IPC is not implemented, so backend availability remains explicitly unavailable; startup subscription and library/scan projection source contracts do not provide a target runtime receipt. The recorded TypeScript receipt is FAILED (exit `2`); an unavailable compiler would instead be INCONCLUSIVE.
 - **Song Page video:** video availability remains explicitly unavailable because runtime IPC is not implemented; the page's typed disconnected state and artwork fallback are not backend video evidence.
 - **Discover route and shell contract:** resolved in source: a Discover placeholder is rendered and the visual contract asserts seven routes.
 - These source resolutions do not change the blocked status: required target build, runtime, visual, migration, shutdown, and release receipts remain unresolved below.
