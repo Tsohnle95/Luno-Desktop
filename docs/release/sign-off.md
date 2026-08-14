@@ -34,7 +34,7 @@ Machine-readable release blockers:
 - No signed/notarized bundle exists. Binary provisioning cannot pass because `release-input/bin/` is absent and the release manifest contains placeholder SHA-256 values.
 - Provider-index transfer handoff and the approved crossfade-removal migration test lack target evidence.
 - Production still uses `NoopKeychain`; key-bearing legacy migration must block until a real macOS Keychain adapter is wired.
-- Frontend backend and video availability remain explicitly unavailable because runtime IPC is not implemented.
+- IPC transport, subscription, and command wiring are implemented in source, while target backend and video capability evidence remains unavailable or failed; the typed disconnected state and artwork fallback are not backend runtime evidence.
 - The shell geometry check is a contract check only, not rendered screenshot evidence.
 
 ## Evidence

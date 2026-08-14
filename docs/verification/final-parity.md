@@ -12,7 +12,7 @@ missing referenced R06 artifacts, 2 reference-only feature passes, 35
 inconclusive feature IDs, 6 inconclusive journeys, 1 failed receipt, and 5
 release-blocker acceptance IDs. The release rule is not met.
 
-Receipt-document chain: R06 source-run HEAD is `b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc`, receipt-generation HEAD is `c208950f34bbc3fcc053e1b5d2cd49d593715c57`, and its correction chain begins `c208950f34bbc3fcc053e1b5d2cd49d593715c57` -> `65cabe686f32125849c3d13b0ffce8b814396f27` -> current tip. R05 source review HEAD is `d64da5c244752483d40b6e7558247e11c805f24b`, source-chain anchor `032b14ec38a96d5761f9a2ea1d58cb193e790bf6`, and its receipt chain ends `0e9c1ca5e3e56d5dbcba7fd88add64f4640bd5ac`. These are provenance references, not claims about the containing commit. Verify current history externally with `git log --format='%H %s' -n 8 -- docs/verification/receipts/r06-manifest.json docs/verification/receipts/r06-summary.md docs/release/artifacts/r05-manifest.json docs/release/artifacts/r05-summary.md` and `git status --porcelain`.
+Receipt-document chain: R06 source-run HEAD is `b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc`, receipt-generation HEAD is `c208950f34bbc3fcc053e1b5d2cd49d593715c57`, and its correction chain is `c208950f34bbc3fcc053e1b5d2cd49d593715c57` -> `65cabe686f32125849c3d13b0ffce8b814396f27` -> audited receipt-document tip `cba3a17a1fce8cd4faed98f510da5039f1776702` (parent `7bd95fcbcef30240db93065b6143980f17075cda`). R05 source review HEAD is `d64da5c244752483d40b6e7558247e11c805f24b`, source-chain anchor `032b14ec38a96d5761f9a2ea1d58cb193e790bf6`, and its receipt chain ends `0e9c1ca5e3e56d5dbcba7fd88add64f4640bd5ac`. These are provenance references, not claims about the containing commit; the R07 audit document is committed separately. Verify current history externally with `git log --format='%H %s' -n 8 -- docs/verification/receipts/r06-manifest.json docs/verification/receipts/r06-summary.md docs/release/artifacts/r05-manifest.json docs/release/artifacts/r05-summary.md` and `git status --porcelain`.
 
 This is a fan-in receipt, not a claim that the React/Tauri/Rust application is
 at parity. A required gate is `pass` only when its configured command or manual
@@ -35,7 +35,7 @@ behavioral fallback.
 | AC-DL-03, AC-DL-04 | INCONCLUSIVE | release_blocker: false | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
 | AC-DISC-01, AC-DISC-02, AC-DISC-03, AC-DISC-04, AC-DISC-05, AC-DISC-06 | INCONCLUSIVE | release_blocker: false | Target provider, preview, save, journey, and shutdown receipts unavailable. |
 | AC-ART-01 | INCONCLUSIVE | release_blocker: false | Target artwork/cache and visual receipt unavailable. |
-| AC-VIDEO-01, AC-VIDEO-02, AC-VIDEO-03 | INCONCLUSIVE | release_blocker: false | Frontend backend/video availability remains explicitly unavailable because runtime IPC is not implemented; target staging/audio-clock lifecycle, visual, manual, and shutdown evidence is unavailable. |
+| AC-VIDEO-01, AC-VIDEO-02, AC-VIDEO-03 | INCONCLUSIVE | release_blocker: false | IPC transport, subscription, and command wiring are implemented in source, but target backend/video capability evidence is unavailable; target staging/audio-clock lifecycle, visual, manual, and shutdown evidence is unavailable. |
 | AC-XFER-01, AC-XFER-02 | PASS (reference only) | release_blocker: false | Frozen v1 codec/rejection coverage and manifest validation pass; this does not prove packaged target parity. |
 | AC-XFER-03 | INCONCLUSIVE | release_blocker: false | Target planner receipt and provider-index/controller handoff evidence unavailable. |
 | AC-XFER-04 | INCONCLUSIVE | release_blocker: true | Target planner receipt and provider-index/controller handoff evidence unavailable. |
@@ -90,8 +90,8 @@ data, signature, or package was fabricated.
 ## Integration Blockers (U45)
 
 - **Tauri runtime:** resolved in source: managed `AppState`, registered bridge command, explicit unsupported-command errors, and startup migration invocation are now present. The R06 Cargo receipt is FAILED (exit `101`); a missing `cargo` executable would instead be INCONCLUSIVE.
-- **Frontend projection:** runtime IPC is not implemented, so backend availability remains explicitly unavailable; startup subscription and library/scan projection source contracts do not provide a target runtime receipt. R06 TypeScript typecheck/build are INCONCLUSIVE (exit `127`) because `tsc` is unavailable.
-- **Song Page video:** video availability remains explicitly unavailable because runtime IPC is not implemented; the page's typed disconnected state and artwork fallback are not backend video evidence.
+- **Frontend projection:** IPC transport, startup subscription, and library/scan command wiring are implemented in source, but target backend capability evidence remains unavailable; source contracts do not provide a target runtime receipt. R06 TypeScript typecheck/build are INCONCLUSIVE (exit `127`) because `tsc` is unavailable.
+- **Song Page video:** IPC command wiring is implemented, but target backend/video capability evidence remains unavailable; the page's typed disconnected state and artwork fallback are not backend video evidence.
 - **Discover route and shell contract:** resolved in source: a Discover placeholder is rendered and the visual contract asserts seven routes.
 - These source resolutions do not change the blocked status: required target build, runtime, visual, migration, shutdown, and release receipts remain unresolved below.
 
