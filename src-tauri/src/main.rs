@@ -21,8 +21,9 @@ fn backend_command(app: tauri::AppHandle, state: tauri::State<'_, AppState>, pay
         error_json(ContractError { code, message: format!("invalid command envelope: {error}"), retryable: false })
     })?;
     let result = state.dispatch(envelope);
-    for event in state.events() {
-        app.emit(BACKEND_EVENT, event).map_err(|error| error_json(ContractError { code: luno_desktop_lib::contracts::types::ErrorCode::Internal, message: error.to_string(), retryable: true }))?;
+    for event in state.pending_events() {
+        app.emit(BACKEND_EVENT, &event).map_err(|error| error_json(ContractError { code: luno_desktop_lib::contracts::types::ErrorCode::Internal, message: error.to_string(), retryable: true }))?;
+        state.acknowledge_event(&event.event_id);
     }
     result.map_err(error_json)
 }

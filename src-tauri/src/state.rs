@@ -27,6 +27,38 @@ mod tests {
         assert!(json.contains("snapshot_created"));
         assert!(!json.contains("/"));
     }
+
+    #[test]
+    fn provider_metadata_is_used_by_scan_publication_path() {
+        let state = AppState::new(1);
+        let path = PathBuf::from("/music/song.mp3");
+        state.set_provider_metadata(path.clone(), TrackMetadata {
+            title: "Provider title".into(),
+            artist: "Provider artist".into(),
+            duration_ms: 1234,
+            provider: Some(crate::domain::identity::ProviderIdentity { provider: "youtube".into(), id: "abc".into() }),
+        });
+
+        let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), vec![path])]));
+
+        assert_eq!(snapshot.tracks[0].title, "Provider title");
+        assert_eq!(snapshot.tracks[0].provider.as_ref().map(|provider| provider.id.as_str()), Some("abc"));
+    }
+
+    #[test]
+    fn failed_event_delivery_preserves_event_until_acknowledged() {
+        let state = AppState::new(1);
+        state.set_event_sink(StdArc::new(|_| Err("emit failed".into())));
+        let event = state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned });
+        state.publish(event.clone());
+
+        let pending = state.pending_events();
+        assert_eq!(pending[0], event);
+        assert!(matches!(pending[1].event, Event::Error { .. }));
+
+        state.acknowledge_event(&pending[0].event_id);
+        assert_eq!(state.pending_events().len(), 1);
+    }
 }
 
 #[derive(Clone)]
@@ -56,7 +88,8 @@ impl AppState {
     pub fn library(&self) -> LibrarySnapshot { self.library.lock().unwrap().clone() }
     pub fn root_statuses(&self) -> Vec<RootStatus> { self.root_statuses.lock().unwrap().clone() }
     pub fn set_scan_roots(&self, roots: Vec<PathBuf>) { *self.roots.lock().unwrap() = roots; }
-    pub fn events(&self) -> Vec<EventEnvelope> { std::mem::take(&mut *self.events.lock().unwrap()) }
+    pub fn pending_events(&self) -> Vec<EventEnvelope> { self.events.lock().unwrap().clone() }
+    pub fn acknowledge_event(&self, event_id: &str) { self.events.lock().unwrap().retain(|event| event.event_id != event_id); }
     pub fn event(&self, generation: Generation, event: Event) -> EventEnvelope {
         let id = self.next_event.fetch_add(1, Ordering::Relaxed) + 1;
         EventEnvelope { version: CONTRACT_VERSION, event_id: format!("event-{id}"), generation, job_id: None, session_id: None, event }
@@ -120,7 +153,7 @@ impl AppState {
             let mut ids = Vec::new();
             for path in files {
                 let id = paths.entry(path.clone()).or_insert_with(|| {
-                    let metadata = state.provider_metadata.lock().unwrap().get(&path).cloned().unwrap_or_else(|| crate::domain::identity::filename_metadata(&path.to_string_lossy()));
+                    let metadata = self.provider_metadata.lock().unwrap().get(&path).cloned().unwrap_or_else(|| crate::domain::identity::filename_metadata(&path.to_string_lossy()));
                     let id = TrackId(crate::domain::identity::track_id(&metadata));
                     tracks.push(Track { id: id.clone(), path: None, title: metadata.title, artist: (!metadata.artist.is_empty()).then_some(metadata.artist), album: None, duration_ms: (metadata.duration_ms != 0).then_some(metadata.duration_ms), artwork_url: None, favorite: false, provider: metadata.provider.map(|provider| crate::contracts::types::ProviderId { provider: provider.provider, id: provider.id }) });
                     id
