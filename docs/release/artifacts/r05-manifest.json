@@ -3,7 +3,12 @@
   "status": "BLOCKED",
   "timestamp": "2026-08-14",
   "source_review_head": "d64da5c244752483d40b6e7558247e11c805f24b",
-  "receipt_update_parent": "032b14ec38a96d5761f9a2ea1d58cb193e790bf6",
+  "source_chain_anchor": "032b14ec38a96d5761f9a2ea1d58cb193e790bf6",
+  "receipt_document_chain": [
+    "dc036f7cdce5b161c475f207e28d756f600d5a50",
+    "2c85724fa06602c8307424ef727b1afe685060ac",
+    "21026067ddbae2e42655ef263b8eeb3be739b071"
+  ],
   "receipt_document_commit": {
     "description": "The commit containing this receipt must be verified externally after commit creation. Its SHA is intentionally not embedded because a commit cannot contain its own hash.",
     "verification_command": "git show --no-patch --format='%H%n%P' <receipt-document-commit-sha>"
@@ -82,7 +87,7 @@
   ],
   "provenance": {
     "source_review_head": "d64da5c244752483d40b6e7558247e11c805f24b",
-    "receipt_update": "The source review is recorded at source_review_head. The previous receipt update is receipt_update_parent 032b14ec38a96d5761f9a2ea1d58cb193e790bf6; this receipt document is committed afterward and its SHA is intentionally verified externally because a commit cannot contain its own hash.",
+    "source_chain": "The source review is recorded at source_review_head. The source-chain anchor is source_chain_anchor 032b14ec38a96d5761f9a2ea1d58cb193e790bf6, whose parent is d64da5c244752483d40b6e7558247e11c805f24b. The subsequent receipt-document chain is dc036f7cdce5b161c475f207e28d756f600d5a50, 2c85724fa06602c8307424ef727b1afe685060ac, and 21026067ddbae2e42655ef263b8eeb3be739b071, verified externally. This receipt document is committed afterward and its SHA is intentionally verified externally because a commit cannot contain its own hash.",
     "commands": [
       {
         "command": "git rev-parse 032b14ec38a96d5761f9a2ea1d58cb193e790bf6^",
@@ -104,7 +109,7 @@
         "output": " M TODO.md\n M dispatch-plan.json"
       }
     ],
-    "note": "The source review was performed at source_review_head d64da5c244752483d40b6e7558247e11c805f24b. The exact previous receipt commit is receipt_update_parent 032b14ec38a96d5761f9a2ea1d58cb193e790bf6, whose parent is d64da5c244752483d40b6e7558247e11c805f24b. The commit containing this receipt is receipt_document_commit and must be verified externally with git show/review; its SHA is not self-embedded because a commit cannot contain its own hash."
+    "note": "The source review was performed at source_review_head d64da5c244752483d40b6e7558247e11c805f24b. The source-chain anchor is source_chain_anchor 032b14ec38a96d5761f9a2ea1d58cb193e790bf6, whose parent is d64da5c244752483d40b6e7558247e11c805f24b. The subsequent receipt-document chain is dc036f7cdce5b161c475f207e28d756f600d5a50, 2c85724fa06602c8307424ef727b1afe685060ac, and 21026067ddbae2e42655ef263b8eeb3be739b071, verified externally. The commit containing this receipt is receipt_document_commit and must be verified externally with git show/review; its SHA is not self-embedded because a commit cannot contain its own hash."
   },
   "unavailable_or_missing": [
     "release-input/bin/ffmpeg",
