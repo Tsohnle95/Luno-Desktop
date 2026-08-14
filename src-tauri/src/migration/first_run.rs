@@ -194,7 +194,7 @@ fn format_warning(path: &Path, legacy_root: &Path, music_root: Option<&Path>, pr
 }
 
 fn preflight(p: &MigrationPaths) -> Result<(), MigrationError> {
-    if p.legacy_root == p.target_root { return Err(MigrationError::UnsafePath("legacy and target roots must differ".into())); }
+    if roots_overlap(&p.legacy_root, &p.target_root) { return Err(MigrationError::UnsafePath("legacy and target roots must not overlap".into())); }
     if !p.preview_dir.starts_with(&p.legacy_root) || p.preview_dir == p.legacy_root {
         return Err(MigrationError::UnsafePath("preview directory must be explicitly contained by the legacy discovery root".into()));
     }

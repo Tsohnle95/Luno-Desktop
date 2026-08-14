@@ -59,6 +59,16 @@ fn preflight_rejects_legacy_root_inside_target_root() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn preflight_rejects_target_nested_under_legacy_root_without_configured_root() {
+    let root = tempdir();
+    let mut p = paths(&root);
+    p.legacy_data_root = None;
+    p.target_root = p.legacy_root.join("target");
+    assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain), Err(MigrationError::UnsafePath(_))));
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn preflight_rejects_lexical_parent_alias_of_target() {
