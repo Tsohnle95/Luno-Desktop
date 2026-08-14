@@ -1,9 +1,10 @@
 # Desktop Release Sign-Off
 
 Status: **BLOCKED**. Current evidence was refreshed on 2026-08-14 at source
-HEAD `e6d2372c43638e0f5f6163fe57b53e689458e7fd` after commits `93915b32`,
-`8343bfbf`, and `e6d2372c`. The macOS Tauri release is not approved; retain the
-Python/PyInstaller fallback and legacy user data.
+HEAD `969a83319a96603a3608c041fc8abf28e2f8a3f7` after the first-parent range
+`93915b329b35085358c8924017a93bbb1ee14fd7^..969a83319a96603a3608c041fc8abf28e2f8a3f7`.
+The macOS Tauri release is not approved; retain the Python/PyInstaller fallback
+and legacy user data.
 
 ## Evidence
 
@@ -21,6 +22,8 @@ Python/PyInstaller fallback and legacy user data.
   not a reviewed release checksum.
 - Video commands remain explicitly unavailable and have no passing target
   receipt.
+- Cargo/unit tests pass, but physical macOS audio backend/device/codec
+  target-runtime validation and packaged target playback were not exercised.
 
 ## Remaining Blockers
 
@@ -28,6 +31,9 @@ Release is blocked only by unresolved release prerequisites and target evidence:
 
 - No reviewed `release-input/bin/` executables and no pinned reviewed checksums.
 - No signing or notarization evidence.
+- Physical macOS audio backend/device/codec target-runtime validation and
+  packaged target playback were not exercised; this remains separate from the
+  unavailable video backend.
 - No target runtime/packaged smoke, visual screenshot, accessibility,
   migration/rollback, shutdown/orphan-process, manual journey, or real-user
   evidence.

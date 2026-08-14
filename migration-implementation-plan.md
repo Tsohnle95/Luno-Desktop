@@ -251,16 +251,18 @@ and rollback trial. Until then Python is the behavioral fallback.
 
 - Status: **BLOCKED** on 2026-08-14; no parity or release sign-off is claimed.
 - Audited source HEAD is
-  `e6d2372c43638e0f5f6163fe57b53e689458e7fd`. The exact first-parent command is
-  `git log --first-parent --format='%H %s' --reverse 93915b32^..HEAD`, covering
-  `93915b32`, `8343bfbf`, and `e6d2372c`.
+  `969a83319a96603a3608c041fc8abf28e2f8a3f7`. The exact first-parent command is
+  `git log --first-parent --format='%H %s' --reverse 93915b329b35085358c8924017a93bbb1ee14fd7^..969a83319a96603a3608c041fc8abf28e2f8a3f7`,
+  covering `93915b32`, `8343bfbf`, `e6d2372c`, and `969a8331`.
 - Current receipts pass: `npm ci`, `npm run typecheck`, `npm run build`,
   `npm test` (13 passed), `cargo test --manifest-path src-tauri/Cargo.toml`
   (31 passed, 1 ignored), and `npm run tauri build` (unsigned local aarch64 DMG).
 - Video commands remain explicitly unavailable. Target runtime, visual,
   accessibility, migration/rollback, shutdown/orphan-process, manual journey,
   and real-user evidence remains inconclusive because no reviewed execution
-  receipt exists.
+  receipt exists. Cargo/unit tests pass, but physical macOS audio
+  backend/device/codec target-runtime validation and packaged target playback
+  were not exercised; this is distinct from video backend unavailability.
 - Release inputs remain incomplete: `release-input/bin/` is absent and
   `release/desktop-binaries.json` retains placeholder checksums. No signing or
   notarization evidence exists.

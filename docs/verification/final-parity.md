@@ -1,7 +1,7 @@
 # Final Desktop Parity Gate
 
 Status: **BLOCKED** (current receipt refresh, 2026-08-14; audited source HEAD
-`e6d2372c43638e0f5f6163fe57b53e689458e7fd`). This is evidence refresh only; it
+`969a83319a96603a3608c041fc8abf28e2f8a3f7`). This is evidence refresh only; it
 does not claim parity or release readiness.
 
 ## Provenance
@@ -14,11 +14,14 @@ first-parent commits:
 93915b329b35085358c8924017a93bbb1ee14fd7 Integrate macOS cpal audio playback
 8343bfbf8228f059a9c23c39516d374dfa18a7f2 Fix frontend backend readiness startup
 e6d2372c43638e0f5f6163fe57b53e689458e7fd Fix frontend test gate and generated artifact hygiene
+969a83319a96603a3608c041fc8abf28e2f8a3f7 docs: refresh release evidence receipts
 ```
 
 Verification command: `git log --first-parent --format='%H %s' --reverse
-93915b32^..HEAD`. This receipt uses the current source HEAD and does not claim
-that older R06 receipt-document commits form a contiguous provenance chain.
+93915b329b35085358c8924017a93bbb1ee14fd7^..969a83319a96603a3608c041fc8abf28e2f8a3f7`.
+The range is pinned to the audited evidence HEAD rather than this correction's
+future `HEAD`, and does not claim that older R06 receipt-document commits form
+a contiguous provenance chain.
 
 ## Current Receipts
 
@@ -45,8 +48,10 @@ No video command receipt is represented as a pass or failure.
 ## Parity Result
 
 The source/toolchain gates above pass. They do not establish target runtime
-parity. The following required evidence remains **INCONCLUSIVE** because it was
-not executed or reviewed: target runtime and packaged smoke behavior; rendered
+parity. In particular, Cargo/unit tests pass, but physical macOS audio
+backend/device/codec validation and packaged target playback were not
+exercised. The following required evidence remains **INCONCLUSIVE** because it
+was not executed or reviewed: physical macOS audio target validation; rendered
 visual screenshots; accessibility diagnostics; migration and rollback with real
 user data; shutdown/orphan-process behavior; manual/user journey evidence;
 target video capability; and target-vs-reference behavior beyond the automated
@@ -61,6 +66,9 @@ Release remains **BLOCKED** only by these actual unresolved prerequisites:
 - `release/desktop-binaries.json` still contains placeholder SHA-256 values;
   the local DMG hash above is not a substitute for pinned reviewed inputs.
 - No signed or notarized release bundle exists.
+- Physical macOS audio backend/device/codec target-runtime validation and
+  packaged target playback were not exercised; Cargo/unit tests are not a
+  substitute for this evidence.
 - Required target runtime, visual, accessibility, migration/rollback,
   shutdown/orphan-process, manual journey, and real-user evidence is absent.
 
