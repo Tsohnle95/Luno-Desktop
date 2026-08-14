@@ -61,7 +61,9 @@ mod tests {
     fn missing_managed_binary_falls_back_without_accepting_relative_path() {
         let dir = std::env::temp_dir().join(format!("luno-exec-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
-        assert!(matches!(discover(ExecutableKind::Ffmpeg, Some(&dir)), Err(ExecutableError::Missing(_)) | Err(ExecutableError::NotExecutable(_))));
+        let managed = dir.join(ExecutableKind::Ffmpeg.filename());
+        let _ = fs::create_dir(&managed);
+        assert!(matches!(discover(ExecutableKind::Ffmpeg, Some(&dir)), Err(ExecutableError::NotFile(_))));
         let _ = fs::remove_dir_all(dir);
     }
 }

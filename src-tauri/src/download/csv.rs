@@ -51,8 +51,8 @@ pub fn parse(input: &[u8]) -> Result<Vec<CsvTrack>, CsvError> {
         tracks.push(CsvTrack {
             title: value(title, "Track Name")?,
             artist: value(artist, "Artist Name(s)")?,
-            album: album.and_then(|i| nonempty(row[i])),
-            url: url.and_then(|i| nonempty(row[i])),
+            album: album.and_then(|i| nonempty(&row[i])),
+            url: url.and_then(|i| nonempty(&row[i])),
         });
     }
     Ok(tracks)

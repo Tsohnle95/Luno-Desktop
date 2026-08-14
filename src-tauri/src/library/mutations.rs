@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 const URL_FILE: &str = ".luno_playlist_urls.json";
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum MutationError {
     #[error("playlist name is empty or invalid")] InvalidName,
     #[error("playlist '{0}' is protected")] Protected(String),

@@ -36,6 +36,6 @@ pub fn promote_to_playlist(staged: impl AsRef<Path>, filename: &str,
         let _ = fs::remove_file(&partial);
         return Err(SaveError::Promotion(PromotionError::Io(error)));
     }
-    let receipt = promote_output(&partial, &target, Validation::audio(), CollisionPolicy::Reject)?;
+    let receipt = promote_output(&partial, &target, Validation::audio(), CollisionPolicy::Reject, None)?;
     Ok(SaveReceipt { playlist_id: destination.playlist_id.clone(), path: receipt.path, already_saved: false })
 }

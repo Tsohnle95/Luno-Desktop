@@ -102,7 +102,7 @@ pub fn read_preview_inventory(dir: &Path) -> Result<Vec<PathBuf>, String> {
     if !safe_directory(&dir) { return Ok(Vec::new()); }
     let mut files = Vec::new();
     let mut inspected = 0;
-    for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
         if inspected >= MAX_RETRY_ENTRIES {
             return Err(format!("preview inventory exceeded {} entries", MAX_RETRY_ENTRIES));
         }
@@ -144,16 +144,16 @@ pub fn inventory_retry_files(legacy_root: &Path, music_root: Option<&Path>, prev
     // a large HOME envelope cannot starve the configured music root (or vice versa).
     let discovery_budget = MAX_RETRY_ENTRIES / 2;
     let music_budget = MAX_RETRY_ENTRIES - discovery_budget;
-    let excluded = [&preview_dir, &target_root];
+    let excluded: [&Path; 2] = [preview_dir.as_path(), target_root.as_path()];
     let mut envelope_budget = discovery_budget / 2;
     let mut preview_budget = discovery_budget - envelope_budget;
     inventory_direct(&legacy_root, &excluded, &mut files, &mut envelope_budget)?;
     inventory_preview(&preview_dir, &mut files, &mut preview_budget)?;
     if let Some(root) = music_root.filter(|root| *root != legacy_root) {
         let mut budget = music_budget;
-        inventory_direct(root, &[], &mut files, &mut budget)?;
+        inventory_direct(&root, &[], &mut files, &mut budget)?;
         let mut marker_roots = Vec::new();
-        find_marker_roots(root, &mut marker_roots, &mut budget)?;
+        find_marker_roots(&root, &mut marker_roots, &mut budget)?;
         for marker_root in marker_roots {
             inventory_direct(&marker_root, &[], &mut files, &mut budget)?;
         }
@@ -275,7 +275,7 @@ pub fn marker_files_excluding(root: &Path, excluded_roots: &[&Path]) -> Result<V
             let path = entry.path();
             if excluded.iter().any(|excluded| path == *excluded || path.starts_with(excluded)) { continue; }
             let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-            if metadata.file_type().is_symlink() || !contained(root, &path) { continue; }
+            if metadata.file_type().is_symlink() || !contained(&root, &path) { continue; }
             if metadata.is_dir() && depth < MAX_RETRY_DEPTH { pending.push((path, depth + 1)); }
             else if matches!(path.file_name().and_then(|name| name.to_str()), Some(".downloaded_vids" | ".sync_failed_vids" | ".downloaded.txt")) { files.push(path); }
         }
@@ -346,7 +346,7 @@ pub fn read_legacy_with_music_root(root: &Path, preview_dir: Option<&Path>, musi
     let config_path = root.join(".luno_config.json");
     read_file!(config_path, |p: &Path| { state.config = Some(legacy::read_config(p)?); if let Some(c) = &state.config { if let Some(v) = &c.favorite_songs { state.favorite_paths.extend(v.clone()); } } Ok(()) });
     let roots = [Some(root.to_path_buf()), music_root];
-    for data_root in roots.into_iter().flatten().filter(|candidate| candidate != root) {
+    for data_root in roots.into_iter().flatten().filter(|candidate| candidate.as_path() != root.as_path()) {
         read_file!(data_root.join(".luno_playlist_urls.json"), |p: &Path| { state.playlist_urls.extend(legacy::read_string_map(p)?); Ok(()) });
         read_file!(data_root.join(".luno_allowed_dups.json"), |p: &Path| { state.allowed_duplicate_keys.extend(legacy::read_string_set(p)?.into_iter()); Ok(()) });
         let markers = match marker_files(&data_root) {

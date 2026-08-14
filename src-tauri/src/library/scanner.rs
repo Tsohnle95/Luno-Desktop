@@ -88,7 +88,7 @@ pub fn scan_library<F: FileSystem>(roots: &[PathBuf], fs: &F) -> ScanOutcome {
             playlists.insert(folder.name, songs);
         }
         for entry in &entries {
-            if !entry.is_dir && supported(&entry.path) { unsorted.push(entry.path); }
+            if !entry.is_dir && supported(&entry.path) { unsorted.push(entry.path.clone()); }
         }
         if !unsorted.is_empty() {
             unsorted.sort_by(|a, b| {

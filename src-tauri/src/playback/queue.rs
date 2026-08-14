@@ -65,7 +65,8 @@ impl QueueState {
     fn shuffle_current_first(&mut self) {
         if let Some(current) = self.current().cloned() {
             let mut rest: Vec<_> = self.physical.iter().filter(|x| **x != current).cloned().collect();
-            rest.rotate_left(rest.len().saturating_sub(1));
+            let rotation = rest.len().saturating_sub(1);
+            rest.rotate_left(rotation);
             self.physical = std::iter::once(current).chain(rest).collect(); self.current_index = Some(0);
         }
     }

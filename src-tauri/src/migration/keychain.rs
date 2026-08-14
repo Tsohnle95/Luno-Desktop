@@ -22,14 +22,14 @@ impl MacOsKeychain {
 
     pub fn remove_lastfm_key(&mut self) -> Result<(), String> {
         #[cfg(target_os = "macos")]
-        { security::remove(self.service, self.account) }
+        { security::remove(&self.service, &self.account) }
         #[cfg(not(target_os = "macos"))]
         { Err("macOS Keychain is unavailable on this platform".into()) }
     }
 
     pub fn read_lastfm_key(&mut self) -> Result<Vec<u8>, String> {
         #[cfg(target_os = "macos")]
-        { security::get(self.service, self.account) }
+        { security::get(&self.service, &self.account) }
         #[cfg(not(target_os = "macos"))]
         { Err("macOS Keychain is unavailable on this platform".into()) }
     }
@@ -37,6 +37,7 @@ impl MacOsKeychain {
 
 #[cfg(target_os = "macos")]
 mod security {
+    use super::KeychainImport;
     use std::ffi::c_void;
     use std::ptr;
 
@@ -150,7 +151,7 @@ mod security {
         let mut item = ptr::null_mut();
         let status = unsafe { SecKeychainFindGenericPassword(ptr::null(), service.len() as UInt32, service.as_ptr(), account.len() as UInt32, account.as_ptr(), &mut length, &mut data, &mut item) };
         if status != 0 { return Err(status_error(status)); }
-        let result = std::slice::from_raw_parts(data, length as usize).to_vec();
+        let result = unsafe { std::slice::from_raw_parts(data, length as usize) }.to_vec();
         unsafe { SecKeychainItemFreeContent(ptr::null(), data); CFRelease(item); }
         Ok(result)
     }
@@ -173,7 +174,7 @@ impl Keychain for MacOsKeychain {
         if key.trim().is_empty() { return Err("Last.fm key is empty".into()); }
         if key.len() > MAX_LASTFM_KEY_LEN { return Err("Last.fm key exceeds maximum length".into()); }
         #[cfg(target_os = "macos")]
-        { security::set(self.service, self.account, key.as_bytes()) }
+        { security::set(&self.service, &self.account, key.as_bytes()) }
         #[cfg(not(target_os = "macos"))]
         { Err("macOS Keychain is unavailable on this platform".into()) }
     }

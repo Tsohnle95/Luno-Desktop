@@ -93,8 +93,8 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
             .map_err(MigrationError::UnsafePath)?,
         target_root: validate_existing_path(&paths.target_root).map_err(MigrationError::UnsafePath)?,
         preview_dir: validate_existing_path(&paths.preview_dir).map_err(MigrationError::UnsafePath)?,
-        current_preview: paths.current_preview.iter().map(validate_existing_path).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
-        promoted_assets: paths.promoted_assets.iter().map(validate_existing_path).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
+        current_preview: paths.current_preview.iter().map(|path| validate_existing_path(path)).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
+        promoted_assets: paths.promoted_assets.iter().map(|path| validate_existing_path(path)).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
     };
     preflight(&paths)?;
     crash(options, CrashStage::Preflight)?;
@@ -125,16 +125,16 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
             warning_messages,
         });
     }
-    let quarantined_records = quarantine_records(paths)?;
+    let quarantined_records = quarantine_records(&paths)?;
     if options.fail_snapshot {
         return Err(restore_after_snapshot_failure(MigrationError::Io("injected snapshot failure".into()), quarantined_records));
     }
-    let snapshot = match snapshot_legacy(paths) {
+    let snapshot = match snapshot_legacy(&paths) {
         Ok(snapshot) => snapshot,
         Err(error) => return Err(restore_after_snapshot_failure(error, quarantined_records)),
     };
     if let Err(error) = crash(options, CrashStage::Snapshotted) {
-        return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, None));
+        return Err(rollback(&paths, snapshot, error, true, &quarantined_records, keychain, None));
     }
     let music_root = validated_music_root(&paths)?;
     let legacy = read_legacy_with_music_root(&paths.legacy_root, Some(&paths.preview_dir), music_root.as_deref());
@@ -142,43 +142,43 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     if let Some(key) = legacy.config.as_ref().and_then(|c| c.lastfm_key.as_deref()).filter(|k| !k.trim().is_empty()) {
         match keychain.import_lastfm_key(key) {
             Ok(import) => keychain_import = Some(import),
-            Err(error) => return Err(rollback(paths, snapshot, MigrationError::Keychain(error), true, &quarantined_records, keychain, None)),
+            Err(error) => return Err(rollback(&paths, snapshot, MigrationError::Keychain(error), true, &quarantined_records, keychain, None)),
         }
     }
     let state = convert(&legacy);
     if let Err(error) = crash(options, CrashStage::Converted) {
-        return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
+        return Err(rollback(&paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
     }
     if let Err(error) = create_once(&paths.state_file(), &serde_json::to_vec_pretty(&state).map_err(|e| MigrationError::Io(e.to_string()))?, options.fail_state_create) {
-        return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
+        return Err(rollback(&paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
     }
     let version = VersionRecord { migration: "desktop-first-run".into(), version: MIGRATION_VERSION, completed: true };
     if let Err(error) = create_once(&paths.version_record(), &serde_json::to_vec_pretty(&version).unwrap(), false) {
-        return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
+        return Err(rollback(&paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
     }
     if let Err(error) = crash(options, CrashStage::VersionRecorded) {
-        return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
+        return Err(rollback(&paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
     }
-    let cleanup = match cleanup_previews(paths) {
+    let cleanup = match cleanup_previews(&paths) {
         Ok(removed) => removed,
-        Err(error) => return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import)),
+        Err(error) => return Err(rollback(&paths, snapshot, error, true, &quarantined_records, keychain, keychain_import)),
     };
     if let Err(error) = crash(options, CrashStage::PreviewCleaned) {
         let restore_error = cleanup.restore(options.fail_preview_restore).err();
-        return Err(rollback_with_extra(paths, snapshot, error, true, &quarantined_records, restore_error, keychain, keychain_import));
+        return Err(rollback_with_extra(&paths, snapshot, error, true, &quarantined_records, restore_error, keychain, keychain_import));
     }
     let removed_previews = match cleanup.commit() {
         Ok(removed) => removed,
         Err((cleanup, error)) => {
             let restore_error = cleanup.restore(options.fail_preview_restore).err();
-            return Err(rollback_with_extra(paths, snapshot, error, true, &quarantined_records, restore_error, keychain, keychain_import));
+            return Err(rollback_with_extra(&paths, snapshot, error, true, &quarantined_records, restore_error, keychain, keychain_import));
         }
     };
     let mut warning_messages: Vec<String> = legacy.warnings.iter().map(|warning| format_warning(warning.path.as_path(), &paths.legacy_root, paths.legacy_data_root.as_deref(), &paths.preview_dir, &warning.message)).collect();
     if let Err(error) = discard_quarantine(quarantined_records, options.fail_discard_quarantine) {
-        warning_messages.push(format!("migration committed but recovery quarantine cleanup failed: {error}"));
+        warning_messages.push(format!("migration committed but recovery quarantine cleanup failed: {error:?}"));
     }
-    Ok(MigrationReceipt { version: paths.version_record(), state: paths.state_file(), snapshot, removed_previews, warnings: warning_messages.len(), warning_messages })
+    Ok(MigrationReceipt { version: paths.version_record(), state: paths.state_file(), snapshot: Some(snapshot), removed_previews, warnings: warning_messages.len(), warning_messages })
 }
 
 fn relative_display(path: &Path, root: &Path) -> String {
@@ -250,7 +250,7 @@ fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
     let result = (|| -> Result<(), MigrationError> {
         let root = &p.legacy_root;
         for name in [".luno_config.json", ".luno_playlist_urls.json", ".luno_allowed_dups.json", ".downloaded_vids", ".sync_failed_vids", ".downloaded.txt"] {
-            let from = root.join(name); if regular_file(&from) { let destination = if root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } if name == ".luno_config.json" { snapshot_config(&from, &destination, &dir)?; } else { fs::copy(&from, destination)?; } }
+            let from = root.join(name); if regular_file(&from) { let destination = if root == &p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } if name == ".luno_config.json" { snapshot_config(&from, &destination, &dir)?; } else { fs::copy(&from, destination)?; } }
         }
         if let Some(root) = music_root.filter(|root| *root != p.legacy_root) {
             for name in [".luno_playlist_urls.json", ".luno_allowed_dups.json"] {
@@ -279,7 +279,7 @@ fn regular_file(path: &Path) -> bool {
 
 fn snapshot_config(source: &Path, destination: &Path, backup: &Path) -> Result<(), MigrationError> {
     let bytes = fs::read(source)?;
-    let mut value: Value = match serde_json::from_slice(&bytes) {
+    let mut value: Value = match serde_json::from_slice::<Value>(&bytes) {
         Ok(value) if value.is_object() => value,
         _ => {
             fs::write(backup.join("config-snapshot-omitted.txt"), "Legacy config snapshot omitted: malformed or non-object JSON; secret redaction could not be proven.\n")?;
@@ -373,7 +373,7 @@ fn rollback_records(mut result: MigrationError, quarantined: &[(PathBuf, PathBuf
 }
 fn rollback_with_extra(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBuf)], extra: Option<MigrationError>, keychain: &mut dyn Keychain, keychain_import: Option<KeychainImport>) -> MigrationError {
     let result = rollback(p, snapshot, error, records, quarantined, keychain, keychain_import);
-    extra.map_or(result, |extra| aggregate(result, MigrationError::Cleanup(format!("preview restoration failed: {extra:?}"))))
+    match extra { Some(extra) => aggregate(result, MigrationError::Cleanup(format!("preview restoration failed: {extra:?}"))), None => result }
 }
 fn aggregate(primary: MigrationError, secondary: MigrationError) -> MigrationError {
     MigrationError::Cleanup(format!("migration failed: {primary:?}; additional rollback failure: {secondary:?}"))
@@ -414,7 +414,7 @@ fn create_once(path: &Path, bytes: &[u8], injected_failure: bool) -> Result<(), 
 fn crash(o: &MigrationOptions, stage: CrashStage) -> Result<(), MigrationError> { if o.crash_at == Some(stage) { Err(MigrationError::InjectedCrash(stage)) } else { Ok(()) } }
 fn nonce() -> u128 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() }
 fn quarantine_records(p: &MigrationPaths) -> Result<Vec<(PathBuf, PathBuf)>, MigrationError> {
-    let mut result = Vec::new();
+    let mut result: Vec<(PathBuf, PathBuf)> = Vec::new();
     for original in [p.state_file(), p.version_record()] {
         if !original.exists() { continue; }
         let backup = p.target_root.join(format!(".migration-recovery-{}-{}", nonce(), original.file_name().unwrap().to_string_lossy()));

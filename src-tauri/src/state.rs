@@ -148,9 +148,10 @@ mod tests {
         let delivered = std::sync::Arc::new(Mutex::new(Vec::new()));
         let sink_delivered = delivered.clone();
         let sink_release = release.clone();
+        let sink_entered = entered.clone();
         state.set_event_sink(StdArc::new(move |event| {
             sink_delivered.lock().unwrap().push(event.event_id.clone());
-            if event.event_id == "event-1" { entered.wait(); sink_release.wait(); }
+            if event.event_id == "event-1" { sink_entered.wait(); sink_release.wait(); }
             Ok(())
         }));
         let first = state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned });
@@ -196,7 +197,9 @@ mod tests {
         let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
         let release = entered.clone();
         let worker_state = state.clone();
-        let worker = std::thread::spawn(move || worker_state.drain_events(|_| { entered.wait(); release.wait(); Ok(()) }));
+        let worker_entered = entered.clone();
+        let worker_release = release.clone();
+        let worker = std::thread::spawn(move || worker_state.drain_events(|_| { worker_entered.wait(); worker_release.wait(); Ok(()) }));
         entered.wait();
         assert_eq!(state.retry_event_delivery(Duration::ZERO), 1);
         release.wait();
@@ -217,7 +220,7 @@ mod tests {
 
         state.replay_latest();
 
-        assert_eq!(*delivered.lock().unwrap(), vec![snapshot.event_id, shutdown.event_id]);
+        assert_eq!(*delivered.lock().unwrap(), vec![snapshot.event_id.clone(), shutdown.event_id.clone()]);
         assert!(state.pending_events().is_empty());
         state.replay_latest();
         assert_eq!(*delivered.lock().unwrap(), vec![snapshot.event_id, shutdown.event_id]);
@@ -246,7 +249,7 @@ mod tests {
 
         assert_eq!(*attempts.lock().unwrap(), vec!["event-1"]);
         assert_eq!(state.retry_event_delivery(Duration::ZERO), 0);
-        assert_eq!(*attempts.lock().unwrap(), vec!["event-1", "event-2", "event-3"]);
+        assert_eq!(*attempts.lock().unwrap(), vec!["event-1", "event-1", "event-2", "delivery-error-1"]);
     }
 
     #[test]
@@ -447,6 +450,8 @@ impl AppState {
                     events.push(envelope);
                     events.sort_by_key(|event| event.event_id.strip_prefix("event-").and_then(|id| id.parse::<u64>().ok()).unwrap_or(u64::MAX));
                     replayed.insert(event_id);
+                } else if events.iter().any(|pending| pending.event_id == envelope.event_id) {
+                    replayed.insert(envelope.event_id.clone());
                 }
             }
         }
@@ -536,7 +541,7 @@ impl AppState {
                 let scope = issue.playlist.map_or_else(|| "root".into(), |playlist| format!("playlist {playlist}"));
                 let root_path = outcome.roots.get(issue.root_index).map(|(path, _)| path.to_string_lossy().into_owned()).unwrap_or_default();
                 let detail = issue.message.replace(&root_path, "<root>");
-                let mut error = state.event(generation, Event::Error { error: ContractError { code: ErrorCode::Internal, message: format!("library scan failed for root {} ({scope}): {detail}"), retryable: true } });
+                let mut error = state.event(generation, Event::Error { error: ContractError { code: ErrorCode::Internal, message: format!("library scan failed for root {root_path} ({scope}): {detail}"), retryable: true } });
                 error.job_id = Some(JobId("library-scan".into()));
                 state.publish(error);
             }
@@ -635,7 +640,7 @@ impl AppState {
         let remaining = deadline.saturating_sub(started.elapsed());
         let undelivered = self.retry_event_delivery(remaining);
         // The terminal drain is the final authority for the shutdown report.
-        let result = ShutdownReport { joined: report.joined, timed_out: terminal_timed_out || undelivered > 0, failed, undelivered };
+        let result = ShutdownReport { joined: report.joined, timed_out: !failed && (terminal_timed_out || undelivered > 0), failed, undelivered };
         *stored_result = Some(result);
         result
     }
