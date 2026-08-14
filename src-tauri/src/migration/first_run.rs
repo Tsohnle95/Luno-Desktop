@@ -19,6 +19,9 @@ pub const MAX_LASTFM_KEY_LEN: usize = 8 * 1024;
 #[derive(Debug, Clone)]
 pub struct MigrationPaths {
     pub legacy_root: PathBuf,
+    /// `legacy_root` may be HOME, which is a discovery envelope rather than
+    /// the actual legacy data root.
+    pub legacy_data_root: Option<PathBuf>,
     pub target_root: PathBuf,
     pub preview_dir: PathBuf,
     pub current_preview: Vec<PathBuf>,
@@ -87,8 +90,22 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
         record.migration == "desktop-first-run" && record.version == MIGRATION_VERSION && record.completed
     });
     if valid_completed_record.is_some() {
-        let warnings = reconcile_recovery_quarantine(&paths.target_root);
-        return Err(MigrationError::AlreadyComplete(warnings));
+        let mut warning_messages = reconcile_recovery_quarantine(&paths.target_root);
+        let legacy = read_legacy(&paths.legacy_root, Some(&paths.preview_dir));
+        if !legacy.warnings.is_empty() || !legacy.preview_files.is_empty() || legacy.config.is_some()
+            || !legacy.playlist_urls.is_empty() || !legacy.allowed_duplicate_keys.is_empty()
+            || !legacy.favorite_paths.is_empty() || !legacy.downloaded_ids.is_empty() || !legacy.failed_ids.is_empty()
+        {
+            warning_messages.push("migration already complete; detected preserved or newly added legacy inputs and did not overwrite target state".into());
+        }
+        return Ok(MigrationReceipt {
+            version: paths.version_record(),
+            state: paths.state_file(),
+            snapshot: paths.target_root.clone(),
+            removed_previews: Vec::new(),
+            warnings: warning_messages.len(),
+            warning_messages,
+        });
     }
     let quarantined_records = quarantine_records(paths)?;
     if options.fail_snapshot {
@@ -147,8 +164,12 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
 
 fn preflight(p: &MigrationPaths) -> Result<(), MigrationError> {
     if p.legacy_root == p.target_root { return Err(MigrationError::UnsafePath("legacy and target roots must differ".into())); }
-    if p.preview_dir == p.legacy_root || p.preview_dir.starts_with(&p.legacy_root) { return Err(MigrationError::UnsafePath("preview directory overlaps legacy data".into())); }
-    if p.target_root.starts_with(&p.legacy_root) { return Err(MigrationError::UnsafePath("target cannot be inside legacy data".into())); }
+    if !p.preview_dir.starts_with(&p.legacy_root) || p.preview_dir == p.legacy_root {
+        return Err(MigrationError::UnsafePath("preview directory must be explicitly contained by the legacy discovery root".into()));
+    }
+    if p.legacy_data_root.as_ref().is_some_and(|root| p.target_root.starts_with(root)) {
+        return Err(MigrationError::UnsafePath("target cannot be inside legacy data".into()));
+    }
     if let Ok(metadata) = fs::symlink_metadata(&p.preview_dir) {
         if metadata.file_type().is_symlink() { return Err(MigrationError::UnsafePath("preview directory must not be a symlink".into())); }
     }
@@ -307,7 +328,7 @@ fn rollback_paths(error: MigrationError, paths: impl IntoIterator<Item = (PathBu
     if failures.is_empty() { error } else { MigrationError::Cleanup(format!("migration failed: {error:?}; rollback cleanup failed: {}", failures.join("; "))) }
 }
 fn create_once(path: &Path, bytes: &[u8], injected_failure: bool) -> Result<(), MigrationError> {
-    let mut f = OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| if e.kind() == io::ErrorKind::AlreadyExists { MigrationError::AlreadyComplete } else { e.into() })?;
+    let mut f = OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| if e.kind() == io::ErrorKind::AlreadyExists { MigrationError::AlreadyComplete(Vec::new()) } else { e.into() })?;
     let result = (|| -> Result<(), MigrationError> {
         f.write_all(bytes)?;
         if injected_failure { return Err(MigrationError::Io("injected state create failure".into())); }
@@ -332,8 +353,16 @@ fn quarantine_records(p: &MigrationPaths) -> Result<Vec<(PathBuf, PathBuf)>, Mig
         if !original.exists() { continue; }
         let backup = p.target_root.join(format!(".migration-recovery-{}-{}", nonce(), original.file_name().unwrap().to_string_lossy()));
         if let Err(error) = fs::rename(&original, &backup) {
-            for (restored, stranded) in result.into_iter().rev() { let _ = fs::rename(stranded, restored); }
-            return Err(error.into());
+            let mut failures = Vec::new();
+            for (restored, stranded) in result.into_iter().rev() {
+                if let Err(restore) = fs::rename(stranded, &restored) {
+                    failures.push(format!("{}: {restore}", restored.display()));
+                }
+            }
+            let primary: MigrationError = error.into();
+            return if failures.is_empty() { Err(primary) } else {
+                Err(aggregate(primary, MigrationError::Cleanup(format!("record restoration failed: {}", failures.join("; ")))))
+            };
         }
         result.push((original, backup));
     }

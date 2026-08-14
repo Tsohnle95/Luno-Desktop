@@ -37,7 +37,7 @@ impl Keychain for ConfigurableKeychain {
 }
 
 fn paths(root: &PathBuf) -> MigrationPaths {
-    MigrationPaths { legacy_root: root.join("legacy"), target_root: root.join("target"), preview_dir: root.join("previews"), current_preview: Vec::new(), promoted_assets: Vec::new() }
+    MigrationPaths { legacy_root: root.join("legacy"), legacy_data_root: Some(root.join("legacy")), target_root: root.join("target"), preview_dir: root.join("legacy").join(".luno_previews"), current_preview: Vec::new(), promoted_assets: Vec::new() }
 }
 
 #[test]
@@ -47,6 +47,21 @@ fn preflight_rejects_overlapping_data_roots() {
     p.target_root = p.legacy_root.join("target");
     let result = migrate(&p, &MigrationOptions::default(), &mut TestKeychain);
     assert!(matches!(result, Err(MigrationError::UnsafePath(_))));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn home_discovery_root_allows_home_app_data_target() {
+    let root = tempdir();
+    let legacy = root.join(".legacy-data");
+    let preview = root.join(".luno_previews");
+    let target = root.join("Library/Application Support/com.ty.luno");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::create_dir_all(&preview).unwrap();
+    fs::write(legacy.join(".luno_config.json"), r#"{}"#).unwrap();
+    let p = MigrationPaths { legacy_root: root.clone(), legacy_data_root: Some(legacy), target_root: target, preview_dir: preview, current_preview: Vec::new(), promoted_assets: Vec::new() };
+    assert!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain).is_ok());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -213,8 +228,24 @@ fn completed_retry_discards_leftover_recovery_quarantine_with_warning() {
     let leftover = p.target_root.join(".migration-recovery-leftover");
     fs::write(&leftover, "old").unwrap();
     let result = migrate(&p, &MigrationOptions::default(), &mut TestKeychain);
-    assert!(matches!(result, Err(MigrationError::AlreadyComplete(warnings)) if warnings.iter().any(|warning| warning.contains("discarded leftover"))));
+    assert!(matches!(result, Ok(receipt) if receipt.warning_messages.iter().any(|warning| warning.contains("discarded leftover"))));
     assert!(!leftover.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn completed_migration_is_idempotent_and_preserves_target_state() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    let first = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
+    fs::write(p.state_file(), "user-owned target").unwrap();
+    fs::write(p.legacy_root.join("new-legacy-input"), "preserved").unwrap();
+    let second = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
+    assert_eq!(fs::read_to_string(p.state_file()).unwrap(), "user-owned target");
+    assert_eq!(first.version, second.version);
+    assert!(second.warning_messages.iter().any(|warning| warning.contains("already complete")));
     fs::remove_dir_all(root).unwrap();
 }
 

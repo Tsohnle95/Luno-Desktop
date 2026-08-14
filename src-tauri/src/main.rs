@@ -6,6 +6,7 @@ use luno_desktop_lib::migration::keychain::MacOsKeychain;
 use luno_desktop_lib::migration::legacy_readers::has_legacy_data;
 use luno_desktop_lib::state::AppState;
 use serde_json::Value;
+use std::fs;
 use std::path::PathBuf;
 use tauri::Manager;
 
@@ -22,8 +23,13 @@ fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
     let preview_dir = legacy_root.join(".luno_previews");
     if !has_legacy_data(&legacy_root, Some(&preview_dir)) { return Ok(()); }
     let target_root = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let legacy_data_root = fs::read_to_string(legacy_root.join(".luno_config.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value| value.get("music_root").and_then(Value::as_str).map(PathBuf::from));
     let paths = MigrationPaths {
         legacy_root,
+        legacy_data_root,
         target_root,
         preview_dir,
         current_preview: Vec::new(),
