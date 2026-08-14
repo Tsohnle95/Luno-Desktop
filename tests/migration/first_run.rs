@@ -37,7 +37,7 @@ impl Keychain for ConfigurableKeychain {
 }
 
 fn paths(root: &PathBuf) -> MigrationPaths {
-    MigrationPaths { legacy_root: root.join("legacy"), legacy_data_root: Some(root.join("legacy")), target_root: root.join("target"), preview_dir: root.join("legacy").join(".luno_previews"), current_preview: Vec::new(), promoted_assets: Vec::new() }
+    MigrationPaths { legacy_root: root.join("legacy"), legacy_data_root: Some(root.join("legacy")), configured_music_root: None, target_root: root.join("target"), preview_dir: root.join("legacy").join(".luno_previews"), current_preview: Vec::new(), promoted_assets: Vec::new() }
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn home_discovery_root_allows_home_app_data_target() {
     fs::create_dir_all(&legacy).unwrap();
     fs::create_dir_all(&preview).unwrap();
     fs::write(legacy.join(".luno_config.json"), r#"{}"#).unwrap();
-    let p = MigrationPaths { legacy_root: root.clone(), legacy_data_root: Some(legacy), target_root: target, preview_dir: preview, current_preview: Vec::new(), promoted_assets: Vec::new() };
+    let p = MigrationPaths { legacy_root: root.clone(), legacy_data_root: Some(legacy), configured_music_root: None, target_root: target, preview_dir: preview, current_preview: Vec::new(), promoted_assets: Vec::new() };
     assert!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain).is_ok());
     fs::remove_dir_all(root).unwrap();
 }
@@ -305,13 +305,39 @@ fn completed_retry_rejects_oversized_preview_inventory() {
 fn migration_warning_paths_are_relative_to_their_explicit_root() {
     let root = tempdir();
     let music = root.join("music");
-    let p = MigrationPaths { legacy_root: root.clone(), legacy_data_root: Some(music.clone()), target_root: root.join("target"), preview_dir: root.join(".luno_previews"), current_preview: Vec::new(), promoted_assets: Vec::new() };
+    let p = MigrationPaths { legacy_root: root.clone(), legacy_data_root: Some(music.clone()), configured_music_root: Some(music.clone()), target_root: root.join("target"), preview_dir: root.join(".luno_previews"), current_preview: Vec::new(), promoted_assets: Vec::new() };
     fs::create_dir_all(&music).unwrap();
     fs::write(root.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, music.display())).unwrap();
     fs::write(music.join(".luno_playlist_urls.json"), "not-json").unwrap();
     let receipt = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
     assert!(receipt.warning_messages.iter().any(|warning| warning.starts_with(".luno_playlist_urls.json: ")));
     assert!(receipt.warning_messages.iter().all(|warning| !warning.contains(root.to_str().unwrap())));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn relative_music_root_is_resolved_once_against_legacy_scope() {
+    let root = tempdir();
+    let music = root.join("Music");
+    let p = MigrationPaths {
+        legacy_root: root.clone(),
+        legacy_data_root: Some(root.clone()),
+        configured_music_root: Some(music.clone()),
+        target_root: root.join("target"),
+        preview_dir: root.join(".luno_previews"),
+        current_preview: Vec::new(),
+        promoted_assets: Vec::new(),
+    };
+    fs::create_dir_all(&music).unwrap();
+    fs::write(root.join(".luno_config.json"), r#"{"music_root":"Music"}"#).unwrap();
+    fs::create_dir_all(music.join("playlist")).unwrap();
+    fs::write(music.join("playlist/.downloaded_vids"), "MUSIC-ID\n").unwrap();
+
+    let receipt = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
+    let snapshot = receipt.snapshot.unwrap();
+    assert!(snapshot.join("music-root/playlist/.downloaded_vids").is_file());
+    assert!(!snapshot.join("playlist/.downloaded_vids").exists());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -337,6 +363,7 @@ fn configured_music_root_symlink_is_rejected() {
     let outside = tempdir();
     symlink(&outside, root.join("music-link")).unwrap();
     fs::write(p.legacy_root.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, root.join("music-link").display())).unwrap();
+    p.configured_music_root = Some(root.join("music-link"));
     assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain), Err(MigrationError::UnsafePath(_))));
     fs::remove_dir_all(root).unwrap();
     fs::remove_dir_all(outside).unwrap();
@@ -352,6 +379,7 @@ fn configured_music_root_parent_alias_is_rejected() {
     fs::create_dir(&outside).unwrap();
     let alias = p.legacy_root.join("../outside");
     fs::write(p.legacy_root.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, alias.display())).unwrap();
+    p.configured_music_root = Some(alias);
     assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain), Err(MigrationError::UnsafePath(_))));
     fs::remove_dir_all(root).unwrap();
 }
@@ -364,6 +392,7 @@ fn configured_music_root_target_overlap_is_rejected() {
     fs::create_dir_all(&p.legacy_root).unwrap();
     let music = p.target_root.join("music");
     fs::write(p.legacy_root.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, music.display())).unwrap();
+    p.configured_music_root = Some(music);
     assert!(matches!(migrate(&p, &MigrationOptions::default(), &mut TestKeychain), Err(MigrationError::UnsafePath(_))));
     fs::remove_dir_all(root).unwrap();
 }
@@ -381,7 +410,7 @@ fn snapshot_excludes_target_descendants_when_legacy_root_is_home() {
     fs::write(legacy.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, legacy.display())).unwrap();
     fs::create_dir_all(target.join("nested-marker")).unwrap();
     fs::write(target.join("nested-marker/.downloaded_vids"), "TARGET\n").unwrap();
-    let p = MigrationPaths { legacy_root: root.clone(), legacy_data_root: Some(legacy), target_root: target.clone(), preview_dir: preview, current_preview: Vec::new(), promoted_assets: Vec::new() };
+    let p = MigrationPaths { legacy_root: root.clone(), legacy_data_root: Some(legacy.clone()), configured_music_root: Some(legacy), target_root: target.clone(), preview_dir: preview, current_preview: Vec::new(), promoted_assets: Vec::new() };
 
     let receipt = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
     let snapshot = receipt.snapshot.unwrap();
