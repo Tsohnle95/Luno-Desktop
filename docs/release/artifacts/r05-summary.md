@@ -2,7 +2,7 @@
 
 Status: **BLOCKED**.
 
-Executed in order on 2026-08-14 from commit `6467d166231e3446b9edb44a9053aa88bc3d30a` on Darwin 25.5.0 (macOS, arm64). The workflow bundle path is `src-tauri/target/release/bundle/macos/Luno.app`.
+Executed in order on 2026-08-14 from reviewed commit `7011d60777cb0d1b311d6d6f5acbc2d2a814a575` on Darwin 25.5.0 (macOS, arm64). The workflow bundle path is `src-tauri/target/release/bundle/macos/Luno.app`.
 
 Toolchain receipt: Node `v22.23.2`, npm `10.9.8`, Rust `rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)`, Cargo `1.97.1 (c980f4866 2026-06-30) (Homebrew)`. TypeScript, Vite, and Tauri CLI versions were unavailable because their local executables were unavailable in the current workspace.
 
@@ -19,5 +19,6 @@ signing credentials, notarization credentials, DMG, or app bundle were created.
 The release workflow now fails closed when reviewed inputs or Apple secrets are
 missing, and provisioning/bundle verification compare reported FFmpeg, ffprobe,
 and yt-dlp versions with `release/desktop-binaries.json` when those binaries
-exist. No binaries, checksums, signatures, DMG, or app bundle were fabricated.
+exist, with version-command failures and mismatches blocking the gate. No
+binaries, checksums, signatures, DMG, or app bundle were fabricated.
 Exact machine and command details are in `r05-manifest.json`.
