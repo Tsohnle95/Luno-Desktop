@@ -1,0 +1,1 @@
+No browser screenshot runner or Chromium executable is installed. Required sizes: 960x660, 1180x800, 1600x1000. No screenshot artifact produced.

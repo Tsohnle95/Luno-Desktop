@@ -1,0 +1,6 @@
+
+> luno-desktop@0.1.0 tauri
+> tauri --version
+
+sh: tauri: command not found
+exit_code=127

@@ -1,0 +1,1 @@
+Packaged Tauri/runtime smoke was not executed. `npm run tauri -- --version` exited 127 because `tauri` is unavailable; no packaged binary exists.

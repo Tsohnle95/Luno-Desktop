@@ -1,0 +1,5 @@
+receipt_count= 12
+acceptance_count= 37
+journey_count= 6
+unique_artifact_refs= 17
+missing_artifacts= []

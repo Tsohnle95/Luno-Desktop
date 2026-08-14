@@ -1,0 +1,1 @@
+Migration, crash-recovery, and rollback corpus were not executed. Cargo compilation failed before target tests could run, and no real-user-data corpus was used.

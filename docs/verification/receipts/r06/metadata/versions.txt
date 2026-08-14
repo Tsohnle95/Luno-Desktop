@@ -1,0 +1,9 @@
+HEAD b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc
+python3 Python 3.14.7
+node v22.23.2
+npm 10.9.8
+cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)
+ffmpeg 8.1
+yt-dlp /opt/homebrew/bin/yt-dlp
+browser_runner unavailable
+tauri_cli unavailable

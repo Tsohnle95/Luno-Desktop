@@ -1,0 +1,1 @@
+manifest_json_exit=0

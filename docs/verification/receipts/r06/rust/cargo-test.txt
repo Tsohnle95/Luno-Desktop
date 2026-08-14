@@ -1,0 +1,1333 @@
+    Updating crates.io index
+     Locking 492 packages to latest compatible versions
+      Adding cpal v0.15.3 (available: v0.18.1)
+      Adding generic-array v0.14.7 (available: v0.14.9)
+      Adding reqwest v0.12.28 (available: v0.13.4)
+      Adding symphonia v0.5.5 (available: v0.6.1)
+      Adding thiserror v1.0.69 (available: v2.0.20)
+      Adding toml v0.8.2 (available: v0.8.23)
+      Adding toml_datetime v0.6.3 (available: v0.6.11)
+      Adding toml_edit v0.20.2 (available: v0.20.7)
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling memchr v2.8.3
+   Compiling serde_core v1.0.229
+   Compiling itoa v1.0.18
+   Compiling find-msvc-tools v0.1.10
+   Compiling shlex v2.0.1
+   Compiling writeable v0.6.4
+   Compiling litemap v0.8.3
+   Compiling cc v1.4.2
+   Compiling utf8_iter v1.0.4
+   Compiling siphasher v1.0.3
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling fastrand v2.5.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling phf_shared v0.13.1
+   Compiling zmij v1.0.23
+   Compiling log v0.4.33
+   Compiling bytes v1.12.1
+   Compiling phf_generator v0.13.1
+   Compiling serde v1.0.229
+   Compiling smallvec v1.15.2
+   Compiling aho-corasick v1.1.5
+   Compiling glob v0.3.4
+   Compiling regex-syntax v0.8.11
+   Compiling http v1.5.0
+   Compiling winnow v1.0.4
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling syn v2.0.119
+   Compiling syn v3.0.3
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling phf_codegen v0.13.1
+   Compiling powerfmt v0.2.0
+   Compiling serde_json v1.0.151
+   Compiling deranged v0.5.8
+   Compiling typeid v1.0.3
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling ident_case v1.0.1
+   Compiling strsim v0.11.1
+   Compiling objc2-exception-helper v0.1.1
+   Compiling bitflags v2.13.1
+   Compiling byteorder v1.5.0
+   Compiling rustc-hash v2.1.3
+   Compiling erased-serde v0.4.10
+   Compiling base64 v0.22.1
+   Compiling parking_lot_core v0.9.12
+   Compiling thiserror v2.0.20
+   Compiling unic-char-range v0.9.0
+   Compiling thiserror v1.0.69
+   Compiling regex-automata v0.4.18
+   Compiling fnv v1.0.7
+   Compiling unic-common v0.9.0
+   Compiling version_check v0.9.5
+   Compiling scopeguard v1.2.0
+   Compiling new_debug_unreachable v1.0.6
+   Compiling lock_api v0.4.14
+   Compiling unic-ucd-version v0.9.0
+   Compiling unic-char-property v0.9.0
+   Compiling string_cache_codegen v0.6.1
+   Compiling precomputed-hash v0.1.1
+   Compiling getrandom v0.4.3
+   Compiling alloc-no-stdlib v2.0.4
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.17.1
+   Compiling objc2 v0.6.4
+   Compiling bitflags v1.3.2
+   Compiling alloc-stdlib v0.2.4
+   Compiling parking_lot v0.12.5
+   Compiling unic-ucd-ident v0.9.0
+   Compiling web_atoms v0.2.6
+   Compiling quick-xml v0.41.0
+   Compiling objc2-encode v4.1.0
+   Compiling percent-encoding v2.3.2
+   Compiling anyhow v1.0.104
+   Compiling string_cache v0.9.0
+   Compiling brotli-decompressor v5.0.3
+   Compiling indexmap v2.14.0
+   Compiling ctor-proc-macro v0.0.7
+   Compiling dunce v1.0.5
+   Compiling serde_spanned v1.1.1
+   Compiling semver v1.0.28
+   Compiling autocfg v1.5.1
+   Compiling same-file v1.0.6
+   Compiling dtoa v1.0.11
+   Compiling form_urlencoded v1.2.2
+   Compiling indexmap v1.9.3
+   Compiling dtoa-short v0.3.5
+   Compiling walkdir v2.5.0
+   Compiling ctor v0.8.0
+   Compiling uuid v1.24.0
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling tendril v0.5.1
+   Compiling brotli v8.0.4
+   Compiling selectors v0.36.1
+   Compiling camino v1.2.5
+   Compiling once_cell v1.21.4
+   Compiling pin-project-lite v0.2.17
+   Compiling toml v1.1.4+spec-1.1.0
+   Compiling servo_arc v0.4.3
+   Compiling hashbrown v0.12.3
+   Compiling schemars v0.8.22
+   Compiling bit-vec v0.8.0
+   Compiling bit-set v0.8.0
+   Compiling cfb v0.7.3
+   Compiling objc2-core-foundation v0.3.2
+   Compiling regex v1.13.1
+   Compiling block2 v0.6.2
+   Compiling time v0.3.55
+   Compiling synstructure v0.13.2
+   Compiling darling_core v0.23.0
+   Compiling serde_derive_internals v0.29.1
+   Compiling crc32fast v1.5.0
+   Compiling foldhash v0.2.0
+   Compiling option-ext v0.2.0
+   Compiling simd-adler32 v0.3.10
+   Compiling dyn-clone v1.0.20
+   Compiling base64 v0.21.7
+   Compiling serde_derive v1.0.229
+   Compiling zerovec-derive v0.11.4
+   Compiling displaydoc v0.2.7
+   Compiling thiserror-impl v2.0.20
+   Compiling futures-core v0.3.34
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling phf_macros v0.13.1
+   Compiling thiserror-impl v1.0.69
+   Compiling cssparser-macros v0.6.1
+   Compiling derive_more-impl v2.1.1
+   Compiling schemars_derive v0.8.22
+   Compiling objc2-foundation v0.3.2
+   Compiling phf v0.13.1
+   Compiling zerofrom v0.1.8
+   Compiling infer v0.19.0
+   Compiling yoke v0.8.3
+   Compiling derive_more v2.1.1
+   Compiling cssparser v0.36.0
+   Compiling zerovec v0.11.7
+   Compiling zerotrie v0.2.5
+   Compiling markup5ever v0.38.0
+   Compiling html5ever v0.38.0
+   Compiling dirs-sys v0.5.0
+   Compiling serde-untagged v0.1.9
+   Compiling generic-array v0.14.7
+   Compiling darling_macro v0.23.0
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.2
+   Compiling darling v0.23.0
+   Compiling clang-sys v1.9.1
+   Compiling adler2 v2.0.1
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling miniz_oxide v0.8.9
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling serde_with_macros v3.22.0
+   Compiling tokio v1.53.1
+   Compiling dom_query v0.27.0
+   Compiling dirs v6.0.0
+   Compiling rustc_version v0.4.1
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling time-macros v0.2.32
+   Compiling swift-rs v1.0.7
+   Compiling jsonptr v0.6.3
+   Compiling cargo-platform v0.1.9
+   Compiling serde_with v3.22.0
+   Compiling cargo_metadata v0.19.2
+   Compiling icu_provider v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling json-patch v3.0.1
+   Compiling plist v1.10.0
+   Compiling ring v0.17.14
+   Compiling arrayvec v0.7.8
+   Compiling futures-sink v0.3.34
+   Compiling bytemuck v1.25.2
+   Compiling winnow v0.7.15
+   Compiling minimal-lexical v0.2.1
+   Compiling core-foundation-sys v0.8.7
+   Compiling typenum v1.20.1
+   Compiling lazy_static v1.5.0
+   Compiling nom v7.1.3
+   Compiling symphonia-core v0.5.5
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling objc2-app-kit v0.3.2
+   Compiling url v2.5.8
+   Compiling embed-resource v3.0.11
+   Compiling flate2 v1.1.9
+   Compiling fdeflate v0.3.7
+   Compiling encoding_rs v0.8.35
+   Compiling urlpattern v0.3.0
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling libloading v0.8.9
+   Compiling crossbeam-utils v0.8.22
+   Compiling zeroize v1.9.0
+   Compiling either v1.17.0
+   Compiling bindgen v0.72.1
+   Compiling heck v0.5.0
+   Compiling itertools v0.13.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling cexpr v0.6.0
+   Compiling tauri-winres v0.3.6
+   Compiling dpi v0.1.2
+   Compiling cookie v0.18.2
+   Compiling cargo_toml v0.22.3
+   Compiling symphonia-metadata v0.5.5
+   Compiling http-body v1.1.0
+   Compiling tauri-utils v2.9.3
+   Compiling getrandom v0.2.17
+   Compiling slab v0.4.12
+   Compiling raw-window-handle v0.6.2
+   Compiling httparse v1.10.1
+   Compiling futures-io v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling shlex v1.3.0
+   Compiling untrusted v0.9.0
+   Compiling futures-util v0.3.34
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling core-foundation v0.10.1
+   Compiling foreign-types-macros v0.2.4
+   Compiling foreign-types-shared v0.3.1
+   Compiling try-lock v0.2.5
+   Compiling rustls v0.23.43
+   Compiling tower-service v0.3.3
+   Compiling want v0.3.1
+   Compiling foreign-types v0.5.0
+   Compiling crossbeam-channel v0.5.16
+   Compiling core-graphics-types v0.2.0
+   Compiling digest v0.10.7
+   Compiling png v0.17.16
+   Compiling rustls-webpki v0.103.14
+   Compiling futures-channel v0.3.34
+   Compiling tracing-core v0.1.36
+   Compiling cpufeatures v0.2.17
+   Compiling atomic-waker v1.1.2
+   Compiling wry v0.55.1
+   Compiling tauri-runtime v2.11.3
+   Compiling subtle v2.6.1
+   Compiling ico v0.5.0
+   Compiling tracing v0.1.44
+   Compiling hyper v1.11.0
+   Compiling sha2 v0.10.9
+   Compiling core-graphics v0.25.0
+   Compiling symphonia-utils-xiph v0.5.5
+   Compiling sync_wrapper v1.0.2
+   Compiling dispatch2 v0.3.1
+   Compiling unicode-segmentation v1.13.3
+   Compiling ipnet v2.12.1
+   Compiling tauri-runtime-wry v2.11.4
+   Compiling tower-layer v0.3.3
+   Compiling getrandom v0.3.4
+   Compiling keyboard-types v0.7.0
+   Compiling tower v0.5.3
+   Compiling webpki-roots v1.0.9
+   Compiling png v0.18.1
+   Compiling serialize-to-javascript-impl v0.1.2
+   Compiling extended v0.1.0
+   Compiling hyper-util v0.1.20
+   Compiling tinyvec_macros v0.1.1
+   Compiling cpal v0.15.3
+   Compiling ryu v1.0.23
+   Compiling objc2-web-kit v0.3.2
+   Compiling tao v0.35.3
+   Compiling tower-http v0.6.11
+   Compiling window-vibrancy v0.6.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling tinyvec v1.12.0
+   Compiling serialize-to-javascript v0.1.2
+   Compiling muda v0.19.3
+   Compiling symphonia-format-riff v0.5.5
+   Compiling symphonia-bundle-flac v0.5.5
+   Compiling symphonia-format-isomp4 v0.5.5
+   Compiling http-body-util v0.1.5
+   Compiling symphonia-bundle-mp3 v0.5.5
+   Compiling serde_repr v0.1.21
+   Compiling mach2 v0.4.3
+   Compiling embed_plist v1.2.2
+   Compiling mime v0.3.17
+   Compiling dasp_sample v0.11.0
+   Compiling unicode-normalization v0.1.25
+   Compiling symphonia v0.5.5
+   Compiling coreaudio-sys v0.2.18
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.12.28
+   Compiling tauri-build v2.6.3
+   Compiling tauri-codegen v2.6.3
+   Compiling tauri v2.11.5
+   Compiling tauri-macros v2.6.3
+   Compiling luno-desktop v0.1.0 (/Users/ty/luno/src-tauri)
+   Compiling coreaudio-rs v0.11.3
+error: 1 positional argument in format string, but no arguments were given
+   --> src/state.rs:539:169
+    |
+539 | ...Code::Internal, message: format!("library scan failed for root {} ({scope}): {detail}"), retryable: true } });
+    |                                                                   ^^
+
+error[E0425]: cannot find type `KeychainImport` in this scope
+  --> src/migration/keychain.rs:93:80
+   |
+93 |     pub fn set(service_name: &str, account_name: &str, value: &[u8]) -> Result<KeychainImport, String> {
+   |                                                                                ^^^^^^^^^^^^^^ not found in this scope
+   |
+help: consider importing this enum through its public re-export
+   |
+40 +     use crate::migration::keychain::KeychainImport;
+   |
+
+error[E0433]: cannot find type `KeychainImport` in this scope
+   --> src/migration/keychain.rs:114:33
+    |
+114 |             return if same { Ok(KeychainImport::Existing) } else { Err(status_error(ERR_SEC_CONFLICT)) };
+    |                                 ^^^^^^^^^^^^^^ use of undeclared type `KeychainImport`
+    |
+help: consider importing this enum through its public re-export
+    |
+ 40 +     use crate::migration::keychain::KeychainImport;
+    |
+
+error[E0433]: cannot find type `KeychainImport` in this scope
+   --> src/migration/keychain.rs:126:23
+    |
+126 |             return Ok(KeychainImport::Created);
+    |                       ^^^^^^^^^^^^^^ use of undeclared type `KeychainImport`
+    |
+help: consider importing this enum through its public re-export
+    |
+ 40 +     use crate::migration::keychain::KeychainImport;
+    |
+
+error[E0433]: cannot find type `KeychainImport` in this scope
+   --> src/migration/keychain.rs:140:33
+    |
+140 |             return if same { Ok(KeychainImport::Existing) } else { Err(status_error(ERR_SEC_CONFLICT)) };
+    |                                 ^^^^^^^^^^^^^^ use of undeclared type `KeychainImport`
+    |
+help: consider importing this enum through its public re-export
+    |
+ 40 +     use crate::migration::keychain::KeychainImport;
+    |
+
+error[E0631]: type mismatch in function arguments
+   --> src/migration/first_run.rs:96:59
+    |
+ 96 | ...   current_preview: paths.current_preview.iter().map(validate_existing_path).collect::<Result<_, _>>().map_err(MigrationError::U...
+    |                                                     --- ^^^^^^^^^^^^^^^^^^^^^^ expected due to this
+    |                                                     |
+    |                                                     required by a bound introduced by this call
+    |
+   ::: src/migration/legacy_readers.rs:75:1
+    |
+ 75 | pub fn validate_existing_path(path: &Path) -> Result<PathBuf, String> {
+    | --------------------------------------------------------------------- found signature defined here
+    |
+    = note: expected function signature `fn(&PathBuf) -> _`
+               found function signature `fn(&Path) -> _`
+note: required by a bound in `map`
+   --> /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:834:12
+    |
+831 |     fn map<B, F>(self, f: F) -> Map<Self, F>
+    |        --- required by a bound in this associated function
+...
+834 |         F: FnMut(Self::Item) -> B,
+    |            ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::map`
+help: consider wrapping the function in a closure
+    |
+ 96 |         current_preview: paths.current_preview.iter().map(|arg0: &PathBuf| validate_existing_path(/* &Path */)).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
+    |                                                           ++++++++++++++++                       +++++++++++++
+
+error[E0631]: type mismatch in function arguments
+   --> src/migration/first_run.rs:96:59
+    |
+ 96 | ...   current_preview: paths.current_preview.iter().map(validate_existing_path).collect::<Result<_, _>>().map_err(MigrationError::U...
+    |                                                     --- ^^^^^^^^^^^^^^^^^^^^^^ expected due to this
+    |                                                     |
+    |                                                     required by a bound introduced by this call
+    |
+   ::: src/migration/legacy_readers.rs:75:1
+    |
+ 75 | pub fn validate_existing_path(path: &Path) -> Result<PathBuf, String> {
+    | --------------------------------------------------------------------- found signature defined here
+    |
+    = note: expected function signature `fn(&std::path::PathBuf) -> _`
+               found function signature `fn(&Path) -> _`
+note: required by a bound in `map`
+   --> /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:834:12
+    |
+831 |     fn map<B, F>(self, f: F) -> Map<Self, F>
+    |        --- required by a bound in this associated function
+...
+834 |         F: FnMut(Self::Item) -> B,
+    |            ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::map`
+help: consider wrapping the function in a closure
+    |
+ 96 |         current_preview: paths.current_preview.iter().map(|arg0: &std::path::PathBuf| validate_existing_path(/* &Path */)).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
+    |                                                           +++++++++++++++++++++++++++                       +++++++++++++
+
+error[E0599]: the method `collect` exists for struct `Map<Iter<'_, PathBuf>, fn(&Path) -> ... {validate_existing_path}>`, but its trait bounds were not satisfied
+  --> src/migration/first_run.rs:96:83
+   |
+96 | ...er().map(validate_existing_path).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
+   |                                     ^^^^^^^ method cannot be called due to unsatisfied trait bounds
+   |
+  ::: /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/core/src/iter/adapters/map.rs:61:1
+   |
+61 | pub struct Map<I, F> {
+   | -------------------- doesn't satisfy `_: Iterator`
+   |
+   = note: the following trait bounds were not satisfied:
+           `<for<'a> fn(&'a Path) -> Result<std::path::PathBuf, std::string::String> {validate_existing_path} as FnOnce<(&std::path::PathBuf,)>>::Output = _`
+           which is required by `std::iter::Map<std::slice::Iter<'_, std::path::PathBuf>, for<'a> fn(&'a Path) -> Result<std::path::PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+           `for<'a> fn(&'a Path) -> Result<std::path::PathBuf, std::string::String> {validate_existing_path}: FnMut<(&std::path::PathBuf,)>`
+           which is required by `std::iter::Map<std::slice::Iter<'_, std::path::PathBuf>, for<'a> fn(&'a Path) -> Result<std::path::PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+           `std::iter::Map<std::slice::Iter<'_, std::path::PathBuf>, for<'a> fn(&'a Path) -> Result<std::path::PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+           which is required by `&mut std::iter::Map<std::slice::Iter<'_, std::path::PathBuf>, for<'a> fn(&'a Path) -> Result<std::path::PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+   = note: the full name for the type has been written to '/Users/ty/luno/src-tauri/target/debug/deps/luno_desktop_lib-670ee90a3a82c35a.long-type-13825916641660779531.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+
+error[E0599]: the method `collect` exists for struct `Map<Iter<'_, PathBuf>, fn(&Path) -> ... {validate_existing_path}>`, but its trait bounds were not satisfied
+  --> src/migration/first_run.rs:96:83
+   |
+96 | ...er().map(validate_existing_path).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
+   |                                     ^^^^^^^ method cannot be called due to unsatisfied trait bounds
+   |
+  ::: /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/core/src/iter/adapters/map.rs:61:1
+   |
+61 | pub struct Map<I, F> {
+   | -------------------- doesn't satisfy `_: Iterator`
+   |
+   = note: the following trait bounds were not satisfied:
+           `<for<'a> fn(&'a Path) -> Result<PathBuf, std::string::String> {validate_existing_path} as FnOnce<(&PathBuf,)>>::Output = _`
+           which is required by `std::iter::Map<std::slice::Iter<'_, PathBuf>, for<'a> fn(&'a Path) -> Result<PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+           `for<'a> fn(&'a Path) -> Result<PathBuf, std::string::String> {validate_existing_path}: FnMut<(&PathBuf,)>`
+           which is required by `std::iter::Map<std::slice::Iter<'_, PathBuf>, for<'a> fn(&'a Path) -> Result<PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+           `std::iter::Map<std::slice::Iter<'_, PathBuf>, for<'a> fn(&'a Path) -> Result<PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+           which is required by `&mut std::iter::Map<std::slice::Iter<'_, PathBuf>, for<'a> fn(&'a Path) -> Result<PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+   = note: the full name for the type has been written to '/Users/ty/luno/src-tauri/target/debug/deps/luno_desktop_lib.long-type-13728492906128599276.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+
+error[E0631]: type mismatch in function arguments
+   --> src/migration/first_run.rs:97:59
+    |
+ 97 | ...   promoted_assets: paths.promoted_assets.iter().map(validate_existing_path).collect::<Result<_, _>>().map_err(MigrationError::U...
+    |                                                     --- ^^^^^^^^^^^^^^^^^^^^^^ expected due to this
+    |                                                     |
+    |                                                     required by a bound introduced by this call
+    |
+   ::: src/migration/legacy_readers.rs:75:1
+    |
+ 75 | pub fn validate_existing_path(path: &Path) -> Result<PathBuf, String> {
+    | --------------------------------------------------------------------- found signature defined here
+    |
+    = note: expected function signature `fn(&std::path::PathBuf) -> _`
+               found function signature `fn(&Path) -> _`
+note: required by a bound in `map`
+   --> /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:834:12
+    |
+831 |     fn map<B, F>(self, f: F) -> Map<Self, F>
+    |        --- required by a bound in this associated function
+...
+834 |         F: FnMut(Self::Item) -> B,
+    |            ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::map`
+help: consider wrapping the function in a closure
+    |
+ 97 |         promoted_assets: paths.promoted_assets.iter().map(|arg0: &std::path::PathBuf| validate_existing_path(/* &Path */)).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
+    |                                                           +++++++++++++++++++++++++++                       +++++++++++++
+
+error[E0631]: type mismatch in function arguments
+   --> src/migration/first_run.rs:97:59
+    |
+ 97 | ...   promoted_assets: paths.promoted_assets.iter().map(validate_existing_path).collect::<Result<_, _>>().map_err(MigrationError::U...
+    |                                                     --- ^^^^^^^^^^^^^^^^^^^^^^ expected due to this
+    |                                                     |
+    |                                                     required by a bound introduced by this call
+    |
+   ::: src/migration/legacy_readers.rs:75:1
+    |
+ 75 | pub fn validate_existing_path(path: &Path) -> Result<PathBuf, String> {
+    | --------------------------------------------------------------------- found signature defined here
+    |
+    = note: expected function signature `fn(&PathBuf) -> _`
+               found function signature `fn(&Path) -> _`
+note: required by a bound in `map`
+   --> /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:834:12
+    |
+831 |     fn map<B, F>(self, f: F) -> Map<Self, F>
+    |        --- required by a bound in this associated function
+...
+834 |         F: FnMut(Self::Item) -> B,
+    |            ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::map`
+help: consider wrapping the function in a closure
+    |
+ 97 |         promoted_assets: paths.promoted_assets.iter().map(|arg0: &PathBuf| validate_existing_path(/* &Path */)).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
+    |                                                           ++++++++++++++++                       +++++++++++++
+
+error[E0599]: the method `collect` exists for struct `Map<Iter<'_, PathBuf>, fn(&Path) -> ... {validate_existing_path}>`, but its trait bounds were not satisfied
+  --> src/migration/first_run.rs:97:83
+   |
+97 | ...er().map(validate_existing_path).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
+   |                                     ^^^^^^^ method cannot be called due to unsatisfied trait bounds
+   |
+  ::: /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/core/src/iter/adapters/map.rs:61:1
+   |
+61 | pub struct Map<I, F> {
+   | -------------------- doesn't satisfy `_: Iterator`
+   |
+   = note: the following trait bounds were not satisfied:
+           `<for<'a> fn(&'a Path) -> Result<std::path::PathBuf, std::string::String> {validate_existing_path} as FnOnce<(&std::path::PathBuf,)>>::Output = _`
+           which is required by `std::iter::Map<std::slice::Iter<'_, std::path::PathBuf>, for<'a> fn(&'a Path) -> Result<std::path::PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+           `for<'a> fn(&'a Path) -> Result<std::path::PathBuf, std::string::String> {validate_existing_path}: FnMut<(&std::path::PathBuf,)>`
+           which is required by `std::iter::Map<std::slice::Iter<'_, std::path::PathBuf>, for<'a> fn(&'a Path) -> Result<std::path::PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+           `std::iter::Map<std::slice::Iter<'_, std::path::PathBuf>, for<'a> fn(&'a Path) -> Result<std::path::PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+           which is required by `&mut std::iter::Map<std::slice::Iter<'_, std::path::PathBuf>, for<'a> fn(&'a Path) -> Result<std::path::PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+   = note: the full name for the type has been written to '/Users/ty/luno/src-tauri/target/debug/deps/luno_desktop_lib-670ee90a3a82c35a.long-type-7376930465486574587.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+
+error[E0599]: the method `collect` exists for struct `Map<Iter<'_, PathBuf>, fn(&Path) -> ... {validate_existing_path}>`, but its trait bounds were not satisfied
+  --> src/migration/first_run.rs:97:83
+   |
+97 | ...er().map(validate_existing_path).collect::<Result<_, _>>().map_err(MigrationError::UnsafePath)?,
+   |                                     ^^^^^^^ method cannot be called due to unsatisfied trait bounds
+   |
+  ::: /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/core/src/iter/adapters/map.rs:61:1
+   |
+61 | pub struct Map<I, F> {
+   | -------------------- doesn't satisfy `_: Iterator`
+   |
+   = note: the following trait bounds were not satisfied:
+           `<for<'a> fn(&'a Path) -> Result<PathBuf, std::string::String> {validate_existing_path} as FnOnce<(&PathBuf,)>>::Output = _`
+           which is required by `std::iter::Map<std::slice::Iter<'_, PathBuf>, for<'a> fn(&'a Path) -> Result<PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+           `for<'a> fn(&'a Path) -> Result<PathBuf, std::string::String> {validate_existing_path}: FnMut<(&PathBuf,)>`
+           which is required by `std::iter::Map<std::slice::Iter<'_, PathBuf>, for<'a> fn(&'a Path) -> Result<PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+           `std::iter::Map<std::slice::Iter<'_, PathBuf>, for<'a> fn(&'a Path) -> Result<PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+           which is required by `&mut std::iter::Map<std::slice::Iter<'_, PathBuf>, for<'a> fn(&'a Path) -> Result<PathBuf, std::string::String> {validate_existing_path}>: Iterator`
+   = note: the full name for the type has been written to '/Users/ty/luno/src-tauri/target/debug/deps/luno_desktop_lib.long-type-12803346975881016625.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:128:50
+    |
+128 |     let quarantined_records = quarantine_records(paths)?;
+    |                               ------------------ ^^^^^ expected `&MigrationPaths`, found `MigrationPaths`
+    |                               |
+    |                               arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/first_run.rs:416:4
+    |
+416 | fn quarantine_records(p: &MigrationPaths) -> Result<Vec<(PathBuf, PathBuf)>, MigrationError> {
+    |    ^^^^^^^^^^^^^^^^^^ ------------------
+help: consider borrowing here
+    |
+128 |     let quarantined_records = quarantine_records(&paths)?;
+    |                                                  +
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:132:42
+    |
+132 |     let snapshot = match snapshot_legacy(paths) {
+    |                          --------------- ^^^^^ expected `&MigrationPaths`, found `MigrationPaths`
+    |                          |
+    |                          arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/first_run.rs:246:4
+    |
+246 | fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
+    |    ^^^^^^^^^^^^^^^ ------------------
+help: consider borrowing here
+    |
+132 |     let snapshot = match snapshot_legacy(&paths) {
+    |                                          +
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:137:29
+    |
+137 |         return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, None));
+    |                    -------- ^^^^^ expected `&MigrationPaths`, found `MigrationPaths`
+    |                    |
+    |                    arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/first_run.rs:357:4
+    |
+357 | fn rollback(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBuf)], keycha...
+    |    ^^^^^^^^ ------------------
+help: consider borrowing here
+    |
+137 |         return Err(rollback(&paths, snapshot, error, true, &quarantined_records, keychain, None));
+    |                             +
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:145:47
+    |
+145 | ...   Err(error) => return Err(rollback(paths, snapshot, MigrationError::Keychain(error), true, &quarantined_records, keychain, Non...
+    |                                -------- ^^^^^ expected `&MigrationPaths`, found `MigrationPaths`
+    |                                |
+    |                                arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/first_run.rs:357:4
+    |
+357 | fn rollback(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBuf)], keycha...
+    |    ^^^^^^^^ ------------------
+help: consider borrowing here
+    |
+145 |             Err(error) => return Err(rollback(&paths, snapshot, MigrationError::Keychain(error), true, &quarantined_records, keychain, None)),
+    |                                               +
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:150:29
+    |
+150 |         return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
+    |                    -------- ^^^^^ expected `&MigrationPaths`, found `MigrationPaths`
+    |                    |
+    |                    arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/first_run.rs:357:4
+    |
+357 | fn rollback(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBuf)], keycha...
+    |    ^^^^^^^^ ------------------
+help: consider borrowing here
+    |
+150 |         return Err(rollback(&paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
+    |                             +
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:153:29
+    |
+153 |         return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
+    |                    -------- ^^^^^ expected `&MigrationPaths`, found `MigrationPaths`
+    |                    |
+    |                    arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/first_run.rs:357:4
+    |
+357 | fn rollback(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBuf)], keycha...
+    |    ^^^^^^^^ ------------------
+help: consider borrowing here
+    |
+153 |         return Err(rollback(&paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
+    |                             +
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:157:29
+    |
+157 |         return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
+    |                    -------- ^^^^^ expected `&MigrationPaths`, found `MigrationPaths`
+    |                    |
+    |                    arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/first_run.rs:357:4
+    |
+357 | fn rollback(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBuf)], keycha...
+    |    ^^^^^^^^ ------------------
+help: consider borrowing here
+    |
+157 |         return Err(rollback(&paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
+    |                             +
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:160:29
+    |
+160 |         return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
+    |                    -------- ^^^^^ expected `&MigrationPaths`, found `MigrationPaths`
+    |                    |
+    |                    arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/first_run.rs:357:4
+    |
+357 | fn rollback(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBuf)], keycha...
+    |    ^^^^^^^^ ------------------
+help: consider borrowing here
+    |
+160 |         return Err(rollback(&paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
+    |                             +
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:162:42
+    |
+162 |     let cleanup = match cleanup_previews(paths) {
+    |                         ---------------- ^^^^^ expected `&MigrationPaths`, found `MigrationPaths`
+    |                         |
+    |                         arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/first_run.rs:319:4
+    |
+319 | fn cleanup_previews(p: &MigrationPaths) -> Result<PreviewCleanup, MigrationError> {
+    |    ^^^^^^^^^^^^^^^^ ------------------
+help: consider borrowing here
+    |
+162 |     let cleanup = match cleanup_previews(&paths) {
+    |                                          +
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:164:43
+    |
+164 |         Err(error) => return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import)),
+    |                                  -------- ^^^^^ expected `&MigrationPaths`, found `MigrationPaths`
+    |                                  |
+    |                                  arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/first_run.rs:357:4
+    |
+357 | fn rollback(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBuf)], keycha...
+    |    ^^^^^^^^ ------------------
+help: consider borrowing here
+    |
+164 |         Err(error) => return Err(rollback(&paths, snapshot, error, true, &quarantined_records, keychain, keychain_import)),
+    |                                           +
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:168:40
+    |
+168 |         return Err(rollback_with_extra(paths, snapshot, error, true, &quarantined_records, restore_error, keychain, keychain_import));
+    |                    ------------------- ^^^^^ expected `&MigrationPaths`, found `MigrationPaths`
+    |                    |
+    |                    arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/first_run.rs:374:4
+    |
+374 | fn rollback_with_extra(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBu...
+    |    ^^^^^^^^^^^^^^^^^^^ ------------------
+help: consider borrowing here
+    |
+168 |         return Err(rollback_with_extra(&paths, snapshot, error, true, &quarantined_records, restore_error, keychain, keychain_import));
+    |                                        +
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:174:44
+    |
+174 | ...   return Err(rollback_with_extra(paths, snapshot, error, true, &quarantined_records, restore_error, keychain, keychain_import));
+    |                  ------------------- ^^^^^ expected `&MigrationPaths`, found `MigrationPaths`
+    |                  |
+    |                  arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/first_run.rs:374:4
+    |
+374 | fn rollback_with_extra(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBu...
+    |    ^^^^^^^^^^^^^^^^^^^ ------------------
+help: consider borrowing here
+    |
+174 |             return Err(rollback_with_extra(&paths, snapshot, error, true, &quarantined_records, restore_error, keychain, keychain_import));
+    |                                            +
+
+error[E0277]: `MigrationError` doesn't implement `std::fmt::Display`
+   --> src/migration/first_run.rs:179:100
+    |
+179 |         warning_messages.push(format!("migration committed but recovery quarantine cleanup failed: {error}"));
+    |                                                                                                    ^^^^^^^ `MigrationError` cannot be formatted with the default formatter
+    |
+help: the trait `std::fmt::Display` is not implemented for `MigrationError`
+   --> src/migration/first_run.rs:82:1
+    |
+ 82 | pub enum MigrationError { UnsupportedPlatform, UnsafePath(String), AlreadyComplete(Vec<String>), Io(String), Keychain(String), Clea...
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+    = note: in format strings you may be able to use `{:?}` (or {:#?} for pretty-print) instead
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:181:87
+    |
+181 | ..._record(), state: paths.state_file(), snapshot, removed_previews, warnings: warning_messages.len(), warning_messages })
+    |                                          ^^^^^^^^ expected `Option<PathBuf>`, found `PathBuf`
+    |
+    = note: expected enum `std::option::Option<PathBuf>`
+             found struct `PathBuf`
+help: try wrapping the expression in `Some`
+    |
+181 |     Ok(MigrationReceipt { version: paths.version_record(), state: paths.state_file(), snapshot: Some(snapshot), removed_previews, warnings: warning_messages.len(), warning_messages })
+    |                                                                                       +++++++++++++++        +
+
+error[E0308]: mismatched types
+   --> src/migration/first_run.rs:181:87
+    |
+181 | ..._record(), state: paths.state_file(), snapshot, removed_previews, warnings: warning_messages.len(), warning_messages })
+    |                                          ^^^^^^^^ expected `Option<PathBuf>`, found `PathBuf`
+    |
+    = note: expected enum `std::option::Option<std::path::PathBuf>`
+             found struct `std::path::PathBuf`
+help: try wrapping the expression in `Some`
+    |
+181 |     Ok(MigrationReceipt { version: paths.version_record(), state: paths.state_file(), snapshot: Some(snapshot), removed_previews, warnings: warning_messages.len(), warning_messages })
+    |                                                                                       +++++++++++++++        +
+
+error[E0277]: can't compare `&PathBuf` with `PathBuf`
+   --> src/migration/first_run.rs:253:92
+    |
+253 | ..._file(&from) { let destination = if root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let ...
+    |                                             ^^ no implementation for `&PathBuf == PathBuf`
+    |
+    = help: the trait `PartialEq<PathBuf>` is not implemented for `&PathBuf`
+help: consider dereferencing here
+    |
+253 |             let from = root.join(name); if regular_file(&from) { let destination = if *root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } if name == ".luno_config.json" { snapshot_config(&from, &destination, &dir)?; } else { fs::copy(&from, destination)?; } }
+    |                                                                                       +
+
+error[E0277]: can't compare `&std::path::PathBuf` with `std::path::PathBuf`
+   --> src/migration/first_run.rs:253:92
+    |
+253 | ...) { let destination = if root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent...
+    |                                  ^^ no implementation for `&std::path::PathBuf == std::path::PathBuf`
+    |
+    = help: the trait `PartialEq<std::path::PathBuf>` is not implemented for `&std::path::PathBuf`
+help: consider dereferencing here
+    |
+253 |             let from = root.join(name); if regular_file(&from) { let destination = if *root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } if name == ".luno_config.json" { snapshot_config(&from, &destination, &dir)?; } else { fs::copy(&from, destination)?; } }
+    |                                                                                       +
+
+error[E0282]: type annotations needed
+   --> src/migration/first_run.rs:282:34
+    |
+282 |     let mut value: Value = match serde_json::from_slice(&bytes) {
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^ cannot infer type of the type parameter `T` declared on the function `from_slice`
+283 |         Ok(value) if value.is_object() => value,
+    |                      ----- type must be known at this point
+    |
+help: consider specifying a concrete type for the type parameter `T`
+    |
+282 |     let mut value: Value = match serde_json::from_slice::</* Type */>(&bytes) {
+    |                                                        ++++++++++++++
+
+error[E0282]: type annotations needed for `Vec<(_, _)>`
+   --> src/migration/first_run.rs:417:9
+    |
+417 |     let mut result = Vec::new();
+    |         ^^^^^^^^^^
+...
+425 |                     failures.push(format!("{}: {restore}", restored.display()));
+    |                                                            -------- type must be known at this point
+    |
+help: consider giving `result` an explicit type, where the placeholders `_` are specified
+    |
+417 |     let mut result: Vec<(_, _)> = Vec::new();
+    |                   +++++++++++++
+
+error[E0308]: arguments to this function are incorrect
+   --> src/migration/keychain.rs:25:11
+    |
+ 25 |         { security::remove(self.service, self.account) }
+    |           ^^^^^^^^^^^^^^^^ ------------  ------------ expected `&str`, found `String`
+    |                            |
+    |                            expected `&str`, found `String`
+    |
+note: function defined here
+   --> src/migration/keychain.rs:158:12
+    |
+158 |     pub fn remove(service_name: &str, account_name: &str) -> Result<(), String> {
+    |            ^^^^^^ ------------------  ------------------
+help: consider borrowing here
+    |
+ 25 |         { security::remove(&self.service, self.account) }
+    |                            +
+help: consider borrowing here
+    |
+ 25 |         { security::remove(self.service, &self.account) }
+    |                                          +
+
+error[E0308]: arguments to this function are incorrect
+   --> src/migration/keychain.rs:32:11
+    |
+ 32 |         { security::get(self.service, self.account) }
+    |           ^^^^^^^^^^^^^ ------------  ------------ expected `&str`, found `String`
+    |                         |
+    |                         expected `&str`, found `String`
+    |
+note: function defined here
+   --> src/migration/keychain.rs:145:12
+    |
+145 |     pub fn get(service_name: &str, account_name: &str) -> Result<Vec<u8>, String> {
+    |            ^^^ ------------------  ------------------
+help: consider borrowing here
+    |
+ 32 |         { security::get(&self.service, self.account) }
+    |                         +
+help: consider borrowing here
+    |
+ 32 |         { security::get(self.service, &self.account) }
+    |                                       +
+
+error[E0308]: arguments to this function are incorrect
+   --> src/migration/keychain.rs:176:11
+    |
+176 |         { security::set(self.service, self.account, key.as_bytes()) }
+    |           ^^^^^^^^^^^^^ ------------  ------------ expected `&str`, found `String`
+    |                         |
+    |                         expected `&str`, found `String`
+    |
+note: function defined here
+   --> src/migration/keychain.rs:93:12
+    |
+ 93 |     pub fn set(service_name: &str, account_name: &str, value: &[u8]) -> Result<KeychainImport, String> {
+    |            ^^^ ------------------  ------------------
+help: consider borrowing here
+    |
+176 |         { security::set(&self.service, self.account, key.as_bytes()) }
+    |                         +
+help: consider borrowing here
+    |
+176 |         { security::set(self.service, &self.account, key.as_bytes()) }
+    |                                       +
+
+error[E0308]: mismatched types
+   --> src/migration/legacy_readers.rs:150:36
+    |
+150 |     inventory_direct(&legacy_root, &excluded, &mut files, &mut envelope_budget)?;
+    |     ----------------               ^^^^^^^^^ expected `&[&Path]`, found `&[&PathBuf; 2]`
+    |     |
+    |     arguments to this function are incorrect
+    |
+    = note: expected reference `&[&Path]`
+               found reference `&[&PathBuf; 2]`
+note: function defined here
+   --> src/migration/legacy_readers.rs:181:4
+    |
+181 | fn inventory_direct(root: &Path, excluded: &[&Path], files: &mut BTreeSet<PathBuf>, budget: &mut usize) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^^^^              ------------------
+
+error[E0308]: mismatched types
+   --> src/migration/legacy_readers.rs:150:36
+    |
+150 |     inventory_direct(&legacy_root, &excluded, &mut files, &mut envelope_budget)?;
+    |     ----------------               ^^^^^^^^^ expected `&[&Path]`, found `&[&PathBuf; 2]`
+    |     |
+    |     arguments to this function are incorrect
+    |
+    = note: expected reference `&[&Path]`
+               found reference `&[&std::path::PathBuf; 2]`
+note: function defined here
+   --> src/migration/legacy_readers.rs:181:4
+    |
+181 | fn inventory_direct(root: &Path, excluded: &[&Path], files: &mut BTreeSet<PathBuf>, budget: &mut usize) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^^^^              ------------------
+
+error[E0308]: mismatched types
+   --> src/migration/legacy_readers.rs:154:26
+    |
+154 |         inventory_direct(root, &[], &mut files, &mut budget)?;
+    |         ---------------- ^^^^ expected `&Path`, found `PathBuf`
+    |         |
+    |         arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/legacy_readers.rs:181:4
+    |
+181 | fn inventory_direct(root: &Path, excluded: &[&Path], files: &mut BTreeSet<PathBuf>, budget: &mut usize) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^^^^ -----------
+help: consider borrowing here
+    |
+154 |         inventory_direct(&root, &[], &mut files, &mut budget)?;
+    |                          +
+
+error[E0308]: mismatched types
+   --> src/migration/legacy_readers.rs:156:27
+    |
+156 |         find_marker_roots(root, &mut marker_roots, &mut budget)?;
+    |         ----------------- ^^^^ expected `&Path`, found `PathBuf`
+    |         |
+    |         arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/legacy_readers.rs:196:4
+    |
+196 | fn find_marker_roots(root: &Path, marker_roots: &mut Vec<PathBuf>, budget: &mut usize) -> Result<(), String> {
+    |    ^^^^^^^^^^^^^^^^^ -----------
+help: consider borrowing here
+    |
+156 |         find_marker_roots(&root, &mut marker_roots, &mut budget)?;
+    |                           +
+
+error[E0308]: mismatched types
+   --> src/migration/legacy_readers.rs:278:64
+    |
+278 |             if metadata.file_type().is_symlink() || !contained(root, &path) { continue; }
+    |                                                      --------- ^^^^ expected `&Path`, found `PathBuf`
+    |                                                      |
+    |                                                      arguments to this function are incorrect
+    |
+note: function defined here
+   --> src/migration/legacy_readers.rs:94:4
+    |
+ 94 | fn contained(root: &Path, child: &Path) -> bool {
+    |    ^^^^^^^^^ -----------
+help: consider borrowing here
+    |
+278 |             if metadata.file_type().is_symlink() || !contained(&root, &path) { continue; }
+    |                                                                +
+
+error[E0277]: can't compare `&PathBuf` with `PathBuf`
+   --> src/migration/legacy_readers.rs:349:79
+    |
+349 |     for data_root in roots.into_iter().flatten().filter(|candidate| candidate != root) {
+    |                                                                               ^^ no implementation for `&PathBuf == PathBuf`
+    |
+    = help: the trait `PartialEq<PathBuf>` is not implemented for `&PathBuf`
+help: consider dereferencing here
+    |
+349 |     for data_root in roots.into_iter().flatten().filter(|candidate| *candidate != root) {
+    |                                                                     +
+
+error[E0277]: can't compare `&std::path::PathBuf` with `std::path::PathBuf`
+   --> src/migration/legacy_readers.rs:349:79
+    |
+349 |     for data_root in roots.into_iter().flatten().filter(|candidate| candidate != root) {
+    |                                                                               ^^ no implementation for `&std::path::PathBuf == std::path::PathBuf`
+    |
+    = help: the trait `PartialEq<std::path::PathBuf>` is not implemented for `&std::path::PathBuf`
+help: consider dereferencing here
+    |
+349 |     for data_root in roots.into_iter().flatten().filter(|candidate| *candidate != root) {
+    |                                                                     +
+
+error[E0308]: mismatched types
+  --> src/download/csv.rs:54:48
+   |
+54 |             album: album.and_then(|i| nonempty(row[i])),
+   |                                       -------- ^^^^^^ expected `&str`, found `String`
+   |                                       |
+   |                                       arguments to this function are incorrect
+   |
+note: function defined here
+  --> src/download/csv.rs:61:4
+   |
+61 | fn nonempty(value: &str) -> Option<String> { (!value.trim().is_empty()).then(|| value.trim().to_string()) }
+   |    ^^^^^^^^ -----------
+help: consider borrowing here
+   |
+54 |             album: album.and_then(|i| nonempty(&row[i])),
+   |                                                +
+
+error[E0308]: mismatched types
+  --> src/download/csv.rs:55:44
+   |
+55 |             url: url.and_then(|i| nonempty(row[i])),
+   |                                   -------- ^^^^^^ expected `&str`, found `String`
+   |                                   |
+   |                                   arguments to this function are incorrect
+   |
+note: function defined here
+  --> src/download/csv.rs:61:4
+   |
+61 | fn nonempty(value: &str) -> Option<String> { (!value.trim().is_empty()).then(|| value.trim().to_string()) }
+   |    ^^^^^^^^ -----------
+help: consider borrowing here
+   |
+55 |             url: url.and_then(|i| nonempty(&row[i])),
+   |                                            +
+
+error[E0277]: the trait bound `MutationError: Clone` is not satisfied
+  --> src/library/mutations.rs:24:75
+   |
+23 | #[derive(Debug, Clone, PartialEq, Eq)]
+   |                 ----- in this derive macro expansion
+24 | pub struct MutationResult<T> { pub value: T, pub refresh: RefreshRequest, pub errors: Vec<MutationError> }
+   |                                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Clone` is not implemented for `MutationError`
+   |
+   = note: required for `Vec<MutationError>` to implement `Clone`
+help: consider annotating `MutationError` with `#[derive(Clone)]`
+   |
+13 + #[derive(Clone)]
+14 | pub enum MutationError {
+   |
+
+error[E0061]: this function takes 5 arguments but 4 arguments were supplied
+  --> src/preview/save.rs:39:19
+   |
+39 |     let receipt = promote_output(&partial, &target, Validation::audio(), CollisionPolicy::Reject)?;
+   |                   ^^^^^^^^^^^^^^----------------------------------------------------------------- argument #5 of type `std::option::Option<&Atomic<bool>>` is missing
+   |
+note: function defined here
+  --> src/download/promotion.rs:76:8
+   |
+76 | pub fn promote_output(
+   |        ^^^^^^^^^^^^^^
+...
+81 |     cancelled: Option<&AtomicBool>,
+   |     ------------------------------
+help: provide the argument
+   |
+39 |     let receipt = promote_output(&partial, &target, Validation::audio(), CollisionPolicy::Reject, /* std::option::Option<&Atomic<bool>> */)?;
+   |                                                                                                 ++++++++++++++++++++++++++++++++++++++++++
+
+warning: variable does not need to be mutable
+   --> src/migration/first_run.rs:367:21
+    |
+367 | fn rollback_records(mut result: MigrationError, quarantined: &[(PathBuf, PathBuf)]) -> MigrationError {
+    |                     ----^^^^^^
+    |                     |
+    |                     help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+error[E0382]: use of moved value: `result`
+   --> src/migration/first_run.rs:376:26
+    |
+375 |     let result = rollback(p, snapshot, error, records, quarantined, keychain, keychain_import);
+    |         ------ move occurs because `result` has type `MigrationError`, which does not implement the `Copy` trait
+376 |     extra.map_or(result, |extra| aggregate(result, MigrationError::Cleanup(format!("preview restoration failed: {extra:?}"))))
+    |                  ------  ^^^^^^^           ------ use occurs due to use in closure
+    |                  |       |
+    |                  |       value used here after move
+    |                  value moved here
+    |
+help: consider cloning the value if the performance cost is acceptable
+    |
+376 |     extra.map_or(result.clone(), |extra| aggregate(result, MigrationError::Cleanup(format!("preview restoration failed: {extra:?}"))))
+    |                        ++++++++
+
+error[E0133]: call to unsafe function `std::slice::from_raw_parts` is unsafe and requires unsafe function or block
+   --> src/migration/keychain.rs:153:22
+    |
+153 |         let result = std::slice::from_raw_parts(data, length as usize).to_vec();
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+error[E0382]: borrow of moved value: `dir`
+    --> src/migration/legacy_readers.rs:114:44
+     |
+ 101 |     let dir = validate_existing_path(dir)?;
+     |         --- move occurs because `dir` has type `PathBuf`, which does not implement the `Copy` trait
+...
+ 105 |     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+     |                               --- value moved here
+...
+ 114 |         if metadata.is_file() && contained(&dir, &path) { files.push(path); }
+     |                                            ^^^^ value borrowed here after move
+     |
+     = note: borrow occurs due to deref coercion to `Path`
+note: deref defined here
+    --> /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/std/src/path.rs:2094:5
+     |
+2094 |     type Target = Path;
+     |     ^^^^^^^^^^^
+help: consider borrowing `dir`
+     |
+ 105 |     for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+     |                               +
+
+error[E0382]: borrow of moved value: `dir`
+    --> src/migration/legacy_readers.rs:114:44
+     |
+ 101 |     let dir = validate_existing_path(dir)?;
+     |         --- move occurs because `dir` has type `std::path::PathBuf`, which does not implement the `Copy` trait
+...
+ 105 |     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+     |                               --- value moved here
+...
+ 114 |         if metadata.is_file() && contained(&dir, &path) { files.push(path); }
+     |                                            ^^^^ value borrowed here after move
+     |
+     = note: borrow occurs due to deref coercion to `Path`
+note: deref defined here
+    --> /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/std/src/path.rs:2094:5
+     |
+2094 |     type Target = Path;
+     |     ^^^^^^^^^^^
+help: consider borrowing `dir`
+     |
+ 105 |     for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+     |                               +
+
+warning: unused variable: `error`
+  --> src/download/sync.rs:28:1130
+   |
+28 | ...temOutcome::Cancelled, Err(error) if started.elapsed() > ITEM_TIMEOUT => ItemOutcome::TimedOut, Err(error) if permanent_failure(&...
+   |                               ^^^^^ help: if this is intentional, prefix it with an underscore: `_error`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+error[E0382]: the type `Arc` does not implement `Copy`
+    --> src/state.rs:160:9
+     |
+ 146 |         let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+     |             ------- this move could be avoided by cloning the original `Arc`, which is inexpensive
+...
+ 151 |         state.set_event_sink(StdArc::new(move |event| {
+     |                                          ------------ value moved into closure here
+ 152 |             sink_delivered.lock().unwrap().push(event.event_id.clone());
+ 153 |             if event.event_id == "event-1" { entered.wait(); sink_release.wait(); }
+     |                                              ------- variable moved due to use in closure
+...
+ 160 |         entered.wait();
+     |         ^^^^^^^ value borrowed here after move
+     |
+     = note: consider using `Arc::clone`
+     = note: borrow occurs due to deref coercion to `Barrier`
+note: deref defined here
+    --> /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/alloc/src/sync.rs:2441:5
+     |
+2441 |     type Target = T;
+     |     ^^^^^^^^^^^
+help: consider cloning the value before moving it into the closure
+     |
+ 151 ~         let value = entered.clone();
+ 152 ~         state.set_event_sink(StdArc::new(move |event| {
+ 153 |             sink_delivered.lock().unwrap().push(event.event_id.clone());
+ 154 ~             if event.event_id == "event-1" { value.wait(); sink_release.wait(); }
+     |
+
+error[E0382]: the type `Arc` does not implement `Copy`
+    --> src/state.rs:200:9
+     |
+ 196 |         let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+     |             ------- this move could be avoided by cloning the original `Arc`, which is inexpensive
+...
+ 199 |         let worker = std::thread::spawn(move || worker_state.drain_events(|_| { entered.wait(); release.wait(); Ok(()) }));
+     |                                         ------- value moved into closure here   ------- variable moved due to use in closure
+ 200 |         entered.wait();
+     |         ^^^^^^^ value borrowed here after move
+     |
+     = note: consider using `Arc::clone`
+     = note: borrow occurs due to deref coercion to `Barrier`
+note: deref defined here
+    --> /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/alloc/src/sync.rs:2441:5
+     |
+2441 |     type Target = T;
+     |     ^^^^^^^^^^^
+help: consider cloning the value before moving it into the closure
+     |
+ 199 ~         let value = entered.clone();
+ 200 ~         let worker = std::thread::spawn(move || worker_state.drain_events(|_| { value.wait(); release.wait(); Ok(()) }));
+     |
+
+error[E0382]: the type `Arc` does not implement `Copy`
+    --> src/state.rs:202:9
+     |
+ 197 |         let release = entered.clone();
+     |             ------- this move could be avoided by cloning the original `Arc`, which is inexpensive
+ 198 |         let worker_state = state.clone();
+ 199 |         let worker = std::thread::spawn(move || worker_state.drain_events(|_| { entered.wait(); release.wait(); Ok(()) }));
+     |                                         ------- value moved into closure here                   ------- variable moved due to use in closure
+...
+ 202 |         release.wait();
+     |         ^^^^^^^ value borrowed here after move
+     |
+     = note: consider using `Arc::clone`
+     = note: borrow occurs due to deref coercion to `Barrier`
+note: deref defined here
+    --> /opt/homebrew/Cellar/rust/1.97.1/lib/rustlib/src/rust/library/alloc/src/sync.rs:2441:5
+     |
+2441 |     type Target = T;
+     |     ^^^^^^^^^^^
+help: consider cloning the value before moving it into the closure
+     |
+ 199 ~         let value = release.clone();
+ 200 ~         let worker = std::thread::spawn(move || worker_state.drain_events(|_| { entered.wait(); value.wait(); Ok(()) }));
+     |
+
+error[E0382]: use of moved value: `snapshot.event_id`
+   --> src/state.rs:223:53
+    |
+220 |         assert_eq!(*delivered.lock().unwrap(), vec![snapshot.event_id, shutdown.event_id]);
+    |                                                     ----------------- value moved here
+...
+223 |         assert_eq!(*delivered.lock().unwrap(), vec![snapshot.event_id, shutdown.event_id]);
+    |                                                     ^^^^^^^^^^^^^^^^^ value used here after move
+    |
+    = note: move occurs because `snapshot.event_id` has type `std::string::String`, which does not implement the `Copy` trait
+
+error[E0382]: use of moved value: `shutdown.event_id`
+   --> src/state.rs:223:72
+    |
+220 |         assert_eq!(*delivered.lock().unwrap(), vec![snapshot.event_id, shutdown.event_id]);
+    |                                                                        ----------------- value moved here
+...
+223 |         assert_eq!(*delivered.lock().unwrap(), vec![snapshot.event_id, shutdown.event_id]);
+    |                                                                        ^^^^^^^^^^^^^^^^^ value used here after move
+    |
+    = note: move occurs because `shutdown.event_id` has type `std::string::String`, which does not implement the `Copy` trait
+
+error[E0507]: cannot move out of `entry.path` which is behind a shared reference
+  --> src/library/scanner.rs:91:72
+   |
+91 |             if !entry.is_dir && supported(&entry.path) { unsorted.push(entry.path); }
+   |                                                                        ^^^^^^^^^^ move occurs because `entry.path` has type `PathBuf`, which does not implement the `Copy` trait
+   |
+help: consider cloning the value if the performance cost is acceptable
+   |
+91 |             if !entry.is_dir && supported(&entry.path) { unsorted.push(entry.path.clone()); }
+   |                                                                                  ++++++++
+
+error[E0507]: cannot move out of `entry.path` which is behind a shared reference
+  --> src/library/scanner.rs:91:72
+   |
+91 |             if !entry.is_dir && supported(&entry.path) { unsorted.push(entry.path); }
+   |                                                                        ^^^^^^^^^^ move occurs because `entry.path` has type `std::path::PathBuf`, which does not implement the `Copy` trait
+   |
+help: consider cloning the value if the performance cost is acceptable
+   |
+91 |             if !entry.is_dir && supported(&entry.path) { unsorted.push(entry.path.clone()); }
+   |                                                                                  ++++++++
+
+error[E0502]: cannot borrow `rest` as immutable because it is also borrowed as mutable
+  --> src/playback/queue.rs:68:30
+   |
+68 |             rest.rotate_left(rest.len().saturating_sub(1));
+   |             ---- ----------- ^^^^ immutable borrow occurs here
+   |             |    |
+   |             |    mutable borrow later used by call
+   |             mutable borrow occurs here
+
+Some errors have detailed explanations: E0061, E0133, E0277, E0282, E0308, E0382, E0425, E0433, E0502...
+For more information about an error, try `rustc --explain E0061`.
+warning: `luno-desktop` (lib) generated 2 warnings
+error: could not compile `luno-desktop` (lib) due to 43 previous errors; 2 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: `luno-desktop` (lib test) generated 2 warnings (2 duplicates)
+error: could not compile `luno-desktop` (lib test) due to 48 previous errors; 2 warnings emitted
+exit_code=101

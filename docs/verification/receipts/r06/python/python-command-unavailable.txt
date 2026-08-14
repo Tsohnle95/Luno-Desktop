@@ -1,0 +1,4 @@
+command: python -m pytest -q
+exit_code: 127
+output: zsh:1: command not found: python
+classification: INCONCLUSIVE

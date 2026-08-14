@@ -1,0 +1,6 @@
+
+> luno-desktop@0.1.0 build
+> tsc --noEmit && vite build src --outDir ../dist
+
+sh: tsc: command not found
+exit_code=127
