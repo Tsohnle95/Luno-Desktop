@@ -33,6 +33,7 @@ fn scan_is_async_and_publishes_a_generation_tagged_snapshot() {
     thread::sleep(Duration::from_millis(20));
     let events = state.events();
     assert!(events.iter().any(|e| matches!(&e.event, Event::LibrarySnapshot { .. }) && e.generation.0 == 1));
+    assert!(state.library().tracks.iter().all(|track| track.path.is_none()));
     let _ = fs::remove_dir_all(root);
 }
 
