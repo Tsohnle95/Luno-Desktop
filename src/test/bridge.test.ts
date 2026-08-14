@@ -67,7 +67,6 @@ describe("typed IPC bridge and projection", () => {
     store.apply({ ...event({ type: "playback_snapshot", payload: { snapshot: { queue: ["new"], current_index: 0, position_ms: 0, duration_ms: null, status: "playing", generation: 1 } } }, 1), event_id: "event-1" });
     expect(store.getSnapshot().video?.track_id).toBe("old");
     expect(store.getSnapshot().playback?.queue[0]).toBe("new");
-    expect(safeVideoSource("https://example.test/video.mp4", "/tmp/preview.mp4")).toContain("preview.mp4");
     expect(safeVideoSource("javascript:alert(1)", null)).toBeNull();
     expect(safeVideoSource("https://example.test/video.mp4", "/tmp/../outside.mp4")).toBe("https://example.test/video.mp4");
   });

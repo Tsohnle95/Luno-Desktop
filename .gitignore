@@ -12,6 +12,9 @@ env/
 # Build outputs
 build/
 dist/
+node_modules/
+src-tauri/target/
+src-tauri/gen/
 **/.gradle/
 *.apk
 *.apk.zip
