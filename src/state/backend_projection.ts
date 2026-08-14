@@ -16,6 +16,7 @@ export const initialBackendProjection = (): BackendProjection => ({
 });
 
 export function reduceBackendProjection(state: BackendProjection, envelope: EventEnvelope): BackendProjection {
+  if (state.lastEventId !== null && compareEventIds(envelope.event_id, state.lastEventId) <= 0) return state;
   // Generation 0 is reserved for shutdown control events. They are lifecycle
   // notifications, not work results, and must survive stale-work filtering.
   if (envelope.event.type !== "shutdown" && envelope.generation < state.generation) return state;
@@ -34,6 +35,14 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
     case "error": return { ...next, errors: [...next.errors, envelope.event.payload.error] };
     case "shutdown": return { ...next, shutdown: envelope.event.payload.envelope };
   }
+}
+
+function compareEventIds(left: string, right: string): number {
+  const numeric = (value: string) => /^(?:event-)?\d+$/.test(value) ? BigInt(value.replace(/^event-/, "")) : null;
+  const a = numeric(left);
+  const b = numeric(right);
+  if (a !== null && b !== null) return a < b ? -1 : a > b ? 1 : 0;
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 export function createBackendProjection() {

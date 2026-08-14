@@ -28,3 +28,13 @@ fn cancellation_terminates_process() {
     assert!(matches!(thread.join().unwrap(), Err(SuperviseError::Cancelled)));
     assert_eq!(registry.active_count(), 0);
 }
+
+#[cfg(unix)]
+#[test]
+fn admitted_process_is_rejected_after_app_shutdown_begins() {
+    let state = luno_desktop_lib::state::AppState::new(1);
+    state.tasks.begin_shutdown();
+    let result = state.run_process(ProcessSpec::new("/bin/sh", vec!["-c".into(), "exit 0".into()], Duration::from_secs(1)));
+    assert!(matches!(result, Err(SuperviseError::Cancelled)));
+    assert_eq!(state.process_count(), 0);
+}

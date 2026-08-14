@@ -1,9 +1,9 @@
-use crate::runtime::task_registry::CancellationToken;
+use crate::runtime::task_registry::{CancellationToken, TaskRegistry};
 use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,18 +21,27 @@ pub enum SuperviseError { Io(io::Error), Timeout, Cancelled, OutputThread, Spawn
 impl From<io::Error> for SuperviseError { fn from(e: io::Error) -> Self { Self::Io(e) } }
 
 #[derive(Clone, Default)]
-pub struct ProcessRegistry { inner: Arc<Mutex<HashMap<u64, CancellationToken>>>, next: Arc<Mutex<u64>> }
+pub struct ProcessRegistry { inner: Arc<Mutex<HashMap<u64, CancellationToken>>>, next: Arc<Mutex<u64>>, admission: Arc<Mutex<()>>, closing: Arc<AtomicBool> }
 impl ProcessRegistry {
     pub fn new() -> Self { Self::default() }
-    fn register(&self) -> (u64, CancellationToken) {
+    fn register(&self) -> Result<(u64, CancellationToken), SuperviseError> {
+        self.register_checked(false)
+    }
+    fn register_checked(&self, closing: bool) -> Result<(u64, CancellationToken), SuperviseError> {
+        let _admission = self.admission.lock().unwrap();
+        if closing || self.closing.load(Ordering::Acquire) { return Err(SuperviseError::Cancelled); }
         let mut n = self.next.lock().unwrap(); *n += 1; let id = *n;
-        let token = CancellationToken::new(); self.inner.lock().unwrap().insert(id, token.clone()); (id, token)
+        let token = CancellationToken::new(); self.inner.lock().unwrap().insert(id, token.clone()); Ok((id, token))
     }
     fn unregister(&self, id: u64) { self.inner.lock().unwrap().remove(&id); }
     pub fn cancel_all(&self) { for token in self.inner.lock().unwrap().values() { token.cancel(); } }
     pub fn active_count(&self) -> usize { self.inner.lock().unwrap().len() }
     pub fn shutdown(&self, deadline: Duration) -> bool {
-        self.cancel_all(); let start = Instant::now();
+        let _admission = self.admission.lock().unwrap();
+        self.closing.store(true, Ordering::Release);
+        self.cancel_all();
+        drop(_admission);
+        let start = Instant::now();
         while self.active_count() != 0 { if start.elapsed() >= deadline { return false; } thread::sleep(Duration::from_millis(2)); }
         true
     }
@@ -46,7 +55,16 @@ impl Supervisor {
     pub fn new(registry: ProcessRegistry) -> Self { Self { registry } }
     pub fn shutdown(&self, deadline: Duration) -> bool { self.registry.shutdown(deadline) }
     pub fn run(&self, spec: ProcessSpec) -> Result<ProcessOutput, SuperviseError> {
-        let (id, token) = self.registry.register();
+        let (id, token) = self.registry.register()?;
+        let result = run_process(&spec, &token);
+        self.registry.unregister(id);
+        if result.as_ref().map(|output| !output.status.success()).unwrap_or(true) {
+            if let Some(path) = &spec.output_path { let _ = std::fs::remove_file(path); }
+        }
+        result
+    }
+    pub fn run_admitted(&self, spec: ProcessSpec, tasks: &TaskRegistry) -> Result<ProcessOutput, SuperviseError> {
+        let (id, token) = self.registry.register_checked(tasks.is_closing())?;
         let result = run_process(&spec, &token);
         self.registry.unregister(id);
         if result.as_ref().map(|output| !output.status.success()).unwrap_or(true) {

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use serde::Serialize;
@@ -148,6 +148,27 @@ mod tests {
         second_thread.join().unwrap();
         assert_eq!(delivered.lock().unwrap().len(), 2);
     }
+
+    #[test]
+    fn allocated_event_ids_publish_in_allocation_order() {
+        let state = AppState::new(1);
+        let delivered = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink_delivered = delivered.clone();
+        state.set_event_sink(StdArc::new(move |event| { sink_delivered.lock().unwrap().push(event.event_id); Ok(()) }));
+        let first = state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned });
+        let second = state.event(Generation(1), Event::LibraryRootStatus { root_index: 1, status: RootStatus::Scanned });
+        state.publish(second);
+        assert!(delivered.lock().unwrap().is_empty());
+        state.publish(first);
+        assert_eq!(*delivered.lock().unwrap(), vec!["event-1", "event-2"]);
+    }
+
+    #[test]
+    fn retry_without_sink_reports_buffered_events() {
+        let state = AppState::new(1);
+        state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned }));
+        assert_eq!(state.retry_event_delivery(Duration::ZERO), 1);
+    }
 }
 
 #[derive(Clone)]
@@ -160,9 +181,12 @@ pub struct AppState {
     events: Arc<Mutex<Vec<EventEnvelope>>>,
     event_draining: Arc<Mutex<bool>>,
     next_event: Arc<AtomicU64>,
+    next_publish: Arc<AtomicU64>,
     next_generation: Arc<AtomicU64>,
     event_sink: Arc<Mutex<Option<StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>>>>,
     publication: Arc<Mutex<()>>,
+    unpublished: Arc<Mutex<BTreeMap<u64, EventEnvelope>>>,
+    skipped_publications: Arc<Mutex<BTreeSet<u64>>>,
     admission: Arc<Mutex<()>>,
     latest_snapshot: Arc<Mutex<Option<EventEnvelope>>>,
     latest_control: Arc<Mutex<Option<EventEnvelope>>>,
@@ -178,7 +202,7 @@ impl AppState {
         Self { tasks: Arc::new(TaskRegistry::new(task_limit)), migration_status: Arc::new(Mutex::new(MigrationStatus::NotRun)),
             library: Arc::new(Mutex::new(LibrarySnapshot { version: CONTRACT_VERSION, generation: Generation(0), tracks: Vec::new(), playlists: Vec::new() })),
             roots: Arc::new(Mutex::new(Vec::new())), root_statuses: Arc::new(Mutex::new(Vec::new())), events: Arc::new(Mutex::new(Vec::new())), event_draining: Arc::new(Mutex::new(false)),
-            next_event: Arc::new(AtomicU64::new(0)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), publication: Arc::new(Mutex::new(())), admission: Arc::new(Mutex::new(())), latest_snapshot: Arc::new(Mutex::new(None)), latest_control: Arc::new(Mutex::new(None)), event_retry_stopped: Arc::new(AtomicBool::new(false)), shutdown_result: Arc::new(Mutex::new(None)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
+            next_event: Arc::new(AtomicU64::new(0)), next_publish: Arc::new(AtomicU64::new(1)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), publication: Arc::new(Mutex::new(())), unpublished: Arc::new(Mutex::new(BTreeMap::new())), skipped_publications: Arc::new(Mutex::new(BTreeSet::new())), admission: Arc::new(Mutex::new(())), latest_snapshot: Arc::new(Mutex::new(None)), latest_control: Arc::new(Mutex::new(None)), event_retry_stopped: Arc::new(AtomicBool::new(false)), shutdown_result: Arc::new(Mutex::new(None)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
     }
     pub fn library(&self) -> LibrarySnapshot { self.library.lock().unwrap().clone() }
     pub fn root_statuses(&self) -> Vec<RootStatus> { self.root_statuses.lock().unwrap().clone() }
@@ -234,13 +258,34 @@ impl AppState {
     pub fn set_provider_metadata(&self, path: PathBuf, metadata: TrackMetadata) { self.provider_metadata.lock().unwrap().insert(path, metadata); }
     pub fn publish(&self, envelope: EventEnvelope) {
         let _publication = self.publication.lock().unwrap();
+        let id = envelope.event_id.strip_prefix("event-").and_then(|value| value.parse::<u64>().ok()).expect("internal event IDs are numeric");
+        self.unpublished.lock().unwrap().insert(id, envelope);
+        self.publish_ready_locked();
+    }
+
+    fn publish_ready_locked(&self) {
+        loop {
+            let next = self.next_publish.load(Ordering::Acquire);
+            if self.skipped_publications.lock().unwrap().remove(&next) {
+                self.next_publish.fetch_add(1, Ordering::Release);
+                continue;
+            }
+            let Some(envelope) = self.unpublished.lock().unwrap().remove(&next) else { break; };
+            self.next_publish.fetch_add(1, Ordering::Release);
+            self.publish_one_locked(envelope);
+        }
+    }
+
+    fn publish_one_locked(&self, envelope: EventEnvelope) {
         if matches!(&envelope.event, Event::LibrarySnapshot { .. }) { *self.latest_snapshot.lock().unwrap() = Some(envelope.clone()); }
         if matches!(&envelope.event, Event::Shutdown { .. }) { *self.latest_control.lock().unwrap() = Some(envelope.clone()); }
         if let Some(sink) = self.event_sink.lock().unwrap().clone() {
             if sink(envelope.clone()).is_err() {
                 self.events.lock().unwrap().push(envelope);
                 let failure = self.event_locked(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "backend event delivery failed".into(), retryable: true } });
+                let failure_id = failure.event_id.strip_prefix("event-").and_then(|value| value.parse::<u64>().ok()).expect("internal event IDs are numeric");
                 self.events.lock().unwrap().push(failure);
+                self.skipped_publications.lock().unwrap().insert(failure_id);
             }
         } else { self.events.lock().unwrap().push(envelope); }
     }
@@ -378,11 +423,18 @@ impl AppState {
     fn retry_event_delivery(&self, deadline: Duration) -> usize {
         let started = std::time::Instant::now();
         loop {
-            let Some(sink) = self.event_sink.lock().unwrap().clone() else { return 0; };
-            let _ = self.drain_events(|event| sink(event.clone()));
+            let Some(sink) = self.event_sink.lock().unwrap().clone() else { return self.pending_events().len(); };
+            let drained = self.drain_events(|event| sink(event.clone()));
             let remaining = self.pending_events().len();
-            if remaining == 0 || started.elapsed() >= deadline { return remaining; }
-            std::thread::sleep(Duration::from_millis(5).min(deadline.saturating_sub(started.elapsed())));
+            if remaining == 0 && !matches!(drained, Ok(false)) { return 0; }
+            if started.elapsed() >= deadline { return remaining; }
+            std::thread::yield_now();
         }
     }
+
+    pub fn run_process(&self, spec: crate::process::supervisor::ProcessSpec) -> Result<crate::process::supervisor::ProcessOutput, crate::process::supervisor::SuperviseError> {
+        let _admission = self.admission.lock().unwrap();
+        self.supervisor.run_admitted(spec, &self.tasks)
+    }
+    pub fn process_count(&self) -> usize { self.supervisor.registry.active_count() }
 }

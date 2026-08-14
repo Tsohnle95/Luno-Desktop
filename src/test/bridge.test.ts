@@ -25,7 +25,15 @@ describe("typed IPC bridge and projection", () => {
     store.apply(event({ type: "error", payload: { error: { code: "internal", message: "new", retryable: false } } }, 2));
     store.apply(event({ type: "error", payload: { error: { code: "internal", message: "old", retryable: false } } }, 1));
     expect(store.getSnapshot().errors).toHaveLength(1);
-    store.apply(event({ type: "shutdown", payload: { envelope: { version: 1, state: "complete", reason: "system" } } }, 2));
+    store.apply({ ...event({ type: "shutdown", payload: { envelope: { version: 1, state: "complete", reason: "system" } } }, 2), event_id: "3" });
     expect(store.getSnapshot().shutdown?.state).toBe("complete");
+  });
+
+  it("rejects duplicate and older event IDs even when generations are newer", () => {
+    const store = createBackendProjection();
+    store.apply(event({ type: "error", payload: { error: { code: "internal", message: "two", retryable: false } } }, 2));
+    store.apply({ ...event({ type: "error", payload: { error: { code: "internal", message: "duplicate", retryable: false } } }, 3), event_id: "2" });
+    store.apply({ ...event({ type: "error", payload: { error: { code: "internal", message: "old", retryable: false } } }, 4), event_id: "1" });
+    expect(store.getSnapshot().errors.map((error) => error.message)).toEqual(["two"]);
   });
 });
