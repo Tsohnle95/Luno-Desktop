@@ -8,7 +8,7 @@ use luno_desktop_lib::state::{AppState, MigrationStatus};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 const BACKEND_EVENT: &str = "backend-event";
 
@@ -46,16 +46,25 @@ fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
         .unwrap_or(false);
     if !completed {
         match has_legacy_data(&legacy_root, Some(&preview_dir)) {
-            Ok(false) => return Ok(()),
-            Err(error) => {
+            Ok(false) => {
+                *app.state::<AppState>().migration_status.lock().map_err(|_| "migration status unavailable".to_string())? = MigrationStatus::Skipped { reason: "no legacy data found".into() };
+                return Ok(());
+            },
+            Err(_error) => {
                 app.state::<AppState>().migration_status.lock().map_err(|_| "migration status unavailable".to_string())
-                    .map(|mut status| *status = MigrationStatus::Failed { reason: error.clone() })?;
-                return Err(format!("unsafe legacy migration input: {error}"));
+                    .map(|mut status| *status = MigrationStatus::Failed { reason: "legacy migration input was unsafe".into() })?;
+                return Err("unsafe legacy migration input".into());
             }
             Ok(true) => {}
         }
     }
-    let configured_music_root = validated_music_root(&legacy_root)?;
+    let configured_music_root = match validated_music_root(&legacy_root) {
+        Ok(root) => root,
+        Err(_error) => {
+            *app.state::<AppState>().migration_status.lock().map_err(|_| "migration status unavailable".to_string())? = MigrationStatus::Failed { reason: "configured music root was unsafe".into() };
+            return Err("configured music root was unsafe".into());
+        }
+    };
     let paths = MigrationPaths {
         legacy_root,
         legacy_data_root: configured_music_root.clone(),
@@ -72,16 +81,19 @@ fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
             *app.state::<AppState>().migration_status.lock().map_err(|_| "migration status unavailable".to_string())? = status;
             Ok(())
         }
-        Err(error) => {
+        Err(_error) => {
             let status = MigrationStatus::Failed { reason: "migration failed".into() };
             *app.state::<AppState>().migration_status.lock().map_err(|_| "migration status unavailable".to_string())? = status;
-            Err(format!("startup migration failed: {error:?}"))
+            Err("startup migration failed".into())
         }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn startup_migration(_app: &tauri::AppHandle) -> Result<(), String> { Ok(()) }
+fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
+    *app.state::<AppState>().migration_status.lock().map_err(|_| "migration status unavailable".to_string())? = MigrationStatus::Skipped { reason: "platform migration is not applicable".into() };
+    Ok(())
+}
 
 fn dirs_fallback_home() -> Result<PathBuf, String> {
     std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| "HOME is not available".into())
@@ -94,11 +106,24 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
             app.state::<AppState>().set_event_sink(std::sync::Arc::new(move |event| {
-                let _ = handle.emit(BACKEND_EVENT, event);
+                handle.emit(BACKEND_EVENT, event).map_err(|error| {
+                    eprintln!("structured backend event delivery failure: {error}");
+                    "event delivery failed".to_string()
+                })
             }));
             startup_migration(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Luno");
+        .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::CloseRequested { .. }) {
+                window.app_handle().state::<AppState>().shutdown_events(luno_desktop_lib::contracts::events::ShutdownReason::UserRequested, std::time::Duration::from_millis(500));
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building Luno")
+        .run(|app, event| {
+            if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+                app.state::<AppState>().shutdown_events(luno_desktop_lib::contracts::events::ShutdownReason::System, std::time::Duration::from_millis(500));
+            }
+        });
 }

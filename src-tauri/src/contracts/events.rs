@@ -38,6 +38,7 @@ pub struct EventEnvelope {
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum Event {
     LibrarySnapshot { snapshot: LibrarySnapshot },
+    LibraryRootStatus { root_index: usize, status: RootStatus },
     PlaybackSnapshot { snapshot: PlaybackSnapshot },
     TrackStarted { track_id: TrackId },
     QueueChanged { queue: Vec<TrackId> },
@@ -57,7 +58,11 @@ pub struct ShutdownEnvelope {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ShutdownState { Requested, Draining, Complete }
+pub enum ShutdownState { Requested, Draining, Complete, TimedOut, Failed }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootStatus { Scanned, Missing, Inaccessible }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

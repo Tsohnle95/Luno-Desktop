@@ -64,11 +64,11 @@ impl TaskRegistry {
             let mut state = self.inner.lock().unwrap();
             self.reap_finished(&mut state);
             if state.closing { return Err(SpawnError::ShuttingDown); }
+            if state.entries.len() >= self.limit { return Err(SpawnError::AtCapacity); }
             // A newer request supersedes the previous request for this logical task.
             if let Some(old) = state.latest.get(&spec.key).copied() {
                 if let Some(entry) = state.entries.get(&old) { entry.token.cancel(); }
             }
-            if state.entries.len() >= self.limit { return Err(SpawnError::AtCapacity); }
             state.next_id += 1;
             let id = state.next_id;
             let token = CancellationToken::new();
