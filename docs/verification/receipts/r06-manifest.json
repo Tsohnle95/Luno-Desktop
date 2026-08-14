@@ -74,7 +74,7 @@
     "AC-PERSIST-01":{"status":"inconclusive","release_blocker":true,"blocker_reason":"target_crash_recovery_marker_receipt_unavailable","receipt":"migration","artifact":"docs/verification/receipts/r06/migration/unavailable.txt"},
     "AC-PERSIST-02":{"status":"inconclusive","receipt":"migration","artifact":"docs/verification/receipts/r06/migration/unavailable.txt"},
     "AC-OPS-01":{"status":"inconclusive","receipt":"accessibility","artifact":"docs/verification/receipts/r06/accessibility/unavailable.txt"},
-    "AC-OPS-02":{"status":"inconclusive","release_blocker":true,"reason":"Required packaged Tauri artifact and reviewed managed binary inputs are missing; checksum placeholders remain.","receipt":"packaging","artifact":"docs/verification/receipts/r06/packaging/ac-ops-02-artifact.txt"},
+    "AC-OPS-02":{"status":"inconclusive","release_blocker":true,"blocker_reason":"Required packaged Tauri artifact and reviewed managed binary inputs are missing; checksum placeholders remain.","receipt":"packaging","artifact":"docs/verification/receipts/r06/packaging/ac-ops-02-artifact.txt"},
     "AC-OPS-03":{"status":"inconclusive","receipt":"shutdown","artifact":"docs/verification/receipts/r06/shutdown/unavailable.txt"}
   },
   "journeys": {
