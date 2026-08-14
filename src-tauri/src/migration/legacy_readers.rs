@@ -174,22 +174,36 @@ fn has_data_file(path: &Path) -> bool {
 
 fn has_legacy_files(root: &Path, recursive: bool) -> bool {
     if [".luno_config.json", ".luno_playlist_urls.json", ".luno_allowed_dups.json"].iter().any(|name| has_data_file(&root.join(name))) { return true; }
-    if recursive { marker_files(root).into_iter().any(|path| has_data_file(&path)) }
+    if recursive { marker_files(root).map(|files| files.into_iter().any(|path| has_data_file(&path))).unwrap_or(true) }
     else { [".downloaded_vids", ".sync_failed_vids", ".downloaded.txt"].iter().any(|name| has_data_file(&root.join(name))) }
 }
 
-fn marker_files(root: &Path) -> Vec<PathBuf> {
+/// Find marker files without following symlinks or recursing through an
+/// unbounded directory tree. The entry budget is consumed before inspecting
+/// each directory entry, so an oversized root fails deterministically.
+pub fn marker_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    if !safe_directory(root) { return Ok(Vec::new()); }
+    let mut pending = vec![root.to_path_buf()];
     let mut files = Vec::new();
-    let Ok(entries) = fs::read_dir(root) else { return files; };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
-            files.extend(marker_files(&path));
-        } else if matches!(path.file_name().and_then(|name| name.to_str()), Some(".downloaded_vids" | ".sync_failed_vids" | ".downloaded.txt")) {
-            files.push(path);
+    let mut inspected = 0;
+    while let Some(directory) = pending.pop() {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&directory).map_err(|e| e.to_string())? {
+            if inspected >= MAX_RETRY_ENTRIES { return Err(format!("legacy marker inspection exceeded {} entries", MAX_RETRY_ENTRIES)); }
+            inspected += 1;
+            entries.push(entry.map_err(|e| e.to_string())?);
+        }
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+            if metadata.file_type().is_symlink() || !contained(root, &path) { continue; }
+            if metadata.is_dir() { pending.push(path); }
+            else if matches!(path.file_name().and_then(|name| name.to_str()), Some(".downloaded_vids" | ".sync_failed_vids" | ".downloaded.txt")) { files.push(path); }
         }
     }
-    files
+    files.sort();
+    Ok(files)
 }
 
 /// Return whether any supported legacy surface contains data worth migrating.
@@ -218,7 +232,14 @@ pub fn read_legacy(root: &Path, preview_dir: Option<&Path>) -> LegacyState {
     for data_root in roots.into_iter().flatten().filter(|candidate| candidate != root) {
         read_file!(data_root.join(".luno_playlist_urls.json"), |p: &Path| { state.playlist_urls.extend(legacy::read_string_map(p)?); Ok(()) });
         read_file!(data_root.join(".luno_allowed_dups.json"), |p: &Path| { state.allowed_duplicate_keys.extend(legacy::read_string_set(p)?.into_iter()); Ok(()) });
-        for marker in marker_files(&data_root) {
+        let markers = match marker_files(&data_root) {
+            Ok(markers) => markers,
+            Err(message) => {
+                state.warnings.push(Warning { path: data_root.clone(), message });
+                Vec::new()
+            }
+        };
+        for marker in markers {
             let legacy = marker.file_name().and_then(|name| name.to_str()) == Some(".downloaded.txt");
             read_file!(marker, |p: &Path| { if legacy { state.downloaded_ids.extend(read_markers(p, true)?); } else if p.file_name().and_then(|name| name.to_str()) == Some(".sync_failed_vids") { state.failed_ids.extend(read_markers(p, false)?); } else { state.downloaded_ids.extend(read_markers(p, false)?); } Ok(()) });
         }

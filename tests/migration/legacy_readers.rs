@@ -108,6 +108,39 @@ fn legacy_detection_rejects_oversized_preview_without_unbounded_listing() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn nested_marker_inventory_is_bounded_sorted_and_reports_overflow() {
+    let root = tempdir();
+    let music = root.join("music");
+    fs::create_dir(&music).unwrap();
+    fs::write(root.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, music.display())).unwrap();
+    for index in 0..(MAX_RETRY_ENTRIES / 2 + 1) {
+        let directory = music.join(format!("playlist-{index:04}"));
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join(if index == MAX_RETRY_ENTRIES / 2 { ".downloaded.txt" } else { ".downloaded_vids" }), if index == MAX_RETRY_ENTRIES / 2 { "old title VID1\n" } else { "VID2\n" }).unwrap();
+    }
+    assert!(marker_files(&root).unwrap_err().contains("legacy marker inspection exceeded"));
+    assert!(has_legacy_data(&root, None));
+    let state = read_legacy(&root, None);
+    assert!(state.downloaded_ids.contains("VID1"));
+    assert!(state.warnings.iter().any(|warning| warning.message.contains("legacy marker inspection exceeded")));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn nested_marker_inventory_does_not_follow_symlink_directories() {
+    use std::os::unix::fs::symlink;
+    let root = tempdir();
+    let outside = tempdir();
+    fs::write(outside.join(".downloaded_vids"), "OUTSIDE\n").unwrap();
+    symlink(&outside, root.join("linked")).unwrap();
+    assert!(marker_files(&root).unwrap().is_empty());
+    assert!(!has_legacy_data(&root, None));
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn dangling_preview_symlink_is_a_migration_trigger_for_main_gating() {

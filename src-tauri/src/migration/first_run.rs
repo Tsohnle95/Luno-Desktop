@@ -4,7 +4,7 @@
 //! removed or rewritten. A migration can therefore be retried, or the Python
 //! release can be launched again, after any failure.
 
-use crate::migration::legacy_readers::{inventory_retry_files, read_legacy, LegacyState};
+use crate::migration::legacy_readers::{inventory_retry_files, marker_files, read_legacy, LegacyState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -210,7 +210,7 @@ fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
         for name in [".luno_config.json", ".luno_playlist_urls.json", ".luno_allowed_dups.json", ".downloaded_vids", ".sync_failed_vids", ".downloaded.txt"] {
             let from = root.join(name); if from.is_file() { let destination = if root == p.legacy_root { dir.join(name) } else { dir.join("music-root").join(name) }; if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; } if name == ".luno_config.json" { snapshot_config(&from, &destination, &dir)?; } else { fs::copy(&from, destination)?; } }
         }
-        for path in walk_marker_files(&root) {
+        for path in marker_files(&root).map_err(MigrationError::Io)? {
             if path == root.join(".downloaded_vids") || path == root.join(".sync_failed_vids") || path == root.join(".downloaded.txt") { continue; }
             let destination = dir.join(path.strip_prefix(&root).unwrap_or(&path));
             if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; }
@@ -235,16 +235,6 @@ fn snapshot_config(source: &Path, destination: &Path, backup: &Path) -> Result<(
     object.insert("lastfm_key".into(), Value::String("[REDACTED]".into()));
     fs::write(destination, serde_json::to_vec_pretty(&value).map_err(|e| MigrationError::Io(e.to_string()))?)?;
     Ok(())
-}
-
-fn walk_marker_files(root: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(root) else { return Vec::new(); };
-    entries.flatten().flat_map(|entry| {
-        let path = entry.path();
-        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) { walk_marker_files(&path) }
-        else if matches!(path.file_name().and_then(|name| name.to_str()), Some(".downloaded_vids" | ".sync_failed_vids" | ".downloaded.txt")) { vec![path] }
-        else { Vec::new() }
-    }).collect()
 }
 
 fn convert(s: &LegacyState) -> MigratedSettings {
