@@ -7,11 +7,15 @@
   "receipt_document_chain": [
     "dc036f7cdce5b161c475f207e28d756f600d5a50",
     "2c85724fa06602c8307424ef727b1afe685060ac",
-    "21026067ddbae2e42655ef263b8eeb3be739b071"
+    "21026067ddbae2e42655ef263b8eeb3be739b071",
+    "221c637e8c4dc91ae8ccb886daabb5bb3255b3ef",
+    "0e9c1ca5e3e56d5dbcba7fd88add64f4640bd5ac"
   ],
   "receipt_document_commit": {
-    "description": "The commit containing this receipt must be verified externally after commit creation. Its SHA is intentionally not embedded because a commit cannot contain its own hash.",
-    "verification_command": "git log --format='%H %s' -- docs/release/artifacts/r05-manifest.json docs/release/artifacts/r05-summary.md"
+    "verification_command": "git log --format='%H %s' -n 5 -- docs/release/artifacts/r05-manifest.json docs/release/artifacts/r05-summary.md",
+    "verification_output": "0e9c1ca5e3e56d5dbcba7fd88add64f4640bd5ac docs: replace R05 receipt placeholder\n221c637e8c4dc91ae8ccb886daabb5bb3255b3ef docs: clarify R05 receipt provenance chain\n21026067ddbae2e42655ef263b8eeb3be739b071 Avoid claiming R05 receipt parent\n2c85724fa06602c8307424ef727b1afe685060ac Clarify R05 receipt commit verification\ndc036f7cdce5b161c475f207e28d756f600d5a50 Fix R05 provenance receipt fields",
+    "status_command": "git status --porcelain",
+    "status_output": " M TODO.md\n M dispatch-plan.json"
   },
   "reviewed_tree_dirty_state": {
     "command": "git status --porcelain",
@@ -87,7 +91,7 @@
   ],
   "provenance": {
     "source_review_head": "d64da5c244752483d40b6e7558247e11c805f24b",
-    "source_chain": "The source review is recorded at source_review_head. The source-chain anchor is source_chain_anchor 032b14ec38a96d5761f9a2ea1d58cb193e790bf6, whose parent is d64da5c244752483d40b6e7558247e11c805f24b. The subsequent receipt-document chain is dc036f7cdce5b161c475f207e28d756f600d5a50, 2c85724fa06602c8307424ef727b1afe685060ac, and 21026067ddbae2e42655ef263b8eeb3be739b071, verified externally. This receipt document is committed afterward and its SHA is intentionally verified externally because a commit cannot contain its own hash.",
+    "source_chain": "The source review is recorded at source_review_head. The source-chain anchor is source_chain_anchor 032b14ec38a96d5761f9a2ea1d58cb193e790bf6, whose parent is d64da5c244752483d40b6e7558247e11c805f24b. The subsequent receipt-document chain is dc036f7cdce5b161c475f207e28d756f600d5a50, 2c85724fa06602c8307424ef727b1afe685060ac, 21026067ddbae2e42655ef263b8eeb3be739b071, 221c637e8c4dc91ae8ccb886daabb5bb3255b3ef, and 0e9c1ca5e3e56d5dbcba7fd88add64f4640bd5ac, verified with the recorded git log command.",
     "commands": [
       {
         "command": "git rev-parse 032b14ec38a96d5761f9a2ea1d58cb193e790bf6^",
@@ -100,8 +104,9 @@
         "output": "032b14ec38a96d5761f9a2ea1d58cb193e790bf6\nd64da5c244752483d40b6e7558247e11c805f24b"
       },
       {
-        "command": "git log --format='%H %s' -- docs/release/artifacts/r05-manifest.json docs/release/artifacts/r05-summary.md",
-        "verification": "Run externally after committing this receipt to list the concrete document commits and review their contents; this does not require embedding a commit's own SHA."
+        "command": "git log --format='%H %s' -n 5 -- docs/release/artifacts/r05-manifest.json docs/release/artifacts/r05-summary.md",
+        "exit_code": 0,
+        "output": "0e9c1ca5e3e56d5dbcba7fd88add64f4640bd5ac docs: replace R05 receipt placeholder\n221c637e8c4dc91ae8ccb886daabb5bb3255b3ef docs: clarify R05 receipt provenance chain\n21026067ddbae2e42655ef263b8eeb3be739b071 Avoid claiming R05 receipt parent\n2c85724fa06602c8307424ef727b1afe685060ac Clarify R05 receipt commit verification\ndc036f7cdce5b161c475f207e28d756f600d5a50 Fix R05 provenance receipt fields"
       },
       {
         "command": "git status --porcelain",
@@ -109,7 +114,7 @@
         "output": " M TODO.md\n M dispatch-plan.json"
       }
     ],
-    "note": "The source review was performed at source_review_head d64da5c244752483d40b6e7558247e11c805f24b. The source-chain anchor is source_chain_anchor 032b14ec38a96d5761f9a2ea1d58cb193e790bf6, whose parent is d64da5c244752483d40b6e7558247e11c805f24b. The subsequent receipt-document chain is dc036f7cdce5b161c475f207e28d756f600d5a50, 2c85724fa06602c8307424ef727b1afe685060ac, and 21026067ddbae2e42655ef263b8eeb3be739b071, verified externally. The commit containing this receipt is receipt_document_commit and must be verified externally with git show/review; its SHA is not self-embedded because a commit cannot contain its own hash."
+    "note": "The source review was performed at source_review_head d64da5c244752483d40b6e7558247e11c805f24b. The source-chain anchor is source_chain_anchor 032b14ec38a96d5761f9a2ea1d58cb193e790bf6, whose parent is d64da5c244752483d40b6e7558247e11c805f24b. The subsequent receipt-document chain is recorded in receipt_document_chain and verified by the concrete git log and git status commands above."
   },
   "unavailable_or_missing": [
     "release-input/bin/ffmpeg",
