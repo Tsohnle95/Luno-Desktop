@@ -169,6 +169,48 @@ mod tests {
         state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned }));
         assert_eq!(state.retry_event_delivery(Duration::ZERO), 1);
     }
+
+    #[test]
+    fn retry_reports_an_active_drainer_until_it_finishes() {
+        let state = AppState::new(1);
+        state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned }));
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = entered.clone();
+        let worker_state = state.clone();
+        let worker = std::thread::spawn(move || worker_state.drain_events(|_| { entered.wait(); release.wait(); Ok(()) }));
+        entered.wait();
+        assert_eq!(state.retry_event_delivery(Duration::ZERO), 1);
+        release.wait();
+        assert_eq!(worker.join().unwrap(), Ok(true));
+        assert_eq!(state.retry_event_delivery(Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn replay_uses_the_pending_order_without_duplicates() {
+        let state = AppState::new(1);
+        let snapshot = state.event(Generation(1), Event::LibrarySnapshot { snapshot: state.library() });
+        let shutdown = state.event(Generation(0), Event::Shutdown { envelope: ShutdownEnvelope { version: CONTRACT_VERSION, state: ShutdownState::Complete, reason: crate::contracts::events::ShutdownReason::System } });
+        state.publish(snapshot.clone());
+        state.publish(shutdown.clone());
+        let delivered = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink_delivered = delivered.clone();
+        state.set_event_sink(StdArc::new(move |event| { sink_delivered.lock().unwrap().push(event.event_id); Ok(()) }));
+
+        state.replay_latest();
+
+        assert_eq!(*delivered.lock().unwrap(), vec![snapshot.event_id, shutdown.event_id]);
+        assert!(state.pending_events().is_empty());
+        state.replay_latest();
+        assert_eq!(*delivered.lock().unwrap(), vec![snapshot.event_id, shutdown.event_id]);
+    }
+
+    #[test]
+    fn panicking_delivery_resets_the_drainer() {
+        let state = AppState::new(1);
+        state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned }));
+        assert!(state.drain_events(|_| panic!("sink panic")).is_err());
+        assert_eq!(state.drain_events(|_| Ok(())), Ok(true));
+    }
 }
 
 #[derive(Clone)]
@@ -180,6 +222,7 @@ pub struct AppState {
     root_statuses: Arc<Mutex<Vec<RootStatus>>>,
     events: Arc<Mutex<Vec<EventEnvelope>>>,
     event_draining: Arc<Mutex<bool>>,
+    event_in_flight: Arc<Mutex<usize>>,
     next_event: Arc<AtomicU64>,
     next_publish: Arc<AtomicU64>,
     next_generation: Arc<AtomicU64>,
@@ -190,6 +233,7 @@ pub struct AppState {
     admission: Arc<Mutex<()>>,
     latest_snapshot: Arc<Mutex<Option<EventEnvelope>>>,
     latest_control: Arc<Mutex<Option<EventEnvelope>>>,
+    replayed_events: Arc<Mutex<BTreeSet<String>>>,
     event_retry_stopped: Arc<AtomicBool>,
     shutdown_result: Arc<Mutex<Option<ShutdownReport>>>,
     supervisor: Arc<Supervisor>,
@@ -201,8 +245,8 @@ impl AppState {
     pub fn new(task_limit: usize) -> Self {
         Self { tasks: Arc::new(TaskRegistry::new(task_limit)), migration_status: Arc::new(Mutex::new(MigrationStatus::NotRun)),
             library: Arc::new(Mutex::new(LibrarySnapshot { version: CONTRACT_VERSION, generation: Generation(0), tracks: Vec::new(), playlists: Vec::new() })),
-            roots: Arc::new(Mutex::new(Vec::new())), root_statuses: Arc::new(Mutex::new(Vec::new())), events: Arc::new(Mutex::new(Vec::new())), event_draining: Arc::new(Mutex::new(false)),
-            next_event: Arc::new(AtomicU64::new(0)), next_publish: Arc::new(AtomicU64::new(1)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), publication: Arc::new(Mutex::new(())), unpublished: Arc::new(Mutex::new(BTreeMap::new())), skipped_publications: Arc::new(Mutex::new(BTreeSet::new())), admission: Arc::new(Mutex::new(())), latest_snapshot: Arc::new(Mutex::new(None)), latest_control: Arc::new(Mutex::new(None)), event_retry_stopped: Arc::new(AtomicBool::new(false)), shutdown_result: Arc::new(Mutex::new(None)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
+            roots: Arc::new(Mutex::new(Vec::new())), root_statuses: Arc::new(Mutex::new(Vec::new())), events: Arc::new(Mutex::new(Vec::new())), event_draining: Arc::new(Mutex::new(false)), event_in_flight: Arc::new(Mutex::new(0)),
+            next_event: Arc::new(AtomicU64::new(0)), next_publish: Arc::new(AtomicU64::new(1)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), publication: Arc::new(Mutex::new(())), unpublished: Arc::new(Mutex::new(BTreeMap::new())), skipped_publications: Arc::new(Mutex::new(BTreeSet::new())), admission: Arc::new(Mutex::new(())), latest_snapshot: Arc::new(Mutex::new(None)), latest_control: Arc::new(Mutex::new(None)), replayed_events: Arc::new(Mutex::new(BTreeSet::new())), event_retry_stopped: Arc::new(AtomicBool::new(false)), shutdown_result: Arc::new(Mutex::new(None)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
     }
     pub fn library(&self) -> LibrarySnapshot { self.library.lock().unwrap().clone() }
     pub fn root_statuses(&self) -> Vec<RootStatus> { self.root_statuses.lock().unwrap().clone() }
@@ -220,19 +264,29 @@ impl AppState {
             if *draining { return Ok(false); }
             *draining = true;
         }
-        let _publication = self.publication.lock().unwrap();
-        let claimed = { std::mem::take(&mut *self.events.lock().unwrap()) };
-        let mut failed = Vec::new();
-        let mut error = None;
-        for (index, event) in claimed.iter().enumerate() {
-            if let Err(message) = deliver(event) {
-                error = Some(message);
-                failed.extend_from_slice(&claimed[index..]);
-                break;
+        struct DrainGuard<'a> { draining: &'a Mutex<bool>, in_flight: &'a Mutex<usize> }
+        impl Drop for DrainGuard<'_> {
+            fn drop(&mut self) {
+                *self.in_flight.lock().unwrap() = 0;
+                *self.draining.lock().unwrap() = false;
             }
         }
+        let _guard = DrainGuard { draining: &self.event_draining, in_flight: &self.event_in_flight };
+        let _publication = self.publication.lock().unwrap();
+        let claimed = { std::mem::take(&mut *self.events.lock().unwrap()) };
+        *self.event_in_flight.lock().unwrap() = claimed.len();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for (index, event) in claimed.iter().enumerate() {
+                if let Err(message) = deliver(event) { return Err((index, message)); }
+            }
+            Ok(())
+        }));
+        let (failed, error) = match outcome {
+            Ok(Ok(())) => (Vec::new(), None),
+            Ok(Err((index, message))) => (claimed[index..].to_vec(), Some(message)),
+            Err(_) => (claimed.clone(), Some("event delivery panicked".into())),
+        };
         if !failed.is_empty() { self.events.lock().unwrap().splice(0..0, failed); }
-        *self.event_draining.lock().unwrap() = false;
         error.map_or(Ok(true), Err)
     }
     pub fn event(&self, generation: Generation, event: Event) -> EventEnvelope {
@@ -244,14 +298,27 @@ impl AppState {
         let id = self.next_event.fetch_add(1, Ordering::Relaxed) + 1;
         EventEnvelope { version: CONTRACT_VERSION, event_id: format!("event-{id}"), generation, job_id: None, session_id: None, event }
     }
-    pub fn set_event_sink(&self, sink: StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>) { *self.event_sink.lock().unwrap() = Some(sink); }
+    pub fn set_event_sink(&self, sink: StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>) {
+        *self.event_sink.lock().unwrap() = Some(sink);
+        self.replayed_events.lock().unwrap().clear();
+    }
     /// Replay the latest state/control envelopes after a listener has started.
     pub fn replay_latest(&self) {
-        let _publication = self.publication.lock().unwrap();
         let Some(sink) = self.event_sink.lock().unwrap().clone() else { return; };
-        for envelope in [self.latest_snapshot.lock().unwrap().clone(), self.latest_control.lock().unwrap().clone()].into_iter().flatten() {
-            if sink(envelope.clone()).is_err() { self.events.lock().unwrap().push(envelope); }
+        {
+            let _publication = self.publication.lock().unwrap();
+            for envelope in [self.latest_snapshot.lock().unwrap().clone(), self.latest_control.lock().unwrap().clone()].into_iter().flatten() {
+                let mut events = self.events.lock().unwrap();
+                let mut replayed = self.replayed_events.lock().unwrap();
+                if !events.iter().any(|pending| pending.event_id == envelope.event_id) && !replayed.contains(&envelope.event_id) {
+                    let event_id = envelope.event_id.clone();
+                    events.push(envelope);
+                    events.sort_by_key(|event| event.event_id.strip_prefix("event-").and_then(|id| id.parse::<u64>().ok()).unwrap_or(u64::MAX));
+                    replayed.insert(event_id);
+                }
+            }
         }
+        let _ = self.drain_events(|event| sink(event.clone()));
     }
     pub fn stop_event_delivery(&self) { self.event_retry_stopped.store(true, Ordering::Release); }
     pub fn event_delivery_stopped(&self) -> bool { self.event_retry_stopped.load(Ordering::Acquire) }
@@ -423,9 +490,16 @@ impl AppState {
     fn retry_event_delivery(&self, deadline: Duration) -> usize {
         let started = std::time::Instant::now();
         loop {
-            let Some(sink) = self.event_sink.lock().unwrap().clone() else { return self.pending_events().len(); };
+            let pending = self.pending_events().len();
+            let in_flight = *self.event_in_flight.lock().unwrap();
+            let active = *self.event_draining.lock().unwrap();
+            let remaining_events = pending + in_flight.max(usize::from(active));
+            let Some(sink) = self.event_sink.lock().unwrap().clone() else { return remaining_events; };
             let drained = self.drain_events(|event| sink(event.clone()));
-            let remaining = self.pending_events().len();
+            let pending = self.pending_events().len();
+            let in_flight = *self.event_in_flight.lock().unwrap();
+            let active = *self.event_draining.lock().unwrap();
+            let remaining = pending + in_flight.max(usize::from(active));
             if remaining == 0 && !matches!(drained, Ok(false)) { return 0; }
             if started.elapsed() >= deadline { return remaining; }
             std::thread::yield_now();
