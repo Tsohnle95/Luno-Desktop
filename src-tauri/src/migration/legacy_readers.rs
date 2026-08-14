@@ -5,6 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub const MAX_RETRY_ENTRIES: usize = 4096;
+pub const MAX_RETRY_DEPTH: usize = 32;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Warning { pub path: PathBuf, pub message: String }
 
@@ -63,6 +66,64 @@ pub fn inventory_files(root: &Path, excluded_roots: &[&Path]) -> Result<Vec<Path
     inventory_files_inner(root, excluded_roots, &mut files)?;
     files.sort();
     Ok(files)
+}
+
+/// Inspect only the bounded legacy surfaces that can contain preserved input.
+/// In particular, do not recursively treat HOME as a migration data root.
+pub fn inventory_retry_files(legacy_root: &Path, music_root: Option<&Path>, preview_dir: &Path, target_root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = BTreeSet::new();
+    let mut budget = MAX_RETRY_ENTRIES;
+    let excluded = [preview_dir, target_root];
+    inventory_direct(legacy_root, &excluded, &mut files, &mut budget)?;
+    if let Some(root) = music_root.filter(|root| *root != legacy_root) {
+        inventory_direct(root, &[], &mut files, &mut budget)?;
+        let mut marker_roots = Vec::new();
+        find_marker_roots(root, 0, &mut marker_roots, &mut budget)?;
+        for marker_root in marker_roots {
+            inventory_direct(&marker_root, &[], &mut files, &mut budget)?;
+        }
+    }
+    for path in read_preview_inventory(preview_dir)? { files.insert(path); }
+    Ok(files.into_iter().collect())
+}
+
+fn inventory_direct(root: &Path, excluded: &[&Path], files: &mut BTreeSet<PathBuf>, budget: &mut usize) -> Result<(), String> {
+    if !safe_directory(root) { return Ok(()); }
+    for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
+        if *budget == 0 { return Err(format!("retry inspection exceeded {} entries", MAX_RETRY_ENTRIES)); }
+        *budget -= 1;
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if excluded.iter().any(|excluded| path == *excluded || path.starts_with(excluded)) { continue; }
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() { continue; }
+        if metadata.is_file() { files.insert(path); }
+    }
+    Ok(())
+}
+
+fn find_marker_roots(root: &Path, depth: usize, marker_roots: &mut Vec<PathBuf>, budget: &mut usize) -> Result<(), String> {
+    if depth > MAX_RETRY_DEPTH || !safe_directory(root) { return Ok(()); }
+    let mut has_marker = false;
+    let mut directories = Vec::new();
+    for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
+        if *budget == 0 { return Err(format!("retry inspection exceeded {} entries", MAX_RETRY_ENTRIES)); }
+        *budget -= 1;
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() { continue; }
+        if metadata.is_dir() { directories.push(path); }
+        else if matches!(path.file_name().and_then(|name| name.to_str()), Some(".downloaded_vids" | ".sync_failed_vids" | ".downloaded.txt")) { has_marker = true; }
+    }
+    if has_marker { marker_roots.push(root.to_path_buf()); }
+    directories.sort();
+    for directory in directories { find_marker_roots(&directory, depth + 1, marker_roots, budget)?; }
+    Ok(())
+}
+
+fn safe_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path).map(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink()).unwrap_or(false)
 }
 
 fn inventory_files_inner(root: &Path, excluded_roots: &[&Path], files: &mut Vec<PathBuf>) -> Result<(), String> {

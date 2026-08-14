@@ -246,7 +246,7 @@ fn completed_migration_is_idempotent_and_preserves_target_state() {
     let second = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap();
     assert_eq!(fs::read_to_string(p.state_file()).unwrap(), "user-owned target");
     assert_eq!(first.version, second.version);
-    assert!(second.warning_messages.iter().any(|warning| warning.contains("already complete")));
+    assert!(second.warning_messages.iter().any(|warning| warning.contains("already complete") && warning.contains("unknown-subdirectory/new-legacy-input")));
     fs::remove_dir_all(root).unwrap();
 }
 

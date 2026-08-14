@@ -48,6 +48,21 @@ fn legacy_detection_covers_configured_root_and_ignores_empty_surfaces() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn retry_inventory_reports_unknown_files_without_recursing_home() {
+    let root = tempdir();
+    let music = root.join("music");
+    fs::create_dir_all(music.join("playlist")).unwrap();
+    fs::write(root.join("unknown-home-input"), b"preserved").unwrap();
+    fs::write(music.join("playlist/.downloaded_vids"), b"id\n").unwrap();
+    fs::write(music.join("playlist/unknown-playlist-input"), b"preserved").unwrap();
+    fs::create_dir_all(music.join("unmarked")).unwrap();
+    fs::write(music.join("unmarked/should-not-be-scanned"), b"ignored").unwrap();
+    let files = inventory_retry_files(&root, Some(&music), &root.join(".luno_previews"), &root.join("target")).unwrap();
+    assert_eq!(files, vec![root.join("unknown-home-input"), music.join("playlist/.downloaded_vids"), music.join("playlist/unknown-playlist-input")]);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn dangling_preview_symlink_is_a_migration_trigger_for_main_gating() {

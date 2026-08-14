@@ -21,8 +21,13 @@ fn backend_command(_state: tauri::State<'_, AppState>, envelope: CommandEnvelope
 fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
     let legacy_root = dirs_fallback_home()?;
     let preview_dir = legacy_root.join(".luno_previews");
-    if !has_legacy_data(&legacy_root, Some(&preview_dir)) { return Ok(()); }
     let target_root = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let completed = fs::read(target_root.join("migration-version.json")).ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|value| Some(value.get("migration")?.as_str()? == "desktop-first-run"
+            && value.get("version")?.as_u64()? == 1 && value.get("completed")?.as_bool()?))
+        .unwrap_or(false);
+    if !completed && !has_legacy_data(&legacy_root, Some(&preview_dir)) { return Ok(()); }
     let legacy_data_root = fs::read_to_string(legacy_root.join(".luno_config.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())

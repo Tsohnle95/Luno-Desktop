@@ -4,7 +4,7 @@
 //! removed or rewritten. A migration can therefore be retried, or the Python
 //! release can be launched again, after any failure.
 
-use crate::migration::legacy_readers::{inventory_files, read_legacy, LegacyState};
+use crate::migration::legacy_readers::{inventory_retry_files, read_legacy, LegacyState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -92,23 +92,16 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     if valid_completed_record.is_some() {
         let mut warning_messages = reconcile_recovery_quarantine(&paths.target_root);
         let legacy = read_legacy(&paths.legacy_root, Some(&paths.preview_dir));
-        let mut preserved_files = Vec::new();
-        let mut inventory_errors = Vec::new();
-        let mut roots = vec![paths.legacy_root.as_path()];
-        if let Some(root) = paths.legacy_data_root.as_deref().filter(|root| *root != paths.legacy_root) { roots.push(root); }
-        for root in roots {
-            match inventory_files(root, &[paths.preview_dir.as_path(), paths.target_root.as_path()]) {
-                Ok(files) => preserved_files.extend(files),
-                Err(error) => inventory_errors.push(format!("{}: {error}", root.display())),
-            }
-        }
-        warning_messages.extend(inventory_errors.into_iter().map(|error| format!("legacy input inventory failed: {error}")));
+        let preserved_files = match inventory_retry_files(&paths.legacy_root, paths.legacy_data_root.as_deref(), &paths.preview_dir, &paths.target_root) {
+            Ok(files) => files,
+            Err(error) => { warning_messages.push(format!("legacy input inventory failed: {error}")); Vec::new() }
+        };
         if !legacy.warnings.is_empty() || !legacy.preview_files.is_empty() || legacy.config.is_some()
             || !legacy.playlist_urls.is_empty() || !legacy.allowed_duplicate_keys.is_empty()
             || !legacy.favorite_paths.is_empty() || !legacy.downloaded_ids.is_empty() || !legacy.failed_ids.is_empty()
             || !preserved_files.is_empty()
         {
-            warning_messages.push("migration already complete; detected preserved or newly added legacy inputs and did not overwrite target state".into());
+            warning_messages.push(format!("migration already complete; detected preserved or newly added legacy inputs and did not overwrite target state: {}", preserved_files.iter().map(|path| relative_display(path, &paths.legacy_root)).collect::<Vec<_>>().join(", ")));
         }
         return Ok(MigrationReceipt {
             version: paths.version_record(),
@@ -172,6 +165,10 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
         warning_messages.push(format!("migration committed but recovery quarantine cleanup failed: {error}"));
     }
     Ok(MigrationReceipt { version: paths.version_record(), state: paths.state_file(), snapshot, removed_previews, warnings: warning_messages.len(), warning_messages })
+}
+
+fn relative_display(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root).unwrap_or(path).to_string_lossy().into_owned()
 }
 
 fn preflight(p: &MigrationPaths) -> Result<(), MigrationError> {
