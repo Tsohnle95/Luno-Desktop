@@ -11,6 +11,7 @@ import {
   type TrackId,
   parseEventEnvelope,
 } from "../shared/contracts";
+import type { LibrarySnapshot } from "../shared/contracts";
 
 export type MigrationStatus =
   | { status: "not_run" }
@@ -20,6 +21,19 @@ export type MigrationStatus =
 
 export const BACKEND_EVENT = "backend-event";
 export const BACKEND_COMMAND = "backend_command";
+
+export function isValidLibraryResponse(value: unknown): value is LibrarySnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const snapshot = value as Record<string, unknown>;
+  return isEventEnvelope({
+    version: CONTRACT_VERSION,
+    event_id: "event-1",
+    generation: snapshot.generation,
+    job_id: null,
+    session_id: null,
+    event: { type: "library_snapshot", payload: { snapshot: value } },
+  });
+}
 
 export interface BridgeTransport {
   invoke<T>(command: string, payload: unknown): Promise<T>;
@@ -73,11 +87,7 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
     cancelJob: (job_id: string) => send({ type: "cancel_job", payload: { job_id } }),
     shutdown: (reason: ShutdownReason) => send({ type: "shutdown", payload: { reason } }),
   subscribe: (handler: (event: EventEnvelope) => void) =>
-      transport.listen<unknown>(BACKEND_EVENT, (payload) => handler(validEvent(payload))).then((unlisten) => {
-        // Listening first makes the command a replay request, not a race with startup emission.
-        void send("get_library");
-        return unlisten;
-      }),
+      transport.listen<unknown>(BACKEND_EVENT, (payload) => handler(validEvent(payload))),
   };
 }
 

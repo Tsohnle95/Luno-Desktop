@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBridge, parseMigrationStatus } from "../app/bridge";
+import { createBridge, isValidLibraryResponse, parseMigrationStatus } from "../app/bridge";
 import { createBackendProjection } from "../state/backend_projection";
 import { currentVideoForTrack, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled } from "../app/Shell";
 import type { BridgeTransport } from "../app/bridge";
@@ -21,11 +21,20 @@ describe("typed IPC bridge and projection", () => {
     await bridge.videoFullscreen(true);
     expect(calls).toHaveLength(4);
     await bridge.subscribe(() => {});
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(4);
     expect(() => callback(event({ type: "error", payload: { error: { code: "internal", message: "x", retryable: false } } }))).not.toThrow();
     expect(() => callback({})).toThrow();
     expect(() => callback(event({ type: "playback_snapshot", payload: { snapshot: { queue: [], current_index: null, position_ms: -1, duration_ms: null, status: "stopped", generation: 1 } } }))).toThrow();
     expect(() => callback(event({ type: "job_updated", payload: { job: { id: "j", kind: "single", state: "running", track_id: null, progress: 2, generation: 1 } } }))).toThrow();
+  });
+
+  it("accepts only a valid library response for startup readiness", () => {
+    const response = { version: 1, generation: 0, tracks: [], playlists: [] };
+    expect(isValidLibraryResponse(response)).toBe(true);
+    expect(isValidLibraryResponse(null)).toBe(false);
+    expect(isValidLibraryResponse({ ...response, generation: -1 })).toBe(false);
+    expect(isValidLibraryResponse({ ...response, tracks: null })).toBe(false);
+    expect(isValidLibraryResponse({ ...response, tracks: [{ id: "broken" }] })).toBe(false);
   });
 
   it("projects lifecycle events and rejects stale generations", () => {

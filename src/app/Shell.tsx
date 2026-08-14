@@ -58,7 +58,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const tracks = projection.library?.tracks ?? [];
   const queueTracks = projection.playback?.queue.map((id) => tracks.find((item) => item.id === id)).filter((item): item is Track => !!item) ?? [];
   const currentVideo = track ? currentVideoForTrack(projection, track.id) : null;
-  const connectedVideo = videoConnected ?? currentVideo !== null;
+  const connectedVideo = videoConnected === true;
   const videoSrc = safeVideoSource(currentVideo?.source_url, currentVideo?.staged_path);
   const videoStatus = (currentVideo?.status === "not_checked" ? "not-checked" : currentVideo?.status) as VideoStageStatus | undefined;
   const videoActive = videoCommandsEnabled(available, connectedVideo, videoSrc, videoStatus);
