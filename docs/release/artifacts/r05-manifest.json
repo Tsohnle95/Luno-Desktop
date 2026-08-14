@@ -1,0 +1,68 @@
+{
+  "receipt": "R05",
+  "status": "BLOCKED",
+  "timestamp": "2026-08-14",
+  "head": "6467d166231e3446b9edb44a9053aa88bc3d30a8",
+  "scope": "Packaging configuration and release machinery only",
+  "inputs": {
+    "managed_binary_directory": "release-input/bin",
+    "managed_binary_directory_present": false,
+    "reviewed_sha256_values": false,
+    "upstream_license_artifacts": false,
+    "signing_credentials": false,
+    "dmg_artifact": false
+  },
+  "checks": [
+    {
+      "command": "npm ci",
+      "exit_code": 0,
+      "status": "PASS",
+      "output": "added 72 packages, and audited 73 packages in 2s; found 0 vulnerabilities"
+    },
+    {
+      "command": "npm run typecheck",
+      "exit_code": 2,
+      "status": "INCONCLUSIVE",
+      "output": "TypeScript errors in src/app/bridge.ts, src/shared/contracts.ts, src/state/backend_projection.ts, and src/test/*.ts(x), including missing vitest types"
+    },
+    {
+      "command": "npm run build",
+      "exit_code": 2,
+      "status": "INCONCLUSIVE",
+      "output": "tsc --noEmit failed with the typecheck diagnostics; Vite did not run"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml",
+      "exit_code": 101,
+      "status": "INCONCLUSIVE",
+      "output": "build script failed: resource path resources/bin doesn't exist"
+    },
+    {
+      "command": "LUNO_BINARY_SOURCE_DIR=release-input/bin ./scripts/provision-desktop-binaries.sh",
+      "exit_code": 1,
+      "status": "BLOCKED",
+      "output": "missing reviewed binary: release-input/bin/ffmpeg"
+    },
+    {
+      "command": "npm run tauri -- build --bundles dmg",
+      "exit_code": 1,
+      "status": "BLOCKED",
+      "output": "beforeBuildCommand npm run build failed with exit code 2"
+    },
+    {
+      "command": "./scripts/verify-desktop-bundle.sh dist/Luno.app",
+      "exit_code": 1,
+      "status": "BLOCKED",
+      "output": "bundle manifest missing: dist/Luno.app/Contents/Resources/desktop-binaries.json"
+    }
+  ],
+  "unavailable_or_missing": [
+    "release-input/bin/ffmpeg",
+    "release-input/bin/ffprobe",
+    "release-input/bin/yt-dlp",
+    "reviewed SHA-256 values in release/desktop-binaries.json",
+    "exact upstream license notices/build configuration",
+    "APPLE_SIGNING_IDENTITY and Apple notarization credentials",
+    "signed/notarized DMG and Luno.app"
+  ]
+}

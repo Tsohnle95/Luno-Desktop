@@ -7,23 +7,38 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: write
+
 jobs:
   macos-release:
     runs-on: macos-14
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - uses: dtolnay/rust-toolchain@stable
-      - run: npm install
-      - name: Provision reviewed media binaries
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Require reviewed managed binaries
+        run: |
+          test -d release-input/bin
+          for name in ffmpeg ffprobe yt-dlp; do
+            test -x "release-input/bin/$name"
+          done
+      - name: Provision managed binaries
         env:
-          LUNO_BINARY_SOURCE_DIR: ${{ github.workspace }}/release-input/bin
+          LUNO_BINARY_SOURCE_DIR: release-input/bin
         run: ./scripts/provision-desktop-binaries.sh
-      - name: Build signed macOS bundle
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build frontend
+        run: npm run build
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Build signed DMG
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -33,8 +48,11 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           test -n "$APPLE_SIGNING_IDENTITY" || { echo "signing identity is required"; exit 1; }
+          test -n "$APPLE_ID"
+          test -n "$APPLE_PASSWORD"
+          test -n "$APPLE_TEAM_ID"
           npm run tauri -- build --bundles dmg
-      - name: Inspect bundle and smoke without developer PATH
+      - name: Verify bundle
         run: ./scripts/verify-desktop-bundle.sh src-tauri/target/release/bundle/macos/Luno.app
       - name: Publish DMG
         uses: softprops/action-gh-release@v2

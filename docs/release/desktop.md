@@ -14,6 +14,9 @@ mismatched SHA-256 values. Never download an unreviewed binary during a build.
 Each update requires a reviewed release commit containing the new version,
 architecture-specific checksums, upstream license notices, and explicit human
 licensing/signing approval. This is an update review, not runtime self-update.
+The repository currently contains no `release-input/bin/` executables and the
+manifest still contains checksum placeholders, so provisioning and bundle
+verification are blocked until the release owner supplies those reviewed inputs.
 
 ## Gates
 
@@ -26,6 +29,8 @@ Signing and notarization are CI hooks. The release workflow fails without
 `APPLE_SIGNING_IDENTITY`; certificate, Apple ID, team, and notarization secrets
 are supplied by the release owner. Signing/notarization cannot be verified on
 non-macOS machines and is an inconclusive receipt until macOS CI completes.
+The workflow also requires `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`;
+none of these credentials are stored in the repository.
 
 ## Rollback
 
