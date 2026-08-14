@@ -4,6 +4,19 @@
   "timestamp": "2026-08-14",
   "head": "6467d166231e3446b9edb44a9053aa88bc3d30a8",
   "scope": "Packaging configuration and release machinery only",
+  "workflow_bundle_path": "src-tauri/target/release/bundle/macos/Luno.app",
+  "environment": {
+    "machine": "Darwin 25.5.0",
+    "os": "macOS (Darwin 25.5.0)",
+    "architecture": "arm64",
+    "node": "v22.23.2",
+    "npm": "10.9.8",
+    "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)",
+    "typescript": "unavailable: local tsc executable was not available in the current workspace",
+    "vite": "unavailable: local Vite executable was not available in the current workspace",
+    "tauri": "unavailable: local Tauri CLI executable was not available in the current workspace"
+  },
   "inputs": {
     "managed_binary_directory": "release-input/bin",
     "managed_binary_directory_present": false,
@@ -22,19 +35,19 @@
     {
       "command": "npm run typecheck",
       "exit_code": 2,
-      "status": "INCONCLUSIVE",
+      "status": "FAILED",
       "output": "TypeScript errors in src/app/bridge.ts, src/shared/contracts.ts, src/state/backend_projection.ts, and src/test/*.ts(x), including missing vitest types"
     },
     {
       "command": "npm run build",
       "exit_code": 2,
-      "status": "INCONCLUSIVE",
+      "status": "FAILED",
       "output": "tsc --noEmit failed with the typecheck diagnostics; Vite did not run"
     },
     {
       "command": "cargo test --manifest-path src-tauri/Cargo.toml",
       "exit_code": 101,
-      "status": "INCONCLUSIVE",
+      "status": "FAILED",
       "output": "build script failed: resource path resources/bin doesn't exist"
     },
     {
@@ -50,10 +63,10 @@
       "output": "beforeBuildCommand npm run build failed with exit code 2"
     },
     {
-      "command": "./scripts/verify-desktop-bundle.sh dist/Luno.app",
+      "command": "./scripts/verify-desktop-bundle.sh src-tauri/target/release/bundle/macos/Luno.app",
       "exit_code": 1,
       "status": "BLOCKED",
-      "output": "bundle manifest missing: dist/Luno.app/Contents/Resources/desktop-binaries.json"
+      "output": "bundle manifest missing: src-tauri/target/release/bundle/macos/Luno.app/Contents/Resources/desktop-binaries.json"
     }
   ],
   "unavailable_or_missing": [

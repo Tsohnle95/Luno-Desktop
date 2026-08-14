@@ -18,6 +18,20 @@ for name in ffmpeg ffprobe yt-dlp; do
   [ "$actual" = "$expected" ] || { echo "checksum mismatch for $name" >&2; exit 1; }
 done
 
+for name in ffmpeg ffprobe yt-dlp; do
+  binary="$root/bin/$name"
+  expected_version=$(jq -r --arg n "$name" '.artifacts[] | select(.name == $n) | .version' "$manifest")
+  case "$expected_version" in ""|null|REPLACE_*) echo "missing reviewed version for $name" >&2; exit 1;; esac
+  case "$name" in
+    ffmpeg|ffprobe) reported_version=$(PATH=/usr/bin:/bin "$binary" -version 2>&1 | sed -n '1s/^[^ ]* version \([^ ]*\).*/\1/p') ;;
+    yt-dlp) reported_version=$(PATH=/usr/bin:/bin "$binary" --version 2>&1 | sed -n '1p' | tr -d '\r') ;;
+  esac
+  [ "$reported_version" = "$expected_version" ] || {
+    echo "version mismatch for $name: expected $expected_version, got ${reported_version:-unavailable}" >&2
+    exit 1
+  }
+done
+
 # A clean-machine smoke: PATH cannot provide a fallback. The managed directory
 # is the only executable source used by the release process.
 PATH=/usr/bin:/bin "$root/bin/ffmpeg" -version >/dev/null
