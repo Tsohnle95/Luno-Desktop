@@ -2,7 +2,7 @@
   "receipt": "R05",
   "status": "BLOCKED",
   "timestamp": "2026-08-14",
-  "head": "7011d60777cb0d1b311d6d6f5acbc2d2a814a575",
+  "head": "02b1be8ed13c39d1d8ad7b7ee797310f3f2ee05c",
   "scope": "Packaging configuration and release machinery only",
   "workflow_bundle_path": "src-tauri/target/release/bundle/macos/Luno.app",
   "environment": {
