@@ -1,6 +1,15 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 pub const CONTRACT_VERSION: u16 = 1;
+pub const MAX_SAFE_EVENT_ID: u64 = 9_007_199_254_740_991;
+
+pub(crate) fn event_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where D: Deserializer<'de> {
+    let value = String::deserialize(deserializer)?;
+    let digits = value.strip_prefix("event-").or_else(|| value.strip_prefix("delivery-error-"));
+    let valid = digits.is_some_and(|digits| !digits.is_empty() && !digits.starts_with('0') && digits.bytes().all(|byte| byte.is_ascii_digit()) && digits.parse::<u64>().is_ok_and(|id| id <= MAX_SAFE_EVENT_ID));
+    if valid { Ok(value) } else { Err(serde::de::Error::custom("invalid event ID")) }
+}
 
 pub(crate) fn version<'de, D>(deserializer: D) -> Result<u16, D::Error>
 where D: Deserializer<'de> {

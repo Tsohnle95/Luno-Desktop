@@ -32,6 +32,16 @@ mod tests {
         assert!(serde_json::from_str::<CommandEnvelope>(r#"{"version":1,"request_id":"x","command":{"type":"seek","payload":{"position_ms":-1}}}"#).is_err());
         assert!(serde_json::from_str::<CommandEnvelope>(r#"{"version":1,"request_id":"x","command":{"type":"seek","payload":{"position_ms":1.5}}}"#).is_err());
     }
+
+    #[test]
+    fn event_ids_accept_only_safe_domain_or_delivery_sequences() {
+        let envelope = |id: &str| format!(r#"{{"version":1,"event_id":"{id}","generation":0,"job_id":null,"session_id":null,"event":{{"type":"error","payload":{{"error":{{"code":"internal","message":"x","retryable":true}}}}}}}}"#);
+        assert!(serde_json::from_str::<EventEnvelope>(&envelope("event-1")).is_ok());
+        assert!(serde_json::from_str::<EventEnvelope>(&envelope("delivery-error-1")).is_ok());
+        for id in ["event-0", "event-01", "event-9007199254740992", "delivery-error-9007199254740992", "event-1.5", "error-1"] {
+            assert!(serde_json::from_str::<EventEnvelope>(&envelope(id)).is_err(), "accepted malformed ID {id}");
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -39,6 +49,7 @@ mod tests {
 pub struct EventEnvelope {
     #[serde(deserialize_with = "super::types::version")]
     pub version: u16,
+    #[serde(deserialize_with = "super::types::event_id")]
     pub event_id: String,
     pub generation: Generation,
     pub job_id: Option<JobId>,

@@ -1,3 +1,4 @@
+import { isDeliveryErrorEventId } from "../shared/contracts";
 import type { EventEnvelope, LibrarySnapshot, PlaybackSnapshot, DownloadJob, ContractError, ShutdownEnvelope, TrackId } from "../shared/contracts";
 import type { Bridge } from "../app/bridge";
 
@@ -16,6 +17,10 @@ export const initialBackendProjection = (): BackendProjection => ({
 });
 
 export function reduceBackendProjection(state: BackendProjection, envelope: EventEnvelope): BackendProjection {
+  if (isDeliveryErrorEventId(envelope.event_id)) {
+    if (envelope.event.type !== "error") return state;
+    return { ...state, errors: [...state.errors, envelope.event.payload.error] };
+  }
   if (state.lastEventId !== null && compareEventIds(envelope.event_id, state.lastEventId) <= 0) return state;
   // Generation 0 is reserved for shutdown control events. They are lifecycle
   // notifications, not work results, and must survive stale-work filtering.

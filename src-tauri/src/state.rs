@@ -4,7 +4,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use std::sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Mutex};
 use std::time::Duration;
-use crate::contracts::{events::{Command, CommandEnvelope, Event, EventEnvelope, RootStatus, ShutdownEnvelope, ShutdownState}, types::{ContractError, ErrorCode, Generation, JobId, LibrarySnapshot, Playlist, Track, TrackId, SessionId, CONTRACT_VERSION}};
+use crate::contracts::{events::{Command, CommandEnvelope, Event, EventEnvelope, RootStatus, ShutdownEnvelope, ShutdownState}, types::{ContractError, ErrorCode, Generation, JobId, LibrarySnapshot, Playlist, Track, TrackId, SessionId, CONTRACT_VERSION, MAX_SAFE_EVENT_ID}};
 use serde_json::Value;
 use std::sync::Arc as StdArc;
 use crate::library::scanner::{scan_library, OsFileSystem};
@@ -12,8 +12,6 @@ use crate::process::supervisor::{ProcessRegistry, Supervisor};
 use crate::download::coordinator::DownloadCoordinator;
 use crate::domain::identity::TrackMetadata;
 use crate::runtime::task_registry::{CancellationToken, ShutdownReport, SpawnError, TaskHandle, TaskRegistry, TaskSpec};
-
-const DELIVERY_ERROR_ID_BASE: u64 = 9_000_000_000_000_000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -275,6 +273,27 @@ mod tests {
         state.publish(later);
         assert_eq!(state.pending_events().iter().map(|event| event.event_id.as_str()).collect::<Vec<_>>(), vec!["event-2"]);
     }
+
+    #[test]
+    fn discard_rejects_future_and_repeated_ids() {
+        let state = AppState::new(1);
+        state.discard_event("event-99");
+        let event = state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned });
+        state.discard_event("event-99");
+        state.publish(event);
+        assert_eq!(state.pending_events().iter().map(|event| event.event_id.as_str()).collect::<Vec<_>>(), vec!["event-1"]);
+    }
+
+    #[test]
+    fn delivery_error_ids_are_separate_and_monotonic() {
+        let state = AppState::new(1);
+        state.set_event_sink(StdArc::new(|_| Err("offline".into())));
+        state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned }));
+        for event in state.events() { state.acknowledge_event(&event.event_id); }
+        state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 1, status: RootStatus::Scanned }));
+        let errors: Vec<_> = state.events().into_iter().filter(|event| matches!(event.event, Event::Error { .. })).map(|event| event.event_id).collect();
+        assert_eq!(errors, vec!["delivery-error-1", "delivery-error-2"]);
+    }
 }
 
 #[derive(Clone)]
@@ -291,6 +310,7 @@ pub struct AppState {
     next_delivery_error: Arc<AtomicU64>,
     next_publish: Arc<AtomicU64>,
     next_generation: Arc<AtomicU64>,
+    allocated_events: Arc<Mutex<BTreeSet<u64>>>,
     event_sink: Arc<Mutex<Option<StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>>>>,
     publication: Arc<Mutex<()>>,
     unpublished: Arc<Mutex<BTreeMap<u64, EventEnvelope>>>,
@@ -311,7 +331,7 @@ impl AppState {
         Self { tasks: Arc::new(TaskRegistry::new(task_limit)), migration_status: Arc::new(Mutex::new(MigrationStatus::NotRun)),
             library: Arc::new(Mutex::new(LibrarySnapshot { version: CONTRACT_VERSION, generation: Generation(0), tracks: Vec::new(), playlists: Vec::new() })),
             roots: Arc::new(Mutex::new(Vec::new())), root_statuses: Arc::new(Mutex::new(Vec::new())), events: Arc::new(Mutex::new(Vec::new())), event_draining: Arc::new(Mutex::new(false)), event_in_flight: Arc::new(Mutex::new(0)),
-            next_event: Arc::new(AtomicU64::new(0)), next_delivery_error: Arc::new(AtomicU64::new(0)), next_publish: Arc::new(AtomicU64::new(1)), next_generation: Arc::new(AtomicU64::new(0)), event_sink: Arc::new(Mutex::new(None)), publication: Arc::new(Mutex::new(())), unpublished: Arc::new(Mutex::new(BTreeMap::new())), skipped_publications: Arc::new(Mutex::new(BTreeSet::new())), admission: Arc::new(Mutex::new(())), latest_snapshot: Arc::new(Mutex::new(None)), latest_control: Arc::new(Mutex::new(None)), replayed_events: Arc::new(Mutex::new(BTreeSet::new())), event_retry_stopped: Arc::new(AtomicBool::new(false)), shutdown_result: Arc::new(Mutex::new(None)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
+            next_event: Arc::new(AtomicU64::new(0)), next_delivery_error: Arc::new(AtomicU64::new(0)), next_publish: Arc::new(AtomicU64::new(1)), next_generation: Arc::new(AtomicU64::new(0)), allocated_events: Arc::new(Mutex::new(BTreeSet::new())), event_sink: Arc::new(Mutex::new(None)), publication: Arc::new(Mutex::new(())), unpublished: Arc::new(Mutex::new(BTreeMap::new())), skipped_publications: Arc::new(Mutex::new(BTreeSet::new())), admission: Arc::new(Mutex::new(())), latest_snapshot: Arc::new(Mutex::new(None)), latest_control: Arc::new(Mutex::new(None)), replayed_events: Arc::new(Mutex::new(BTreeSet::new())), event_retry_stopped: Arc::new(AtomicBool::new(false)), shutdown_result: Arc::new(Mutex::new(None)), supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())), downloads: Arc::new(DownloadCoordinator::new()), provider_metadata: Arc::new(Mutex::new(BTreeMap::new())) }
     }
     pub fn library(&self) -> LibrarySnapshot { self.library.lock().unwrap().clone() }
     pub fn root_statuses(&self) -> Vec<RootStatus> { self.root_statuses.lock().unwrap().clone() }
@@ -363,14 +383,15 @@ impl AppState {
     pub fn discard_event(&self, event_id: &str) {
         let Some(id) = event_id.strip_prefix("event-").and_then(|value| value.parse::<u64>().ok()) else { return; };
         let _publication = self.publication.lock().unwrap();
-        if id >= self.next_publish.load(Ordering::Acquire) {
+        if self.allocated_events.lock().unwrap().remove(&id) {
             self.skipped_publications.lock().unwrap().insert(id);
             self.publish_ready_locked();
         }
     }
 
     fn event_locked(&self, generation: Generation, event: Event) -> EventEnvelope {
-        let id = self.next_event.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = self.next_event.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1).filter(|next| *next <= MAX_SAFE_EVENT_ID)).expect("event ID space exhausted") + 1;
+        self.allocated_events.lock().unwrap().insert(id);
         EventEnvelope { version: CONTRACT_VERSION, event_id: format!("event-{id}"), generation, job_id: None, session_id: None, event }
     }
     pub fn set_event_sink(&self, sink: StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>) {
@@ -413,6 +434,7 @@ impl AppState {
                 continue;
             }
             let Some(envelope) = self.unpublished.lock().unwrap().remove(&next) else { break; };
+            self.allocated_events.lock().unwrap().remove(&next);
             self.next_publish.fetch_add(1, Ordering::Release);
             self.publish_one_locked(envelope);
         }
@@ -429,8 +451,8 @@ impl AppState {
                 let delivery = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(envelope.clone())));
                 if !matches!(delivery, Ok(Ok(()))) {
                     self.queue_event_locked(envelope);
-                    let failure_id = DELIVERY_ERROR_ID_BASE - self.next_delivery_error.fetch_add(1, Ordering::Relaxed);
-                    let failure = EventEnvelope { version: CONTRACT_VERSION, event_id: format!("event-{failure_id}"), generation: Generation(0), job_id: None, session_id: None, event: Event::Error { error: ContractError { code: ErrorCode::Internal, message: "backend event delivery failed".into(), retryable: true } } };
+                    let failure_id = self.next_delivery_error.fetch_add(1, Ordering::Relaxed) + 1;
+                    let failure = EventEnvelope { version: CONTRACT_VERSION, event_id: format!("delivery-error-{failure_id}"), generation: Generation(0), job_id: None, session_id: None, event: Event::Error { error: ContractError { code: ErrorCode::Internal, message: "backend event delivery failed".into(), retryable: true } } };
                     self.queue_event_locked(failure);
                 }
             } else {

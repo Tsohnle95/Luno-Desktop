@@ -36,4 +36,15 @@ describe("typed IPC bridge and projection", () => {
     store.apply({ ...event({ type: "error", payload: { error: { code: "internal", message: "old", retryable: false } } }, 4), event_id: "1" });
     expect(store.getSnapshot().errors.map((error) => error.message)).toEqual(["two"]);
   });
+
+  it("keeps repeated delivery errors out of domain ID ordering", () => {
+    const store = createBackendProjection();
+    store.apply(event({ type: "error", payload: { error: { code: "internal", message: "domain", retryable: false } } }, 1));
+    const deliveryError = { ...event({ type: "error", payload: { error: { code: "internal", message: "delivery", retryable: true } } }, 0), event_id: "delivery-error-1" };
+    store.apply(deliveryError);
+    store.apply({ ...deliveryError, event_id: "delivery-error-2" });
+    store.apply({ ...event({ type: "error", payload: { error: { code: "internal", message: "next", retryable: false } } }, 2), event_id: "event-2" });
+    expect(store.getSnapshot().errors.map((error) => error.message)).toEqual(["domain", "delivery", "delivery", "next"]);
+    expect(store.getSnapshot().lastEventId).toBe("event-2");
+  });
 });

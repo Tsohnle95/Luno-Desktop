@@ -14,6 +14,9 @@ assert(!isEventEnvelope({ version: 1, event_id: "event-1.5", generation: 2, job_
 assert(!isEventEnvelope({ version: 1, event_id: "root-2", generation: 2, job_id: null, session_id: null, event: { type: "library_root_status", payload: { root_index: Number.MAX_SAFE_INTEGER + 1, status: "missing" } } }), "unsafe root index accepted");
 assert(isEventEnvelope({ version: 1, event_id: "event-2", generation: 0, job_id: null, session_id: null, event: { type: "shutdown", payload: { envelope: { version: 1, state: "timed_out", reason: "system" } } } }), "timed out shutdown rejected");
 assert(!isEventEnvelope({ version: 1, event_id: "error-1", generation: 2, job_id: null, session_id: null, event: { type: "error", payload: { error: { code: "internal", message: "x" } } } }), "incomplete error accepted");
+const validError = { version: 1, event_id: "delivery-error-1", generation: 0, job_id: null, session_id: null, event: { type: "error", payload: { error: { code: "internal", message: "x", retryable: true } } } };
+assert(isEventEnvelope(validError), "delivery error ID rejected");
+for (const id of ["event-01", "event-9007199254740992", "delivery-error-9007199254740992", "delivery-error-1.5"]) assert(!isEventEnvelope({ ...validError, event_id: id }), `malformed ID accepted: ${id}`);
 let rejected = false;
 try { parseEventEnvelope(JSON.stringify({ version: 1, event_id: "e1", generation: 0, job_id: null, session_id: null, event: {}, extra: true })); } catch { rejected = true; }
 assert(rejected, "malformed event accepted");
