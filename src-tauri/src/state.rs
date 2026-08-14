@@ -205,6 +205,32 @@ mod tests {
     }
 
     #[test]
+    fn publication_queues_new_events_behind_a_failed_delivery() {
+        let state = AppState::new(1);
+        let attempts = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let fail_first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let sink_attempts = attempts.clone();
+        let sink_fail_first = fail_first.clone();
+        state.set_event_sink(StdArc::new(move |event| {
+            sink_attempts.lock().unwrap().push(event.event_id.clone());
+            if event.event_id == "event-1" && sink_fail_first.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                Err("offline".into())
+            } else {
+                Ok(())
+            }
+        }));
+        let first = state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned });
+        let second = state.event(Generation(1), Event::LibraryRootStatus { root_index: 1, status: RootStatus::Scanned });
+
+        state.publish(first);
+        state.publish(second);
+
+        assert_eq!(*attempts.lock().unwrap(), vec!["event-1"]);
+        assert_eq!(state.retry_event_delivery(Duration::ZERO), 0);
+        assert_eq!(*attempts.lock().unwrap(), vec!["event-1", "event-2", "event-3"]);
+    }
+
+    #[test]
     fn panicking_delivery_resets_the_drainer() {
         let state = AppState::new(1);
         state.publish(state.event(Generation(1), Event::LibraryRootStatus { root_index: 0, status: RootStatus::Scanned }));
@@ -346,15 +372,30 @@ impl AppState {
     fn publish_one_locked(&self, envelope: EventEnvelope) {
         if matches!(&envelope.event, Event::LibrarySnapshot { .. }) { *self.latest_snapshot.lock().unwrap() = Some(envelope.clone()); }
         if matches!(&envelope.event, Event::Shutdown { .. }) { *self.latest_control.lock().unwrap() = Some(envelope.clone()); }
-        if let Some(sink) = self.event_sink.lock().unwrap().clone() {
-            if sink(envelope.clone()).is_err() {
-                self.events.lock().unwrap().push(envelope);
-                let failure = self.event_locked(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "backend event delivery failed".into(), retryable: true } });
-                let failure_id = failure.event_id.strip_prefix("event-").and_then(|value| value.parse::<u64>().ok()).expect("internal event IDs are numeric");
-                self.events.lock().unwrap().push(failure);
-                self.skipped_publications.lock().unwrap().insert(failure_id);
+        let has_delivery_work = !self.events.lock().unwrap().is_empty()
+            || *self.event_in_flight.lock().unwrap() > 0
+            || *self.event_draining.lock().unwrap();
+        if !has_delivery_work {
+            if let Some(sink) = self.event_sink.lock().unwrap().clone() {
+                if sink(envelope.clone()).is_err() {
+                    self.queue_event_locked(envelope);
+                    let failure = self.event_locked(Generation(0), Event::Error { error: ContractError { code: ErrorCode::Internal, message: "backend event delivery failed".into(), retryable: true } });
+                    let failure_id = failure.event_id.strip_prefix("event-").and_then(|value| value.parse::<u64>().ok()).expect("internal event IDs are numeric");
+                    self.queue_event_locked(failure);
+                    self.skipped_publications.lock().unwrap().insert(failure_id);
+                }
+            } else {
+                self.queue_event_locked(envelope);
             }
-        } else { self.events.lock().unwrap().push(envelope); }
+        } else {
+            self.queue_event_locked(envelope);
+        }
+    }
+
+    fn queue_event_locked(&self, envelope: EventEnvelope) {
+        let mut events = self.events.lock().unwrap();
+        events.push(envelope);
+        events.sort_by_key(|event| event.event_id.strip_prefix("event-").and_then(|id| id.parse::<u64>().ok()).unwrap_or(u64::MAX));
     }
     pub fn next_generation(&self) -> Generation { Generation(self.next_generation.fetch_add(1, Ordering::Relaxed) + 1) }
     pub fn scan_async(&self) -> Result<Generation, SpawnError> {
