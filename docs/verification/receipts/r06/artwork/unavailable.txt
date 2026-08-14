@@ -1,0 +1,6 @@
+status: inconclusive
+command=Target artwork and cache acceptance gate
+acceptance_ids=AC-ART-01
+exit_code=N/A
+result=TARGET_NOT_RUN
+reason=No target artwork/cache or visual receipt was available.

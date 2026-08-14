@@ -1,7 +1,9 @@
 # Desktop Release Sign-Off
 
 Status: **BLOCKED**. R07 final parity audit on 2026-08-14, audited source HEAD
-`cba3a17a1fce8cd4faed98f510da5039f1776702`.
+`b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc`.
+
+R06 receipt generation is separately recorded at `c208950f34bbc3fcc053e1b5d2cd49d593715c57`; later receipt-document corrections are not source-run commits and are not self-claimed as this document's commit.
 
 Audited worktree state: ` M TODO.md` and ` M dispatch-plan.json`. R07's focused
 documentation changes are not included in that pre-edit state. There is no

@@ -1,0 +1,6 @@
+status: inconclusive
+command=Target library scan, generation, favorites, and rename acceptance gates
+acceptance_ids=AC-LIB-01,AC-LIB-02,AC-LIB-03,AC-LIB-04,AC-LIB-05,AC-LIB-06
+exit_code=N/A
+result=TARGET_NOT_RUN
+reason=No packaged target, target differential harness, or target journey receipt was available.

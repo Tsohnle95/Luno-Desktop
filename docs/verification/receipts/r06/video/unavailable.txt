@@ -1,5 +1,6 @@
 status: inconclusive
 command=Video staging/audio-clock/lifecycle checks against the packaged target
+acceptance_ids=AC-VIDEO-01,AC-VIDEO-02,AC-VIDEO-03
 exit_code=N/A
 result=MANUAL_NOT_RUN
 reason=No runnable target, browser runner, or video lifecycle harness was available.

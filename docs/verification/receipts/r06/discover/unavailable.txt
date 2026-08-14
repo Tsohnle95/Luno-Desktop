@@ -1,0 +1,6 @@
+status: inconclusive
+command=Target Discover provider, filtering, preview, session, handoff, and explicit-save acceptance gates
+acceptance_ids=AC-DISC-01,AC-DISC-02,AC-DISC-03,AC-DISC-04,AC-DISC-05,AC-DISC-06
+exit_code=N/A
+result=TARGET_NOT_RUN
+reason=No target provider, fake-subprocess, preview, or Discover journey receipt was available.

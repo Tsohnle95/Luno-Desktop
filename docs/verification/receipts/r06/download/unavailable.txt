@@ -1,0 +1,6 @@
+status: inconclusive
+command=Target download coordination, output validation, sync, marker, search, direct, and CSV acceptance gates
+acceptance_ids=AC-DL-01,AC-DL-02,AC-DL-03,AC-DL-04
+exit_code=N/A
+result=TARGET_NOT_RUN
+reason=No target fake-subprocess, download workflow, or packaged target receipt was available.

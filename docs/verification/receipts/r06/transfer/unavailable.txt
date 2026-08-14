@@ -1,0 +1,6 @@
+status: inconclusive
+command=Target transfer matching and provider-index handoff acceptance gates
+acceptance_ids=AC-XFER-03,AC-XFER-04
+exit_code=N/A
+result=TARGET_NOT_RUN
+reason=No target planner, provider-index, or packaged target receipt was available.

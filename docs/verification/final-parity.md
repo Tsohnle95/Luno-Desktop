@@ -1,13 +1,13 @@
 # Final Desktop Parity Gate
 
-Status: **BLOCKED** (R07, 2026-08-14; audited source HEAD `cba3a17a1fce8cd4faed98f510da5039f1776702`; worktree dirty).
+Status: **BLOCKED** (R07, 2026-08-14; audited source HEAD `b76d9b5be9ee43b3a5a6576b0904d6b3858b3ebc`; worktree dirty).
 
 R07 is a mechanical fan-in audit of the R06 and R05 receipts. The audited
 worktree state was exactly ` M TODO.md` and ` M dispatch-plan.json`; no R04
 receipt document exists under `docs/`. R04's toolchain result is therefore
 consumed only through the later R05/R06 receipts, not treated as new evidence.
 
-Audit counts: 37 feature acceptance IDs, 6 journey IDs, 17 R06 receipts, 0
+Audit counts: 37 feature acceptance IDs, 6 journey IDs, 23 R06 receipts, 0
 missing referenced R06 artifacts, 2 reference-only feature passes, 35
 inconclusive feature IDs, 6 inconclusive journeys, 1 failed receipt, and 5
 release-blocker acceptance IDs. The release rule is not met.
@@ -28,7 +28,7 @@ behavioral fallback.
 | AC-LIB-01, AC-LIB-02, AC-LIB-03 | INCONCLUSIVE | release_blocker: false | Python/reference differential surface only; no target conformance receipt. |
 | AC-LIB-04, AC-LIB-05, AC-LIB-06 | INCONCLUSIVE | release_blocker: false | Target generation, journey, and rename/reference-repair receipts unavailable. |
 | AC-PLAY-01, AC-PLAY-02 | INCONCLUSIVE | release_blocker: false | Pure reference coverage exists; target/shell journey receipt unavailable. |
-| AC-PLAY-03, AC-PLAY-04, AC-PLAY-05 | INCONCLUSIVE | release_blocker: false | Target differential/audio backend receipts are not available; the recorded Cargo build receipt itself is FAILED (exit `101`). |
+| AC-PLAY-03, AC-PLAY-04, AC-PLAY-05 | INCONCLUSIVE | release_blocker: false | Target playback/differential receipts are unavailable; the separate Rust compilation failure does not establish these acceptance gates. |
 | AC-PLAY-06 | INCONCLUSIVE | release_blocker: true | Decision D8 approves removal, but the target migration rejection test evidence is unavailable. |
 | AC-DL-01 | INCONCLUSIVE | release_blocker: false | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
 | AC-DL-02 | INCONCLUSIVE | release_blocker: true | Target fake-subprocess/workflow receipts unavailable; no packaged target run. |
