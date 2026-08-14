@@ -27,6 +27,15 @@ impl Keychain for TrackingKeychain {
     fn rollback_lastfm_key(&mut self, _: KeychainImport) -> Result<(), String> { self.rollback_count += 1; Ok(()) }
 }
 
+struct ConfigurableKeychain { import: KeychainImport, rollback_error: bool, rollback_count: usize }
+impl Keychain for ConfigurableKeychain {
+    fn import_lastfm_key(&mut self, _: &str) -> Result<KeychainImport, String> { Ok(self.import) }
+    fn rollback_lastfm_key(&mut self, _: KeychainImport) -> Result<(), String> {
+        self.rollback_count += 1;
+        if self.rollback_error { Err("rollback unavailable".into()) } else { Ok(()) }
+    }
+}
+
 fn paths(root: &PathBuf) -> MigrationPaths {
     MigrationPaths { legacy_root: root.join("legacy"), target_root: root.join("target"), preview_dir: root.join("previews"), current_preview: Vec::new(), promoted_assets: Vec::new() }
 }
@@ -248,6 +257,83 @@ fn post_import_failure_rolls_back_new_keychain_item() {
     let mut keychain = TrackingKeychain { rollback_count: 0 };
     let result = migrate(&p, &MigrationOptions { crash_at: Some(CrashStage::Converted), ..Default::default() }, &mut keychain);
     assert!(matches!(result, Err(MigrationError::InjectedCrash(CrashStage::Converted))));
+    assert_eq!(keychain.rollback_count, 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn snapshot_failure_restores_quarantined_records() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    fs::create_dir_all(&p.target_root).unwrap();
+    fs::write(p.state_file(), "old-state").unwrap();
+    fs::write(p.version_record(), "old-version").unwrap();
+    let result = migrate(&p, &MigrationOptions { fail_snapshot: true, ..Default::default() }, &mut TestKeychain);
+    assert!(matches!(result, Err(MigrationError::Io(_))));
+    assert_eq!(fs::read_to_string(p.state_file()).unwrap(), "old-state");
+    assert_eq!(fs::read_to_string(p.version_record()).unwrap(), "old-version");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn partial_state_creation_is_rolled_back() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    let result = migrate(&p, &MigrationOptions { fail_state_create: true, ..Default::default() }, &mut TestKeychain);
+    assert!(matches!(result, Err(MigrationError::Io(_))));
+    assert!(!p.state_file().exists());
+    assert!(!p.version_record().exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn every_post_import_crash_rolls_back_new_keychain_item_and_records() {
+    for stage in [CrashStage::Converted, CrashStage::VersionRecorded, CrashStage::PreviewCleaned] {
+        let root = tempdir();
+        let p = paths(&root);
+        fs::create_dir_all(&p.legacy_root).unwrap();
+        fs::write(p.legacy_root.join(".luno_config.json"), r#"{"lastfm_key":"secret"}"#).unwrap();
+        let mut keychain = TrackingKeychain { rollback_count: 0 };
+        let result = migrate(&p, &MigrationOptions { crash_at: Some(stage), ..Default::default() }, &mut keychain);
+        assert!(matches!(result, Err(MigrationError::InjectedCrash(_))));
+        assert_eq!(keychain.rollback_count, 1);
+        assert!(!p.state_file().exists());
+        assert!(!p.version_record().exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn preexisting_keychain_value_is_not_rolled_back() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    fs::write(p.legacy_root.join(".luno_config.json"), r#"{"lastfm_key":"secret"}"#).unwrap();
+    let mut keychain = ConfigurableKeychain { import: KeychainImport::Existing, rollback_error: false, rollback_count: 0 };
+    let result = migrate(&p, &MigrationOptions { crash_at: Some(CrashStage::Converted), ..Default::default() }, &mut keychain);
+    assert!(matches!(result, Err(MigrationError::InjectedCrash(CrashStage::Converted))));
+    assert_eq!(keychain.rollback_count, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn rollback_aggregates_primary_keychain_and_preview_errors() {
+    let root = tempdir();
+    let p = paths(&root);
+    fs::create_dir_all(&p.legacy_root).unwrap();
+    fs::create_dir_all(&p.preview_dir).unwrap();
+    fs::write(p.preview_dir.join("preview.mp3"), "preview").unwrap();
+    let mut keychain = ConfigurableKeychain { import: KeychainImport::Created, rollback_error: true, rollback_count: 0 };
+    let result = migrate(&p, &MigrationOptions { crash_at: Some(CrashStage::PreviewCleaned), fail_preview_restore: true, ..Default::default() }, &mut keychain);
+    let error = result.unwrap_err();
+    assert!(matches!(error, MigrationError::Cleanup(message) if message.contains("InjectedCrash") && message.contains("Keychain rollback failed") && message.contains("preview restoration failed")));
     assert_eq!(keychain.rollback_count, 1);
     fs::remove_dir_all(root).unwrap();
 }

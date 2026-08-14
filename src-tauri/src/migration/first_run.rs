@@ -34,7 +34,7 @@ impl MigrationPaths {
 pub enum CrashStage { Preflight, Snapshotted, Converted, VersionRecorded, PreviewCleaned }
 
 #[derive(Debug, Clone, Default)]
-pub struct MigrationOptions { pub crash_at: Option<CrashStage>, pub fail_discard_quarantine: bool }
+pub struct MigrationOptions { pub crash_at: Option<CrashStage>, pub fail_discard_quarantine: bool, pub fail_snapshot: bool, pub fail_state_create: bool, pub fail_preview_restore: bool }
 
 pub trait Keychain {
     fn import_lastfm_key(&mut self, key: &str) -> Result<KeychainImport, String>;
@@ -91,7 +91,13 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
         return Err(MigrationError::AlreadyComplete(warnings));
     }
     let quarantined_records = quarantine_records(paths)?;
-    let snapshot = snapshot_legacy(paths)?;
+    if options.fail_snapshot {
+        return Err(restore_after_snapshot_failure(MigrationError::Io("injected snapshot failure".into()), quarantined_records));
+    }
+    let snapshot = match snapshot_legacy(paths) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return Err(restore_after_snapshot_failure(error, quarantined_records)),
+    };
     if let Err(error) = crash(options, CrashStage::Snapshotted) {
         return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, None));
     }
@@ -107,11 +113,11 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
     if let Err(error) = crash(options, CrashStage::Converted) {
         return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
     }
-    if let Err(error) = create_once(&paths.state_file(), &serde_json::to_vec_pretty(&state).map_err(|e| MigrationError::Io(e.to_string()))?) {
-        return Err(rollback(paths, snapshot, error, false, &quarantined_records, keychain, keychain_import));
+    if let Err(error) = create_once(&paths.state_file(), &serde_json::to_vec_pretty(&state).map_err(|e| MigrationError::Io(e.to_string()))?, options.fail_state_create) {
+        return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
     }
     let version = VersionRecord { migration: "desktop-first-run".into(), version: MIGRATION_VERSION, completed: true };
-    if let Err(error) = create_once(&paths.version_record(), &serde_json::to_vec_pretty(&version).unwrap()) {
+    if let Err(error) = create_once(&paths.version_record(), &serde_json::to_vec_pretty(&version).unwrap(), false) {
         return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import));
     }
     if let Err(error) = crash(options, CrashStage::VersionRecorded) {
@@ -122,13 +128,13 @@ pub fn migrate(paths: &MigrationPaths, options: &MigrationOptions, keychain: &mu
         Err(error) => return Err(rollback(paths, snapshot, error, true, &quarantined_records, keychain, keychain_import)),
     };
     if let Err(error) = crash(options, CrashStage::PreviewCleaned) {
-        let restore_error = cleanup.restore().err();
+        let restore_error = cleanup.restore(options.fail_preview_restore).err();
         return Err(rollback_with_extra(paths, snapshot, error, true, &quarantined_records, restore_error, keychain, keychain_import));
     }
     let removed_previews = match cleanup.commit() {
         Ok(removed) => removed,
         Err((cleanup, error)) => {
-            let restore_error = cleanup.restore().err();
+            let restore_error = cleanup.restore(options.fail_preview_restore).err();
             return Err(rollback_with_extra(paths, snapshot, error, true, &quarantined_records, restore_error, keychain, keychain_import));
         }
     };
@@ -207,7 +213,8 @@ fn convert(s: &LegacyState) -> MigratedSettings {
 
 struct PreviewCleanup { removed: Vec<PathBuf>, quarantine: Option<PathBuf> }
 impl PreviewCleanup {
-    fn restore(&self) -> Result<(), MigrationError> {
+    fn restore(&self, injected_failure: bool) -> Result<(), MigrationError> {
+        if injected_failure { return Err(MigrationError::Cleanup("injected preview restoration failure".into())); }
         let Some(quarantine) = &self.quarantine else { return Ok(()); };
         let mut failures = Vec::new();
         for path in self.removed.iter().rev() {
@@ -263,8 +270,11 @@ fn read_json<T: for<'a> Deserialize<'a>>(p: &Path) -> Option<T> { fs::read(p).ok
 fn rollback(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBuf)], keychain: &mut dyn Keychain, keychain_import: Option<KeychainImport>) -> MigrationError {
     let mut paths = vec![(snapshot, true)];
     if records { paths.extend([(p.state_file(), false), (p.version_record(), false)]); }
-    let mut result = rollback_paths(error, paths);
-    if let Some(import) = keychain_import { if let Err(error) = keychain.rollback_lastfm_key(import) { result = MigrationError::Cleanup(format!("migration failed: {result:?}; Keychain rollback failed: {error}")); } }
+    let result = rollback_paths(error, paths);
+    let result = match keychain_import.and_then(|import| keychain.rollback_lastfm_key(import).err()) {
+        Some(error) => aggregate(result, MigrationError::Keychain(format!("Keychain rollback failed: {error}"))),
+        None => result,
+    };
     rollback_records(result, quarantined)
 }
 fn rollback_records(mut result: MigrationError, quarantined: &[(PathBuf, PathBuf)]) -> MigrationError {
@@ -272,11 +282,21 @@ fn rollback_records(mut result: MigrationError, quarantined: &[(PathBuf, PathBuf
     for (original, backup) in quarantined.into_iter().rev() {
         if let Err(error) = fs::rename(&backup, &original) { failures.push(format!("{}: {error}", original.display())); }
     }
-    if failures.is_empty() { result } else { result = MigrationError::Cleanup(format!("migration failed: {result:?}; record restoration failed: {}", failures.join("; "))); result }
+    if failures.is_empty() { result } else { aggregate(result, MigrationError::Cleanup(format!("record restoration failed: {}", failures.join("; ")))) }
 }
 fn rollback_with_extra(p: &MigrationPaths, snapshot: PathBuf, error: MigrationError, records: bool, quarantined: &[(PathBuf, PathBuf)], extra: Option<MigrationError>, keychain: &mut dyn Keychain, keychain_import: Option<KeychainImport>) -> MigrationError {
     let result = rollback(p, snapshot, error, records, quarantined, keychain, keychain_import);
-    match extra { Some(extra) => MigrationError::Cleanup(format!("migration rollback failed: {result:?}; preview restoration failed: {extra:?}")), None => result }
+    extra.map_or(result, |extra| aggregate(result, MigrationError::Cleanup(format!("preview restoration failed: {extra:?}"))))
+}
+fn aggregate(primary: MigrationError, secondary: MigrationError) -> MigrationError {
+    MigrationError::Cleanup(format!("migration failed: {primary:?}; additional rollback failure: {secondary:?}"))
+}
+fn restore_after_snapshot_failure(error: MigrationError, quarantined: Vec<(PathBuf, PathBuf)>) -> MigrationError {
+    let mut failures = Vec::new();
+    for (original, backup) in quarantined.into_iter().rev() {
+        if let Err(restore) = fs::rename(&backup, &original) { failures.push(format!("{}: {restore}", original.display())); }
+    }
+    if failures.is_empty() { error } else { aggregate(error, MigrationError::Cleanup(format!("record restoration failed: {}", failures.join("; ")))) }
 }
 fn rollback_paths(error: MigrationError, paths: impl IntoIterator<Item = (PathBuf, bool)>) -> MigrationError {
     let mut failures = Vec::new();
@@ -286,7 +306,24 @@ fn rollback_paths(error: MigrationError, paths: impl IntoIterator<Item = (PathBu
     }
     if failures.is_empty() { error } else { MigrationError::Cleanup(format!("migration failed: {error:?}; rollback cleanup failed: {}", failures.join("; "))) }
 }
-fn create_once(path: &Path, bytes: &[u8]) -> Result<(), MigrationError> { let mut f = OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| if e.kind() == io::ErrorKind::AlreadyExists { MigrationError::AlreadyComplete } else { e.into() })?; f.write_all(bytes)?; f.sync_all()?; if let Some(parent) = path.parent() { File::open(parent)?.sync_all()?; } Ok(()) }
+fn create_once(path: &Path, bytes: &[u8], injected_failure: bool) -> Result<(), MigrationError> {
+    let mut f = OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| if e.kind() == io::ErrorKind::AlreadyExists { MigrationError::AlreadyComplete } else { e.into() })?;
+    let result = (|| -> Result<(), MigrationError> {
+        f.write_all(bytes)?;
+        if injected_failure { return Err(MigrationError::Io("injected state create failure".into())); }
+        f.sync_all()?;
+        if let Some(parent) = path.parent() { File::open(parent)?.sync_all()?; }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        drop(f);
+        if let Err(cleanup) = fs::remove_file(path) {
+            if cleanup.kind() != io::ErrorKind::NotFound { return Err(aggregate(error, MigrationError::Cleanup(format!("partial state-file cleanup failed: {cleanup}")))); }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
 fn crash(o: &MigrationOptions, stage: CrashStage) -> Result<(), MigrationError> { if o.crash_at == Some(stage) { Err(MigrationError::InjectedCrash(stage)) } else { Ok(()) } }
 fn nonce() -> u128 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() }
 fn quarantine_records(p: &MigrationPaths) -> Result<Vec<(PathBuf, PathBuf)>, MigrationError> {
