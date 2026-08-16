@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { DownloaderView } from "../../views/DownloaderView";
+import { LibraryView } from "../../views/LibraryView";
 
 const runningJob = { id: "job-1", kind: "single" as const, state: "running" as const, track_id: null, progress: 0.5, generation: 1 };
 
@@ -37,5 +38,12 @@ describe("Gate 6 downloader view", () => {
     expect(html).toContain("Downloading — 50%");
     expect(html).toContain("Cancel");
     expect(html).toContain('aria-live="polite"');
+  });
+});
+describe("Gate 6 library view", () => {
+  it("announces the loading state while the first snapshot is pending", () => {
+    const html = renderToStaticMarkup(<LibraryView loading={true} />);
+    expect(html).toContain('role="status"');
+    expect(html).toContain("Loading library...");
   });
 });
