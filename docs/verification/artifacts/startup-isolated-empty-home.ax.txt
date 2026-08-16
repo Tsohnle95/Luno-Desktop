@@ -1,0 +1,15 @@
+AX dump (AXApplication -> AXWindow -> WebArea), launch 1 (empty isolated HOME below /tmp):
+  role=AXApplication title=Luno
+    role=AXWindow sub=AXStandardWindow title=Luno
+      role=AXGroup
+        role=AXGroup
+          role=AXWebArea desc=Luno
+            role=AXGroup sub=AXLandmarkComplementary
+              ... AXGroup title=Luno desc=Luno / AXStaticText "Luno"
+            role=AXGroup sub=AXLandmarkNavigation title=Primary navigation
+              AXButton Home, Recent, Discover, Downloader, Settings, Song, Error Log
+            role=AXGroup sub=AXLandmarkMain
+              role=AXGroup sub=AXApplicationStatus
+                AXStaticText "Video preview unavailable; artwork fallback is active."
+                AXStaticText "Migration skipped: " "no legacy data found"
+              role=AXGroup sub=AXLandmarkRegion title=Library

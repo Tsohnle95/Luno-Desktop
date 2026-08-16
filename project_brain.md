@@ -58,9 +58,17 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── test_discover_mode.py     # Deterministic mocked unit tests for Discover mode (first-five window, rolling refill, handoff teardown)
 ├── test_art_cache.py         # Regression tests for bounded artwork caching
 ├── test_contract_fixtures.py  # Shared library-export compatibility fixture tests
+├── src-tauri/resources/bin/.gitkeep # Tracked empty resource directory; reviewed release binaries are provisioned separately
+├── src-tauri/src/gate3_tests.rs # Deterministic playback, queue, clock, recovery, and synthetic-WAV contract tests
 ├── test_library_transfer.py   # Manifest validation, export, matching, and additive merge tests
 ├── test_media_keys.py        # Deterministic mocked unit tests for media key logic
 ├── test_downloader_sync.py   # Deterministic mocked tests for playlist synchronization
+├── src/app/gate3Smoke.tsx    # Development-only real-bridge playback/queue smoke probe
+├── src/app/gate4Smoke.tsx    # Development-only real-bridge downloader/settings/transfer smoke probe
+├── src/app/gate5Smoke.tsx    # Development-only real-bridge discovery/preview/artwork/video staging smoke probe
+├── src/test/gate3_smoke.test.ts # Deterministic command/event lifecycle coverage for the Gate 3 probe
+├── src-tauri/src/gate5_tests.rs # Deterministic target-policy fixtures for discovery, previews, artwork, video, and shutdown
+├── src-tauri/src/runtime/gate5_smoke.rs # Opt-in native Gate 5 command seam using caller-provided synthetic fixture roots
 ├── test_tkvideo.py            # Ad-hoc Tk/video experiment (not part of the app)
 ├── pytest.ini                 # Default pytest collection excludes dependency-bound ad-hoc scripts
 ├── test_dl.py
@@ -124,14 +132,41 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 3.  **Views (`views/*.py`)**:
     *   **Modular Frames**: Standalone modules that interact with the controller via `self.controller`.
 4.  **Library Transfer (`library_transfer.py`)**:
-     *   Builds and strictly validates the shared `luno.library.export` v1 JSON manifest. It contains metadata, ordered playlist memberships, and optional provider IDs only; it never contains audio bytes, local paths, secrets, queue state, or history.
+      *   Builds and strictly validates the shared `luno.library.export` v1 JSON manifest. It contains metadata, ordered playlist memberships, and optional provider IDs only; it never contains audio bytes, local paths, secrets, queue state, or history.
+
+### Rust Target Runtime Boundary
+The Tauri target exposes the versioned command envelope through `src-tauri/src/main.rs`.
+`AppState` owns configured scan roots, session-only recent track IDs (capped at 100),
+normalized favorite paths, and authoritative `QueueState`, `PlaybackClock`, and
+`FailureRecovery` playback state. Config loading and marker inspection are read-only
+IPC journeys over caller-provided fixture roots; malformed config is reported as an
+invalid request without rewriting the source. Library scans use the task registry
+with one active generation and one coalesced follow-up, injectable scan work for
+deterministic tests, stale-result guards, and cancellation-aware publication,
+including checks at the real `OsFileSystem` scan boundary. The version-1 command
+bridge also exposes validated local audio promotion into a configured library
+root through the existing atomic promotion contract. Gate 4 commands for
+downloader search/direct URL/CSV/URL-queue validation, safe-root selection and
+ fake-helper promotion, typed settings persistence, transfer export, and transfer preview/apply
+dispatch through the same `AppState` event boundary;
+download job snapshots are projected through the React bridge without exposing
+local paths as track identity.
+Startup migration validates the legacy discovery inputs through
+`validate_existing_path`, which canonicalizes standard macOS system redirects
+(for example `/tmp` -> `/private/tmp`) instead of rejecting them, preserves the
+full shape of not-yet-created targets such as
+`HOME/Library/Application Support/com.ty.luno`, and keeps a symlinked leaf
+unresolved for explicit leaf checks. Migration input or execution failures
+never abort app setup: they are recorded as a bounded `MigrationStatus::Failed`
+reason and the app opens with empty state; empty isolated HOME surfaces as
+`MigrationStatus::Skipped`.
 
 ---
 
 ## 🔀 Data Flow
 
 ### Library Scan → UI
-1. `_refresh_library()` starts at most one generation-tagged thread calling standalone `scan_library(roots)` (imported from `engine.py`); repeated refresh requests coalesce into one pending scan and stale results are ignored
+1. `_refresh_library()` starts at most one generation-tagged worker calling standalone `scan_library(roots)` (imported from `engine.py`); repeated refresh requests coalesce into one pending scan, which the worker consumes as exactly one fresh follow-up generation after its terminal result, and stale results are ignored
 2. Returns `dict[playlist_name → list[file_paths]]`; root-level tracks represented by `Unsorted` are ordered newest-first by filesystem modification time, with filename tie-breaking
 3. `_finalize_library_update(new_lib)` hashes the result, stores it in `self._library`
 4. Calls `_populate_sidebar()` → rebuilds sidebar cards
@@ -144,11 +179,11 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 3. Live queue/history/favorite path references are updated, then the generation-tagged library scan refreshes search, ordering, and the Unsorted view
 
 ### Playback
-1. User clicks track → `engine.play_with_context(path, context_list)` in the legacy desktop path; the Rust macOS migration surface resolves the track ID to its scanned local path, decodes through Symphonia, and streams normalized 44.1 kHz stereo samples through cpal. Rust non-macOS audio and all Rust video commands remain explicitly unavailable.
+1. User clicks track → the React bridge sends `play_with_context(track_id, context)`; the Rust macOS migration surface resolves the track ID to its scanned local path, replaces `AppState`'s `QueueState`, decodes through Symphonia, and streams normalized 44.1 kHz stereo samples through cpal. Rust non-macOS audio and all Rust video commands remain explicitly unavailable.
 2. Sets `queue` to `context_list` (or the playlist containing `path`)
 3. Sets `queue_idx` to track's position
-4. Calls `play_current()` → clears stale scrub position/time, loads `pygame.mixer.music`, starts playback, records mixer-clock base state plus monotonic fallback state, probes duration via `mutagen.File` (supports mp3/m4a/flac/etc.)
-5. `_poll()` loop (400ms heartbeat) — unconditional reschedule after every invocation except when controller is closing:
+4. The Rust target's `AppState` replaces the authoritative queue context, loads the selected track through `CpalSymphoniaBackend`, starts the cancellation-owned heartbeat, records non-preview history, and publishes snapshots including queue/index/status/position/duration/shuffle/repeat.
+5. `_poll()` loop (400ms heartbeat) — desktop pygame behavior remains unconditional except when controller is closing; the Rust target uses the task registry and cancellation/closing guards:
    - Uses `get_position()` (canonical elapsed from `pygame.mixer.music.get_pos()` while audio is busy, clamped to `[0, duration]`, with monotonic fallback for startup/end/unavailable mixer-clock states)
    - Updates main scrubber/time and Song Page scrubber/time
    - Completion detection uses **generation latch** (`_completion_dispatched`): at most one advance per track
@@ -166,7 +201,7 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 1. `DiscoverView`'s Add to Library action → `LunoMusicPlayer._download_track()` → `Downloader.download_sync_tracks()`; `DownloadView._download_selected()` / `_queue_direct_url()` → `Downloader.download_single()`, `_download_all()` → `Downloader.download_sync_tracks()`, `_start_csv_dl()` → `Downloader.download_csv_tracks()`, and URL Queue / Sync All actions → `Downloader.download_playlist_sync()`
 2. `Downloader` admits one active download/write job at a time, rejects duplicate starts, and propagates cooperative cancellation through yt-dlp progress hooks. Playlist track timeouts run in the owning job and never leave a detached yt-dlp worker running while the next track starts.
 3. `Downloader._create_opts()` → yt-dlp options: 44.1kHz, 192k MP3, loudnorm, EmbedThumbnail
-4. Discovery download status, logs, and completion callbacks are marshalled through `controller.after(0, ...)`; the sync-track path creates the destination folder and treats a missing audio output as a failure instead of reporting a false success. A completed discovery download requests a fresh scan and resets the library track list to its first row.
+4. Discovery download status, logs, and completion callbacks are marshalled through `controller.after(0, ...)`; the sync-track path creates the destination folder and treats missing or signature-invalid audio output as a failure instead of reporting a false success. A completed discovery download requests a fresh scan and resets the library track list to its first row.
 5. Progress hook → coalesced `controller.after(0, ...)` → UI update
 6. On complete → `_refresh_library()` → coalesced library scan
 7. Playlist sync compares candidates against the whole local music library root, not only the destination playlist folder, so Sync All avoids duplicating tracks that already exist in another playlist. It tracks successful/matched YouTube IDs in `.downloaded_vids` and permanent failures in `.sync_failed_vids` inside the playlist folder.
@@ -240,7 +275,7 @@ Stores aggregated and folder-specific track paths. Now includes empty directorie
 Persisted across sessions: `music_root`, `lastfm_key`, `auto_discovery`, `volume`, `crossfade`, `sleep_timer`, `global_keys` (media key toggle), and `favorite_songs` (normalized absolute paths for locally favorited tracks). The Rust migration target intentionally ignores the legacy `crossfade` preference and does not persist or expose an equivalent setting.
 
 ### 5. Session State
-`LunoEngine` manages the live `queue`, `queue_idx`, `_original_queue` (for shuffle restore), and playback status (`playing`, `paused`).
+`LunoEngine` manages the live `queue`, `queue_idx`, `_original_queue` (for shuffle restore), and playback status (`playing`, `paused`). The Rust target `AppState` owns equivalent `QueueState`, `PlaybackClock`, and `FailureRecovery` objects and publishes authoritative queue/current-index/status/position/duration/generation snapshots through the versioned event stream.
 **Queue Architecture**: The system uses a flat `queue` list, but tracks a `user_queue_count` integer to behave like a modern "Up Next" queue. "Play Next" inserts immediately after the current `queue_idx`. "Add to Queue" appends to `queue_idx + 1 + user_queue_count`, ensuring manually queued items play before the rest of the playlist context. `user_queue_count` decrements naturally during track progression and resets on hard skips/context changes.
 
 ### 6. Exclusion Management

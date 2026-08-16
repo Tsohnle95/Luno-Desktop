@@ -69,26 +69,39 @@ pub fn canonicalize_path(path: &Path) -> PathBuf {
     lexical_normalize(&result)
 }
 
-/// Reject symlinks in every existing component before resolving a path. This
-/// is intentionally strict for public readers: canonicalizing only the final
-/// directory would otherwise allow an intermediate link to escape the scope.
+/// Resolve symlinks in every existing component before returning a path.
+/// Standard system redirectors (for example macOS `/tmp` and `/var` pointing
+/// into `/private`) are canonicalized, not rejected, so an isolated HOME below
+/// such a redirect remains a valid legacy discovery root. Every component
+/// below the deepest existing ancestor is preserved, so a not-yet-created
+/// multi-level target (for example `~/Library/Application Support/com.ty.luno`)
+/// keeps its full shape. Scope safety is preserved: every containment
+/// comparison canonicalizes both sides (`contained`, and `starts_with` on
+/// validated paths), inventory traversal skips symlinked entries, and callers
+/// that require a real final directory (preflight, `resolve_music_root`)
+/// explicitly reject a symlinked leaf.
 pub fn validate_existing_path(path: &Path) -> Result<PathBuf, String> {
-    let normalized = lexical_normalize(path);
-    let mut current = PathBuf::new();
-    for component in normalized.components() {
-        current.push(component.as_os_str());
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) => {
-                if metadata.file_type().is_symlink() {
-                    return Err(format!("path component must not be a symlink: {}", current.display()));
-                }
-                fs::canonicalize(&current).map_err(|error| error.to_string())?;
+    let path = lexical_normalize(path);
+    let mut ancestor = path.clone();
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    if let Some(name) = ancestor.file_name() {
+        suffix.push(name.to_owned());
+        ancestor.pop();
+    }
+    while !ancestor.exists() {
+        match ancestor.file_name() {
+            Some(name) => {
+                suffix.push(name.to_owned());
+                ancestor.pop();
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => return Err(error.to_string()),
+            None => return Ok(lexical_normalize(&path)),
         }
     }
-    Ok(canonicalize_path(&normalized))
+    let mut result = fs::canonicalize(&ancestor).map_err(|error| error.to_string())?;
+    for name in suffix.iter().rev() {
+        result.push(name);
+    }
+    Ok(lexical_normalize(&result))
 }
 
 fn contained(root: &Path, child: &Path) -> bool {

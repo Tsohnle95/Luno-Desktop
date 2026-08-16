@@ -1,0 +1,12 @@
+launch1 root: /tmp/luno-launch.r3v8Ox
+launch2 root: /tmp/luno-migrate-launch.8MoQr4
+--- stderr launch1 ---
+--- stderr launch2 ---
+--- migrated tree launch2 ---
+/tmp/luno-migrate-launch.8MoQr4/home/Library
+/tmp/luno-migrate-launch.8MoQr4/home/Library/Application Support
+/tmp/luno-migrate-launch.8MoQr4/home/Library/Application Support/com.ty.luno
+/tmp/luno-migrate-launch.8MoQr4/home/Library/Application Support/com.ty.luno/migration-backup-1786868209173465000
+/tmp/luno-migrate-launch.8MoQr4/home/Library/Application Support/com.ty.luno/migration-backup-1786868209173465000/.luno_config.json
+/tmp/luno-migrate-launch.8MoQr4/home/Library/Application Support/com.ty.luno/settings-v1.json
+/tmp/luno-migrate-launch.8MoQr4/home/Library/Application Support/com.ty.luno/migration-version.json
