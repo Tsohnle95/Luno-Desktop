@@ -25,6 +25,13 @@ describe("Gate 6 downloader view", () => {
     expect(html).toContain('aria-labelledby="download-tab-search"');
   });
 
+  it("keeps only the active tab in the tab order (roving tabindex)", () => {
+    const html = renderToStaticMarkup(<DownloaderView />);
+    expect((html.match(/id="download-tab-[a-z-]+" tabindex="0"/g) ?? [])).toHaveLength(1);
+    expect((html.match(/id="download-tab-[a-z-]+" tabindex="-1"/g) ?? [])).toHaveLength(6);
+    expect(html).toContain('id="download-tab-search" tabindex="0"');
+  });
+
   it("exposes progress, cancel, and live-region affordances for active jobs", () => {
     const html = renderToStaticMarkup(<DownloaderView jobs={{ "job-1": runningJob }} />);
     expect(html).toContain("Downloading — 50%");
