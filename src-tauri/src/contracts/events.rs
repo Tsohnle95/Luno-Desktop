@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use super::types::*;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,18 +16,137 @@ pub struct CommandEnvelope {
 pub enum Command {
     GetLibrary,
     ScanLibrary,
-    Play { track_id: TrackId },
+    LoadConfig {
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        home: String,
+    },
+    RegisterRoot {
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        root: String,
+    },
+    PromoteAudioOutput {
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        temporary: String,
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        destination: String,
+    },
+    SyncMarkers {
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        folder: String,
+    },
+    SearchDownloader {
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        query: String,
+        try_soundcloud: bool,
+    },
+    ValidateDirectUrl {
+        url: String,
+        destination: String,
+    },
+    PreviewCsv {
+        csv: String,
+    },
+    QueueUrls {
+        urls: Vec<String>,
+    },
+    SelectLibraryRoot {
+        root: String,
+    },
+    StartDownload {
+        job_id: JobId,
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        destination: String,
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        helper: String,
+    },
+    RetryDownload { job_id: JobId },
+    LoadSettings {
+        home: String,
+    },
+    SaveSettings {
+        home: String,
+        settings: super::types::SettingsInput,
+    },
+    TransferPreview {
+        manifest: String,
+        destination: String,
+    },
+    TransferExport,
+    TransferApply {
+        manifest: String,
+        destination: String,
+        approvals: std::collections::BTreeMap<String, String>,
+    },
+    ToggleFavorite {
+        track_id: TrackId,
+    },
+    RecordRecent {
+        track_id: TrackId,
+    },
+    GetRecent,
+    ClearRecent,
+    Play {
+        track_id: TrackId,
+    },
+    PlayWithContext {
+        track_id: TrackId,
+        context: Vec<TrackId>,
+    },
+    Next,
+    Previous,
+    PlayNext {
+        track_ids: Vec<TrackId>,
+    },
+    AddToQueue {
+        track_ids: Vec<TrackId>,
+    },
+    RemoveFromQueue {
+        #[serde(deserialize_with = "super::types::safe_usize")]
+        index: usize,
+    },
+    ReorderQueue {
+        #[serde(deserialize_with = "super::types::safe_usize")]
+        from: usize,
+        #[serde(deserialize_with = "super::types::safe_usize")]
+        to: usize,
+    },
+    ClearQueue,
+    ToggleShuffle,
+    SetRepeat {
+        repeat: RepeatMode,
+    },
     Pause,
-    Seek { #[serde(deserialize_with = "super::types::safe_u64")] position_ms: u64 },
-    VideoSource { track_id: TrackId },
-    VideoStage { track_id: TrackId },
+    Seek {
+        #[serde(deserialize_with = "super::types::safe_u64")]
+        position_ms: u64,
+    },
+    VideoSource {
+        track_id: TrackId,
+    },
+    VideoStage {
+        track_id: TrackId,
+    },
     VideoPlay,
     VideoPause,
-    VideoSeek { #[serde(deserialize_with = "super::types::safe_u64")] position_ms: u64 },
-    VideoResize { #[serde(deserialize_with = "super::types::safe_u64")] width: u64, #[serde(deserialize_with = "super::types::safe_u64")] height: u64 },
-    VideoFullscreen { fullscreen: bool },
-    CancelJob { job_id: JobId },
-    Shutdown { reason: ShutdownReason },
+    VideoSeek {
+        #[serde(deserialize_with = "super::types::safe_u64")]
+        position_ms: u64,
+    },
+    VideoResize {
+        #[serde(deserialize_with = "super::types::safe_u64")]
+        width: u64,
+        #[serde(deserialize_with = "super::types::safe_u64")]
+        height: u64,
+    },
+    VideoFullscreen {
+        fullscreen: bool,
+    },
+    CancelJob {
+        job_id: JobId,
+    },
+    Shutdown {
+        reason: ShutdownReason,
+    },
 }
 
 #[cfg(test)]
@@ -42,12 +161,47 @@ mod tests {
     }
 
     #[test]
+    fn playback_commands_carry_context_and_queue_operations() {
+        for command in [
+            r#"{"type":"play_with_context","payload":{"track_id":"track-b","context":["track-a","track-b"]}}"#,
+            r#"{"type":"next"}"#,
+            r#"{"type":"previous"}"#,
+            r#"{"type":"add_to_queue","payload":{"track_ids":["track-x"]}}"#,
+            r#"{"type":"play_next","payload":{"track_ids":["track-y"]}}"#,
+            r#"{"type":"remove_from_queue","payload":{"index":2}}"#,
+            r#"{"type":"reorder_queue","payload":{"from":1,"to":2}}"#,
+            r#"{"type":"toggle_shuffle"}"#,
+            r#"{"type":"set_repeat","payload":{"repeat":"all"}}"#,
+        ] {
+            let json = format!(r#"{{"version":1,"request_id":"test-1","command":{command}}}"#);
+            assert!(
+                serde_json::from_str::<CommandEnvelope>(&json).is_ok(),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
     fn event_ids_accept_only_safe_domain_or_delivery_sequences() {
-        let envelope = |id: &str| format!(r#"{{"version":1,"event_id":"{id}","generation":0,"job_id":null,"session_id":null,"event":{{"type":"error","payload":{{"error":{{"code":"internal","message":"x","retryable":true}}}}}}}}"#);
+        let envelope = |id: &str| {
+            format!(
+                r#"{{"version":1,"event_id":"{id}","generation":0,"job_id":null,"session_id":null,"event":{{"type":"error","payload":{{"error":{{"code":"internal","message":"x","retryable":true}}}}}}}}"#
+            )
+        };
         assert!(serde_json::from_str::<EventEnvelope>(&envelope("event-1")).is_ok());
         assert!(serde_json::from_str::<EventEnvelope>(&envelope("delivery-error-1")).is_ok());
-        for id in ["event-0", "event-01", "event-9007199254740992", "delivery-error-9007199254740992", "event-1.5", "error-1"] {
-            assert!(serde_json::from_str::<EventEnvelope>(&envelope(id)).is_err(), "accepted malformed ID {id}");
+        for id in [
+            "event-0",
+            "event-01",
+            "event-9007199254740992",
+            "delivery-error-9007199254740992",
+            "event-1.5",
+            "error-1",
+        ] {
+            assert!(
+                serde_json::from_str::<EventEnvelope>(&envelope(id)).is_err(),
+                "accepted malformed ID {id}"
+            );
         }
     }
 }
@@ -68,15 +222,43 @@ pub struct EventEnvelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum Event {
-    LibrarySnapshot { snapshot: LibrarySnapshot },
-    LibraryRootStatus { #[serde(deserialize_with = "super::types::safe_usize")] root_index: usize, status: RootStatus },
-    PlaybackSnapshot { snapshot: PlaybackSnapshot },
-    VideoState { state: VideoState },
-    TrackStarted { track_id: TrackId },
-    QueueChanged { queue: Vec<TrackId> },
-    JobUpdated { job: DownloadJob },
-    Error { error: ContractError },
-    Shutdown { envelope: ShutdownEnvelope },
+    LibrarySnapshot {
+        snapshot: LibrarySnapshot,
+    },
+    LibraryRootStatus {
+        #[serde(deserialize_with = "super::types::safe_usize")]
+        root_index: usize,
+        status: RootStatus,
+    },
+    PlaybackSnapshot {
+        snapshot: PlaybackSnapshot,
+    },
+    VideoState {
+        state: VideoState,
+    },
+    TrackStarted {
+        track_id: TrackId,
+    },
+    QueueChanged {
+        queue: Vec<TrackId>,
+    },
+    JobUpdated {
+        job: DownloadJob,
+    },
+    Error {
+        error: ContractError,
+    },
+    Shutdown {
+        envelope: ShutdownEnvelope,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepeatMode {
+    Off,
+    One,
+    All,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -94,7 +276,16 @@ pub struct VideoState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum VideoStatus { NotChecked, Loading, Ready, Playing, Paused, Ended, Unavailable, Error }
+pub enum VideoStatus {
+    NotChecked,
+    Loading,
+    Ready,
+    Playing,
+    Paused,
+    Ended,
+    Unavailable,
+    Error,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -109,12 +300,26 @@ pub struct ShutdownEnvelope {
 /// must not discard them as stale work results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ShutdownState { Requested, Draining, Complete, TimedOut, Failed }
+pub enum ShutdownState {
+    Requested,
+    Draining,
+    Complete,
+    TimedOut,
+    Failed,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RootStatus { Scanned, Missing, Inaccessible }
+pub enum RootStatus {
+    Scanned,
+    Missing,
+    Inaccessible,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ShutdownReason { UserRequested, System, FatalError }
+pub enum ShutdownReason {
+    UserRequested,
+    System,
+    FatalError,
+}

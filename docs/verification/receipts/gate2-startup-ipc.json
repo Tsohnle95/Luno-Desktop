@@ -1,0 +1,141 @@
+{
+  "artifact_id": "gate2-startup-ipc",
+  "date": "2026-08-15",
+  "gate": "Gate 2",
+  "formal_verdict": "INCONCLUSIVE",
+  "verdict_rationale": "The controlled Rust AppState/event-sink boundary passed the exercised startup, configuration, root-registration, marker, and scan-publication assertions, including a directly instrumented chmod-000 target status of Inaccessible. The target test pass establishes the permission-denied fixture branch, but a launched Tauri process and real React/UI bridge were not exercised, so the overall formal verdict remains INCONCLUSIVE.",
+  "provenance": {
+    "authority_paths": [
+      "docs/verification/receipts/gate2-evidence-plan.md (absent in this checkout; requested authority path could not be read)",
+      "docs/migration/reference-corpus.md",
+      "docs/migration/acceptance-catalog.md",
+      "docs/migration/rollback.md",
+      "src-tauri/src/gate2_tests.rs",
+      "src-tauri/src/main.rs",
+      "src-tauri/src/state.rs",
+      "src-tauri/src/library/scanner.rs"
+    ],
+    "frozen_reference_ids": [
+      "REF-CONFIG-CORRUPT",
+      "REF-ROOT-MISSING",
+      "REF-ROOT-EMPTY",
+      "REF-SCAN-ORDER",
+      "REF-SHUTDOWN"
+    ],
+    "acceptance_ids": [
+      "AC-LIB-01",
+      "AC-LIB-02",
+      "AC-LIB-03",
+      "AC-PERSIST-01",
+      "AC-OPS-01",
+      "AC-OPS-03"
+    ]
+  },
+  "evidence_kind": {
+    "observed": "controlled AppState command dispatch and in-process event sink",
+    "not_observed": "launched Tauri process, React application, or production UI bridge",
+    "interpretation": "PASS applies only to the exercised controlled event seam; the launched UI bridge remains INCONCLUSIVE."
+  },
+  "environment": {
+    "os": "Darwin 26.5",
+    "arch": "arm64",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)",
+    "jq": "jq-1.7.1-apple",
+    "git": "git version 2.50.1",
+    "cargo_home_policy": "pre-cached dependency cache only; represented as <pre-cached-cargo-home> and not persisted as an absolute path",
+    "network": "not called; CARGO_NET_OFFLINE=true",
+    "application_environment_policy": "HOME and TMPDIR were isolated beneath <fixture-root>; no real HOME was used for application data; no Keychain, credentials, provider, music library, yt-dlp, audio, or network were used"
+  },
+  "fixtures": {
+    "root_pattern": "/tmp/luno-gate2-runtime-<pid>/",
+    "application_home_pattern": "<fixture-root>/home/",
+    "temporary_directory_pattern": "<fixture-root>/tmp/",
+    "test_fixture_pattern": "<fixture-root>/tmp/luno-gate2-<label>-<pid>/",
+    "exact_labels": [
+      "command-config",
+      "command-config-no-root",
+      "command-scan-statuses",
+      "explicit-persistence-failures",
+      "target-scan-boundary"
+    ],
+    "scratch_capture_pattern": "<fixture-root>/logs/<test-filter>.log"
+  },
+  "commands": [
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_command_boundary_loads_config_registers_root_and_syncs_markers -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 0,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; config resolved Music under the fixture home, root registered, marker counts were successful=1 and permanent_failures=1"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_command_boundary_clears_previous_root_for_valid_legacy_config_without_root -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 1,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; a valid legacy config without music_root cleared the previous configured root"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_command_boundary_dispatches_root_statuses_without_home_fallback -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 0,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; empty was Scanned and missing was Missing without HOME fallback; direct diagnostic reported chmod-000 status Inaccessible"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_config_and_marker_failures_are_explicit -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 0,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; missing config/markers produced NotFound and blank, malformed, or corrupt inputs produced InvalidRequest"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_scan_publishes_fixture_root_statuses_and_snapshot_on_event_boundary -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 0,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; event sink received scanned and missing root statuses and a generation-matched empty snapshot; direct diagnostic reported Inaccessible"
+    }
+  ],
+  "permission_denied_fixture": {
+    "fixture_path_pattern": "/tmp/luno-gate2-runtime-<pid>/ with denied root at <fixture-root>/tmp/luno-gate2-command-scan-statuses-<pid>/denied",
+    "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+    "exact_command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_command_boundary_dispatches_root_statuses_without_home_fallback -- --nocapture",
+    "host_probe_command": "chmod 000 <denied-root>; test -r <denied-root>; ls <denied-root>",
+    "exit_status": 0,
+    "target_observed_status": "Inaccessible",
+    "host_probe_result": {
+      "read_test": "not-readable",
+      "directory_listing": "permission-denied"
+    },
+    "classification": "PASS"
+  },
+  "observations": {
+    "REF-CONFIG-CORRUPT": { "classification": "PASS", "acceptance": ["AC-PERSIST-01", "AC-OPS-01"], "detail": "Tolerant valid legacy loading and explicit failures for blank/malformed config were observed without rewriting the source fixture." },
+    "REF-ROOT-MISSING": { "classification": "PASS", "acceptance": ["AC-LIB-01"], "detail": "Missing root was dispatched as Missing with no fabricated content." },
+    "REF-ROOT-EMPTY": { "classification": "PASS", "acceptance": ["AC-LIB-01", "AC-LIB-02"], "detail": "Empty root was dispatched as Scanned and produced an empty snapshot." },
+    "REF-ROOT-INACCESSIBLE": { "classification": "PASS", "acceptance": ["AC-LIB-01"], "detail": "The isolated target command directly reported the chmod-000 denied root as Inaccessible; the independent host probe is corroboration only." },
+    "REF-SCAN-ORDER": { "classification": "PASS", "acceptance": ["AC-LIB-03"], "detail": "The event-boundary fixture scan was exercised; detailed root ordering is independently recorded in gate2-scan-events.json." },
+    "REF-SHUTDOWN": { "classification": "PASS at controlled seam", "acceptance": ["AC-OPS-03"], "detail": "Cancellation and terminal handling were exercised by the scan/event tests; no launched-process lifecycle was exercised." }
+  },
+  "warnings": [
+    "Every Cargo invocation emitted the same three existing compiler warnings: unused_mut in src/migration/first_run.rs:777, unused variable error in src/download/sync.rs:157, and dead_code for SecKeychainItemModifyAttributesAndData in src/migration/keychain.rs:74.",
+    "The requested evidence plan file was absent from this checkout.",
+    "The target diagnostic directly observed Inaccessible for the chmod-000 denied root; an independent host probe also reported not-readable and permission-denied, but target status was not inferred from that probe."
+  ],
+  "remaining_gaps": [
+    "Launch a real Tauri process and exercise the React/UI bridge before upgrading the formal verdict.",
+    "No real HOME, Keychain, credentials, provider, network, yt-dlp, music library, or audio was used by design."
+  ],
+  "artifact_paths": [
+    "docs/verification/receipts/gate2-startup-ipc.json",
+    "docs/verification/receipts/gate2-scan-events.json"
+  ],
+  "capture_note": "Complete stdout/stderr was captured before summarization under <fixture-root>/logs/ and included the direct target diagnostic; scratch paths are sanitized here and the scratch fixture was removed after receipt validation."
+}

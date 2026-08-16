@@ -79,6 +79,24 @@ impl QueueState {
         self.current()
     }
     pub fn previous(&mut self) -> Option<&TrackId> { let index = self.current_index?; self.user_queue_count = 0; self.current_index = Some(index.saturating_sub(1)); self.current() }
+    pub fn remove(&mut self, index: usize) -> bool {
+        if index >= self.physical.len() { return false; }
+        self.physical.remove(index);
+        if let Some(current) = self.current_index {
+            self.current_index = if self.physical.is_empty() { None } else if index < current { Some(current - 1) } else if index == current { Some(current.min(self.physical.len() - 1)) } else { Some(current) };
+        }
+        self.user_queue_count = self.user_queue_count.min(self.physical.len());
+        true
+    }
+    pub fn reorder(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.physical.len() || to >= self.physical.len() { return false; }
+        let item = self.physical.remove(from);
+        self.physical.insert(to, item);
+        if let Some(current) = self.current_index {
+            self.current_index = if current == from { Some(to) } else if from < current && current <= to { Some(current - 1) } else if to <= current && current < from { Some(current + 1) } else { Some(current) };
+        }
+        true
+    }
     pub fn record_started(&mut self, track: TrackId, transient: bool) { if transient { return; } self.history.retain(|id| id != &track); self.history.insert(0, track); self.history.truncate(HISTORY_LIMIT); }
     pub fn clear_history(&mut self) { self.history.clear(); }
     pub fn clear(&mut self) { self.physical.clear(); self.original.clear(); self.current_index = None; self.user_queue_count = 0; self.previews.clear(); }

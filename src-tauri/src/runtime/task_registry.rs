@@ -74,12 +74,18 @@ impl TaskRegistry {
             let id = state.next_id;
             let token = CancellationToken::new();
             let thread_token = token.clone();
+            let started = Arc::new(AtomicBool::new(false));
+            let worker_started = started.clone();
             let join = thread::Builder::new().name(format!("luno-task-{}", spec.key)).spawn(move || {
+                while !worker_started.load(Ordering::Acquire) {
+                    thread::yield_now();
+                }
                 let result = work(thread_token);
                 let _ = tx.send(result);
             }).expect("failed to spawn runtime task");
             state.latest.insert(spec.key.clone(), id);
             state.entries.insert(id, Entry { spec: spec.clone(), token: token.clone(), join });
+            started.store(true, Ordering::Release);
             (id, token)
         };
         let _ = (id, token);
@@ -97,7 +103,13 @@ impl TaskRegistry {
 
     pub fn is_current(&self, spec: &TaskSpec) -> bool {
         let state = self.inner.lock().unwrap();
-        !state.closing && state.latest.get(&spec.key).and_then(|id| state.entries.get(id)).map(|e| e.spec == *spec).unwrap_or(false)
+        !state.closing
+            && state
+                .latest
+                .get(&spec.key)
+                .and_then(|id| state.entries.get(id))
+                .map(|e| e.spec == *spec && !e.token.is_cancelled())
+                .unwrap_or(false)
     }
 
     pub fn shutdown(&self, deadline: Duration) -> ShutdownReport {

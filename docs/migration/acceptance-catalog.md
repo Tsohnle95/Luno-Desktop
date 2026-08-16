@@ -22,7 +22,7 @@ the sanitized fixture IDs.
 | AC-PLAY-03 | Shuffle/repeat | Shuffle keeps current first and restores order; repeat behavior matches the Python engine. | `migration-audit/05-playback-queue.md:45-60` |
 | AC-PLAY-04 | Clock/seek/completion | Preserve mixer-clock precedence, monotonic fallback, seek clamping, pause position, idle completion, and exactly-once advancement. | `migration-audit/05-playback-queue.md:62-78` |
 | AC-PLAY-05 | Failure recovery | Missing/unloadable tracks log, skip asynchronously, and stop after the observed consecutive-failure threshold. | `migration-audit/05-playback-queue.md:80-97` |
-| AC-PLAY-06 | Crossfade decision | Do not claim crossfade parity until a baseline decision and audible envelope test exist. | `migration-audit/05-playback-queue.md:116-130` |
+| AC-PLAY-06 | Crossfade decision | Target v1 retires the legacy crossfade preference and behavior: transitions are immediate, crossfade parity is not claimed, and the retired feature is not an unresolved blocker. | `migration-audit/05-playback-queue.md:116-130` |
 | AC-DL-01 | Download coordination | Permit one normal write job, expose busy/cancel states, and keep heavy work off the UI thread. | `migration-audit/06-download-sync.md:3-40` |
 | AC-DL-02 | Output validation | Every download reports success only after expected audio output is validated and safely promoted. | `migration-audit/06-download-sync.md:42-79`; `migration-audit/14-audit-review.md:25-37` |
 | AC-DL-03 | Sync/markers | Preserve whole-root dedupe, list parsing, sequential sync, 120-second timeout, legacy markers, and verified success markers. | `migration-audit/06-download-sync.md:81-130` |
@@ -60,9 +60,14 @@ the sanitized fixture IDs.
 
 ## Decisions And Gaps
 
-- `AC-PLAY-06`, `AC-DL-02`, `AC-PERSIST-01`, and `AC-XFER-04` remain release
-  blockers until the crossfade, direct-output atomicity, persistence recovery,
-  and provider-index decisions are implemented and tested.
+- `AC-PLAY-06` has an explicit target v1 decision: legacy crossfade preference
+  and behavior are retired, with immediate transitions and no crossfade
+  control. Crossfade parity is not claimed, and its absence is no longer an
+  unresolved implementation blocker. The migration-audit crossfade finding is
+  preserved as historical source evidence. `AC-DL-02`, `AC-PERSIST-01`, and
+  `AC-XFER-04` remain release blockers until the direct-output atomicity,
+  persistence recovery, and provider-index decisions are implemented and
+  tested.
 - Visual/manual IDs are represented by `CAP-*` in `reference-corpus.md`; no
   source-only citation is a visual pass.
 - The configured desktop gate is `python -m pytest`. U01 receipt: exit `127`,

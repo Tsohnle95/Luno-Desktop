@@ -21,17 +21,17 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost http://localhost:1420; style-src 'self' 'unsafe-inline';"
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; style-src 'self' 'unsafe-inline';"
     }
   },
   "bundle": {
     "active": true,
     "targets": ["dmg"],
-    "resources": [
-      "../release/desktop-binaries.json",
-      "../release/THIRD_PARTY_NOTICES.md",
-      "resources/bin"
-    ],
+    "resources": {
+      "../release/desktop-binaries.json": "desktop-binaries.json",
+      "../release/THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "resources/bin": "bin"
+    },
     "macOS": {
       "minimumSystemVersion": "13.0"
     }

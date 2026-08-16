@@ -12,7 +12,10 @@ use crate::contracts::TrackId;
 pub const ROLLING_WINDOW: usize = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReadyAsset { pub id: TrackId, pub path: PathBuf }
+pub struct ReadyAsset {
+    pub id: TrackId,
+    pub path: PathBuf,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiscoverAction {
@@ -36,19 +39,46 @@ pub struct DiscoverMode {
 }
 
 impl DiscoverMode {
-    pub fn new(generation: u64, physical_queue: Vec<TrackId>, physical_index: usize,
-               recommendations: Vec<TrackId>) -> Option<Self> {
-        if physical_queue.is_empty() || physical_index >= physical_queue.len() { return None; }
-        Some(Self { generation, physical_queue, physical_index, recommendations,
-            assets: HashMap::new(), queued: Vec::new(), cursor: 0, discover: false, active: false })
+    pub fn new(
+        generation: u64,
+        physical_queue: Vec<TrackId>,
+        physical_index: usize,
+        recommendations: Vec<TrackId>,
+    ) -> Option<Self> {
+        if physical_queue.is_empty() || physical_index >= physical_queue.len() {
+            return None;
+        }
+        Some(Self {
+            generation,
+            physical_queue,
+            physical_index,
+            recommendations,
+            assets: HashMap::new(),
+            queued: Vec::new(),
+            cursor: 0,
+            discover: false,
+            active: false,
+        })
     }
 
-    pub fn generation(&self) -> u64 { self.generation }
-    pub fn is_active(&self) -> bool { self.active }
-    pub fn discover_enabled(&self) -> bool { self.discover }
-    pub fn recommendations(&self) -> &[TrackId] { &self.recommendations }
-    pub fn queued_assets(&self) -> &[TrackId] { &self.queued }
-    pub fn physical_queue(&self) -> &[TrackId] { &self.physical_queue }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+    pub fn discover_enabled(&self) -> bool {
+        self.discover
+    }
+    pub fn recommendations(&self) -> &[TrackId] {
+        &self.recommendations
+    }
+    pub fn queued_assets(&self) -> &[TrackId] {
+        &self.queued
+    }
+    pub fn physical_queue(&self) -> &[TrackId] {
+        &self.physical_queue
+    }
 
     /// A ready completion is retained for adoption; stale completions cannot
     /// reintroduce an asset after cancellation or a new seed.
@@ -57,7 +87,10 @@ impl DiscoverMode {
             return DiscoverAction::Noop;
         }
         self.assets.insert(asset.id.clone(), asset.path);
-        let in_window = self.recommendations.iter().position(|id| id == &asset.id)
+        let in_window = self
+            .recommendations
+            .iter()
+            .position(|id| id == &asset.id)
             .is_some_and(|position| position < self.cursor.saturating_add(ROLLING_WINDOW));
         if self.active && self.discover && in_window && !self.queued.contains(&asset.id) {
             self.queued.push(asset.id.clone());
@@ -69,7 +102,9 @@ impl DiscoverMode {
     /// Enables Discover and adopts every ready recommendation in order. It
     /// does not start playback: the ordinary completion path autoplays it.
     pub fn enable(&mut self) -> DiscoverAction {
-        if self.active && self.discover { return DiscoverAction::Noop; }
+        if self.active && self.discover {
+            return DiscoverAction::Noop;
+        }
         self.active = true;
         self.discover = true;
         self.cursor = 0;
@@ -82,46 +117,80 @@ impl DiscoverMode {
         self.active = false;
         self.discover = false;
         self.queued.clear();
-        DiscoverAction::Restore { queue: self.physical_queue.clone(), index: self.physical_index }
+        DiscoverAction::Restore {
+            queue: self.physical_queue.clone(),
+            index: self.physical_index,
+        }
     }
 
     /// Call when the player reaches a recommendation. The next five ready
     /// assets are added; a missing next asset is returned as a preparation job.
     pub fn advance(&mut self, current: &TrackId) -> DiscoverAction {
-        if !self.active || !self.discover || !self.queued.contains(current) { return DiscoverAction::Noop; }
+        if !self.active || !self.discover || !self.queued.contains(current) {
+            return DiscoverAction::Noop;
+        }
         if let Some(position) = self.recommendations.iter().position(|id| id == current) {
             self.cursor = position.saturating_add(1);
         }
         self.adopt_window();
-        self.recommendations.iter()
+        self.recommendations
+            .iter()
             .find(|id| !self.queued.contains(*id) && !self.assets.contains_key(*id))
-            .cloned().map_or(DiscoverAction::Noop, |id| DiscoverAction::Prepare { id })
+            .cloned()
+            .map_or(DiscoverAction::Noop, |id| DiscoverAction::Prepare { id })
     }
 
     /// A natural handoff or queue replacement ends Discover without mutating
     /// a queue owned by somebody else.
     pub fn handoff(&mut self, queue: &[TrackId]) -> DiscoverAction {
-        if queue != self.projected_queue().as_slice() { self.active = false; self.discover = false; self.queued.clear(); }
-        DiscoverAction::Restore { queue: self.physical_queue.clone(), index: self.physical_index }
+        if queue != self.projected_queue().as_slice() && queue != self.physical_queue.as_slice() {
+            self.active = false;
+            self.discover = false;
+            self.queued.clear();
+            // A caller-owned replacement queue must never be overwritten by restoration.
+            return DiscoverAction::Noop;
+        }
+        DiscoverAction::Restore {
+            queue: self.physical_queue.clone(),
+            index: self.physical_index,
+        }
     }
 
-    pub fn cancel(&mut self, generation: u64) -> DiscoverAction { self.disable(generation) }
+    pub fn cancel(&mut self, generation: u64) -> DiscoverAction {
+        self.disable(generation)
+    }
 
-    pub fn path_for(&self, id: &TrackId) -> Option<&PathBuf> { self.assets.get(id) }
+    pub fn path_for(&self, id: &TrackId) -> Option<&PathBuf> {
+        self.assets.get(id)
+    }
 
     pub fn projected_queue(&self) -> Vec<TrackId> {
         let mut queue = self.physical_queue[..=self.physical_index].to_vec();
         queue.extend(self.queued.iter().cloned());
-        queue.extend(self.physical_queue[self.physical_index + 1..].iter().cloned());
+        queue.extend(
+            self.physical_queue[self.physical_index + 1..]
+                .iter()
+                .cloned(),
+        );
         queue
     }
 
     fn adopt_window(&mut self) {
-        for id in self.recommendations.iter().skip(self.cursor).take(ROLLING_WINDOW) {
-            if self.assets.contains_key(id) && !self.queued.contains(id) { self.queued.push(id.clone()); }
+        for id in self
+            .recommendations
+            .iter()
+            .skip(self.cursor)
+            .take(ROLLING_WINDOW)
+        {
+            if self.assets.contains_key(id) && !self.queued.contains(id) {
+                self.queued.push(id.clone());
+            }
         }
     }
     fn queue_action(&self) -> DiscoverAction {
-        DiscoverAction::QueueChanged { queue: self.projected_queue(), index: self.physical_index }
+        DiscoverAction::QueueChanged {
+            queue: self.projected_queue(),
+            index: self.physical_index,
+        }
     }
 }

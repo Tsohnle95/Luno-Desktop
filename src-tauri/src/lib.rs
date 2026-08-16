@@ -18,6 +18,7 @@ pub mod migration {
     pub mod legacy_readers;
 }
 pub mod runtime {
+    pub mod gate5_smoke;
     pub mod shutdown;
     pub mod task_registry;
 }
@@ -74,3 +75,12 @@ pub mod video {
     pub mod source;
     pub mod staging;
 }
+
+#[cfg(test)]
+mod gate2_tests;
+#[cfg(test)]
+mod gate3_tests;
+#[cfg(test)]
+mod gate4_tests;
+#[cfg(test)]
+mod gate5_tests;

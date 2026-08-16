@@ -1,0 +1,20 @@
+Gate 5 real-runtime AX evidence
+Captured: 2026-08-16T09:15:48Z
+Window: luno-desktop 'Luno' (CGWindowID 75132, 1180x800)
+
+static text Luno
+static text Video preview unavailable; artwork fallback is active.
+static text Migration skipped: 
+static text no legacy data found
+static text Library
+static text All Music
+static text 0 songs
+static text No songs in 
+static text All Music
+static text .
+static text Queue
+static text Queue is empty
+static text IPC contract v
+static text 1
+static text Discovery 1; preview ready; video ready. Native event observed; shutdown complete. Unobserved: manual Discover/Song Page rendering; APIC/Tk artwork decoding; FFmpeg/process/native audio clock; external provider/video and wall-clock deadlines.
+static text Luno

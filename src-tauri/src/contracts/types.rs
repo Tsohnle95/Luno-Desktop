@@ -140,7 +140,7 @@ id_type!(SessionId);
 #[serde(transparent)]
 pub struct Generation(#[serde(deserialize_with = "safe_u64")] pub u64);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderId {
     #[serde(deserialize_with = "non_empty_string")]
@@ -189,6 +189,8 @@ pub struct LibrarySnapshot {
 pub struct PlaybackSnapshot {
     pub queue: Vec<TrackId>,
     pub current_index: Option<u32>,
+    pub shuffle: bool,
+    pub repeat: crate::contracts::events::RepeatMode,
     #[serde(deserialize_with = "safe_u64")]
     pub position_ms: u64,
     #[serde(deserialize_with = "safe_option_u64")]
@@ -225,6 +227,24 @@ pub enum DownloadKind {
     Csv,
     Sync,
     UrlQueue,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsInput {
+    pub music_root: Option<String>,
+    pub auto_discovery: Option<bool>,
+    pub volume: Option<f64>,
+    pub sleep_timer: Option<serde_json::Value>,
+    pub global_keys: Option<bool>,
+    pub favorite_songs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchResult {
+    pub provider: String,
+    pub query: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

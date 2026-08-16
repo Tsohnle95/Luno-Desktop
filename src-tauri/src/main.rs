@@ -13,7 +13,7 @@ use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 const BACKEND_EVENT: &str = "backend-event";
 const GATE5_EVENT: &str = "gate5-smoke-event";
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn gate5_smoke(app: tauri::AppHandle, root: String, preview_root: String, video_root: String) -> Result<Value, String> {
     let result = luno_desktop_lib::runtime::gate5_smoke::run(PathBuf::from(root), PathBuf::from(preview_root), PathBuf::from(video_root))?;
     let value = serde_json::to_value(result).map_err(|error| error.to_string())?;

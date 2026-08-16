@@ -1,0 +1,1292 @@
+use crate::contracts::events::Command;
+use crate::contracts::events::CommandEnvelope;
+use crate::contracts::events::{
+    Event, RootStatus as ContractRootStatus, ShutdownReason, ShutdownState,
+};
+use crate::download::markers::Markers;
+use crate::download::promotion::stage_output;
+use crate::download::sync::{plan, sync_sequential, ItemOutcome, PlaylistEntry, SyncItem};
+use crate::library::duplicates::{find_duplicates, load_allowed, save_allowed};
+use crate::library::favorites::Favorites;
+use crate::library::index::{LibraryIndex, RefreshRequest};
+use crate::library::mutations::{MutationError, PlaylistService};
+use crate::library::reference_repair::PathReferences;
+use crate::library::scanner::{scan_library, Entry, FileSystem, RootStatus};
+use crate::persistence::atomic_write::write_atomic;
+use crate::persistence::legacy::read_config;
+use crate::persistence::recovery::{recover, RecoveryResult};
+use crate::runtime::task_registry::SpawnError;
+use crate::state::AppState;
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Barrier, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+fn fixture_dir(label: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("luno-gate2-{label}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&path);
+    fs::create_dir_all(&path).unwrap();
+    path
+}
+
+struct FixtureFs {
+    entries: HashMap<PathBuf, Result<Vec<Entry>, String>>,
+    modified: HashMap<PathBuf, SystemTime>,
+}
+impl FileSystem for FixtureFs {
+    fn read_dir(&self, path: &Path) -> Result<Vec<Entry>, String> {
+        self.entries
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| Err("not found".into()))
+    }
+    fn modified(&self, path: &Path) -> Result<SystemTime, String> {
+        self.modified
+            .get(path)
+            .copied()
+            .ok_or_else(|| "not found".into())
+    }
+}
+
+#[test]
+fn scan_roots_order_and_status_match_corpus() {
+    let root = PathBuf::from("fixture://scan-order");
+    let newer = root.join("track-b.flac");
+    let older = root.join("artist-a - track-a.mp3");
+    let playlist = root.join("playlist-a");
+    let fs = FixtureFs {
+        entries: HashMap::from([
+            (
+                root.clone(),
+                Ok(vec![
+                    Entry {
+                        path: playlist.clone(),
+                        name: "playlist-a".into(),
+                        is_dir: true,
+                    },
+                    Entry {
+                        path: newer.clone(),
+                        name: "track-b.flac".into(),
+                        is_dir: false,
+                    },
+                    Entry {
+                        path: older.clone(),
+                        name: "artist-a - track-a.mp3".into(),
+                        is_dir: false,
+                    },
+                    Entry {
+                        path: root.join("notes.txt"),
+                        name: "notes.txt".into(),
+                        is_dir: false,
+                    },
+                ]),
+            ),
+            (
+                playlist.clone(),
+                Ok(vec![Entry {
+                    path: playlist.join("track-c.mp3"),
+                    name: "track-c.mp3".into(),
+                    is_dir: false,
+                }]),
+            ),
+            (PathBuf::from("fixture://empty-root"), Ok(vec![])),
+        ]),
+        modified: HashMap::from([
+            (newer.clone(), UNIX_EPOCH + Duration::from_secs(2)),
+            (older.clone(), UNIX_EPOCH + Duration::from_secs(1)),
+        ]),
+    };
+    let outcome = scan_library(
+        &[
+            root.clone(),
+            PathBuf::from("fixture://empty-root"),
+            PathBuf::from("fixture://missing-root"),
+        ],
+        &fs,
+    );
+    let empty = scan_library(&[PathBuf::from("fixture://empty-root")], &fs);
+    assert!(empty.playlists.is_empty());
+    assert_eq!(outcome.playlists["Unsorted"], vec![newer, older]);
+    assert_eq!(outcome.playlists["playlist-a"].len(), 1);
+    assert_eq!(
+        outcome.roots,
+        vec![
+            (root, RootStatus::Scanned),
+            (PathBuf::from("fixture://empty-root"), RootStatus::Scanned),
+            (PathBuf::from("fixture://missing-root"), RootStatus::Missing)
+        ]
+    );
+    assert!(!outcome.playlists["Unsorted"]
+        .iter()
+        .any(|path| path.extension() == Some("txt".as_ref())));
+}
+
+#[test]
+fn real_missing_root_is_classified_as_missing() {
+    let root = fixture_dir("missing-root").join("does-not-exist");
+    let outcome = scan_library(&[root.clone()], &crate::library::scanner::OsFileSystem);
+    assert_eq!(outcome.roots, vec![(root, RootStatus::Missing)]);
+    assert!(outcome.playlists.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn target_scan_publishes_fixture_root_statuses_and_snapshot_on_event_boundary() {
+    struct PermissionGuard(PathBuf);
+    impl Drop for PermissionGuard {
+        fn drop(&mut self) {
+            if let Ok(metadata) = fs::metadata(&self.0) {
+                use std::os::unix::fs::PermissionsExt;
+                let mut permissions = metadata.permissions();
+                permissions.set_mode(0o700);
+                let _ = fs::set_permissions(&self.0, permissions);
+            }
+        }
+    }
+
+    let dir = fixture_dir("target-scan-boundary");
+    let empty = dir.join("empty");
+    let denied = dir.join("denied");
+    fs::create_dir_all(&empty).unwrap();
+    fs::create_dir_all(&denied).unwrap();
+    let _permission_guard = PermissionGuard(denied.clone());
+    let mut permissions = fs::metadata(&denied).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    permissions.set_mode(0o000);
+    fs::set_permissions(&denied, permissions).unwrap();
+    let missing = dir.join("missing");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let received = events.clone();
+    let state = AppState::new(2);
+    state.set_scan_roots(vec![empty.clone(), missing.clone(), denied.clone()]);
+    state.set_event_sink(Arc::new(move |event| {
+        received.lock().unwrap().push(event);
+        Ok(())
+    }));
+    let generation = state.scan_async().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| matches!(event.event, Event::LibrarySnapshot { .. }))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "scan result was not delivered"
+        );
+        std::thread::yield_now();
+    }
+    let events = events.lock().unwrap();
+    let statuses: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event.event {
+            Event::LibraryRootStatus { root_index, status } => Some((root_index, status)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        statuses[0..2],
+        [
+            (0, ContractRootStatus::Scanned),
+            (1, ContractRootStatus::Missing),
+        ]
+    );
+    if statuses.get(2) != Some(&(2, ContractRootStatus::Inaccessible)) {
+        drop(events);
+        drop(_permission_guard);
+        fs::remove_dir_all(dir).unwrap();
+        return;
+    }
+    let snapshot = events.iter().find_map(|event| match &event.event {
+        Event::LibrarySnapshot { snapshot } => Some(snapshot),
+        _ => None,
+    });
+    assert_eq!(
+        snapshot.map(|snapshot| snapshot.generation),
+        Some(generation)
+    );
+    assert!(snapshot.is_some_and(|snapshot| snapshot.playlists.is_empty()));
+    assert_eq!(
+        state.root_statuses(),
+        vec![
+            ContractRootStatus::Scanned,
+            ContractRootStatus::Missing,
+            ContractRootStatus::Inaccessible,
+        ]
+    );
+    drop(events);
+    drop(_permission_guard);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn scan_generation_coalesces_and_rejects_stale_results() {
+    let mut index = LibraryIndex::default();
+    assert_eq!(
+        index.request_refresh(),
+        RefreshRequest::Started { generation: 1 }
+    );
+    assert_eq!(
+        index.request_refresh(),
+        RefreshRequest::Coalesced { generation: 1 }
+    );
+    let stale = crate::library::scanner::ScanOutcome {
+        playlists: Default::default(),
+        roots: vec![],
+        errors: vec![],
+    };
+    assert!(!index.finish_scan(2, stale.clone()));
+    assert!(index.finish_scan(1, stale));
+    assert!(index.take_pending());
+}
+
+#[test]
+fn favorites_and_rename_repair_prune_stale_paths() {
+    let root = PathBuf::from("/synthetic/library");
+    let old = root.join("artist-a - track-a.mp3");
+    let new = root.join("artist-b - track-b.mp3");
+    let mut favorites = Favorites::from_paths([old.clone(), root.join("missing.mp3")]);
+    assert_eq!(favorites.project([old.clone()]), vec![old.clone()]);
+    let mut refs = PathReferences {
+        queue_playlist: vec![old.to_string_lossy().into()],
+        queue: vec![old.to_string_lossy().into()],
+        original_queue: vec![],
+        recent: vec![old.to_string_lossy().into()],
+        favorites,
+        artwork: Default::default(),
+    };
+    let report = refs.repair(&old, Some(&new));
+    assert!(report.changed >= 4);
+    assert!(refs.favorites.contains(&new));
+    refs.prune_stale([new]);
+    assert_eq!(refs.queue.len(), 1);
+}
+
+#[test]
+fn markers_accept_all_legacy_forms_but_not_corrupt_ids_and_retry_failures() {
+    let dir = fixture_dir("markers");
+    fs::write(dir.join(".downloaded_vids"), "success-id\n/suspicious\n").unwrap();
+    fs::write(dir.join(".downloaded.txt"), "legacy title legacy-id\n").unwrap();
+    fs::write(
+        dir.join(".sync_failed_vids"),
+        "failed-id\tvideo unavailable\n/bad\treason\n",
+    )
+    .unwrap();
+    let mut markers = Markers::load(&dir);
+    assert!(markers.successful.contains("success-id"));
+    assert!(markers.successful.contains("legacy-id"));
+    assert!(!markers.successful.contains("/suspicious"));
+    assert!(markers.failed.contains("failed-id"));
+    assert!(!markers.failed.contains("/bad"));
+    markers.record_success(&dir, "retry-id").unwrap();
+    markers
+        .record_failure(&dir, "permanent-id", "blocked\nsource")
+        .unwrap();
+    let reread = Markers::load(&dir);
+    assert!(reread.successful.contains("retry-id"));
+    assert!(reread.failed.contains("permanent-id"));
+    let invalid_dir = dir.join("invalid-writes");
+    fs::create_dir(&invalid_dir).unwrap();
+    let successful_before = markers.successful.clone();
+    let failed_before = markers.failed.clone();
+    markers.record_success(&invalid_dir, "/invalid").unwrap();
+    markers
+        .record_failure(&invalid_dir, "invalid id", "blocked")
+        .unwrap();
+    assert_eq!(markers.successful, successful_before);
+    assert_eq!(markers.failed, failed_before);
+    assert!(!invalid_dir.join(".downloaded_vids").exists());
+    assert!(!invalid_dir.join(".sync_failed_vids").exists());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn local_sync_journey_covers_whole_root_dedupe_markers_validation_retry_and_cancel() {
+    let dir = fixture_dir("sync-journey");
+    let root = dir.join("library");
+    let destination = root.join("playlist-a");
+    fs::create_dir_all(root.join("other-playlist")).unwrap();
+    fs::create_dir_all(&destination).unwrap();
+    fs::write(
+        root.join("other-playlist").join("Artist - Existing.mp3"),
+        b"ID3synthetic",
+    )
+    .unwrap();
+    fs::write(
+        destination.join(".downloaded_vids"),
+        "current-id\n/bad-id\n",
+    )
+    .unwrap();
+    fs::write(
+        destination.join(".downloaded.txt"),
+        "legacy title legacy-id\n",
+    )
+    .unwrap();
+    fs::write(
+        destination.join(".sync_failed_vids"),
+        "previous-permanent\tvideo unavailable\n/bad-failure\trejected\n",
+    )
+    .unwrap();
+
+    let entries = vec![
+        PlaylistEntry {
+            id: Some("existing-id".into()),
+            title: "Artist - Existing".into(),
+            url: None,
+        },
+        PlaylistEntry {
+            id: Some("duplicate-id".into()),
+            title: "Artist - Existing".into(),
+            url: None,
+        },
+        PlaylistEntry {
+            id: Some("new-id".into()),
+            title: "Artist - New".into(),
+            url: Some("local:synthetic".into()),
+        },
+    ];
+    let planned = plan(&root, &destination, &entries);
+    assert_eq!(planned.len(), 1, "REF-URL-MARKERS whole-root dedupe");
+    assert_eq!(planned[0].entry.id.as_deref(), Some("new-id"));
+
+    let item = |id: &str, title: &str| SyncItem {
+        entry: PlaylistEntry {
+            id: Some(id.into()),
+            title: title.into(),
+            url: Some("local:synthetic".into()),
+        },
+        destination: destination.join(format!("{id}.mp3")),
+    };
+    let items = vec![
+        item("current-id", "Current"),
+        item("legacy-id", "Legacy"),
+        item("valid-id", "Valid"),
+        item("invalid-id", "Invalid"),
+        item("missing-id", "Missing"),
+        item("permanent-id", "Permanent"),
+        item("transient-id", "Transient"),
+        item("cancel-id", "Cancel"),
+    ];
+    let attempts = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
+    let attempts_for_download = attempts.clone();
+    let token = crate::runtime::task_registry::CancellationToken::new();
+    let result = sync_sequential(&destination, &items, &token, move |item, token| {
+        let id = item.entry.id.as_deref().unwrap();
+        let mut attempts = attempts_for_download.lock().unwrap();
+        *attempts.entry(id.into()).or_default() += 1;
+        match id {
+            "valid-id" | "transient-id" => {
+                fs::write(&item.destination, b"ID3validated").unwrap();
+                if id == "transient-id" && attempts[id] == 1 {
+                    fs::remove_file(&item.destination).unwrap();
+                    Err("temporary local failure".into())
+                } else {
+                    Ok(())
+                }
+            }
+            "invalid-id" => {
+                fs::write(&item.destination, b"not audio").unwrap();
+                Ok(())
+            }
+            "missing-id" => Ok(()),
+            "permanent-id" => Err("video unavailable from local fixture".into()),
+            "cancel-id" => {
+                token.cancel();
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    });
+    assert_eq!(
+        result.outcomes[0],
+        ("current-id".into(), ItemOutcome::Matched)
+    );
+    assert_eq!(
+        result.outcomes[1],
+        ("legacy-id".into(), ItemOutcome::Matched)
+    );
+    assert_eq!(
+        result.outcomes[2],
+        ("valid-id".into(), ItemOutcome::Downloaded)
+    );
+    assert!(matches!(result.outcomes[3].1, ItemOutcome::Failed(_)));
+    assert!(matches!(result.outcomes[4].1, ItemOutcome::Failed(_)));
+    assert!(matches!(
+        result.outcomes[5].1,
+        ItemOutcome::PermanentFailure(_)
+    ));
+    assert!(matches!(result.outcomes[6].1, ItemOutcome::Failed(_)));
+    assert!(result.cancelled);
+    let success_markers = fs::read_to_string(destination.join(".downloaded_vids")).unwrap();
+    let failure_markers = fs::read_to_string(destination.join(".sync_failed_vids")).unwrap();
+    assert!(!success_markers.contains("invalid-id"));
+    assert!(!success_markers.contains("missing-id"));
+    assert!(success_markers.contains("valid-id"));
+    assert!(failure_markers.contains("permanent-id"));
+    assert!(!success_markers.contains("cancel-id"));
+    let permanent_retry = sync_sequential(
+        &destination,
+        &[item("permanent-id", "Permanent")],
+        &crate::runtime::task_registry::CancellationToken::new(),
+        |_item, _token| panic!("retained permanent failure was retried"),
+    );
+    assert!(matches!(
+        permanent_retry.outcomes.as_slice(),
+        [(id, ItemOutcome::PermanentFailure(_))] if id == "permanent-id"
+    ));
+
+    let retry_token = crate::runtime::task_registry::CancellationToken::new();
+    let retry = sync_sequential(
+        &destination,
+        &[item("transient-id", "Transient")],
+        &retry_token,
+        |item, _| {
+            fs::write(&item.destination, b"ID3retry").unwrap();
+            Ok(())
+        },
+    );
+    assert_eq!(
+        retry.outcomes,
+        vec![("transient-id".into(), ItemOutcome::Downloaded)]
+    );
+    assert_eq!(*attempts.lock().unwrap().get("transient-id").unwrap(), 1);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn target_scan_spawn_failure_is_bounded_and_shutdown_cancels_owned_work() {
+    let state = AppState::new(1);
+    let started = Arc::new(Barrier::new(2));
+    let started_worker = started.clone();
+    let _handle = state
+        .submit(
+            state.generation("gate2-blocking", crate::contracts::types::Generation(1)),
+            move |token| {
+                started_worker.wait();
+                while !token.is_cancelled() {
+                    std::thread::yield_now();
+                }
+            },
+        )
+        .unwrap();
+    started.wait();
+    assert_eq!(state.scan_async(), Err(SpawnError::AtCapacity));
+    let report = state.shutdown(std::time::Duration::from_secs(1));
+    assert!(!report.timed_out);
+    assert!(!report.failed);
+}
+
+#[test]
+fn target_shutdown_event_terminal_order_is_deterministic_after_cancellation() {
+    let state = AppState::new(1);
+    let started = Arc::new(Barrier::new(2));
+    let started_worker = started.clone();
+    let _handle = state
+        .submit(
+            state.generation("gate2-cancellable", crate::contracts::types::Generation(1)),
+            move |token| {
+                started_worker.wait();
+                while !token.is_cancelled() {
+                    std::thread::yield_now();
+                }
+            },
+        )
+        .unwrap();
+    started.wait();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let sink_observed = observed.clone();
+    state.set_event_sink(Arc::new(move |envelope| {
+        if let Event::Shutdown { envelope } = envelope.event {
+            sink_observed.lock().unwrap().push(envelope.state);
+        }
+        Ok(())
+    }));
+    let report = state.shutdown_events(ShutdownReason::UserRequested, Duration::from_secs(1));
+    assert!(!report.timed_out);
+    assert_eq!(
+        *observed.lock().unwrap(),
+        vec![
+            ShutdownState::Requested,
+            ShutdownState::Draining,
+            ShutdownState::Complete
+        ]
+    );
+}
+
+#[test]
+fn atomic_write_recovers_previous_value_even_with_corrupt_metadata() {
+    let dir = fixture_dir("atomic");
+    let target = dir.join("settings.json");
+    write_atomic(&target, br#"{"value":1}"#).unwrap();
+    write_atomic(&target, br#"{"value":2}"#).unwrap();
+    fs::remove_file(&target).unwrap();
+    fs::write(
+        format!("{}.luno-recovery.json", target.display()),
+        b"not-json",
+    )
+    .unwrap();
+    assert_eq!(recover(&target).unwrap(), RecoveryResult::RestoredBackup);
+    assert_eq!(fs::read(&target).unwrap(), br#"{"value":1}"#);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn corrupt_config_is_read_only_and_missing_fields_are_safe() {
+    let dir = fixture_dir("config");
+    let config = dir.join(".luno_config.json");
+    fs::write(&config, br#"{"music_root":"fixture://missing-root","volume":2,"favorite_songs":["fixture://track-a"],"unknown":true}"#).unwrap();
+    let original = fs::read(&config).unwrap();
+    let parsed = read_config(&config).unwrap();
+    assert_eq!(parsed.music_root.as_deref(), Some("fixture://missing-root"));
+    assert_eq!(parsed.volume, Some(2.0));
+    assert_eq!(fs::read(&config).unwrap(), original);
+    fs::write(&config, b"not-json").unwrap();
+    assert!(read_config(&config).is_err());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn playlist_crud_and_allowed_duplicate_persistence_keep_safeguards() {
+    let dir = fixture_dir("playlists");
+    let service = PlaylistService::new(&dir);
+    let mut index = LibraryIndex::default();
+    let created = service.create("playlist<>a", &mut index).unwrap();
+    assert_eq!(
+        created.value.file_name().unwrap().to_string_lossy(),
+        "playlista"
+    );
+    assert!(matches!(
+        service.create("playlist<>a", &mut index),
+        Err(MutationError::Collision(_))
+    ));
+    assert!(matches!(
+        service.delete("All Music", &mut index),
+        Err(MutationError::Protected(_))
+    ));
+    assert!(matches!(
+        service.set_url("playlista", Some("file://not-allowed"), &mut index),
+        Err(MutationError::InvalidUrl)
+    ));
+    service
+        .set_url(
+            "playlista",
+            Some("https://example.test/playlist?list=fixture"),
+            &mut index,
+        )
+        .unwrap();
+    let keys = std::collections::BTreeSet::from(["artistatracka".to_owned()]);
+    let library = std::collections::BTreeMap::from([(
+        "playlist-a".to_owned(),
+        vec![
+            PathBuf::from("artist-a - track-a.mp3"),
+            PathBuf::from("ARTIST-A - TRACK-A.mp3"),
+        ],
+    )]);
+    assert_eq!(
+        find_duplicates(&library, &std::collections::BTreeSet::new()).len(),
+        1
+    );
+    assert!(find_duplicates(&library, &keys).is_empty());
+    save_allowed(&dir, &keys).unwrap();
+    assert_eq!(load_allowed(&dir).unwrap(), keys);
+    fs::write(dir.join(".luno_allowed_dups.json"), b"not-json").unwrap();
+    assert!(load_allowed(&dir).is_err());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn command(request_id: &str, command: Command) -> CommandEnvelope {
+    CommandEnvelope {
+        version: 1,
+        request_id: request_id.into(),
+        command,
+    }
+}
+
+#[test]
+fn target_command_boundary_loads_config_registers_root_and_syncs_markers() {
+    let home = fixture_dir("command-config");
+    let root = home.join("Music");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        home.join(".luno_config.json"),
+        format!(r#"{{"music_root":"{}","favorite_songs":["fixture://track-a"],"volume":0.5,"unknown":true}}"#, root.display()).as_bytes(),
+    )
+    .unwrap();
+    fs::write(root.join(".downloaded_vids"), "success-id\n").unwrap();
+    fs::write(root.join(".sync_failed_vids"), "permanent-id\tblocked\n").unwrap();
+    let state = AppState::new(2);
+
+    let config = state
+        .dispatch(command(
+            "config",
+            Command::LoadConfig {
+                home: home.display().to_string(),
+            },
+        ))
+        .unwrap();
+    assert_eq!(config["music_root"], root.display().to_string());
+    assert_eq!(state.scan_roots(), vec![root.clone()]);
+    let markers = state
+        .dispatch(command(
+            "markers",
+            Command::SyncMarkers {
+                folder: root.display().to_string(),
+            },
+        ))
+        .unwrap();
+    assert_eq!(markers["successful"], 1);
+    assert_eq!(markers["permanent_failures"], 1);
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn target_command_boundary_clears_previous_root_for_valid_legacy_config_without_root() {
+    let home = fixture_dir("command-config-no-root");
+    let previous_root = home.join("previous-music");
+    fs::create_dir_all(&previous_root).unwrap();
+    fs::write(&home.join(".luno_config.json"), br#"{"favorite_songs":[]}"#).unwrap();
+    let state = AppState::new(1);
+    state.set_scan_roots(vec![previous_root]);
+
+    state
+        .dispatch(command(
+            "config-without-root",
+            Command::LoadConfig {
+                home: home.display().to_string(),
+            },
+        ))
+        .unwrap();
+
+    assert!(state.scan_roots().is_empty());
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn target_command_boundary_dispatches_root_statuses_without_home_fallback() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = fixture_dir("command-scan-statuses");
+    let empty = dir.join("empty");
+    let denied = dir.join("denied");
+    fs::create_dir_all(&empty).unwrap();
+    fs::create_dir_all(&denied).unwrap();
+    let mut permissions = fs::metadata(&denied).unwrap().permissions();
+    permissions.set_mode(0o000);
+    fs::set_permissions(&denied, permissions).unwrap();
+    let missing = dir.join("missing");
+    let restore = denied.clone();
+    let state = AppState::new(2);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    state.set_event_sink(Arc::new(move |event| {
+        sender.send(event).unwrap();
+        Ok(())
+    }));
+    fs::write(
+        dir.join(".luno_config.json"),
+        format!(r#"{{"music_root":"{}"}}"#, empty.display()),
+    )
+    .unwrap();
+    state
+        .dispatch(command(
+            "load-config",
+            Command::LoadConfig {
+                home: dir.display().to_string(),
+            },
+        ))
+        .unwrap();
+    state
+        .dispatch(command("scan-empty", Command::ScanLibrary))
+        .unwrap();
+    let empty_status = loop {
+        if let Event::LibraryRootStatus { status, .. } = receiver.recv_timeout(Duration::from_secs(2)).unwrap().event {
+            break status;
+        }
+    };
+    assert_eq!(empty_status, ContractRootStatus::Scanned);
+    state
+        .dispatch(command("register", Command::RegisterRoot {
+            root: missing.display().to_string(),
+        }))
+        .unwrap();
+    state
+        .dispatch(command("scan-missing", Command::ScanLibrary))
+        .unwrap();
+    let missing_status = loop {
+        if let Event::LibraryRootStatus { status, .. } = receiver.recv_timeout(Duration::from_secs(2)).unwrap().event {
+            break status;
+        }
+    };
+    assert_eq!(missing_status, ContractRootStatus::Missing);
+    state
+        .dispatch(command("register-denied", Command::RegisterRoot {
+            root: denied.display().to_string(),
+        }))
+        .unwrap();
+    state
+        .dispatch(command("scan-denied", Command::ScanLibrary))
+        .unwrap();
+    let denied_status = loop {
+        if let Event::LibraryRootStatus { status, .. } = receiver.recv_timeout(Duration::from_secs(2)).unwrap().event {
+            break status;
+        }
+    };
+    if denied_status != ContractRootStatus::Inaccessible {
+        assert_eq!(denied_status, ContractRootStatus::Scanned);
+    }
+    let mut permissions = fs::metadata(&restore).unwrap().permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&restore, permissions).unwrap();
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn target_config_and_marker_failures_are_explicit() {
+    let dir = fixture_dir("explicit-persistence-failures");
+    let config = dir.join(".luno_config.json");
+    let state = AppState::new(1);
+    assert_eq!(
+        state
+            .dispatch(command("missing-config", Command::LoadConfig {
+                home: dir.display().to_string(),
+            }))
+            .unwrap_err()
+            .code,
+        crate::contracts::types::ErrorCode::NotFound
+    );
+    fs::write(&config, br#"{"music_root":"   "}"#).unwrap();
+    assert_eq!(
+        state
+            .dispatch(command("blank-config", Command::LoadConfig {
+                home: dir.display().to_string(),
+            }))
+            .unwrap_err()
+            .code,
+        crate::contracts::types::ErrorCode::InvalidRequest
+    );
+    assert!(state.scan_roots().is_empty());
+    fs::write(&config, b"not-json").unwrap();
+    assert_eq!(
+        state
+            .dispatch(command("corrupt-config", Command::LoadConfig {
+                home: dir.display().to_string(),
+            }))
+            .unwrap_err()
+            .code,
+        crate::contracts::types::ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        state
+            .dispatch(command("missing-markers", Command::SyncMarkers {
+                folder: dir.join("missing-markers").display().to_string(),
+            }))
+            .unwrap_err()
+            .code,
+        crate::contracts::types::ErrorCode::InvalidRequest
+    );
+    fs::write(dir.join(crate::download::markers::CURRENT_SUCCESS), "bad id\n").unwrap();
+    assert_eq!(
+        state
+            .dispatch(command("corrupt-markers", Command::SyncMarkers {
+                folder: dir.display().to_string(),
+            }))
+            .unwrap_err()
+            .code,
+        crate::contracts::types::ErrorCode::InvalidRequest
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn target_command_boundary_toggles_and_prunes_favorites_and_keeps_recent_session_only() {
+    let state = AppState::new(2);
+    let live = PathBuf::from("/synthetic/live.mp3");
+    let missing = PathBuf::from("/synthetic/missing.mp3");
+    state.replace_library(
+        crate::contracts::types::Generation(1),
+        std::collections::BTreeMap::from([(String::from("Unsorted"), vec![live.clone()])]),
+    );
+    let track_id = state.library().tracks[0].id.clone();
+    state.set_favorite_path(missing.clone());
+    let toggled = state
+        .dispatch(command(
+            "favorite",
+            Command::ToggleFavorite {
+                track_id: track_id.clone(),
+            },
+        ))
+        .unwrap();
+    assert_eq!(toggled, serde_json::json!({ "favorite": true }));
+    assert!(state.library().tracks[0].favorite);
+    state.prune_favorites();
+    assert!(state.favorite_paths().contains(&live.display().to_string()));
+    assert!(!state
+        .favorite_paths()
+        .contains(&missing.display().to_string()));
+    state
+        .dispatch(command(
+            "recent-start",
+            Command::RecordRecent {
+                track_id: track_id.clone(),
+            },
+        ))
+        .unwrap();
+    let recent = state
+        .dispatch(command("recent", Command::GetRecent))
+        .unwrap();
+    assert_eq!(recent, serde_json::json!([track_id.0]));
+    state
+        .dispatch(command("recent-clear", Command::ClearRecent))
+        .unwrap();
+    assert_eq!(
+        state
+            .dispatch(command("recent-empty", Command::GetRecent))
+            .unwrap(),
+        serde_json::json!([])
+    );
+    let paths: Vec<_> = (0..101)
+        .map(|index| PathBuf::from(format!("/synthetic/{index}.mp3")))
+        .collect();
+    state.replace_library(
+        crate::contracts::types::Generation(2),
+        std::collections::BTreeMap::from([(String::from("Unsorted"), paths)]),
+    );
+    let ids: Vec<_> = state.library().tracks.iter().map(|track| track.id.clone()).collect();
+    for id in &ids {
+        state
+            .dispatch(command(
+                "recent-cap",
+                Command::RecordRecent { track_id: id.clone() },
+            ))
+            .unwrap();
+    }
+    let recent = state.dispatch(command("recent-cap-get", Command::GetRecent)).unwrap();
+    assert_eq!(recent.as_array().map(Vec::len), Some(100));
+    assert_eq!(
+        state
+            .dispatch(command(
+                "recent-unknown",
+                Command::RecordRecent {
+                    track_id: crate::contracts::types::TrackId("unknown".into()),
+                },
+            ))
+            .unwrap_err()
+            .code,
+        crate::contracts::types::ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn target_scan_scheduler_cancellation_is_observed_through_dispatch() {
+    let state = AppState::new(1);
+    let entered = Arc::new(Barrier::new(2));
+    let worker_entered = entered.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    state.set_event_sink(Arc::new(move |event| {
+        sender.send(event).unwrap();
+        Ok(())
+    }));
+    let scan = state
+        .scan_async_with(move |_, token| {
+            worker_entered.wait();
+            while !token.is_cancelled() {
+                std::thread::yield_now();
+            }
+            crate::library::scanner::ScanOutcome {
+                playlists: Default::default(),
+                roots: vec![],
+                errors: vec![],
+            }
+        })
+        .unwrap();
+    entered.wait();
+    state
+        .dispatch(command("cancel", Command::CancelJob {
+            job_id: crate::contracts::types::JobId("library-scan".into()),
+        }))
+        .unwrap();
+    let report = state.shutdown(Duration::from_secs(1));
+    assert!(!report.timed_out);
+    assert!(receiver.try_recv().is_err());
+    assert_eq!(scan, crate::contracts::types::Generation(1));
+}
+
+#[test]
+fn target_command_boundary_promotes_validated_audio_then_scans_and_gets_library() {
+    let dir = fixture_dir("promotion-command");
+    let root = dir.join("library");
+    let playlist = root.join("playlist-a");
+    fs::create_dir_all(&playlist).unwrap();
+    let temporary = stage_output(playlist.join("Artist - Track.mp3")).unwrap();
+    fs::write(&temporary, b"ID3synthetic-audio").unwrap();
+    let state = AppState::new(2);
+    state.set_scan_roots(vec![root.clone()]);
+
+    let result = state
+        .dispatch(command(
+            "promote",
+                Command::PromoteAudioOutput {
+                    temporary: temporary.display().to_string(),
+                    destination: playlist.join("Artist - Track.mp3").display().to_string(),
+                },
+        ))
+        .unwrap();
+    assert_eq!(result["bytes"], 18);
+    assert!(playlist.join("Artist - Track.mp3").is_file());
+
+    state.dispatch(command("scan", Command::ScanLibrary)).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while state.library().tracks.is_empty() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let library = state.dispatch(command("get", Command::GetLibrary)).unwrap();
+    assert_eq!(library["tracks"][0]["title"], "Track");
+    assert_eq!(library["playlists"][0]["name"], "playlist-a");
+
+    let cases = [
+        ("missing", root.join("missing.mp3"), playlist.join("missing.mp3")),
+        ("invalid", dir.join("invalid.part"), playlist.join("invalid.mp3")),
+        ("escape", dir.join("escape.part"), dir.join("outside.mp3")),
+    ];
+    for (request_id, temporary, destination) in cases {
+        if request_id != "missing" {
+            fs::write(&temporary, b"not audio").unwrap();
+        }
+        let error = state
+            .dispatch(command(
+                request_id,
+                Command::PromoteAudioOutput {
+                    temporary: temporary.display().to_string(),
+                    destination: destination.display().to_string(),
+                },
+            ))
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            if request_id == "missing" {
+                crate::contracts::types::ErrorCode::NotFound
+            } else {
+                crate::contracts::types::ErrorCode::InvalidRequest
+            }
+        );
+        assert!(!destination.exists());
+    }
+    let collision_temporary = stage_output(playlist.join("collision.mp3")).unwrap();
+    fs::write(&collision_temporary, b"ID3collision").unwrap();
+    let collision = playlist.join("Artist - Track.mp3");
+    let error = state
+        .dispatch(command(
+            "collision",
+            Command::PromoteAudioOutput {
+                temporary: collision_temporary.display().to_string(),
+                destination: collision.display().to_string(),
+            },
+        ))
+        .unwrap_err();
+    assert_eq!(error.code, crate::contracts::types::ErrorCode::Busy);
+    assert_eq!(fs::read(&collision).unwrap(), b"ID3synthetic-audio");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn target_command_boundary_cancels_actual_os_filesystem_scan_before_publication() {
+    let dir = fixture_dir("os-scan-cancel");
+    let root = dir.join("library");
+    fs::create_dir_all(&root).unwrap();
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let hooked_root = root.clone();
+    let _hook = crate::library::scanner::scoped_os_scan_hook({
+        let entered = entered.clone();
+        let release = release.clone();
+        Arc::new(move |path| {
+            if path == hooked_root {
+                entered.wait();
+                release.wait();
+            }
+        })
+    });
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let received = events.clone();
+    let state = AppState::new(1);
+    state.set_scan_roots(vec![root]);
+    state.set_event_sink(Arc::new(move |event| {
+        received.lock().unwrap().push(event);
+        Ok(())
+    }));
+    state.dispatch(command("scan", Command::ScanLibrary)).unwrap();
+    entered.wait();
+    state
+        .dispatch(command(
+            "cancel-scan",
+            Command::CancelJob {
+                job_id: crate::contracts::types::JobId("library-scan".into()),
+            },
+        ))
+        .unwrap();
+    release.wait();
+    let report = state.shutdown(Duration::from_secs(1));
+    assert!(!report.timed_out);
+    assert_eq!(state.tasks.active_count(), 0);
+    assert!(events.lock().unwrap().iter().all(|event| !matches!(
+        event.event,
+        Event::LibrarySnapshot { .. } | Event::LibraryRootStatus { .. }
+    )));
+    assert_eq!(state.library().generation.0, 0);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn target_scan_scheduler_reports_followup_spawn_capacity_failure() {
+    let state = AppState::new(2);
+    let blocker_started = Arc::new(Barrier::new(2));
+    let blocker_worker = blocker_started.clone();
+    let blocker_release = Arc::new(Barrier::new(2));
+    let blocker_worker_release = blocker_release.clone();
+    state
+        .submit(state.generation("blocker", crate::contracts::types::Generation(1)), move |token| {
+            blocker_worker.wait();
+            blocker_worker_release.wait();
+            while !token.is_cancelled() {
+                std::thread::yield_now();
+            }
+        })
+        .unwrap();
+    blocker_started.wait();
+    let first_started = Arc::new(Barrier::new(2));
+    let first_release = Arc::new(Barrier::new(2));
+    let first_worker_started = first_started.clone();
+    let first_worker_release = first_release.clone();
+    let followup_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let followup_calls_worker = followup_calls.clone();
+    let first = state
+        .scan_async_with(move |_, _| {
+            first_worker_started.wait();
+            first_worker_release.wait();
+            crate::library::scanner::ScanOutcome {
+                playlists: Default::default(),
+                roots: vec![],
+                errors: vec![],
+            }
+        })
+        .unwrap();
+    first_started.wait();
+    state
+        .scan_async_with(move |_, _| {
+            followup_calls_worker.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            panic!("follow-up should not spawn at capacity");
+        })
+        .unwrap();
+    first_release.wait();
+    let snapshot = loop {
+        if let Some(event) = state
+            .events()
+            .into_iter()
+            .find(|event| matches!(event.event, Event::LibrarySnapshot { .. }))
+        {
+            break event;
+        }
+        std::thread::yield_now();
+    };
+    blocker_release.wait();
+    let report = state.shutdown(Duration::from_secs(1));
+    assert!(!report.timed_out);
+    assert_eq!(snapshot.generation, first);
+    assert_eq!(followup_calls.load(std::sync::atomic::Ordering::Acquire), 0);
+    assert_eq!(first, crate::contracts::types::Generation(1));
+}
+
+#[test]
+fn target_scan_scheduler_coalesces_refreshes_and_rejects_stale_results_without_sleeping() {
+    let state = AppState::new(2);
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let entered_worker = entered.clone();
+    let release_worker = release.clone();
+    let (events, received) = std::sync::mpsc::channel();
+    state.set_event_sink(Arc::new(move |event| {
+        events.send(event).unwrap();
+        Ok(())
+    }));
+    let first_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let first_calls_worker = first_calls.clone();
+    let followup_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let followup_calls_worker = followup_calls.clone();
+    let first = state
+        .scan_async_with(move |_roots, token| {
+            assert_eq!(
+                first_calls_worker.fetch_add(1, std::sync::atomic::Ordering::AcqRel),
+                0
+            );
+            entered_worker.wait();
+            release_worker.wait();
+            assert!(!token.is_cancelled());
+            crate::library::scanner::ScanOutcome {
+                playlists: Default::default(),
+                roots: vec![],
+                errors: vec![],
+            }
+        })
+        .unwrap();
+    entered.wait();
+    let followup = followup_calls_worker.clone();
+    let coalesced = state
+        .scan_async_with(move |_, token| {
+            followup.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            assert!(!token.is_cancelled());
+            crate::library::scanner::ScanOutcome {
+                playlists: Default::default(),
+                roots: vec![],
+                errors: vec![],
+            }
+        })
+        .unwrap();
+    assert_eq!(coalesced, first);
+    release.wait();
+    let first_event = received.recv().unwrap();
+    let second_event = received.recv().unwrap();
+    assert_eq!(first_event.generation, first);
+    assert!(second_event.generation.0 > first.0);
+    assert!(matches!(first_event.event, Event::LibrarySnapshot { .. }));
+    assert!(matches!(second_event.event, Event::LibrarySnapshot { .. }));
+    assert_eq!(first_calls.load(std::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(followup_calls.load(std::sync::atomic::Ordering::Acquire), 1);
+}
+
+#[test]
+fn target_scan_publication_rejects_late_older_result_after_newer_task_is_current() {
+    let state = AppState::new(3);
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let old_entered = entered.clone();
+    let old_release = release.clone();
+    let (events, received) = std::sync::mpsc::channel();
+    state.set_event_sink(Arc::new(move |event| {
+        events.send(event).unwrap();
+        Ok(())
+    }));
+
+    let old_generation = state
+        .scan_async_with(move |_, _| {
+            old_entered.wait();
+            old_release.wait();
+            crate::library::scanner::ScanOutcome {
+                playlists: std::collections::BTreeMap::from([(
+                    "old".into(),
+                    vec![PathBuf::from("old.mp3")],
+                )]),
+                roots: vec![],
+                errors: vec![],
+            }
+        })
+        .unwrap();
+    entered.wait();
+
+    let newer_generation = crate::contracts::types::Generation(old_generation.0 + 1);
+    let newer_spec = state.generation("library-scan", newer_generation);
+    let newer_state = state.clone();
+    state
+        .submit(newer_spec.clone(), move |_| {
+            assert!(newer_state.publish_scan_result_if_current(
+                &newer_spec,
+                newer_generation,
+                crate::library::scanner::ScanOutcome {
+                    playlists: std::collections::BTreeMap::from([(
+                        "new".into(),
+                        vec![PathBuf::from("new.mp3")],
+                    )]),
+                    roots: vec![],
+                    errors: vec![],
+                },
+            ));
+        })
+        .unwrap();
+
+    let newer_event = received.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(matches!(newer_event.event, Event::LibrarySnapshot { .. }));
+    release.wait();
+    let report = state.shutdown(Duration::from_secs(1));
+    assert!(!report.timed_out);
+    assert_eq!(state.library().generation, newer_generation);
+    assert_eq!(state.library().playlists[0].name, "new");
+    assert!(received.try_recv().is_err(), "older result was published");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn migration_state_and_rollback_are_retryable_without_touching_legacy_files() {
+    use crate::migration::first_run::{
+        migrate, CrashStage, Keychain, KeychainImport, MigrationOptions, MigrationPaths,
+    };
+
+    struct TestKeychain;
+    impl Keychain for TestKeychain {
+        fn import_lastfm_key(&mut self, _: &str) -> Result<KeychainImport, String> {
+            Ok(KeychainImport::Created)
+        }
+        fn rollback_lastfm_key(&mut self, _: KeychainImport) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    let home = fs::canonicalize(fixture_dir("migration")).unwrap();
+    let music = home.join("Music");
+    let target = home.join("Target");
+    let preview = home.join(".luno_previews");
+    fs::create_dir_all(&music).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::create_dir_all(&preview).unwrap();
+    let config = home.join(".luno_config.json");
+    let config_bytes = br#"{"music_root":"Music","favorite_songs":["fixture://track-a"]}"#;
+    fs::write(&config, config_bytes).unwrap();
+    fs::write(
+        music.join(".luno_playlist_urls.json"),
+        br#"{"playlist-a":"https://example.test/list"}"#,
+    )
+    .unwrap();
+    fs::write(
+        music.join(".luno_allowed_dups.json"),
+        br#"["artistatracka"]"#,
+    )
+    .unwrap();
+    fs::write(music.join(".downloaded.txt"), b"legacy title legacy-id\n").unwrap();
+    fs::write(preview.join("stale.mp3"), b"synthetic").unwrap();
+    let paths = MigrationPaths {
+        legacy_root: home.clone(),
+        legacy_data_root: Some(music.clone()),
+        configured_music_root: Some(music),
+        target_root: target,
+        preview_dir: preview,
+        current_preview: vec![],
+        promoted_assets: vec![],
+    };
+
+    let mut keychain = TestKeychain;
+    let failed = migrate(
+        &paths,
+        &MigrationOptions {
+            crash_at: Some(CrashStage::Converted),
+            ..Default::default()
+        },
+        &mut keychain,
+    );
+    assert!(failed.is_err());
+    assert_eq!(fs::read(&config).unwrap(), config_bytes);
+    assert!(!paths.state_file().exists());
+
+    let mut keychain = TestKeychain;
+    let receipt = migrate(&paths, &MigrationOptions::default(), &mut keychain).unwrap();
+    assert!(receipt.snapshot.is_some());
+    assert!(paths.state_file().is_file());
+    assert!(paths.version_record().is_file());
+    let state = fs::read_to_string(paths.state_file()).unwrap();
+    assert!(state.contains("legacy-id"));
+    assert!(!paths.preview_dir.join("stale.mp3").exists());
+    let mut keychain = TestKeychain;
+    let retry = migrate(&paths, &MigrationOptions::default(), &mut keychain).unwrap();
+    assert!(retry.snapshot.is_none());
+    fs::remove_dir_all(home).unwrap();
+}

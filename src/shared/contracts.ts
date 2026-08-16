@@ -12,7 +12,8 @@ export interface Track { id: TrackId; path: string | null; title: string; artist
 export interface Playlist { id: PlaylistId; name: string; path: string | null; url: string | null; ordered_track_ids: TrackId[] }
 export interface LibrarySnapshot { version: ContractVersion; generation: Generation; tracks: Track[]; playlists: Playlist[] }
 export type PlaybackStatus = "stopped" | "playing" | "paused" | "failed";
-export interface PlaybackSnapshot { queue: TrackId[]; current_index: number | null; position_ms: number; duration_ms: number | null; status: PlaybackStatus; generation: Generation }
+export type RepeatMode = "off" | "one" | "all";
+export interface PlaybackSnapshot { queue: TrackId[]; current_index: number | null; shuffle: boolean; repeat: RepeatMode; position_ms: number; duration_ms: number | null; status: PlaybackStatus; generation: Generation }
 export type VideoStatus = "not_checked" | "loading" | "ready" | "playing" | "paused" | "ended" | "unavailable" | "error";
 export interface VideoState { track_id: TrackId | null; source_url: string | null; staged_path: string | null; status: VideoStatus; position_ms: number; fullscreen: boolean; generation: Generation }
 export type DownloadKind = "single" | "csv" | "sync" | "url_queue";
@@ -20,9 +21,31 @@ export type JobState = "queued" | "running" | "cancelling" | "succeeded" | "fail
 export interface DownloadJob { id: JobId; kind: DownloadKind; state: JobState; track_id: TrackId | null; progress: number | null; generation: Generation }
 export type ErrorCode = "invalid_request" | "unsupported_version" | "not_found" | "busy" | "cancelled" | "unavailable" | "internal" | "shutting_down";
 export interface ContractError { code: ErrorCode; message: string; retryable: boolean }
+export interface SettingsInput { music_root: string | null; auto_discovery: boolean | null; volume: number | null; sleep_timer: unknown | null; global_keys: boolean | null; favorite_songs: string[] }
+export interface SearchResult { provider: string; query: string }
 
 export type Command =
   | { type: "get_library" } | { type: "scan_library" } | { type: "play"; payload: { track_id: TrackId } }
+  | { type: "play_with_context"; payload: { track_id: TrackId; context: TrackId[] } }
+  | { type: "next" } | { type: "previous" }
+  | { type: "play_next"; payload: { track_ids: TrackId[] } } | { type: "add_to_queue"; payload: { track_ids: TrackId[] } }
+  | { type: "remove_from_queue"; payload: { index: number } } | { type: "reorder_queue"; payload: { from: number; to: number } }
+  | { type: "clear_queue" } | { type: "toggle_shuffle" } | { type: "set_repeat"; payload: { repeat: "off" | "one" | "all" } }
+  | { type: "load_config"; payload: { home: string } } | { type: "register_root"; payload: { root: string } }
+  | { type: "promote_audio_output"; payload: { temporary: string; destination: string } }
+  | { type: "sync_markers"; payload: { folder: string } } | { type: "toggle_favorite"; payload: { track_id: TrackId } }
+  | { type: "search_downloader"; payload: { query: string; try_soundcloud: boolean } }
+  | { type: "validate_direct_url"; payload: { url: string; destination: string } }
+  | { type: "preview_csv"; payload: { csv: string } }
+  | { type: "queue_urls"; payload: { urls: string[] } }
+  | { type: "select_library_root"; payload: { root: string } }
+  | { type: "start_download"; payload: { job_id: JobId; destination: string; helper: string } }
+  | { type: "retry_download"; payload: { job_id: JobId } }
+  | { type: "load_settings"; payload: { home: string } } | { type: "save_settings"; payload: { home: string; settings: SettingsInput } }
+  | { type: "transfer_preview"; payload: { manifest: string; destination: string } }
+  | { type: "transfer_export" }
+  | { type: "transfer_apply"; payload: { manifest: string; destination: string; approvals: Record<string, string> } }
+  | { type: "record_recent"; payload: { track_id: TrackId } } | { type: "get_recent" } | { type: "clear_recent" }
   | { type: "pause" } | { type: "seek"; payload: { position_ms: number } }
   | { type: "video_source"; payload: { track_id: TrackId } } | { type: "video_stage"; payload: { track_id: TrackId } }
   | { type: "video_play" } | { type: "video_pause" } | { type: "video_seek"; payload: { position_ms: number } }
@@ -53,8 +76,29 @@ const safeInteger = (v: unknown): v is number => Number.isSafeInteger(v);
 export function isContractVersion(v: unknown): v is ContractVersion { return v === CONTRACT_VERSION; }
 function isCommand(v: unknown): v is Command {
   if (!object(v) || typeof v.type !== "string") return false;
-  if (["get_library", "scan_library", "pause"].includes(v.type)) return Object.keys(v).length === 1;
+   if (["get_library", "scan_library", "pause", "get_recent", "clear_recent", "transfer_export"].includes(v.type)) return Object.keys(v).length === 1;
+   if (v.type === "load_config") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && Object.keys(v.payload).length === 1;
+    if (v.type === "register_root") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.root === "string" && v.payload.root.trim().length > 0 && Object.keys(v.payload).length === 1;
+    if (v.type === "promote_audio_output") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.temporary === "string" && v.payload.temporary.trim().length > 0 && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && Object.keys(v.payload).length === 2;
+    if (v.type === "sync_markers") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.folder === "string" && v.payload.folder.trim().length > 0 && Object.keys(v.payload).length === 1;
+    if (v.type === "search_downloader") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.query === "string" && v.payload.query.trim().length > 0 && typeof v.payload.try_soundcloud === "boolean" && Object.keys(v.payload).length === 2;
+    if (v.type === "validate_direct_url") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.url === "string" && typeof v.payload.destination === "string" && v.payload.url.trim().length > 0 && v.payload.destination.trim().length > 0 && Object.keys(v.payload).length === 2;
+    if (v.type === "preview_csv") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.csv === "string" && v.payload.csv.length <= 10_485_760 && Object.keys(v.payload).length === 1;
+    if (v.type === "queue_urls") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.urls) && v.payload.urls.every((url) => typeof url === "string" && url.trim().length > 0) && Object.keys(v.payload).length === 1;
+    if (v.type === "select_library_root") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.root === "string" && v.payload.root.trim().length > 0 && Object.keys(v.payload).length === 1;
+    if (v.type === "start_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && typeof v.payload.helper === "string" && v.payload.helper.trim().length > 0 && Object.keys(v.payload).length === 3;
+    if (v.type === "retry_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && Object.keys(v.payload).length === 1;
+    if (v.type === "load_settings") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && Object.keys(v.payload).length === 1;
+    if (v.type === "save_settings") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && object(v.payload.settings) && Object.keys(v.payload.settings).every((key) => ["music_root", "auto_discovery", "volume", "sleep_timer", "global_keys", "favorite_songs"].includes(key)) && Array.isArray(v.payload.settings.favorite_songs) && v.payload.settings.favorite_songs.every((item) => typeof item === "string") && Object.keys(v.payload.settings).length === 6 && Object.keys(v.payload).length === 2;
+    if (["transfer_preview", "transfer_apply"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.manifest === "string" && v.payload.manifest.length <= 10_485_760 && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && (v.type === "transfer_preview" || (object(v.payload.approvals) && Object.keys(v.payload).length === 3)) && Object.keys(v.payload).length === (v.type === "transfer_preview" ? 2 : 3);
+   if (["toggle_favorite", "record_recent"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && Object.keys(v.payload).length === 1;
    if (v.type === "play") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && Object.keys(v.payload).length === 1;
+   if (v.type === "play_with_context") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && Array.isArray(v.payload.context) && v.payload.context.every(nonEmptyId) && Object.keys(v.payload).length === 2;
+   if (["next", "previous", "clear_queue", "toggle_shuffle"].includes(v.type)) return Object.keys(v).length === 1;
+   if (["play_next", "add_to_queue"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.track_ids) && v.payload.track_ids.every(nonEmptyId) && Object.keys(v.payload).length === 1;
+   if (["remove_from_queue"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && safeInteger(v.payload.index) && v.payload.index >= 0 && Object.keys(v.payload).length === 1;
+   if (v.type === "reorder_queue") return exact(v, ["type", "payload"]) && object(v.payload) && safeInteger(v.payload.from) && v.payload.from >= 0 && safeInteger(v.payload.to) && v.payload.to >= 0 && Object.keys(v.payload).length === 2;
+   if (v.type === "set_repeat") return exact(v, ["type", "payload"]) && object(v.payload) && ["off", "one", "all"].includes(String(v.payload.repeat)) && Object.keys(v.payload).length === 1;
    if (["video_play", "video_pause"].includes(v.type)) return Object.keys(v).length === 1;
    if (["seek", "video_seek"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.position_ms === "number" && Number.isSafeInteger(v.payload.position_ms) && v.payload.position_ms >= 0 && Object.keys(v.payload).length === 1;
    if (["video_source", "video_stage"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && Object.keys(v.payload).length === 1;
@@ -74,7 +118,7 @@ function isEvent(v: unknown): v is Event {
   const track = (value: unknown): value is Track => exact(value, ["id", "path", "title", "artist", "album", "duration_ms", "artwork_url", "favorite", "provider"]) && id(value.id) && optionalString(value.path) && typeof value.title === "string" && optionalString(value.artist) && optionalString(value.album) && (value.duration_ms === null || nonNegativeInt(value.duration_ms)) && optionalString(value.artwork_url) && typeof value.favorite === "boolean" && (value.provider === null || provider(value.provider));
   const playlist = (value: unknown): value is Playlist => exact(value, ["id", "name", "path", "url", "ordered_track_ids"]) && id(value.id) && typeof value.name === "string" && optionalString(value.path) && optionalString(value.url) && Array.isArray(value.ordered_track_ids) && value.ordered_track_ids.every(id);
   const library = (value: unknown): value is LibrarySnapshot => exact(value, ["version", "generation", "tracks", "playlists"]) && value.version === CONTRACT_VERSION && generation(value.generation) && Array.isArray(value.tracks) && value.tracks.every(track) && Array.isArray(value.playlists) && value.playlists.every(playlist);
-   const playback = (value: unknown): value is PlaybackSnapshot => exact(value, ["queue", "current_index", "position_ms", "duration_ms", "status", "generation"]) && Array.isArray(value.queue) && value.queue.every(id) && (value.current_index === null || nonNegativeInt(value.current_index)) && nonNegativeInt(value.position_ms) && (value.duration_ms === null || nonNegativeInt(value.duration_ms)) && ["stopped", "playing", "paused", "failed"].includes(String(value.status)) && generation(value.generation);
+    const playback = (value: unknown): value is PlaybackSnapshot => exact(value, ["queue", "current_index", "shuffle", "repeat", "position_ms", "duration_ms", "status", "generation"]) && Array.isArray(value.queue) && value.queue.every(id) && (value.current_index === null || nonNegativeInt(value.current_index)) && typeof value.shuffle === "boolean" && ["off", "one", "all"].includes(String(value.repeat)) && nonNegativeInt(value.position_ms) && (value.duration_ms === null || nonNegativeInt(value.duration_ms)) && ["stopped", "playing", "paused", "failed"].includes(String(value.status)) && generation(value.generation);
    const video = (value: unknown): value is VideoState => exact(value, ["track_id", "source_url", "staged_path", "status", "position_ms", "fullscreen", "generation"]) && (value.track_id === null || id(value.track_id)) && optionalString(value.source_url) && optionalString(value.staged_path) && ["not_checked", "loading", "ready", "playing", "paused", "ended", "unavailable", "error"].includes(String(value.status)) && nonNegativeInt(value.position_ms) && typeof value.fullscreen === "boolean" && generation(value.generation);
   const progress = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
   const job = (value: unknown): value is DownloadJob => exact(value, ["id", "kind", "state", "track_id", "progress", "generation"]) && id(value.id) && ["single", "csv", "sync", "url_queue"].includes(String(value.kind)) && ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"].includes(String(value.state)) && (value.track_id === null || id(value.track_id)) && (value.progress === null || progress(value.progress)) && generation(value.generation);
@@ -101,3 +145,4 @@ export function isDomainEventId(value: unknown): value is string { return typeof
 export function isEventEnvelope(v: unknown): v is EventEnvelope { return exact(v, ["version", "event_id", "generation", "job_id", "session_id", "event"]) && isContractVersion(v.version) && (isDomainEventId(v.event_id) || isDeliveryErrorEventId(v.event_id)) && safeInteger(v.generation) && v.generation >= 0 && (v.job_id === null || nonEmptyId(v.job_id)) && (v.session_id === null || nonEmptyId(v.session_id)) && isEvent(v.event); }
 export function parseCommandEnvelope(json: string): CommandEnvelope { const value: unknown = JSON.parse(json); if (!isCommandEnvelope(value)) throw new Error("invalid or unsupported command envelope"); return value; }
 export function parseEventEnvelope(json: string): EventEnvelope { const value: unknown = JSON.parse(json); if (!isEventEnvelope(value)) throw new Error("invalid or unsupported event envelope"); return value; }
+export function isSearchResults(value: unknown): value is SearchResult[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["provider", "query"]) && nonEmptyId(item.provider) && nonEmptyId(item.query)); }

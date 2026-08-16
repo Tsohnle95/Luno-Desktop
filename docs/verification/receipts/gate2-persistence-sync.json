@@ -1,0 +1,155 @@
+{
+  "provenance": {
+    "corpus_ids": [
+      "REF-CONFIG-CORRUPT",
+      "REF-MARKER-CORRUPT",
+      "REF-URL-MARKERS",
+      "REF-DIRECT-OUTPUT"
+    ],
+    "acceptance_ids": [
+      "AC-PERSIST-01",
+      "AC-PERSIST-02",
+      "AC-DL-02",
+      "AC-DL-03",
+      "AC-OPS-01"
+    ],
+    "journey_ids": [
+      "JRN-DOWNLOAD"
+    ],
+    "authorities": [
+      "docs/migration/reference-corpus.md",
+      "docs/migration/acceptance-catalog.md",
+      "docs/migration/rollback.md",
+      "docs/verification/receipts/gate2-evidence-plan.md",
+      "docs/verification/receipts/gate2-library-persistence.md",
+      "src-tauri/src/gate2_tests.rs"
+    ]
+  },
+  "environment": {
+    "os": "macOS",
+    "arch": "arm64",
+    "home": "sanitized temporary fixture HOME",
+    "tmpdir": "sanitized temporary fixture TMPDIR",
+    "cargo_home": "pre-cached dependency home",
+    "cargo_net_offline": true,
+    "network_provider_yt_dlp_credentials_keychain_audio_real_home": "not used",
+    "fixture_labels": [
+      "fixture://config",
+      "fixture://markers",
+      "fixture://sync-journey",
+      "fixture://promotion-command"
+    ]
+  },
+  "classification": {
+    "direct_runtime": "No launched Tauri process or UI bridge was run.",
+    "controlled_local_seam": "AppState command dispatch, marker loading, local sync callbacks, promotion, and scanner seams were run in deterministic Rust tests.",
+    "source_inspection": "Command and test source was inspected only to reconcile the current promotion seam with the stale evidence-plan gap note."
+  },
+  "commands": [
+    {
+      "command": "HOME=<fixture> TMPDIR=<fixture>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true cargo test --manifest-path src-tauri/Cargo.toml 'gate2_tests::target_command_boundary' -- --nocapture",
+      "exit_status": 0,
+      "counts": {"passed": 6, "failed": 0, "ignored": 0, "filtered": 73},
+      "classification": "controlled_local_seam",
+      "result": "PASS"
+    },
+    {
+      "command": "HOME=<fixture> TMPDIR=<fixture>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true cargo test --manifest-path src-tauri/Cargo.toml 'gate2_tests::local_sync_journey_covers_whole_root_dedupe_markers_validation_retry_and_cancel' -- --nocapture",
+      "exit_status": 0,
+      "counts": {"passed": 1, "failed": 0, "ignored": 0, "filtered": 78},
+      "classification": "controlled_local_seam",
+      "result": "PASS"
+    },
+    {
+      "command": "HOME=<fixture> TMPDIR=<fixture>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true cargo test --manifest-path src-tauri/Cargo.toml 'gate2_tests::target_config_and_marker_failures_are_explicit' -- --nocapture",
+      "exit_status": 0,
+      "counts": {"passed": 1, "failed": 0, "ignored": 0, "filtered": 78},
+      "classification": "controlled_local_seam",
+      "result": "PASS"
+    },
+    {
+      "command": "HOME=<fixture> TMPDIR=<fixture>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true cargo test --manifest-path src-tauri/Cargo.toml 'gate2_tests::target_command_boundary_promotes_validated_audio_then_scans_and_gets_library' -- --nocapture",
+      "exit_status": 0,
+      "counts": {"passed": 1, "failed": 0, "ignored": 0, "filtered": 78},
+      "classification": "controlled_local_seam",
+      "result": "PASS"
+    },
+    {
+      "command": "HOME=<fixture> TMPDIR=<fixture>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true cargo test --manifest-path src-tauri/Cargo.toml gate2_tests -- --nocapture",
+      "exit_status": 0,
+      "counts": {"passed": 24, "failed": 0, "ignored": 0, "filtered": 55},
+      "classification": "controlled_local_seam",
+      "result": "PASS"
+    },
+    {
+      "command": "git diff --check",
+      "exit_status": 0,
+      "classification": "direct_runtime",
+      "result": "PASS"
+    }
+  ],
+  "rows": [
+    {
+      "fixture_id": "REF-CONFIG-CORRUPT",
+      "acceptance_ids": ["AC-PERSIST-01", "AC-OPS-01"],
+      "status": "PASS",
+      "classification": "controlled_local_seam",
+      "observed": {
+        "request_ids": ["config", "config-without-root", "missing-config", "blank-config", "corrupt-config"],
+        "valid_config": "Configured root resolved and registered; input remained byte-for-byte unchanged.",
+        "missing_root_config": "Previous root was cleared rather than falling back to HOME.",
+        "errors": ["missing config -> NotFound", "blank root -> InvalidRequest", "malformed JSON -> InvalidRequest"],
+        "marker_config_failure": "Missing marker folder -> NotFound; corrupt marker ID -> InvalidRequest"
+      }
+    },
+    {
+      "fixture_id": "REF-MARKER-CORRUPT",
+      "acceptance_ids": ["AC-PERSIST-02", "AC-DL-03"],
+      "status": "PASS",
+      "classification": "controlled_local_seam",
+      "observed": {
+        "valid_records": "Current success, current failure, and legacy success IDs loaded.",
+        "ignored_records": "Blank/path/whitespace-corrupt IDs did not create state.",
+        "request_ids": ["markers", "missing-markers", "corrupt-markers"],
+        "retryability": "Transient failures remained retryable; permanent failures remained retained.",
+        "marker_order": "Load and validation preceded any marker state publication."
+      }
+    },
+    {
+      "fixture_id": "REF-URL-MARKERS",
+      "acceptance_ids": ["AC-DL-03", "AC-PERSIST-02"],
+      "status": "PASS",
+      "classification": "controlled_local_seam",
+      "observed": {
+        "planning": "Whole-root dedupe reduced three synthetic entries to one new item despite an existing file in another playlist.",
+        "outcome_order": ["current-id: matched", "legacy-id: matched", "valid-id: downloaded", "invalid-id: failed", "missing-id: failed", "permanent-id: permanent_failure", "transient-id: failed", "cancel-id: failed"],
+        "marker_rules": ["validated output wrote valid-id success marker", "invalid and missing output did not write success markers", "permanent-id failure marker was retained", "cancel-id did not write success marker"],
+        "retry": "transient-id succeeded on a subsequent local callback; retained permanent-id was not retried.",
+        "terminal": "cancelled after cancel-id; sequential processing stopped."
+      }
+    },
+    {
+      "fixture_id": "REF-DIRECT-OUTPUT",
+      "acceptance_ids": ["AC-DL-02", "AC-DL-04"],
+      "status": "PASS",
+      "classification": "controlled_local_seam",
+      "observed": {
+        "promotion_command": "Validated synthetic staged bytes promoted atomically into a configured playlist destination.",
+        "scan_order": "After promotion, ScanLibrary completed and GetLibrary returned playlist-a / Track.",
+        "rejected_cases": ["missing temporary output -> NotFound", "invalid output -> InvalidRequest", "destination escape -> InvalidRequest", "existing destination -> Busy"],
+        "boundary": "This is direct AppState command dispatch, not evidence from a launched Tauri bridge or a provider download."
+      }
+    }
+  ],
+  "warnings_and_limitations": [
+    "Every successful Rust run emitted the same three pre-existing warnings: unused mut in migration/first_run.rs, unused error in download/sync.rs, and an unused macOS Keychain symbol.",
+    "No provider extraction, yt-dlp, network, credentials, Keychain, audio bytes, real HOME, or real music library was used.",
+    "The current source exposes PromoteAudioOutput in the Rust Command enum and AppState dispatch; the evidence-plan statement that the command variant is absent is stale and was not repeated.",
+    "No launched Tauri process, UI event bridge, real direct download, or provider response was exercised.",
+    "The controlled promotion test proves validated local promotion and subsequent scan visibility only; it does not prove end-to-end download/provider behavior."
+  ],
+  "overall_verdict": {
+    "status": "INCONCLUSIVE",
+    "rationale": "All requested local persistence, marker, sync, retry, error, and promotion seam tests passed, but launched Tauri/UI bridge and provider/download boundaries remain unexercised."
+  }
+}

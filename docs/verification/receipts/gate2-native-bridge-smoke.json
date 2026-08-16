@@ -1,0 +1,72 @@
+{
+  "artifact_id": "gate2-native-bridge-smoke",
+  "date": "2026-08-15",
+  "gate": "Gate 2",
+  "formal_verdict": "PASS",
+  "verdict": "PASS — controlled native runtime proof for the Tauri/React command, event, promotion, scan, and library-discovery boundary",
+  "provenance": {
+    "authority_paths": [
+      "docs/verification/receipts/gate2-library-persistence.md",
+      "docs/verification/artifacts/gate2-native-bridge-smoke.png",
+      "src/app/gate2Smoke.tsx",
+      "src/test/gate2_smoke.test.ts"
+    ],
+    "evidence_kind": "clean isolated Tauri dev run with a synthetic local audio fixture",
+    "independent_observation": "A real native Luno window was observed, including the React/WebView overlay, library state, filesystem postconditions, and process cleanup."
+  },
+  "environment": {
+    "os": "Darwin 26.5",
+    "arch": "arm64",
+    "home_policy": "HOME was isolated beneath <fixture-root>/home",
+    "tmpdir_policy": "TMPDIR was isolated beneath <fixture-root>/tmp",
+    "cargo_home_policy": "CARGO_HOME used the pre-cached dependency cache only",
+    "cargo_net_offline": true,
+    "provider_network_yt_dlp_credentials_keychain_real_home_audio_playback": "not used or claimed"
+  },
+  "launch": {
+    "command": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true VITE_LUNO_GATE2_SMOKE=1 VITE_LUNO_GATE2_SMOKE_ROOT=<fixture-root>/library VITE_LUNO_GATE2_SMOKE_TEMPORARY=<fixture-root>/stage/gate2-smoke.mp3 VITE_LUNO_GATE2_SMOKE_DESTINATION=<fixture-root>/library/Runtime Demo/Gate2 Smoke.mp3 npm run tauri dev",
+    "fixture_paths": {
+      "root": "<fixture-root>/library",
+      "temporary": "<fixture-root>/stage/gate2-smoke.mp3",
+      "destination": "<fixture-root>/library/Runtime Demo/Gate2 Smoke.mp3"
+    },
+    "process": "real native Tauri Luno window observed; no backend or command error"
+  },
+  "observations": {
+    "dom_overlay_text": "Gate 2 smoke pass: registerRoot, promoteAudioOutput, scanLibrary, library_snapshot, getLibrary; 1 track observed.",
+    "library_state": {
+      "songs_count": 1,
+      "track": "Gate2 Smoke",
+      "playlist": "Runtime Demo",
+      "playlist_count": 1
+    },
+    "bridge_journey": [
+      "registerRoot",
+      "promoteAudioOutput",
+      "scanLibrary",
+      "library_snapshot",
+      "getLibrary"
+    ],
+    "filesystem_postconditions": {
+      "staged_source": "consumed",
+      "destination": "existed with 22 bytes"
+    },
+    "artifact_path": "docs/verification/artifacts/gate2-native-bridge-smoke.png"
+  },
+  "cleanup": {
+    "process": "disposable process terminated after observation",
+    "post_cleanup_process_check": "ps showed no luno/vite/tauri process",
+    "post_cleanup_port_check": "port 1420 was not listening",
+    "fixture_policy": "fixture was disposable and no absolute temporary path was retained"
+  },
+  "limitations": [
+    "This is equivalent controlled runtime proof for the provider/direct-download boundary only at the validated local promotion and library-discoverability boundary.",
+    "Provider/network extraction, yt-dlp, credentials, real HOME, Keychain, audio playback, and network behavior were not exercised and are not claimed.",
+    "Deterministic scan coalescing, stale-result rejection, and cancellation remain supported by the focused target seam tests, not by this smoke run.",
+    "No later-gate behavior is included in this verdict."
+  ],
+  "artifact_paths": [
+    "docs/verification/artifacts/gate2-native-bridge-smoke.png",
+    "docs/verification/receipts/gate2-native-bridge-smoke.json"
+  ]
+}

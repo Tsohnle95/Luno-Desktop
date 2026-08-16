@@ -16,6 +16,14 @@ export interface SettingsViewProps {
   onAutoDiscoveryChange?: (value: boolean) => void;
   onSleepTimerChange?: (value: SleepTimer) => void;
   onMediaKeysChange?: (value: boolean) => void;
+  transferManifest?: string;
+  transferDestination?: string;
+  onTransferManifestChange?: (value: string) => void;
+  onTransferDestinationChange?: (value: string) => void;
+  onTransferPreview?: () => void;
+  onTransferApply?: () => void;
+  onTransferExport?: () => void;
+  transferResult?: string;
   onOpenErrorLog?: () => void;
 }
 
@@ -26,6 +34,7 @@ export function SettingsView({
   lastfmKey = "", keychainStatus = "available", musicRoot = "Not configured", autoDiscovery = false,
   sleepTimer = "Off", mediaKeys = true, loading = false, error = null, onLastfmKeyChange,
   onChooseMusicRoot, onAutoDiscoveryChange, onSleepTimerChange, onMediaKeysChange, onOpenErrorLog,
+  transferManifest = "", transferDestination = "", transferResult = "", onTransferManifestChange, onTransferDestinationChange, onTransferPreview, onTransferApply, onTransferExport,
 }: SettingsViewProps) {
   const [key, setKey] = useState(lastfmKey);
   const [keyError, setKeyError] = useState<string | null>(null);
@@ -53,6 +62,13 @@ export function SettingsView({
     {section("Playback Settings", <>
       <label htmlFor="sleep-timer">Sleep timer</label><select id="sleep-timer" value={sleepTimer} onChange={(e) => onSleepTimerChange?.(e.target.value as SleepTimer)} style={{ ...inputStyle, marginTop: 8 }} aria-label="Sleep timer">{["Off", "5 mins", "15 mins", "30 mins", "60 mins"].map(value => <option key={value}>{value}</option>)}</select>
       <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 22 }}><input type="checkbox" checked={mediaKeys} onChange={(e) => onMediaKeysChange?.(e.target.checked)} /> Global media keys (macOS remote commands)</label>
+    </>)}
+    {section("Library Transfer", <>
+      <label htmlFor="transfer-manifest">Manifest JSON</label>
+      <textarea id="transfer-manifest" value={transferManifest} onChange={(e) => onTransferManifestChange?.(e.target.value)} rows={5} style={{ ...inputStyle, marginTop: 8, fontFamily: "monospace" }} />
+      <label htmlFor="transfer-destination" style={{ display: "block", marginTop: 12 }}>Destination folder</label>
+      <input id="transfer-destination" value={transferDestination} onChange={(e) => onTransferDestinationChange?.(e.target.value)} style={{ ...inputStyle, marginTop: 8 }} />
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}><button type="button" onClick={onTransferExport} style={buttonStyle}>Export current library</button><button type="button" onClick={onTransferPreview} style={buttonStyle}>Preview import</button><button type="button" onClick={onTransferApply} style={{ ...buttonStyle, background: "var(--luno-bg-3)", color: "var(--luno-text)" }}>Apply approved import</button></div>{transferResult && <p role="status" style={{ marginTop: 12 }}>{transferResult}</p>}
     </>)}
     {section("Troubleshooting", <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 }}><span style={{ color: "var(--luno-text-2)" }}>View internal application logs for technical support.</span><button type="button" onClick={onOpenErrorLog} style={{ ...buttonStyle, background: "var(--luno-bg-3)", color: "var(--luno-text)" }}>Open logs</button></div>)}
   </div>;

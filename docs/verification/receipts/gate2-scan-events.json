@@ -1,0 +1,170 @@
+{
+  "artifact_id": "gate2-scan-events",
+  "date": "2026-08-15",
+  "gate": "Gate 2",
+  "formal_verdict": "INCONCLUSIVE",
+  "verdict_rationale": "The controlled AppState/event-sink scan seam passed all requested deterministic scan, generation, cancellation, stale-result, spawn-capacity, and shutdown assertions. This is not evidence from a launched Tauri process or React/UI bridge, so the formal Gate 2 verdict remains INCONCLUSIVE.",
+  "provenance": {
+    "authority_paths": [
+      "docs/verification/receipts/gate2-evidence-plan.md (absent in this checkout; requested authority path could not be read)",
+      "docs/migration/reference-corpus.md",
+      "docs/migration/acceptance-catalog.md",
+      "docs/migration/rollback.md",
+      "src-tauri/src/gate2_tests.rs",
+      "src-tauri/src/library/scanner.rs",
+      "src-tauri/src/library/index.rs",
+      "src-tauri/src/runtime/task_registry.rs",
+      "src-tauri/src/state.rs"
+    ],
+    "frozen_reference_ids": [
+      "REF-ROOT-MISSING",
+      "REF-ROOT-EMPTY",
+      "REF-SCAN-ORDER",
+      "REF-SCAN-GENERATION",
+      "REF-SHUTDOWN"
+    ],
+    "acceptance_ids": [
+      "AC-LIB-01",
+      "AC-LIB-02",
+      "AC-LIB-03",
+      "AC-LIB-04",
+      "AC-OPS-03"
+    ]
+  },
+  "evidence_kind": {
+    "observed": "controlled AppState scan workers, command dispatch, and in-process event sink",
+    "not_observed": "launched Tauri process, React application, or production UI bridge",
+    "interpretation": "PASS applies to the exercised controlled scan/event seam only; launched UI delivery remains INCONCLUSIVE."
+  },
+  "environment": {
+    "os": "Darwin 26.5",
+    "arch": "arm64",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)",
+    "jq": "jq-1.7.1-apple",
+    "git": "git version 2.50.1",
+    "cargo_home_policy": "pre-cached dependency cache only; represented as <pre-cached-cargo-home> and not persisted as an absolute path",
+    "network": "not called; CARGO_NET_OFFLINE=true",
+    "application_environment_policy": "HOME and TMPDIR were isolated beneath <fixture-root>; no real HOME was used for application data; no Keychain, credentials, provider, music library, yt-dlp, audio, or network were used"
+  },
+  "fixtures": {
+    "root_pattern": "/tmp/luno-gate2-runtime-<pid>/",
+    "application_home_pattern": "<fixture-root>/home/",
+    "temporary_directory_pattern": "<fixture-root>/tmp/",
+    "test_fixture_pattern": "<fixture-root>/tmp/luno-gate2-<label>-<pid>/",
+    "exact_labels": [
+      "target-scan-boundary",
+      "os-scan-cancel"
+    ],
+    "synthetic_labels_without_filesystem_fixture": [
+      "fixture://scan-order",
+      "fixture://empty-root",
+      "fixture://missing-root",
+      "gate2-blocking",
+      "gate2-cancellable"
+    ],
+    "scratch_capture_pattern": "<fixture-root>/logs/<test-filter>.log"
+  },
+  "commands": [
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml scan_roots_order_and_status_match_corpus -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 1,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; supported extensions only, playlist child folder, Unsorted root tracks, newest-first order, and Missing/Scanned root statuses matched assertions"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::scan_generation_coalesces_and_rejects_stale_results -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 0,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; refresh request coalesced, stale generation 2 was rejected, generation 1 completed, and pending refresh remained recorded"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_scan_scheduler_coalesces_refreshes_and_rejects_stale_results_without_sleeping -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 0,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; refreshes coalesced, exactly one first worker and one follow-up ran, and event generations increased in order"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_scan_publication_rejects_late_older_result_after_newer_task_is_current -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 0,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; newer snapshot became current and the late older result produced no event"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_scan_scheduler_cancellation_is_observed_through_dispatch -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 1,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; CancelJob was dispatched to a running scan, shutdown completed without timeout, and no late event was received"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_command_boundary_cancels_actual_os_filesystem_scan_before_publication -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 0,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; cancellation was observed at the OsFileSystem scan hook, active tasks reached zero, and no snapshot/root-status event was published"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_scan_scheduler_reports_followup_spawn_capacity_failure -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 0,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; coalesced follow-up did not spawn at capacity, first generation published, and follow-up callback count remained zero"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_scan_spawn_failure_is_bounded_and_shutdown_cancels_owned_work -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 0,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; AtCapacity was observed for a bounded scheduler and shutdown cancelled owned work without timeout or failure"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml gate2_tests::target_shutdown_event_terminal_order_is_deterministic_after_cancellation -- --nocapture",
+      "isolated_prefix": "HOME=<fixture-root>/home TMPDIR=<fixture-root>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true",
+      "exit_status": 0,
+      "elapsed_seconds": 0,
+      "counts": { "selected_passed": 1, "selected_failed": 0, "selected_ignored": 0, "filtered_out": 78, "main_tests": 0 },
+      "output_summary": "ok; controlled shutdown event order was Requested, Draining, Complete after cancellation"
+    }
+  ],
+  "observations": {
+    "REF-ROOT-MISSING": { "classification": "PASS", "acceptance": ["AC-LIB-01"], "detail": "Synthetic missing root was classified Missing without fabricated tracks." },
+    "REF-ROOT-EMPTY": { "classification": "PASS", "acceptance": ["AC-LIB-01", "AC-LIB-02"], "detail": "Synthetic empty root was classified Scanned with an empty playlist result." },
+    "REF-SCAN-ORDER": { "classification": "PASS", "acceptance": ["AC-LIB-02", "AC-LIB-03"], "detail": "Child folders became playlists, root audio became Unsorted, notes.txt was excluded, and root audio was newest-first with deterministic tie behavior." },
+    "REF-SCAN-GENERATION": { "classification": "PASS", "acceptance": ["AC-LIB-04"], "detail": "Generation order, refresh coalescing, stale-result rejection, follow-up execution, and late-publication suppression were separately observed." },
+    "REF-SHUTDOWN": { "classification": "PASS at controlled seam", "acceptance": ["AC-OPS-03"], "detail": "Cancellation, shutdown, owned-work termination, no-late-publication, spawn-capacity failure, and terminal event ordering were separately observed." },
+    "cancellation": "PASS: dispatch cancellation reached injectable and actual OS filesystem scan work before publication.",
+    "shutdown": "PASS: bounded shutdown completed without timeout; terminal event sequence was Requested -> Draining -> Complete.",
+    "stale_result_rejection": "PASS: older result was not published after newer generation became current.",
+    "generation_order": "PASS: first snapshot generation preceded the follow-up generation.",
+    "refresh_coalescing": "PASS: repeated refresh request coalesced and exactly one follow-up callback executed.",
+    "spawn_capacity_failure": "PASS: follow-up was not spawned at capacity and bounded spawn failure was reported by assertion.",
+    "late_publication_suppression": "PASS: no older snapshot event arrived after newer publication."
+  },
+  "warnings": [
+    "Every Cargo invocation emitted the same three existing compiler warnings: unused_mut in src/migration/first_run.rs:777, unused variable error in src/download/sync.rs:157, and dead_code for SecKeychainItemModifyAttributesAndData in src/migration/keychain.rs:74.",
+    "The requested evidence plan file was absent from this checkout.",
+    "The scan/event sink is controlled in-process evidence, not a launched UI bridge."
+  ],
+  "remaining_gaps": [
+    "Launch a real Tauri process and observe the production event/UI bridge.",
+    "No real filesystem music library, provider, network, yt-dlp, audio, credentials, Keychain, or host application HOME was used by design."
+  ],
+  "artifact_paths": [
+    "docs/verification/receipts/gate2-startup-ipc.json",
+    "docs/verification/receipts/gate2-scan-events.json"
+  ],
+  "capture_note": "Complete stdout/stderr was captured before summarization under <fixture-root>/logs/ and is scratch-only; scratch paths are sanitized here and are removed after receipt validation."
+}

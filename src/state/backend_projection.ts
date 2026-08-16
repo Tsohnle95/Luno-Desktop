@@ -50,6 +50,7 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
   const event = envelope.event;
   switch (event.type) {
     case "library_snapshot": return { ...next, library: event.payload.snapshot };
+    case "library_root_status": return next;
     case "playback_snapshot": return { ...next, playback: event.payload.snapshot };
     case "video_state": return { ...next, video: event.payload.state };
     case "track_started": {
@@ -64,7 +65,7 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
     case "error": return { ...next, errors: [...next.errors, event.payload.error] };
     case "shutdown": return { ...next, shutdown: event.payload.envelope };
   }
-  throw new Error(`unhandled backend event: ${event.type}`);
+  throw new Error("unhandled backend event");
 }
 
 export function currentTrack(projection: Pick<BackendProjection, "library" | "playback">): Track | null {

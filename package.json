@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite src",
+    "dev": "vite src --host localhost --port 1420 --strictPort",
     "build": "tsc --noEmit && vite build src --outDir ../dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

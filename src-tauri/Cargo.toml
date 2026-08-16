@@ -24,4 +24,4 @@ thiserror = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cpal = "0.15"
-symphonia = { version = "0.5", default-features = false, features = ["mp3", "isomp4", "flac", "wav"] }
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "isomp4", "flac", "wav", "pcm"] }

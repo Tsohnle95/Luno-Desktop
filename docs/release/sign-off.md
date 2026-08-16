@@ -1,5 +1,177 @@
 # Desktop Release Sign-Off
 
+## Gate 7 Fresh Package Receipt: INCONCLUSIVE / BLOCKED
+
+Observed run timestamp: `2026-08-15T21:50:38Z` (UTC; temporary evidence-root
+creation time).
+
+This is a durable local evidence receipt, not release approval. The observed
+package run succeeded, but release readiness remains **INCONCLUSIVE / BLOCKED**.
+Before this receipt, HEAD was `f9e81c78e38a6c3a2fcb7aaa707f9516cd0088b5` and the
+workspace contained unrelated Gate 2-6/application changes. The bounded
+remediation earlier in this task changed the already-dirty
+`src-tauri/tauri.conf.json` resource entries to explicit destinations, added
+`src-tauri/resources/bin/.gitkeep`, and updated the project brain file registry.
+This fresh package-evidence refresh then changed only
+`docs/release/sign-off.md`. No commit, push, deploy, publish, network,
+credential, signing, notarization, stapling, or release command was performed.
+
+### Fresh Package Evidence
+
+- `HOME=/tmp/luno-gate7-package2.Va2P4H/home TMPDIR=/tmp/luno-gate7-package2.Va2P4H/tmp CARGO_TARGET_DIR=/tmp/luno-gate7-package2.Va2P4H/target CARGO_HOME=/Users/ty/.cargo CARGO_NET_OFFLINE=true npm run tauri -- build --bundles dmg` exited `0`; `npm run build` ran first and Vite transformed 55 modules.
+- The local DMG was `/tmp/luno-gate7-package2.Va2P4H/target/release/bundle/dmg/Luno_0.1.0_aarch64.dmg`, 52,527,211 bytes, SHA-256 `0695adc31755587b328b71cacca23d4547c82aa640aab5210107091b2c3ef6e5`. `hdiutil imageinfo` identified UDZO; readonly attach and forced detach both exited `0`.
+- The DMG was copied only to `/tmp/luno-gate7-package2.Va2P4H/install/Luno.app`, not `/Applications`. Its required root resources are present: `desktop-binaries.json` and `THIRD_PARTY_NOTICES.md`; `Contents/Resources/bin` exists but has no managed executables beyond the source `.gitkeep`. No `_up_/release` directory exists.
+- The manifest still contains three `REPLACE_WITH_REVIEWED_SHA256` placeholders. `Info.plist` reports `com.ty.luno`, version `0.1.0`, and minimum macOS `13.0`. The arm64 main executable is 66,528,528 bytes with SHA-256 `99b7b57a0f35ea55aea52dbfa5b23913cb590cf074ca6ff9707c2436630c214d`.
+- Explicit Tauri resource destination mapping and the tracked empty source directory are fixed and verified. They do not make this package release-ready.
+
+### Checks And Blockers
+
+1. No reviewed binaries or non-placeholder checksums: `LUNO_BINARY_SOURCE_DIR=release-input/bin ./scripts/provision-desktop-binaries.sh` exited `1` with `missing reviewed binary: release-input/bin/ffmpeg`; no developer-PATH substitution occurred.
+2. Bundle verification failed: `./scripts/verify-desktop-bundle.sh /tmp/luno-gate7-package2.Va2P4H/install/Luno.app` exited `1` with `non-executable bundled ffmpeg`.
+3. The app is unsigned/ad-hoc: strict `codesign --verify --deep --strict --verbose=2` exited `1` with `code has no resources but signature indicates they must be present`; `codesign -dv --verbose=4` reported arm64 ad-hoc/linker-signed, no Team ID, and `Sealed Resources=none`; `spctl` exited `1` with the same resource error.
+4. No signing identity exists: `security find-identity -v -p codesigning` exited `0` but found `0 valid identities`.
+5. No notarization ticket exists: `xcrun stapler validate` exited `65`. No signing, notarization, or stapling invocation occurred.
+6. Clean GUI/runtime evidence is unavailable: isolated direct launch with fixture-only temporary HOME and `PATH=/usr/bin:/bin` had `timed_out=false`, child exit `-6`, and stderr reported `unsafe legacy migration input` followed by a non-unwinding panic. No matching process remained; no GUI window, playback, accessibility, screenshot, rollback, or clean-machine install was observed.
+
+Independent deterministic checks passed: `npm run typecheck` (0), `npm test` (0; 6 files/34 tests), `npm run build` (0; 55 Vite modules), `CARGO_NET_OFFLINE=true cargo test --manifest-path src-tauri/Cargo.toml` (0; 89 passed/0 failed/1 ignored), `npm run tauri -- --version` (0; tauri-cli 2.11.4), resource mapping JSON validation (0), and `git diff --check` (0). The invalid `npm test -- --runInBand` probe was superseded by plain `npm test` and is not a release failure.
+
+Warning: The offline Cargo run emitted three existing non-fatal warnings: `unused_mut` in `migration/first_run.rs`, an unused variable in `download/sync.rs`, and `dead_code` for the macOS keychain symbol. The Vite build emitted its existing warning that `outDir ../dist` is outside the project root and is not emptied. These warnings did not change exit status or test counts.
+
+The local unsigned DMG is a historical/local evidence artifact only. It is not
+an approved release artifact, and this receipt makes no release approval claim.
+Retain the Python/PyInstaller fallback and legacy data; `docs/migration/rollback.md`
+remains the rollback boundary.
+
+The older historical sections follow.
+
+## Formal Gate 7: INCONCLUSIVE / BLOCKED
+
+Run timestamp: `2026-08-15T13:19:24Z` (UTC). This is a packaged-release
+readiness receipt, not release approval. No commit, push, deploy, publish,
+distribution, signing, notarization submission, credential access, secret
+change, real user data, or unrelated-file deletion was performed.
+
+### Provenance And Dirty Baseline
+
+- Source HEAD before execution: `f9e81c78e38a6c3a2fcb7aaa707f9516cd0088b5`
+- The pre-existing dirty baseline was the tracked modifications to
+  `package.json`, `project_brain.md`, `src-tauri/Cargo.lock`,
+  `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, the listed Rust source
+  files under `src-tauri/src/`, and the listed frontend files under `src/`;
+  plus untracked prior Gate 2-6 receipts and `src-tauri/src/gate2_tests.rs`
+  through `gate5_tests.rs`. This run preserved that baseline and changed only
+  this receipt.
+- `git status --short --untracked-files=all` after execution reports the same
+  pre-existing set; generated `dist/`, `src-tauri/target/`, and temporary DMG
+  mount/launch directories are ignored or were removed.
+
+### Required Checks
+
+| Command | Exit | Classification | Observed evidence |
+|---|---:|---|---|
+| `npm run typecheck` | 0 | PASS | `tsc --noEmit` completed |
+| `npm test` | 0 | PASS | 2 files, 15 tests passed |
+| `npm run build` | 0 | PASS | Vite transformed 51 modules; emitted `dist/index.html`, CSS, and JS |
+| `cargo test --manifest-path src-tauri/Cargo.toml` | 0 | PASS | 63 passed, 0 failed, 1 ignored; ignored test requires interactive macOS login Keychain |
+| `npm run tauri -- --version` | 0 | PASS | `tauri-cli 2.11.4` |
+| Earlier `npm run tauri build` attempt | 0 | HISTORICAL ONLY | Produced a local unsigned DMG, later independently hashed and inspected; this attempt is superseded and its DMG is not a current or approved release artifact |
+| Later authoritative `npm run tauri build` rerun | 1 | FAIL | Built the release executable and app, then failed at DMG bundling: `failed to bundle project: error running bundle_dmg.sh: failed to run .../src-tauri/target/release/bundle/dmg/bundle_dmg.sh` |
+| `git diff --check` | 0 | PASS | no whitespace errors |
+
+The later independent verification is authoritative. The staging app remains at
+`src-tauri/target/release/bundle/macos/Luno.app`; the old DMG was removed before
+the failed rerun, and no current DMG exists. The failed packaging result is not
+release readiness evidence.
+
+### Artifacts And Hashes
+
+- Historical first-attempt local DMG only: before the authoritative rerun it was
+  independently measured at `49,500,186` bytes with SHA-256
+  `5ab6e2d0eda37ecdfabf8811e2d0a53f38f16c927949b4dc4af8654242bbf73e`.
+  `hdiutil imageinfo` exited `0` and identified an unencrypted compressed
+  `UDZO` image. It was removed before the failed rerun and is not a current or
+  approved release artifact.
+- Current staging app: `src-tauri/target/release/bundle/macos/Luno.app`.
+  `Contents/MacOS/luno-desktop` is Mach-O arm64, `60,940,400` bytes, SHA-256
+  `61184c1fd0a543e23eaf901e60e36a31f6a06981b642de24e77a0b58aab2eafc`.
+  `Info.plist` reports identifier `com.ty.luno`, version `0.1.0`, and
+  `LSMinimumSystemVersion 13.0`.
+
+### Bundle Verification And Managed Binaries
+
+- `./scripts/verify-desktop-bundle.sh src-tauri/target/release/bundle/macos/Luno.app`
+  exited `1`: `bundle manifest missing: .../Luno.app/Contents/Resources/desktop-binaries.json`.
+- The app contains only `_up_/release/desktop-binaries.json` and
+  `_up_/release/THIRD_PARTY_NOTICES.md` under `Contents/Resources`; it has no
+  `Contents/Resources/bin/` managed executables.
+- `release-input/bin/{ffmpeg,ffprobe,yt-dlp}` and
+  `src-tauri/resources/bin/{ffmpeg,ffprobe,yt-dlp}` are absent. No provisioning
+  was attempted and no developer-PATH binary was substituted.
+- `release/desktop-binaries.json` remains valid JSON, but all three artifact
+  hashes are the literal `REPLACE_WITH_REVIEWED_SHA256` placeholder.
+  Developer PATH versions are FFmpeg/ffprobe `8.1` and yt-dlp `2026.03.17`;
+  clean PATH cannot supply them.
+
+### macOS Validation
+
+- Staging-app `Info.plist`: bundle identifier `com.ty.luno`, version `0.1.0`,
+  `LSMinimumSystemVersion 13.0`.
+- `codesign --verify --deep --strict --verbose=2` exited `1`: `code has no
+  resources but signature indicates they must be present`.
+- `codesign -dv --verbose=4` exited `0` and reported an arm64 ad-hoc,
+  linker-signed executable (`flags=0x20002(adhoc,linker-signed)`), no Team ID,
+  and `Sealed Resources=none`. This is not a release signature or hardened
+  runtime result; no `runtime` flag was reported.
+- `codesign -d --entitlements :-` exited `0` with no entitlements payload.
+- `spctl --assess --type execute --verbose=4` exited `1` with the same missing
+  sealed-resource error. No acceptance was claimed.
+- `xcrun stapler validate` exited `65`: `Luno.app does not have a ticket
+  stapled to it`. `xcrun notarytool --version` exited `0` (`1.1.2 (41)`),
+  proving tool availability only. No submission or stapling command was
+  invoked.
+- `security find-identity -v -p codesigning` reported `0 valid identities`.
+
+### Isolated Launch And Installation
+
+- Direct staging-executable launch used a process-created temporary `HOME`
+  containing only empty `fixture-library` and `.luno_previews` directories.
+  `timed_out=false`, child exit `-6`, no stdout, and stderr reported panic
+  `Failed to setup app: ... unsafe legacy migration input`. The temporary HOME
+  was removed and no matching process remained.
+- No GUI window, clean-machine install, playback, accessibility, screenshot, or
+  user-data rollback evidence was obtained. Classification:
+  INCONCLUSIVE/BLOCKED.
+
+### Rollback And Release Boundary
+
+`docs/migration/rollback.md` remains the governing rollback record: migration
+is additive, legacy files and audio are preserved, and the Python release must
+be used if migration or packaging fails. This receipt distinguishes the local
+unsigned DMG from a signed bundle, a notarized artifact, and a
+release-approved artifact. None of the latter three exists here. The existing
+Python/PyInstaller fallback and legacy user data must be retained.
+
+### Explicit Blockers
+
+1. No reviewed `release-input/bin/` executables are present.
+2. The manifest contains placeholder checksums, and reviewed managed binaries
+   are missing; clean-PATH smoke cannot pass.
+3. The current DMG bundling failed in this environment at `bundle_dmg.sh`.
+4. The app resource layout places release files under `_up_/release/`, omits
+   managed binaries, and fails the bundle verifier.
+5. The app has only an ad-hoc linker signature, fails strict codesign and
+   `spctl` resource validation, has no hardened-runtime evidence, and there is
+   no signing identity.
+6. No notarization or stapling occurred; the app has no stapled ticket.
+7. Isolated launch panicked on unsafe legacy migration input and terminated
+   with child exit `-6`; no clean-machine evidence exists.
+
+**Formal Gate 7 verdict: INCONCLUSIVE / BLOCKED. The historical local unsigned
+DMG is not current or approved for release, signing, notarization, distribution,
+or submission.**
+
+The previous sign-off history follows.
+
 Status: **BLOCKED**. Current evidence was refreshed on 2026-08-14 at source
 HEAD `969a83319a96603a3608c041fc8abf28e2f8a3f7` after the first-parent range
 `93915b329b35085358c8924017a93bbb1ee14fd7^..969a83319a96603a3608c041fc8abf28e2f8a3f7`.

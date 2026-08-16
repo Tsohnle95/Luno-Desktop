@@ -1,0 +1,123 @@
+{
+  "provenance": {
+    "corpus_ids": ["REF-FAVORITES", "REF-CONFIG-CORRUPT", "REF-ROOT-EMPTY", "REF-ROOT-MISSING"],
+    "acceptance_ids": ["AC-LIB-01", "AC-LIB-02", "AC-LIB-05", "AC-PERSIST-01"],
+    "journey_ids": ["JRN-SCAN-PLAY"],
+    "authorities": [
+      "docs/migration/reference-corpus.md",
+      "docs/migration/acceptance-catalog.md",
+      "docs/migration/rollback.md",
+      "docs/verification/receipts/gate2-evidence-plan.md",
+      "docs/verification/receipts/gate2-library-persistence.md",
+      "src-tauri/src/gate2_tests.rs"
+    ]
+  },
+  "environment": {
+    "os": "macOS",
+    "arch": "arm64",
+    "home": "sanitized temporary fixture HOME",
+    "tmpdir": "sanitized temporary fixture TMPDIR",
+    "cargo_home": "pre-cached dependency home",
+    "cargo_net_offline": true,
+    "fixture_labels": ["fixture://command-config", "fixture://command-scan-statuses", "fixture://synthetic-library", "fixture://recent-session"],
+    "network_provider_yt_dlp_credentials_keychain_audio_real_home": "not used"
+  },
+  "classification": {
+    "direct_runtime": "No launched Tauri process, desktop UI, or UI bridge was run.",
+    "controlled_local_seam": "AppState dispatch and synthetic library state were exercised by deterministic Rust tests.",
+    "source_inspection": "Source was inspected to identify command/event boundaries and distinguish them from launched bridge evidence."
+  },
+  "commands": [
+    {
+      "command": "HOME=<fixture> TMPDIR=<fixture>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true cargo test --manifest-path src-tauri/Cargo.toml 'gate2_tests::target_command_boundary' -- --nocapture",
+      "exit_status": 0,
+      "counts": {"passed": 6, "failed": 0, "ignored": 0, "filtered": 73},
+      "classification": "controlled_local_seam",
+      "result": "PASS"
+    },
+    {
+      "command": "HOME=<fixture> TMPDIR=<fixture>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true cargo test --manifest-path src-tauri/Cargo.toml 'gate2_tests::target_command_boundary_toggles_and_prunes_favorites_and_keeps_recent_session_only' -- --nocapture",
+      "exit_status": 0,
+      "counts": {"passed": 1, "failed": 0, "ignored": 0, "filtered": 78},
+      "classification": "controlled_local_seam",
+      "result": "PASS"
+    },
+    {
+      "command": "HOME=<fixture> TMPDIR=<fixture>/tmp CARGO_HOME=<pre-cached-cargo-home> CARGO_NET_OFFLINE=true cargo test --manifest-path src-tauri/Cargo.toml gate2_tests -- --nocapture",
+      "exit_status": 0,
+      "counts": {"passed": 24, "failed": 0, "ignored": 0, "filtered": 55},
+      "classification": "controlled_local_seam",
+      "result": "PASS"
+    },
+    {
+      "command": "git diff --check",
+      "exit_status": 0,
+      "classification": "direct_runtime",
+      "result": "PASS"
+    }
+  ],
+  "rows": [
+    {
+      "fixture_id": "REF-FAVORITES",
+      "acceptance_ids": ["AC-LIB-05"],
+      "status": "PASS",
+      "classification": "controlled_local_seam",
+      "observed": {
+        "request_ids": ["favorite", "recent-start", "recent", "recent-clear", "recent-empty", "recent-cap", "recent-cap-get", "recent-unknown"],
+        "favorite_lifecycle": ["synthetic live track toggled on", "missing favorite path pruned", "live normalized path remained projected"],
+        "favorite_persistence": "Favorite state was held in target state; no durable history or export state was invented.",
+        "unknown_track": "RecordRecent for unknown track returned NotFound."
+      }
+    },
+    {
+      "fixture_id": "REF-CONFIG-CORRUPT",
+      "acceptance_ids": ["AC-PERSIST-01"],
+      "status": "PASS",
+      "classification": "controlled_local_seam",
+      "observed": {
+        "config": "Valid config loaded without rewriting input; missing, blank, and malformed inputs returned explicit errors.",
+        "root_state": "A valid legacy config without a root cleared the previous configured root; no HOME fallback occurred.",
+        "warnings": "No secrets or unsafe paths entered the synthetic state."
+      }
+    },
+    {
+      "fixture_id": "REF-ROOT-MISSING",
+      "acceptance_ids": ["AC-LIB-01"],
+      "status": "PASS",
+      "classification": "controlled_local_seam",
+      "observed": {
+        "event_order": ["RegisterRoot", "ScanLibrary", "LibraryRootStatus: Missing"],
+        "tracks": 0,
+        "fabrication": "No tracks were fabricated."
+      }
+    },
+    {
+      "fixture_id": "REF-ROOT-EMPTY",
+      "acceptance_ids": ["AC-LIB-02"],
+      "status": "PASS",
+      "classification": "controlled_local_seam",
+      "observed": {
+        "event_order": ["LoadConfig", "ScanLibrary", "LibraryRootStatus: Scanned", "LibrarySnapshot"],
+        "snapshot": "Empty synthetic root produced no tracks and no crash."
+      }
+    }
+  ],
+  "lifecycle_details": {
+    "recent_order": "New records are newest-first and deduplicated by track identity.",
+    "recent_cap": 100,
+    "recent_observed": "101 synthetic tracks were recorded; GetRecent returned exactly 100.",
+    "clear": "ClearRecent completed and GetRecent returned an empty array; state is session-only.",
+    "favorite_projection": "Only live scanned paths remained in the favorite projection.",
+    "event_or_request_order": "Command request IDs and scan status/snapshot boundaries were observed through the controlled sink/state seam."
+  },
+  "warnings_and_limitations": [
+    "The Rust runs emitted three pre-existing warnings: unused mut in migration/first_run.rs, unused error in download/sync.rs, and an unused macOS Keychain symbol.",
+    "No real UI row, launched Tauri process, UI event bridge, cross-process persistence, provider, network, credential, Keychain, audio, or real HOME behavior was exercised.",
+    "The lifecycle evidence is direct target-state/command-seam evidence, not a claim that AppState callbacks prove a launched desktop bridge.",
+    "Host permission behavior is not generalized beyond the controlled synthetic fixture; no permission denial claim is made here."
+  ],
+  "overall_verdict": {
+    "status": "INCONCLUSIVE",
+    "rationale": "Favorites, recent/history lifecycle, config handling, root status, and empty/missing scan behavior passed controlled local target tests, while launched UI bridge and cross-process persistence remain unexercised."
+  }
+}

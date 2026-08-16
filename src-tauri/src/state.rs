@@ -1,6 +1,6 @@
 use crate::contracts::{
     events::{
-        Command, CommandEnvelope, Event, EventEnvelope, RootStatus, ShutdownEnvelope, ShutdownState,
+        Command, CommandEnvelope, Event, EventEnvelope, RepeatMode as ContractRepeatMode, RootStatus, ShutdownEnvelope, ShutdownState,
     },
     types::{
         ContractError, ErrorCode, Generation, JobId, LibrarySnapshot, Playlist, SessionId, Track,
@@ -9,20 +9,24 @@ use crate::contracts::{
 };
 use crate::domain::identity::TrackMetadata;
 use crate::download::coordinator::DownloadCoordinator;
-use crate::library::scanner::{scan_library, OsFileSystem};
+use crate::download::markers::Markers;
+use crate::download::promotion::{promote_output, CollisionPolicy, PromotionError, Validation};
+use crate::library::favorites::Favorites;
+use crate::library::scanner::{OsFileSystem, ScanOutcome};
 #[cfg(target_os = "macos")]
 use crate::playback::{
     backend::{AudioBackend, BackendError},
     backend_adapter::CpalSymphoniaBackend,
 };
 use crate::process::supervisor::{ProcessRegistry, Supervisor};
+use crate::playback::{clock::PlaybackClock, queue::QueueState, recovery::FailureRecovery};
 use crate::runtime::task_registry::{
     CancellationToken, ShutdownReport, SpawnError, TaskHandle, TaskRegistry, TaskSpec,
 };
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Arc as StdArc;
 use std::sync::{
@@ -111,9 +115,9 @@ mod tests {
         state.set_provider_metadata(
             path.clone(),
             TrackMetadata {
-            title: "Provider title".into(),
-            artist: "Provider artist".into(),
-            duration_ms: 1234,
+                title: "Provider title".into(),
+                artist: "Provider artist".into(),
+                duration_ms: 1234,
                 provider: Some(crate::domain::identity::ProviderIdentity {
                     provider: "youtube".into(),
                     id: "abc".into(),
@@ -537,11 +541,11 @@ mod tests {
         let seen = delivered.clone();
         assert!(state
             .drain_events(|event| {
-            seen.lock().unwrap().push(event.event_id.clone());
+                seen.lock().unwrap().push(event.event_id.clone());
                 if event.event_id == "event-2" {
                     panic!("sink panic");
                 }
-            Ok(())
+                Ok(())
             })
             .is_err());
         assert_eq!(*delivered.lock().unwrap(), vec!["event-1", "event-2"]);
@@ -727,13 +731,27 @@ pub struct AppState {
     delivery_failure: Arc<Mutex<Option<ContractError>>>,
     supervisor: Arc<Supervisor>,
     downloads: Arc<DownloadCoordinator>,
+    download_requests: Arc<Mutex<BTreeMap<String, (PathBuf, PathBuf)>>>,
     provider_metadata: Arc<Mutex<BTreeMap<PathBuf, TrackMetadata>>>,
     track_paths: Arc<Mutex<BTreeMap<TrackId, PathBuf>>>,
     current_track: Arc<Mutex<Option<TrackId>>>,
+    playback: Arc<Mutex<QueueState>>,
+    clock: Arc<Mutex<Option<PlaybackClock>>>,
+    recovery: Arc<Mutex<FailureRecovery>>,
+    favorites: Arc<Mutex<Favorites>>,
+    recent: Arc<Mutex<Vec<TrackId>>>,
+    scan: Arc<Mutex<ScanState>>,
     #[cfg(target_os = "macos")]
     playback_status: Arc<Mutex<crate::contracts::types::PlaybackStatus>>,
     #[cfg(target_os = "macos")]
     audio: Arc<Mutex<Box<dyn AudioBackend + Send>>>,
+}
+
+type ScanWork = Arc<dyn Fn(&[PathBuf], CancellationToken) -> ScanOutcome + Send + Sync>;
+
+struct ScanState {
+    active: bool,
+    pending: Option<ScanWork>,
 }
 
 impl AppState {
@@ -770,9 +788,19 @@ impl AppState {
             delivery_failure: Arc::new(Mutex::new(None)),
             supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())),
             downloads: Arc::new(DownloadCoordinator::new()),
+            download_requests: Arc::new(Mutex::new(BTreeMap::new())),
             provider_metadata: Arc::new(Mutex::new(BTreeMap::new())),
             track_paths: Arc::new(Mutex::new(BTreeMap::new())),
             current_track: Arc::new(Mutex::new(None)),
+            playback: Arc::new(Mutex::new(QueueState::new())),
+            clock: Arc::new(Mutex::new(None)),
+            recovery: Arc::new(Mutex::new(FailureRecovery::new())),
+            favorites: Arc::new(Mutex::new(Favorites::default())),
+            recent: Arc::new(Mutex::new(Vec::new())),
+            scan: Arc::new(Mutex::new(ScanState {
+                active: false,
+                pending: None,
+            })),
             #[cfg(target_os = "macos")]
             playback_status: Arc::new(Mutex::new(crate::contracts::types::PlaybackStatus::Stopped)),
             #[cfg(target_os = "macos")]
@@ -787,6 +815,30 @@ impl AppState {
     }
     pub fn set_scan_roots(&self, roots: Vec<PathBuf>) {
         *self.roots.lock().unwrap() = roots;
+    }
+    pub fn scan_roots(&self) -> Vec<PathBuf> {
+        self.roots.lock().unwrap().clone()
+    }
+    pub fn favorite_paths(&self) -> Vec<String> {
+        self.favorites
+            .lock()
+            .unwrap()
+            .paths()
+            .map(str::to_owned)
+            .collect()
+    }
+    pub fn set_favorite_path(&self, path: impl AsRef<std::path::Path>) {
+        self.favorites.lock().unwrap().set(path, true);
+    }
+    pub fn prune_favorites(&self) {
+        let paths = self
+            .track_paths
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        self.favorites.lock().unwrap().project(paths);
     }
     pub fn pending_events(&self) -> Vec<EventEnvelope> {
         self.events.lock().unwrap().clone()
@@ -1052,82 +1104,166 @@ impl AppState {
         Generation(self.next_generation.fetch_add(1, Ordering::Relaxed) + 1)
     }
     pub fn scan_async(&self) -> Result<Generation, SpawnError> {
+        self.scan_async_with(|roots, token| {
+            if token.is_cancelled() {
+                return ScanOutcome {
+                    playlists: BTreeMap::new(),
+                    roots: Vec::new(),
+                    errors: Vec::new(),
+                };
+            }
+            crate::library::scanner::scan_library_with_cancel(roots, &OsFileSystem, || token.is_cancelled())
+        })
+    }
+
+    /// Schedule a real task-registry scan while keeping refresh requests
+    /// deterministic: one active scan and one deferred follow-up.
+    pub fn scan_async_with<F>(&self, work: F) -> Result<Generation, SpawnError>
+    where
+        F: Fn(&[PathBuf], CancellationToken) -> ScanOutcome + Send + Sync + 'static,
+    {
+        let work = Arc::new(work);
+        {
+            let mut scan = self.scan.lock().unwrap();
+            if scan.active {
+                scan.pending = Some(work);
+                return Ok(Generation(self.next_generation.load(Ordering::Acquire)));
+            }
+            scan.active = true;
+        }
+        self.start_scan(work)
+    }
+
+    fn start_scan(&self, work: ScanWork) -> Result<Generation, SpawnError> {
         let generation = self.next_generation();
         let spec = self.generation("library-scan", generation);
         let state = self.clone();
         let roots = self.roots.lock().unwrap().clone();
-        self.submit(spec.clone(), move |token| {
-            let outcome = scan_library(&roots, &OsFileSystem);
-            if token.is_cancelled() || !state.publish_allowed(&spec) {
-                return;
+        let result = self.submit(spec.clone(), move |token| {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let outcome = work(&roots, token.clone());
+                if !token.is_cancelled() {
+                    state.publish_scan_result_if_current(&spec, generation, outcome);
+                }
+            }));
+            match outcome {
+                Ok(()) => state.finish_scan(token.is_cancelled() || state.is_closing()),
+                Err(panic) => {
+                    state.finish_scan(true);
+                    std::panic::resume_unwind(panic);
+                }
             }
-            let statuses: Vec<_> = outcome
-                .roots
-                .iter()
-                .map(|(_, status)| match status {
+        });
+        if result.is_err() {
+            let mut scan = self.scan.lock().unwrap();
+            scan.active = false;
+            scan.pending = None;
+        }
+        result.map(|_| generation)
+    }
+
+    fn finish_scan(&self, discard_pending: bool) {
+        let pending = {
+            let mut scan = self.scan.lock().unwrap();
+            if discard_pending || self.is_closing() {
+                scan.active = false;
+                scan.pending = None;
+                None
+            } else {
+                scan.pending.take().or_else(|| {
+                    scan.active = false;
+                    None
+                })
+            }
+        };
+        if let Some(work) = pending {
+            if self.start_scan(work).is_err() {
+                let mut scan = self.scan.lock().unwrap();
+                scan.active = false;
+                scan.pending = None;
+            }
+        }
+    }
+
+    pub fn publish_scan_result_if_current(
+        &self,
+        spec: &TaskSpec,
+        generation: Generation,
+        outcome: ScanOutcome,
+    ) -> bool {
+        if spec.generation != generation || !self.publish_allowed(spec) {
+            return false;
+        }
+        self.publish_scan_outcome(generation, outcome);
+        true
+    }
+
+    fn publish_scan_outcome(&self, generation: Generation, outcome: ScanOutcome) {
+        let statuses: Vec<_> = outcome
+            .roots
+            .iter()
+            .map(|(_, status)| match status {
                 crate::library::scanner::RootStatus::Scanned => RootStatus::Scanned,
                 crate::library::scanner::RootStatus::Missing => RootStatus::Missing,
                 crate::library::scanner::RootStatus::Inaccessible => RootStatus::Inaccessible,
-                })
-                .collect();
-            *state.root_statuses.lock().unwrap() = statuses.clone();
-            for (root_index, status) in statuses.iter().copied().enumerate() {
-                let mut event =
-                    state.event(generation, Event::LibraryRootStatus { root_index, status });
-                event.job_id = Some(JobId("library-scan".into()));
-                state.publish(event);
-                if !matches!(status, RootStatus::Scanned) {
-                    let mut error = state.event(
-                        generation,
-                        Event::Error {
-                            error: ContractError {
-                                code: ErrorCode::Internal,
-                                message: "library root could not be scanned".into(),
-                                retryable: true,
-                            },
-                        },
-                    );
-                    error.job_id = Some(JobId("library-scan".into()));
-                    state.publish(error);
-                }
-            }
-            for issue in outcome.errors {
-                let scope = issue
-                    .playlist
-                    .map_or_else(|| "root".into(), |playlist| format!("playlist {playlist}"));
-                let root_path = outcome
-                    .roots
-                    .get(issue.root_index)
-                    .map(|(path, _)| path.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let detail = issue.message.replace(&root_path, "<root>");
-                let mut error = state.event(
+            })
+            .collect();
+        *self.root_statuses.lock().unwrap() = statuses.clone();
+        for (root_index, status) in statuses.iter().copied().enumerate() {
+            let mut event = self.event(generation, Event::LibraryRootStatus { root_index, status });
+            event.job_id = Some(JobId("library-scan".into()));
+            self.publish(event);
+            if !matches!(status, RootStatus::Scanned) {
+                let mut error = self.event(
                     generation,
                     Event::Error {
                         error: ContractError {
                             code: ErrorCode::Internal,
-                            message: format!(
-                                "library scan failed for root {root_path} ({scope}): {detail}"
-                            ),
+                            message: "library root could not be scanned".into(),
                             retryable: true,
                         },
                     },
                 );
                 error.job_id = Some(JobId("library-scan".into()));
-                state.publish(error);
+                self.publish(error);
             }
-            let snapshot = state.replace_library(generation, outcome.playlists);
-            let mut event = state.event(generation, Event::LibrarySnapshot { snapshot });
-            event.job_id = Some(JobId("library-scan".into()));
-            state.publish(event);
-        })
-        .map(|_| generation)
+        }
+        for issue in outcome.errors {
+            let scope = issue
+                .playlist
+                .map_or_else(|| "root".into(), |playlist| format!("playlist {playlist}"));
+            let root_path = outcome
+                .roots
+                .get(issue.root_index)
+                .map(|(path, _)| path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let detail = issue.message.replace(&root_path, "<root>");
+            let mut error = self.event(
+                generation,
+                Event::Error {
+                    error: ContractError {
+                        code: ErrorCode::Internal,
+                        message: format!(
+                            "library scan failed for root {root_path} ({scope}): {detail}"
+                        ),
+                        retryable: true,
+                    },
+                },
+            );
+            error.job_id = Some(JobId("library-scan".into()));
+            self.publish(error);
+        }
+        let snapshot = self.replace_library(generation, outcome.playlists);
+        let mut event = self.event(generation, Event::LibrarySnapshot { snapshot });
+        event.job_id = Some(JobId("library-scan".into()));
+        self.publish(event);
     }
-    fn replace_library(
+    pub fn replace_library(
         &self,
         generation: Generation,
         playlists: BTreeMap<String, Vec<PathBuf>>,
     ) -> LibrarySnapshot {
+        self.track_paths.lock().unwrap().clear();
         let mut paths = BTreeMap::<PathBuf, TrackId>::new();
         let mut tracks = Vec::new();
         let mut playlist_data = Vec::new();
@@ -1147,11 +1283,12 @@ impl AppState {
                             .unwrap_or_else(|| {
                                 crate::domain::identity::filename_metadata(&path.to_string_lossy())
                             });
-                    let id = TrackId(crate::domain::identity::track_id(&metadata));
+                        let id = TrackId(crate::domain::identity::track_id(&metadata));
                         self.track_paths
                             .lock()
                             .unwrap()
                             .insert(id.clone(), path.clone());
+                        let favorite = self.favorites.lock().unwrap().contains(&path);
                         tracks.push(Track {
                             id: id.clone(),
                             path: None,
@@ -1161,7 +1298,7 @@ impl AppState {
                             duration_ms: (metadata.duration_ms != 0)
                                 .then_some(metadata.duration_ms),
                             artwork_url: None,
-                            favorite: false,
+                            favorite,
                             provider: metadata.provider.map(|provider| {
                                 crate::contracts::types::ProviderId {
                                     provider: provider.provider,
@@ -1169,7 +1306,7 @@ impl AppState {
                                 }
                             }),
                         });
-                    id
+                        id
                     })
                     .clone();
                 ids.push(id);
@@ -1189,6 +1326,14 @@ impl AppState {
             playlists: playlist_data,
         };
         *self.library.lock().unwrap() = snapshot.clone();
+        let scanned = self
+            .track_paths
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        self.favorites.lock().unwrap().project(scanned);
         snapshot
     }
     pub fn submit<T, F>(&self, spec: TaskSpec, work: F) -> Result<TaskHandle<T>, SpawnError>
@@ -1261,8 +1406,147 @@ impl AppState {
                 })?;
                 Ok(serde_json::json!({ "generation": generation.0, "job_id": "library-scan" }))
             }
+            Command::LoadConfig { home } => self.load_config(PathBuf::from(home)),
+            Command::RegisterRoot { root } => {
+                let root = PathBuf::from(root);
+                if !root.is_absolute() || root.to_string_lossy().chars().any(char::is_control) {
+                    return Err(ContractError::invalid("library root must be an absolute directory"));
+                }
+                self.set_scan_roots(vec![root.clone()]);
+                Ok(serde_json::json!({ "root": root.display().to_string() }))
+            }
+            Command::PromoteAudioOutput { temporary, destination } => {
+                self.promote_audio_output(
+                    PathBuf::from(temporary),
+                    PathBuf::from(destination),
+                )
+            }
+            Command::SyncMarkers { folder } => {
+                let folder = validate_library_path(self, &PathBuf::from(&folder), false)?;
+                let markers = Markers::load_checked(folder).map_err(|message| ContractError {
+                    code: if message.contains("missing") {
+                        ErrorCode::NotFound
+                    } else {
+                        ErrorCode::InvalidRequest
+                    },
+                    message,
+                    retryable: false,
+                })?;
+                Ok(serde_json::json!({
+                    "successful": markers.successful.len(),
+                    "permanent_failures": markers.failed.len()
+                }))
+            }
+            Command::SearchDownloader { query, try_soundcloud } => {
+                let sources = crate::download::workflows::search_sources(&query, try_soundcloud)
+                    .map_err(|error| ContractError::invalid(format!("invalid downloader search: {error:?}")))?;
+                Ok(serde_json::to_value(sources.into_iter().map(|(provider, query)| {
+                    serde_json::json!({ "provider": format!("{provider:?}").to_lowercase(), "query": query })
+                }).collect::<Vec<_>>()).unwrap_or(Value::Null))
+            }
+            Command::ValidateDirectUrl { url, destination } => {
+                crate::download::workflows::validate_http_url(&url)
+                    .map_err(|_| ContractError::invalid("URL must use http or https"))?;
+                let destination = PathBuf::from(destination);
+                if !destination.is_absolute() {
+                    return Err(ContractError::invalid("destination must be an absolute path"));
+                }
+                validate_library_path(self, &destination, true)?;
+                Ok(serde_json::json!({ "url": url.trim(), "destination": destination.display().to_string() }))
+            }
+            Command::PreviewCsv { csv } => {
+                let tracks = crate::download::csv::parse(csv.as_bytes())
+                    .map_err(|error| ContractError::invalid(format!("invalid CSV: {error:?}")))?;
+                Ok(serde_json::json!({ "rows": tracks.iter().enumerate().map(|(index, track)| serde_json::json!({
+                    "id": format!("csv:{}", index + 1), "title": track.title, "artist": track.artist,
+                    "album": track.album, "url": track.url
+                })).collect::<Vec<_>>() }))
+            }
+            Command::QueueUrls { urls } => {
+                let mut accepted = Vec::new();
+                let mut rejected = Vec::new();
+                for url in urls {
+                    match crate::download::workflows::validate_http_url(&url) {
+                        Ok(url) => accepted.push(url.to_owned()),
+                        Err(_) => rejected.push(serde_json::json!({ "url": url.trim(), "reason": "invalid HTTP/HTTPS URL" })),
+                    }
+                }
+                Ok(serde_json::json!({ "accepted": accepted, "rejected": rejected }))
+            }
+            Command::SelectLibraryRoot { root } => {
+                let root = PathBuf::from(root);
+                if !root.is_absolute() || root.to_string_lossy().chars().any(char::is_control) { return Err(ContractError::invalid("library root must be an absolute directory")); }
+                if !root.is_dir() { return Err(ContractError { code: ErrorCode::NotFound, message: "library root does not exist".into(), retryable: false }); }
+                let root = std::fs::canonicalize(root).map_err(|_| ContractError::invalid("library root could not be canonicalized"))?;
+                self.set_scan_roots(vec![root.clone()]);
+                Ok(serde_json::json!({ "root": root.display().to_string() }))
+            }
+            Command::StartDownload { job_id, destination, helper } => self.start_download(job_id, PathBuf::from(destination), PathBuf::from(helper)),
+            Command::RetryDownload { job_id } => {
+                let (destination, helper) = self.download_requests.lock().unwrap().get(&job_id.0).cloned().ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "download request not found".into(), retryable: false })?;
+                self.start_download(job_id, destination, helper)
+            }
+            Command::LoadSettings { home } => self.load_config(PathBuf::from(home)),
+            Command::SaveSettings { home, settings } => self.save_settings(PathBuf::from(home), settings),
+            Command::TransferPreview { manifest, destination } => self.transfer_preview(&manifest, PathBuf::from(destination)),
+            Command::TransferExport => self.transfer_export(),
+            Command::TransferApply { manifest, destination, approvals } => self.transfer_apply(&manifest, PathBuf::from(destination), approvals),
+            Command::ToggleFavorite { track_id } => self.toggle_favorite(track_id),
+            Command::RecordRecent { track_id } => {
+                if !self.track_paths.lock().unwrap().contains_key(&track_id) {
+                    return Err(ContractError {
+                        code: ErrorCode::NotFound,
+                        message: "track is not available locally".into(),
+                        retryable: false,
+                    });
+                }
+                self.record_recent(track_id);
+                Ok(Value::Null)
+            }
+            Command::GetRecent => serde_json::to_value(self.recent.lock().unwrap().clone())
+                .map_err(|_| ContractError {
+                    code: ErrorCode::Internal,
+                    message: "recent history unavailable".into(),
+                    retryable: false,
+                }),
+            Command::ClearRecent => {
+                self.recent.lock().unwrap().clear();
+                Ok(Value::Null)
+            }
+            Command::PlayNext { track_ids } => self.queue_insert(track_ids, true),
+            Command::AddToQueue { track_ids } => self.queue_insert(track_ids, false),
+            Command::RemoveFromQueue { index } => self.queue_remove(index),
+            Command::ReorderQueue { from, to } => self.queue_reorder(from, to),
+            Command::ClearQueue => {
+                self.playback.lock().unwrap().clear();
+                #[cfg(target_os = "macos")]
+                {
+                    if let Ok(mut backend) = self.audio.lock() { backend.stop(); }
+                    if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.stop(); }
+                    *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Stopped;
+                    *self.current_track.lock().unwrap() = None;
+                }
+                self.publish_queue_snapshot();
+                Ok(Value::Null)
+            }
+            Command::ToggleShuffle => {
+                self.playback.lock().unwrap().toggle_shuffle();
+                self.publish_queue_snapshot();
+                Ok(Value::Null)
+            }
+            Command::SetRepeat { repeat } => {
+                self.playback.lock().unwrap().set_repeat(match repeat {
+                    ContractRepeatMode::Off => crate::playback::queue::RepeatMode::Off,
+                    ContractRepeatMode::One => crate::playback::queue::RepeatMode::One,
+                    ContractRepeatMode::All => crate::playback::queue::RepeatMode::All,
+                });
+                self.publish_queue_snapshot();
+                Ok(Value::Null)
+            }
             Command::CancelJob { job_id } => {
-                if self.tasks.cancel_key(&job_id.0) {
+                if self.downloads.cancel_job(&job_id.0) {
+                    Ok(Value::Null)
+                } else if self.tasks.cancel_key(&job_id.0) {
                     Ok(Value::Null)
                 } else {
                     Err(ContractError {
@@ -1273,13 +1557,19 @@ impl AppState {
                 }
             }
             #[cfg(not(target_os = "macos"))]
-            Command::Play { .. } | Command::Pause | Command::Seek { .. } => Err(ContractError {
+            Command::Play { .. } | Command::PlayWithContext { .. } | Command::Next | Command::Previous | Command::Pause | Command::Seek { .. } => Err(ContractError {
                 code: ErrorCode::Unavailable,
                 message: "audio backend unavailable on this platform".into(),
                 retryable: false,
             }),
             #[cfg(target_os = "macos")]
             Command::Play { track_id } => self.play_track(track_id),
+            #[cfg(target_os = "macos")]
+            Command::PlayWithContext { track_id, context } => self.play_with_context(track_id, context),
+            #[cfg(target_os = "macos")]
+            Command::Next => self.next_track(),
+            #[cfg(target_os = "macos")]
+            Command::Previous => self.previous_track(),
             #[cfg(target_os = "macos")]
             Command::Pause => self.pause_track(),
             #[cfg(target_os = "macos")]
@@ -1317,6 +1607,301 @@ impl AppState {
         }
     }
 
+    fn load_config(&self, home: PathBuf) -> Result<Value, ContractError> {
+        validate_home(&home)?;
+        let path = home.join(".luno_config.json");
+        let config = match crate::persistence::legacy::read_config(&path) {
+            Ok(config) => config,
+            Err(error) if error.contains("No such file") || error.contains("not found") => {
+                return Err(ContractError {
+                    code: ErrorCode::NotFound,
+                    message: "configuration is missing".into(),
+                    retryable: false,
+                });
+            }
+            Err(_) => {
+                return Err(ContractError {
+                    code: ErrorCode::InvalidRequest,
+                    message: "configuration is corrupt".into(),
+                    retryable: false,
+                });
+            }
+        };
+        let root = config.music_root.map(|value| value.trim().to_owned());
+        if root.as_deref().is_some_and(str::is_empty) {
+            return Err(ContractError {
+                code: ErrorCode::InvalidRequest,
+                message: "configuration music root is empty".into(),
+                retryable: false,
+            });
+        }
+        let root = root.map(|root| {
+            let root = PathBuf::from(root);
+            root
+        });
+        if let Some(root) = &root {
+            if !root.is_absolute() || root.to_string_lossy().chars().any(char::is_control) || !root.is_dir() {
+                return Err(ContractError::invalid("configuration music root is unsafe or unavailable"));
+            }
+        }
+        self.set_scan_roots(root.clone().into_iter().collect());
+        if let Some(paths) = config.favorite_songs {
+            let mut favorites = self.favorites.lock().unwrap();
+            for path in paths {
+                favorites.set(path, true);
+            }
+        }
+        Ok(serde_json::json!({
+            "music_root": root.map(|path| path.display().to_string()),
+            "auto_discovery": config.auto_discovery,
+            "volume": config.volume,
+            "sleep_timer": config.sleep_timer,
+            "global_keys": config.global_keys,
+            "favorite_songs": self.favorites.lock().unwrap().paths().map(str::to_owned).collect::<Vec<_>>(),
+        }))
+    }
+
+    fn save_settings(&self, home: PathBuf, settings: crate::contracts::types::SettingsInput) -> Result<Value, ContractError> {
+        validate_home(&home)?;
+        if home.as_os_str().is_empty()
+            || settings.favorite_songs.iter().any(|path| path.is_empty() || path.contains('\0') || path.chars().any(char::is_control))
+            || settings.volume.is_some_and(|volume| !volume.is_finite() || !(0.0..=1.0).contains(&volume))
+        {
+            return Err(ContractError::invalid("settings contain an unsafe path"));
+        }
+        if let Some(root) = settings.music_root.as_deref() {
+            let root = PathBuf::from(root);
+            if !root.is_absolute() || !root.is_dir() {
+                return Err(ContractError::invalid("music root must be an existing absolute directory"));
+            }
+        }
+        let value = serde_json::json!({
+            "music_root": settings.music_root,
+            "auto_discovery": settings.auto_discovery,
+            "volume": settings.volume,
+            "sleep_timer": settings.sleep_timer,
+            "global_keys": settings.global_keys,
+            "favorite_songs": settings.favorite_songs,
+        });
+        let bytes = serde_json::to_vec_pretty(&value).map_err(|_| ContractError { code: ErrorCode::Internal, message: "settings could not be encoded".into(), retryable: false })?;
+        let path = home.join(".luno_config.json");
+        crate::persistence::atomic_write::write_atomic(&path, &bytes).map_err(|_| ContractError { code: ErrorCode::Internal, message: "settings could not be persisted".into(), retryable: true })?;
+        Ok(serde_json::json!({ "saved": true }))
+    }
+
+    fn start_download(&self, job_id: JobId, destination: PathBuf, helper: PathBuf) -> Result<Value, ContractError> {
+        let root = self.scan_roots().first().cloned().ok_or_else(|| ContractError::invalid("no configured library root"))?;
+        let root = std::fs::canonicalize(root).map_err(|_| ContractError { code: ErrorCode::NotFound, message: "configured library root is unavailable".into(), retryable: false })?;
+        let parent = destination.parent().ok_or_else(|| ContractError::invalid("destination must name a file"))?;
+        let parent = std::fs::canonicalize(parent).map_err(|_| ContractError::invalid("destination directory is unavailable"))?;
+        if !parent.starts_with(&root) || !helper.is_absolute() || !helper.is_file() {
+            return Err(ContractError::invalid("download helper or destination is unsafe"));
+        }
+        self.download_requests.lock().unwrap().insert(job_id.0.clone(), (destination.clone(), helper.clone()));
+        let generation = self.next_generation();
+        let job = job_id.clone();
+        let coordinator = self.downloads.clone();
+        let state = self.clone();
+        let helper_for_worker = helper.clone();
+        let receiver = coordinator.events_for(&job.0);
+        let worker_home = root.join(".luno-gate4-worker-home");
+        std::fs::create_dir_all(&worker_home).map_err(|_| ContractError::invalid("download worker home is unavailable"))?;
+        let start_result = coordinator.start(crate::download::coordinator::DownloadRequest { job_id: job.0.clone(), destination }, Box::new(move |temporary, token, progress| {
+            if token.is_cancelled() { return Err("cancelled".into()); }
+            let mut child = std::process::Command::new(&helper_for_worker).arg(temporary).env("HOME", &worker_home).spawn().map_err(|_| "download helper could not start".to_string())?;
+            loop {
+                if token.is_cancelled() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("cancelled".into());
+                }
+                match child.try_wait().map_err(|_| "download helper failed".to_string())? {
+                    Some(status) => { progress(1.0); return if status.success() { Ok(()) } else { Err("download helper failed".into()) }; }
+                    None => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        }));
+        if let Err(error) = start_result {
+            coordinator.remove_events_for(&job.0);
+            return Err(ContractError { code: match error { crate::download::coordinator::StartError::Busy => ErrorCode::Busy, crate::download::coordinator::StartError::ShuttingDown => ErrorCode::ShuttingDown, crate::download::coordinator::StartError::InvalidRequest => ErrorCode::InvalidRequest }, message: "download could not start".into(), retryable: matches!(error, crate::download::coordinator::StartError::Busy) });
+        }
+        let spec = self.generation(format!("download-{}", job.0), generation);
+        let worker_job = job.clone();
+        self.submit(spec, move |task_token| {
+            while !state.is_closing() {
+                if task_token.is_cancelled() { break; }
+                let Ok(event) = receiver.recv_timeout(Duration::from_millis(50)) else {
+                    continue;
+                };
+                use crate::download::coordinator::DownloadEvent;
+                let (state_value, progress, error) = match &event {
+                    DownloadEvent::Started { .. } => (crate::contracts::types::JobState::Running, None, None),
+                    DownloadEvent::Progress { fraction, .. } => (crate::contracts::types::JobState::Running, Some(*fraction), None),
+                    DownloadEvent::Cancelling { .. } => (crate::contracts::types::JobState::Cancelling, None, None),
+                    DownloadEvent::Succeeded { .. } => (crate::contracts::types::JobState::Succeeded, Some(1.0), None),
+                    DownloadEvent::Failed { error, .. } => {
+                        (crate::contracts::types::JobState::Failed, None, Some(ContractError { code: ErrorCode::Unavailable, message: sanitize_download_error(error), retryable: true }))
+                    },
+                    DownloadEvent::Cancelled { .. } => (crate::contracts::types::JobState::Cancelled, None, None),
+                };
+                let mut envelope = state.event(generation, Event::JobUpdated { job: crate::contracts::types::DownloadJob { id: worker_job.clone(), kind: crate::contracts::types::DownloadKind::Single, state: state_value, track_id: None, progress, generation } });
+                envelope.job_id = Some(worker_job.clone());
+                state.publish(envelope);
+                if let Some(error) = error { state.publish(state.event(generation, Event::Error { error })); }
+                if matches!(event, DownloadEvent::Succeeded { .. } | DownloadEvent::Failed { .. } | DownloadEvent::Cancelled { .. }) { break; }
+            }
+        }).map_err(|_| ContractError { code: ErrorCode::Internal, message: "download worker could not start".into(), retryable: true })?;
+        Ok(serde_json::json!({ "job_id": job.0, "generation": generation.0 }))
+    }
+
+    fn transfer_export(&self) -> Result<Value, ContractError> {
+        let library = self.library();
+        let mut assigned = BTreeSet::new();
+        let playlists = library.playlists.iter().map(|playlist| {
+            for id in &playlist.ordered_track_ids { assigned.insert(id.clone()); }
+            crate::transfer::codec::Playlist { name: playlist.name.clone(), description: String::new(), track_refs: playlist.ordered_track_ids.iter().map(|id| id.0.clone()).collect() }
+        }).collect::<Vec<_>>();
+        let tracks = library.tracks.iter().map(|track| crate::transfer::codec::Track {
+            r#ref: track.id.0.clone(), title: track.title.clone(), artist: track.artist.clone().unwrap_or_default(), album: track.album.clone().unwrap_or_default(), duration_ms: track.duration_ms.unwrap_or_default(), source: track.provider.as_ref().map(|source| crate::transfer::codec::Source { provider: source.provider.clone(), id: source.id.clone() }), ambiguity_confirmation_required: track.provider.is_none(),
+        }).collect::<Vec<_>>();
+        let unassigned_track_refs = library.tracks.iter().filter(|track| !assigned.contains(&track.id)).map(|track| track.id.0.clone()).collect();
+        let manifest = crate::transfer::codec::Manifest { format: crate::transfer::codec::MANIFEST_FORMAT.into(), manifest_version: crate::transfer::codec::MANIFEST_VERSION, scope: "library".into(), created_at: "1970-01-01T00:00:00Z".into(), tracks, playlists, unassigned_track_refs };
+        let manifest = crate::transfer::codec::encode(&manifest).map_err(|error| ContractError::invalid(error.to_string()))?;
+        Ok(serde_json::json!({ "manifest": manifest }))
+    }
+
+    fn transfer_index(&self) -> crate::transfer::provider_index::ProviderIndex {
+        let metadata = self.provider_metadata.lock().unwrap();
+        crate::transfer::provider_index::ProviderIndex::new(self.track_paths.lock().unwrap().iter().map(|(id, path)| crate::transfer::provider_index::IndexedTrack { path: path.clone(), metadata: metadata.get(path).cloned().unwrap_or_else(|| crate::domain::identity::filename_metadata(&id.0)) }))
+    }
+
+    fn transfer_preview(&self, manifest: &str, destination: PathBuf) -> Result<Value, ContractError> {
+        self.validate_transfer_destination(&destination)?;
+        let manifest = crate::transfer::codec::decode(manifest).map_err(|error| ContractError::invalid(error.to_string()))?;
+        let plan = crate::transfer::planner::plan_import(&manifest, &self.transfer_index(), destination);
+        let matched = plan.tracks.iter().filter(|track| matches!(track.match_plan, crate::transfer::planner::MatchPlan::Matched(_))).count();
+        let ambiguous = plan.tracks.iter().filter(|track| matches!(track.match_plan, crate::transfer::planner::MatchPlan::Ambiguous(_))).count();
+        let missing = plan.tracks.iter().filter(|track| matches!(track.match_plan, crate::transfer::planner::MatchPlan::Unresolved)).count();
+        let provider_matches = manifest.tracks.iter().filter(|track| track.source.is_some()).count().min(matched);
+        Ok(serde_json::json!({ "matched": matched, "ambiguous": ambiguous, "missing": missing, "provider_matches": provider_matches, "unresolved_provider_handoff": missing, "no_deletions": plan.no_deletions }))
+    }
+
+    fn transfer_apply(&self, manifest: &str, destination: PathBuf, approvals: std::collections::BTreeMap<String, String>) -> Result<Value, ContractError> {
+        self.validate_transfer_destination(&destination)?;
+        let manifest = crate::transfer::codec::decode(manifest).map_err(|error| ContractError::invalid(error.to_string()))?;
+        let plan = crate::transfer::planner::plan_import(&manifest, &self.transfer_index(), &destination);
+        let approvals = approvals.into_iter().map(|(key, value)| (key, PathBuf::from(value))).collect();
+        let result = crate::transfer::planner::apply_import_plan(&plan, &approvals);
+        Ok(serde_json::json!({ "copied": result.copied.len(), "failures": result.failures.len(), "no_deletions": plan.no_deletions }))
+    }
+
+    fn validate_transfer_destination(&self, destination: &PathBuf) -> Result<(), ContractError> {
+        let roots = self.scan_roots();
+        let root = roots.first().ok_or_else(|| ContractError::invalid("no configured library root"))?;
+        let root = std::fs::canonicalize(root).map_err(|_| ContractError { code: ErrorCode::NotFound, message: "configured library root is unavailable".into(), retryable: false })?;
+        let destination = std::fs::canonicalize(destination).map_err(|_| ContractError::invalid("transfer destination is unavailable"))?;
+        if destination.starts_with(root) { Ok(()) } else { Err(ContractError::invalid("transfer destination is outside the configured library")) }
+    }
+
+    fn promote_audio_output(
+        &self,
+        temporary: PathBuf,
+        destination: PathBuf,
+    ) -> Result<Value, ContractError> {
+        if temporary.as_os_str().is_empty() || destination.as_os_str().is_empty() {
+            return Err(ContractError::invalid("promotion paths must not be empty"));
+        }
+        let configured_root = self
+            .scan_roots()
+            .first()
+            .cloned()
+            .ok_or_else(|| ContractError::invalid("no configured library root"))?;
+        let root = std::fs::canonicalize(&configured_root).map_err(|_| ContractError {
+            code: ErrorCode::NotFound,
+            message: "configured library root is unavailable".into(),
+            retryable: false,
+        })?;
+        let parent = destination.parent().ok_or_else(|| {
+            ContractError::invalid("promotion destination must name a file")
+        })?;
+        let canonical_parent = std::fs::canonicalize(parent).map_err(|_| {
+            ContractError::invalid("promotion destination directory is unavailable")
+        })?;
+        if !canonical_parent.starts_with(&root)
+            || destination.file_name().is_none_or(|name| name.is_empty())
+        {
+            return Err(ContractError::invalid(
+                "promotion destination is outside the configured library",
+            ));
+        }
+        promote_output(
+            &temporary,
+            &destination,
+            Validation::audio(),
+            CollisionPolicy::Reject,
+            None,
+        )
+        .map(|receipt| serde_json::json!({ "path": receipt.path, "bytes": receipt.bytes }))
+        .map_err(Self::promotion_error)
+    }
+
+fn promotion_error(error: PromotionError) -> ContractError {
+        match error {
+            PromotionError::Cancelled => ContractError {
+                code: ErrorCode::Cancelled,
+                message: "audio promotion was cancelled".into(),
+                retryable: false,
+            },
+            PromotionError::Collision(_) => ContractError {
+                code: ErrorCode::Busy,
+                message: "promotion destination already exists".into(),
+                retryable: false,
+            },
+            PromotionError::InvalidOutput(message) => ContractError::invalid(message),
+            PromotionError::Io(error) => ContractError {
+                code: if error.kind() == std::io::ErrorKind::NotFound {
+                    ErrorCode::NotFound
+                } else {
+                    ErrorCode::Internal
+                },
+                message: "audio promotion could not complete".into(),
+                retryable: error.kind() != std::io::ErrorKind::NotFound,
+            },
+        }
+    }
+
+    fn toggle_favorite(&self, track_id: TrackId) -> Result<Value, ContractError> {
+        let path = self
+            .track_paths
+            .lock()
+            .unwrap()
+            .get(&track_id)
+            .cloned()
+            .ok_or_else(|| ContractError {
+                code: ErrorCode::NotFound,
+                message: "track is not available locally".into(),
+                retryable: false,
+            })?;
+        let favorite = {
+            let mut favorites = self.favorites.lock().unwrap();
+            let next = !favorites.contains(&path);
+            favorites.set(&path, next);
+            next
+        };
+        let mut library = self.library.lock().unwrap();
+        if let Some(track) = library.tracks.iter_mut().find(|track| track.id == track_id) {
+            track.favorite = favorite;
+        }
+        Ok(serde_json::json!({ "favorite": favorite }))
+    }
+
+    pub fn record_recent(&self, track_id: TrackId) {
+        let mut recent = self.recent.lock().unwrap();
+        recent.retain(|id| id != &track_id);
+        recent.insert(0, track_id);
+        recent.truncate(100);
+    }
+
     #[cfg(target_os = "macos")]
     fn playback_error(error: BackendError) -> ContractError {
         let code = match error {
@@ -1335,25 +1920,41 @@ impl AppState {
     }
 
     #[cfg(target_os = "macos")]
-    fn playback_snapshot(
-        &self,
-        status: crate::contracts::types::PlaybackStatus,
-        track: Option<TrackId>,
-        position: Duration,
-        duration: Option<Duration>,
-    ) -> crate::contracts::types::PlaybackSnapshot {
-        let track = track.or_else(|| self.current_track.lock().unwrap().clone());
-        crate::contracts::types::PlaybackSnapshot {
-            queue: track.clone().into_iter().collect(),
-            current_index: track.as_ref().map(|_| 0),
-            position_ms: position.as_millis().min(u64::MAX as u128) as u64,
-            duration_ms: duration.map(|value| value.as_millis().min(u64::MAX as u128) as u64),
-            status,
-            generation: self.library().generation,
+    fn recover_from_backend_error(&self, error: BackendError) {
+        let contract = Self::playback_error(error);
+        self.publish(self.event(self.library().generation, Event::Error { error: contract }));
+        let action = self.recovery.lock().unwrap().record_failure();
+        if matches!(action, crate::playback::recovery::RecoveryAction::Stop) {
+            *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Failed;
+            self.publish_queue_snapshot();
+        } else {
+            let _ = self.next_track();
         }
     }
 
-    #[cfg(target_os = "macos")]
+    fn playback_snapshot(
+        &self,
+        status: crate::contracts::types::PlaybackStatus,
+        position: Duration,
+        duration: Option<Duration>,
+    ) -> crate::contracts::types::PlaybackSnapshot {
+        let queue = self.playback.lock().unwrap();
+        crate::contracts::types::PlaybackSnapshot {
+            queue: queue.queue().to_vec(),
+            current_index: queue.current_index().map(|index| index as u32),
+            shuffle: queue.shuffle(),
+            repeat: match queue.repeat() {
+                crate::playback::queue::RepeatMode::Off => ContractRepeatMode::Off,
+                crate::playback::queue::RepeatMode::One => ContractRepeatMode::One,
+                crate::playback::queue::RepeatMode::All => ContractRepeatMode::All,
+            },
+            position_ms: position.as_millis().min(u64::MAX as u128) as u64,
+            duration_ms: duration.map(|value| value.as_millis().min(u64::MAX as u128) as u64),
+            status,
+            generation: self.next_generation(),
+        }
+    }
+
     fn publish_playback(
         &self,
         snapshot: crate::contracts::types::PlaybackSnapshot,
@@ -1363,10 +1964,52 @@ impl AppState {
         if let Some(track_id) = track {
             self.publish(self.event(self.library().generation, Event::TrackStarted { track_id }));
         }
-            }
+    }
+
+    fn publish_queue_snapshot(&self) {
+        let status = {
+            #[cfg(target_os = "macos")]
+            { *self.playback_status.lock().unwrap() }
+            #[cfg(not(target_os = "macos"))]
+            { crate::contracts::types::PlaybackStatus::Stopped }
+        };
+        let snapshot = self.playback_snapshot(status, Duration::ZERO, None);
+        self.publish_playback(snapshot, None);
+    }
+
+    fn queue_insert(&self, track_ids: Vec<TrackId>, next: bool) -> Result<Value, ContractError> {
+        if next { self.playback.lock().unwrap().play_next(track_ids); }
+        else { self.playback.lock().unwrap().add_to_queue(track_ids); }
+        self.publish_queue_snapshot();
+        Ok(Value::Null)
+    }
+
+    fn queue_remove(&self, index: usize) -> Result<Value, ContractError> {
+        if !self.playback.lock().unwrap().remove(index) {
+            return Err(ContractError::invalid("queue index is out of range"));
+        }
+        self.publish_queue_snapshot();
+        Ok(Value::Null)
+    }
+
+    fn queue_reorder(&self, from: usize, to: usize) -> Result<Value, ContractError> {
+        if !self.playback.lock().unwrap().reorder(from, to) {
+            return Err(ContractError::invalid("queue index is out of range"));
+        }
+        self.publish_queue_snapshot();
+        Ok(Value::Null)
+    }
 
     #[cfg(target_os = "macos")]
     fn play_track(&self, track_id: TrackId) -> Result<Value, ContractError> {
+        self.play_with_context(track_id.clone(), vec![track_id])
+    }
+
+    #[cfg(target_os = "macos")]
+    fn play_with_context(&self, track_id: TrackId, context: Vec<TrackId>) -> Result<Value, ContractError> {
+        if context.is_empty() || !context.iter().any(|id| id == &track_id) {
+            return Err(ContractError::invalid("playback context must contain the selected track"));
+        }
         let path = self
             .track_paths
             .lock()
@@ -1378,28 +2021,77 @@ impl AppState {
                 message: "track is not available locally".into(),
                 retryable: false,
             })?;
+        self.playback.lock().unwrap().play_with_context(track_id.clone(), context);
         let mut backend = self.audio.lock().map_err(|_| ContractError {
             code: ErrorCode::Internal,
             message: "audio backend lock failed".into(),
             retryable: false,
         })?;
-        let info = backend.load(&path).map_err(Self::playback_error)?;
-        backend.play().map_err(Self::playback_error)?;
+        let info = match backend.load(&path) {
+            Ok(info) => info,
+            Err(error) => {
+                drop(backend);
+                self.recover_from_backend_error(error);
+                return Err(ContractError { code: ErrorCode::Unavailable, message: "audio track could not be loaded".into(), retryable: true });
+            }
+        };
+        if let Err(error) = backend.play() {
+            drop(backend);
+            self.recover_from_backend_error(error);
+            return Err(ContractError { code: ErrorCode::Unavailable, message: "audio output could not start".into(), retryable: true });
+        }
+        self.playback.lock().unwrap().record_started(track_id.clone(), false);
+        self.record_recent(track_id.clone());
+        *self.clock.lock().unwrap() = Some(PlaybackClock::new(info.duration));
+        if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.start(0.0); }
+        self.recovery.lock().unwrap().record_success();
         *self.current_track.lock().unwrap() = Some(track_id.clone());
         *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Playing;
         let snapshot = self.playback_snapshot(
             crate::contracts::types::PlaybackStatus::Playing,
-            Some(track_id.clone()),
             Duration::ZERO,
             info.duration,
         );
         self.publish_playback(snapshot.clone(), Some(track_id));
+        let heartbeat_state = self.clone();
+        let generation = snapshot.generation;
+        let _ = self.submit(self.generation("playback-heartbeat", generation), move |token| {
+            while !token.is_cancelled() && !heartbeat_state.is_closing() {
+                std::thread::sleep(crate::playback::clock::HEARTBEAT);
+                if token.is_cancelled() || heartbeat_state.is_closing() { break; }
+                if heartbeat_state.heartbeat_tick().is_err() { break; }
+            }
+        });
         serde_json::to_value(snapshot).map_err(|e| ContractError {
             code: ErrorCode::Internal,
             message: e.to_string(),
             retryable: false,
         })
-        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn next_track(&self) -> Result<Value, ContractError> {
+        let next = self.playback.lock().unwrap().next().cloned();
+        next.map_or_else(|| {
+            if let Ok(mut backend) = self.audio.lock() { backend.stop(); }
+            if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.stop(); }
+            *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Stopped;
+            self.publish_queue_snapshot();
+            Ok(Value::Null)
+        }, |track| {
+            let context = self.playback.lock().unwrap().queue().to_vec();
+            self.play_with_context(track, context)
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn previous_track(&self) -> Result<Value, ContractError> {
+        let previous = self.playback.lock().unwrap().previous().cloned();
+        previous.map_or_else(|| Ok(Value::Null), |track| {
+            let context = self.playback.lock().unwrap().queue().to_vec();
+            self.play_with_context(track, context)
+        })
+    }
 
     #[cfg(target_os = "macos")]
     fn pause_track(&self) -> Result<Value, ContractError> {
@@ -1408,13 +2100,25 @@ impl AppState {
             message: "audio backend lock failed".into(),
             retryable: false,
         })?;
-        backend.pause().map_err(Self::playback_error)?;
-        let position = backend.position().map_err(Self::playback_error)?;
-        let duration = backend.duration().map_err(Self::playback_error)?;
-        *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Paused;
+        let was_paused = *self.playback_status.lock().unwrap() == crate::contracts::types::PlaybackStatus::Paused;
+        if was_paused { backend.play().map_err(Self::playback_error)?; }
+        else { backend.pause().map_err(Self::playback_error)?; }
+        let position = match backend.position() {
+            Ok(position) => position,
+            Err(error) => { drop(backend); self.recover_from_backend_error(error); return Ok(Value::Null); }
+        };
+        let duration = match backend.duration() {
+            Ok(duration) => duration,
+            Err(error) => { drop(backend); self.recover_from_backend_error(error); return Ok(Value::Null); }
+        };
+        if was_paused {
+            if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.resume(0.0); }
+        } else if let Some(clock) = self.clock.lock().unwrap().as_mut() {
+            clock.pause(0.0, Some(position));
+        }
+        *self.playback_status.lock().unwrap() = if was_paused { crate::contracts::types::PlaybackStatus::Playing } else { crate::contracts::types::PlaybackStatus::Paused };
         let snapshot = self.playback_snapshot(
-            crate::contracts::types::PlaybackStatus::Paused,
-            None,
+            *self.playback_status.lock().unwrap(),
             position,
             duration,
         );
@@ -1438,14 +2142,49 @@ impl AppState {
             .map_err(Self::playback_error)?;
         let position = backend.position().map_err(Self::playback_error)?;
         let duration = backend.duration().map_err(Self::playback_error)?;
+        if let Some(clock) = self.clock.lock().unwrap().as_mut() {
+            clock.seek(position, 0.0);
+        }
         let status = *self.playback_status.lock().unwrap();
-        let snapshot = self.playback_snapshot(status, None, position, duration);
+        let snapshot = self.playback_snapshot(status, position, duration);
         self.publish_playback(snapshot.clone(), None);
         serde_json::to_value(snapshot).map_err(|e| ContractError {
             code: ErrorCode::Internal,
             message: e.to_string(),
             retryable: false,
         })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn heartbeat_tick(&self) -> Result<(), ContractError> {
+        let backend = self.audio.lock().map_err(|_| ContractError { code: ErrorCode::Internal, message: "audio backend lock failed".into(), retryable: false })?;
+        let position = match backend.position() {
+            Ok(position) => position,
+            Err(error) => {
+                drop(backend);
+                self.recover_from_backend_error(error);
+                return Err(ContractError { code: ErrorCode::Unavailable, message: "audio position is unavailable".into(), retryable: true });
+            }
+        };
+        let duration = match backend.duration() {
+            Ok(duration) => duration,
+            Err(error) => {
+                drop(backend);
+                self.recover_from_backend_error(error);
+                return Err(ContractError { code: ErrorCode::Unavailable, message: "audio duration is unavailable".into(), retryable: true });
+            }
+        };
+        let status = *self.playback_status.lock().unwrap();
+        let elapsed = position;
+        let due = self.clock.lock().unwrap().as_ref().is_some_and(|clock| clock.completion_due(elapsed, true, elapsed));
+        if due && self.clock.lock().unwrap().as_mut().is_some_and(|clock| clock.dispatch_completion()) {
+            drop(backend);
+            let _ = self.next_track()?;
+        } else {
+            let snapshot = self.playback_snapshot(status, position, duration);
+            self.publish_playback(snapshot, None);
+        }
+        Ok(())
     }
 
     pub fn shutdown_events(
@@ -1468,6 +2207,10 @@ impl AppState {
             return report;
         }
         self.tasks.begin_shutdown();
+        #[cfg(target_os = "macos")]
+        if let Ok(mut backend) = self.audio.lock() {
+            backend.shutdown();
+        }
         self.publish(self.event(
             Generation(0),
             Event::Shutdown {
@@ -1590,4 +2333,26 @@ impl AppState {
     pub fn process_count(&self) -> usize {
         self.supervisor.registry.active_count()
     }
+}
+
+fn validate_home(home: &PathBuf) -> Result<(), ContractError> {
+    if !home.is_absolute() || home.as_os_str().is_empty() || home.to_string_lossy().chars().any(char::is_control) || !home.is_dir() || std::fs::canonicalize(home).is_err() {
+        return Err(ContractError::invalid("settings home must be an absolute safe directory"));
+    }
+    Ok(())
+}
+
+fn validate_library_path(state: &AppState, path: &Path, allow_file: bool) -> Result<PathBuf, ContractError> {
+    let root = state.scan_roots().first().cloned().ok_or_else(|| ContractError::invalid("no configured library root"))?;
+    let root = std::fs::canonicalize(root).map_err(|_| ContractError { code: ErrorCode::NotFound, message: "configured library root is unavailable".into(), retryable: false })?;
+    if !path.is_absolute() || path.to_string_lossy().chars().any(char::is_control) { return Err(ContractError::invalid("path must be absolute and safe")); }
+    let candidate = if path.exists() { std::fs::canonicalize(path) } else { path.parent().map(std::fs::canonicalize).unwrap_or_else(|| Err(std::io::Error::other("missing parent"))) };
+    let candidate = candidate.map_err(|_| ContractError::invalid("path is unavailable"))?;
+    if !candidate.starts_with(&root) || (!allow_file && !path.is_dir()) { return Err(ContractError::invalid("path is outside the configured library")); }
+    Ok(candidate)
+}
+
+fn sanitize_download_error(error: &str) -> String {
+    let first = error.lines().next().unwrap_or("download failed");
+    if first.contains('/') || first.contains('\\') { "download worker failed".into() } else { first.chars().take(160).collect() }
 }

@@ -72,8 +72,8 @@ impl CpalSymphoniaBackend {
         let track_id = track.id;
         let duration = track.codec_params.time_base.and_then(|tb| {
             track.codec_params.n_frames.map(|frames| {
-            let time = tb.calc_time(frames);
-            Duration::from_secs_f64(time.seconds as f64 + time.frac)
+                let time = tb.calc_time(frames);
+                Duration::from_secs_f64(time.seconds as f64 + time.frac)
             })
         });
         let mut decoder = symphonia::default::get_codecs()
@@ -274,6 +274,17 @@ impl AudioBackend for CpalSymphoniaBackend {
             .as_ref()
             .map(|t| t.duration)
             .ok_or(BackendError::NotLoaded)
+    }
+
+    fn stop(&mut self) {
+        if let Some(state) = &self.state {
+            state.lock().unwrap().playing = false;
+        }
+        self.stop_stream();
+    }
+
+    fn shutdown(&mut self) {
+        self.stop();
     }
 }
 

@@ -9,7 +9,9 @@ import {
   isEventEnvelope,
   type ShutdownReason,
   type TrackId,
+  type JobId, type SettingsInput,
   parseEventEnvelope,
+  isSearchResults,
 } from "../shared/contracts";
 import type { LibrarySnapshot } from "../shared/contracts";
 
@@ -21,6 +23,11 @@ export type MigrationStatus =
 
 export const BACKEND_EVENT = "backend-event";
 export const BACKEND_COMMAND = "backend_command";
+export const GATE5_EVENT = "gate5-smoke-event";
+
+export function backendCommandArgs(envelope: unknown): InvokeArgs {
+  return { payload: envelope };
+}
 
 export function isValidLibraryResponse(value: unknown): value is LibrarySnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -40,13 +47,15 @@ export interface BridgeTransport {
   listen<T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn>;
 }
 
-const tauriTransport: BridgeTransport = {
-  invoke: <T>(command: string, payload: unknown) => tauriInvoke<T>(command, payload as InvokeArgs),
+export const tauriTransport: BridgeTransport = {
+  invoke: <T>(command: string, payload: unknown) => command === BACKEND_COMMAND
+    ? tauriInvoke<T>(command, backendCommandArgs(payload))
+    : payload == null ? tauriInvoke<T>(command) : tauriInvoke<T>(command, payload as InvokeArgs),
   listen: <T>(event: string, handler: (payload: T) => void) => listen<T>(event, (message) => handler(message.payload)),
 };
 
 let requestSequence = 0;
-type UnitCommand = "get_library" | "scan_library" | "pause" | "video_play" | "video_pause";
+type UnitCommand = "get_library" | "scan_library" | "pause" | "video_play" | "video_pause" | "get_recent" | "clear_recent" | "next" | "previous" | "clear_queue" | "toggle_shuffle";
 
 function envelope(command: Command | UnitCommand): CommandEnvelope {
   const request_id = `frontend-${Date.now()}-${requestSequence++}`;
@@ -67,7 +76,37 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
   return {
     getLibrary: () => send("get_library"),
     scanLibrary: () => send("scan_library"),
+    loadConfig: (home: string) => send({ type: "load_config", payload: { home } }),
+    registerRoot: (root: string) => send({ type: "register_root", payload: { root } }),
+    promoteAudioOutput: (temporary: string, destination: string) => send({ type: "promote_audio_output", payload: { temporary, destination } }),
+     syncMarkers: (folder: string) => send({ type: "sync_markers", payload: { folder } }),
+      searchDownloader: async (query: string, try_soundcloud = true) => { const value = await send<unknown>({ type: "search_downloader", payload: { query, try_soundcloud } }); if (!isSearchResults(value)) throw new Error("invalid downloader search response"); return value; },
+      validateDirectUrl: (url: string, destination: string) => send({ type: "validate_direct_url", payload: { url, destination } }),
+      previewCsv: (csv: string) => send({ type: "preview_csv", payload: { csv } }),
+      queueUrls: (urls: string[]) => send({ type: "queue_urls", payload: { urls } }),
+      selectLibraryRoot: (root: string) => send({ type: "select_library_root", payload: { root } }),
+     startDownload: (job_id: JobId, destination: string, helper: string) => send({ type: "start_download", payload: { job_id, destination, helper } }),
+     retryDownload: (job_id: JobId) => send({ type: "retry_download", payload: { job_id } }),
+     loadSettings: (home: string) => send({ type: "load_settings", payload: { home } }),
+     saveSettings: (home: string, settings: SettingsInput) => send({ type: "save_settings", payload: { home, settings } }),
+     transferPreview: (manifest: string, destination: string) => send({ type: "transfer_preview", payload: { manifest, destination } }),
+     transferExport: () => send({ type: "transfer_export" }),
+     transferApply: (manifest: string, destination: string, approvals: Record<string, string>) => send({ type: "transfer_apply", payload: { manifest, destination, approvals } }),
+    toggleFavorite: (track_id: TrackId) => send({ type: "toggle_favorite", payload: { track_id } }),
+    recordRecent: (track_id: TrackId) => send({ type: "record_recent", payload: { track_id } }),
+    getRecent: () => send("get_recent"),
+    clearRecent: () => send("clear_recent"),
     play: (track_id: string) => send({ type: "play", payload: { track_id } }),
+    playWithContext: (track_id: TrackId, context: TrackId[]) => send({ type: "play_with_context", payload: { track_id, context } }),
+    next: () => send("next"),
+    previous: () => send("previous"),
+    playNext: (track_ids: TrackId[]) => send({ type: "play_next", payload: { track_ids } }),
+    addToQueue: (track_ids: TrackId[]) => send({ type: "add_to_queue", payload: { track_ids } }),
+    removeFromQueue: (index: number) => send({ type: "remove_from_queue", payload: { index } }),
+    reorderQueue: (from: number, to: number) => send({ type: "reorder_queue", payload: { from, to } }),
+    clearQueue: () => send("clear_queue"),
+    toggleShuffle: () => send("toggle_shuffle"),
+    setRepeat: (repeat: "off" | "one" | "all") => send({ type: "set_repeat", payload: { repeat } }),
     pause: () => send("pause"),
     seek: (position_ms: number) => {
       if (!Number.isSafeInteger(position_ms) || position_ms < 0) return Promise.reject(new Error("position_ms must be a non-negative integer"));
@@ -85,10 +124,23 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
       return parseMigrationStatus(value);
     },
     cancelJob: (job_id: string) => send({ type: "cancel_job", payload: { job_id } }),
-    shutdown: (reason: ShutdownReason) => send({ type: "shutdown", payload: { reason } }),
-  subscribe: (handler: (event: EventEnvelope) => void) =>
+     shutdown: (reason: ShutdownReason) => send({ type: "shutdown", payload: { reason } }),
+     gate5Smoke: (root: string, preview_root: string, video_root: string) => transport.invoke<Gate5SmokeResult>("gate5_smoke", { root, preview_root, video_root }),
+     subscribeGate5Smoke: (handler: (result: Gate5SmokeResult) => void) => transport.listen<Gate5SmokeResult>(GATE5_EVENT, handler),
+   subscribe: (handler: (event: EventEnvelope) => void) =>
       transport.listen<unknown>(BACKEND_EVENT, (payload) => handler(validEvent(payload))),
   };
+}
+
+export interface Gate5SmokeResult {
+  discovery_items: number;
+  discovery_artwork: boolean;
+  artwork_design: number;
+  preview_ready: boolean;
+  preview_hidden_before_save: boolean;
+  saved_visible_after_scan: boolean;
+  video_ready: boolean;
+  unobserved: string[];
 }
 
 export function parseMigrationStatus(value: unknown): MigrationStatus {
