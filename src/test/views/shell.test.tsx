@@ -13,7 +13,7 @@ describe("Gate 6 player bar", () => {
   });
 
   it("announces playing state through the toggle label and position values", () => {
-    const html = renderToStaticMarkup(<PlayerBar track={{ id: "t1", title: "Aurora", artist: "Gate Six", album: null, path: null, duration_ms: 3000, artwork_url: null, favorite: false, provider: null }} playback={{ status: "playing", track_id: "t1", position_ms: 1250, duration_ms: 3000, shuffle: false, repeat: "off", volume: 1, generation: 1 }} />);
+    const html = renderToStaticMarkup(<PlayerBar track={{ id: "t1", title: "Aurora", artist: "Gate Six", album: null, path: null, duration_ms: 3000, artwork_url: null, favorite: false, provider: null }} playback={{ queue: ["t1"], current_index: 0, shuffle: false, repeat: "off", status: "playing", position_ms: 1250, duration_ms: 3000, generation: 1 }} />);
     expect(html).toContain('aria-label="Pause"');
     expect(html).toContain("Aurora");
     expect(html).toContain("0:01");
