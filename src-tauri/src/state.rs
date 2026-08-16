@@ -1960,9 +1960,13 @@ fn promotion_error(error: PromotionError) -> ContractError {
         snapshot: crate::contracts::types::PlaybackSnapshot,
         track: Option<TrackId>,
     ) {
-        self.publish(self.event(snapshot.generation, Event::PlaybackSnapshot { snapshot }));
+        let snapshot_generation = snapshot.generation;
+        self.publish(self.event(snapshot_generation, Event::PlaybackSnapshot { snapshot }));
         if let Some(track_id) = track {
-            self.publish(self.event(self.library().generation, Event::TrackStarted { track_id }));
+            // TrackStarted rides the same generation as its snapshot so the
+            // frontend's stale-event filter never drops it (playback domain
+            // generation outruns the library generation during heartbeats).
+            self.publish(self.event(snapshot_generation, Event::TrackStarted { track_id }));
         }
     }
 
