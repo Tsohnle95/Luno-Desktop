@@ -16,9 +16,14 @@ during a build.
 Each update requires a reviewed release commit containing the new version,
 architecture-specific checksums, upstream license notices, and explicit human
 licensing/signing approval. This is an update review, not runtime self-update.
-The repository currently contains no `release-input/bin/` executables and the
-manifest still contains checksum placeholders, so provisioning and bundle
-verification are blocked until the release owner supplies those reviewed inputs.
+Reviewed inputs were supplied under receipt R06: ffmpeg/ffprobe 7.1.1 built
+locally from the PGP- and git-tag-verified ffmpeg.org source (LGPL-only, arm64)
+and yt-dlp 2025.08.11 from the official GitHub release (checksum- and
+signature-verified, universal2). The manifest carries the reviewed SHA-256
+values and `THIRD_PARTY_NOTICES.md` carries the exact upstream license texts.
+The inputs themselves are intentionally not committed; the release owner
+re-supplies them per release, and provisioning and bundle verification fail
+closed if they are absent or mismatched.
 
 ## Gates
 

@@ -7,22 +7,22 @@
     {
       "name": "ffmpeg",
       "version": "7.1.1",
-      "source": "release-attached",
-      "sha256": "REPLACE_WITH_REVIEWED_SHA256",
+      "source": "ffmpeg.org release 7.1.1 tarball, locally built (LGPL-only, arm64)",
+      "sha256": "d69335856dd48485f0343693734048fb7d89861720bf7b8255f947f11737274f",
       "license_notice": "THIRD_PARTY_NOTICES.md#ffmpeg"
     },
     {
       "name": "ffprobe",
       "version": "7.1.1",
-      "source": "release-attached",
-      "sha256": "REPLACE_WITH_REVIEWED_SHA256",
+      "source": "ffmpeg.org release 7.1.1 tarball, locally built (LGPL-only, arm64)",
+      "sha256": "a2c0abaa9744aec49f339d1f7a1afc981a9cc5d6fe48329ddd04dd400b6ac375",
       "license_notice": "THIRD_PARTY_NOTICES.md#ffmpeg"
     },
     {
       "name": "yt-dlp",
       "version": "2025.08.11",
-      "source": "release-attached",
-      "sha256": "REPLACE_WITH_REVIEWED_SHA256",
+      "source": "official GitHub release 2025.08.11 yt-dlp_macos (universal2)",
+      "sha256": "8001c730007495a26de24d7fcf6c72e76bc24c47bdde2cfd86d51e21626bd7e4",
       "license_notice": "THIRD_PARTY_NOTICES.md#yt-dlp"
     }
   ]

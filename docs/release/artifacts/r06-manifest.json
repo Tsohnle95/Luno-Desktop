@@ -1,0 +1,162 @@
+{
+  "receipt": "R06",
+  "status": "PASS",
+  "scope": "Reviewed media binary supply, provisioning, DMG bundle verification",
+  "timestamp": "2026-08-16",
+  "source_review_head": "0fc27703af21839c326148734f6aeed8019c60a3",
+  "environment": {
+    "machine": "Darwin 25.5.0",
+    "os": "macOS (Darwin 25.5.0)",
+    "architecture": "arm64",
+    "node": "v22.23.2",
+    "npm": "10.9.8",
+    "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)",
+    "clang": "Apple clang 21.0.0 (clang-2100.1.1.101)",
+    "gpg": "GnuPG 2.5.21 (Homebrew)",
+    "jq": "present",
+    "xcode_clt": "present via /usr/bin/clang and /usr/bin/codesign"
+  },
+  "inputs": {
+    "managed_binary_directory": "release-input/bin",
+    "managed_binary_directory_present": true,
+    "reviewed_sha256_values": true,
+    "upstream_license_artifacts": true,
+    "signing_credentials": false,
+    "dmg_artifact": true
+  },
+  "artifacts": {
+    "ffmpeg": {
+      "version": "7.1.1",
+      "sha256": "d69335856dd48485f0343693734048fb7d89861720bf7b8255f947f11737274f",
+      "architecture": "arm64",
+      "size_bytes": 21152632,
+      "source": "https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz (locally built LGPL-only)"
+    },
+    "ffprobe": {
+      "version": "7.1.1",
+      "sha256": "a2c0abaa9744aec49f339d1f7a1afc981a9cc5d6fe48329ddd04dd400b6ac375",
+      "architecture": "arm64",
+      "size_bytes": 21060824,
+      "source": "https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz (locally built LGPL-only)"
+    },
+    "yt-dlp": {
+      "version": "2025.08.11",
+      "sha256": "8001c730007495a26de24d7fcf6c72e76bc24c47bdde2cfd86d51e21626bd7e4",
+      "architecture": "universal2 (x86_64, arm64)",
+      "size_bytes": 35740176,
+      "source": "https://github.com/yt-dlp/yt-dlp/releases/download/2025.08.11/yt-dlp_macos"
+    },
+    "ffmpeg_source_tarball_sha256": "733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1",
+    "dmg": {
+      "path": "src-tauri/target/release/bundle/dmg/Luno_0.1.0_aarch64.dmg",
+      "size_bytes": 108050744,
+      "sha256": "441c1d815854b234391ced66c26b8ee7f5bce9ee90f0fbbfac2b3014fa4992eb"
+    }
+  },
+  "verification": [
+    {
+      "what": "ffmpeg release tarball PGP signature",
+      "command": "gpg --verify ffmpeg-7.1.1.tar.xz.asc ffmpeg-7.1.1.tar.xz",
+      "result": "Good signature from FFmpeg release signing key <ffmpeg-devel@ffmpeg.org>",
+      "key": "FCF986EA15E6E293A5644F10B4322F04D67658D8",
+      "key_channel": "https://ffmpeg.org/ffmpeg-devel.asc over TLS; fingerprint also published at https://ffmpeg.org/download.html"
+    },
+    {
+      "what": "ffmpeg git tag signature",
+      "command": "git tag -v n7.1.1 (shallow clone of tag)",
+      "result": "Good signature (tagger FFmpeg 7.1.1 release, Michael Niedermayer)",
+      "key": "DD1EC9E8DE085C629B3E1846B18E8928B3948D64",
+      "key_channel": "https://ffmpeg.org/git-tag-key.asc over TLS"
+    },
+    {
+      "what": "ffmpeg build configuration",
+      "command": "./configure --disable-gpl --disable-doc --disable-debug --disable-ffplay --disable-sdl2 --disable-libxcb --disable-xlib",
+      "result": "License: LGPL version 2.1 or later; external libraries limited to macOS system frameworks (appkit, avfoundation, audiotoolbox, bzlib, coreimage, iconv, securetransport, videotoolbox, zlib)"
+    },
+    {
+      "what": "no non-system dylib dependencies",
+      "command": "otool -L ffmpeg",
+      "result": "no non-/usr/lib or System dylibs listed"
+    },
+    {
+      "what": "yt-dlp published checksum match",
+      "command": "shasum -a 256 yt-dlp_macos vs SHA2-256SUMS",
+      "result": "8001c730007495a26de24d7fcf6c72e76bc24c47bdde2cfd86d51e21626bd7e4 matches published value"
+    },
+    {
+      "what": "yt-dlp checksum file signature",
+      "command": "gpg --verify SHA2-256SUMS.sig SHA2-256SUMS",
+      "result": "Good signature from Simon Sawicki (yt-dlp signing key) <contact@grub4k.xyz>",
+      "key": "AC0CBBE6848D6A873464AF4E57CF65933B5A7581",
+      "key_channel": "keys.openpgp.org; fingerprint matches official public.key in the yt-dlp repository"
+    },
+    {
+      "what": "manifest placeholders replaced",
+      "command": "jq '.artifacts[].sha256' release/desktop-binaries.json",
+      "result": "three reviewed 64-hex values, no REPLACE_ values"
+    },
+    {
+      "what": "provisioning",
+      "command": "LUNO_BINARY_SOURCE_DIR=release-input/bin ./scripts/provision-desktop-binaries.sh",
+      "exit_code": 0,
+      "result": "binaries installed to src-tauri/resources/bin; architectures, versions, and checksums validated against manifest"
+    },
+    {
+      "what": "isolated DMG build",
+      "command": "HOME=<fresh> TMPDIR=<fresh> CARGO_HOME=/Users/ty/.cargo CARGO_NET_OFFLINE=true PATH=/opt/homebrew/bin:/usr/bin:/bin npm run tauri -- build",
+      "exit_code": 0,
+      "result": "Luno.app bundled; Luno_0.1.0_aarch64.dmg created"
+    },
+    {
+      "what": "bundle verifier against mounted DMG",
+      "command": "hdiutil attach -nobrowse -readonly <dmg> && ./scripts/verify-desktop-bundle.sh /Volumes/Luno/Luno.app",
+      "exit_code": 0,
+      "result": "bundle inspection and no-developer-PATH smoke passed"
+    },
+    {
+      "what": "in-bundle checksum equality",
+      "command": "shasum -a 256 <mounted>/Luno.app/Contents/Resources/bin/{ffmpeg,ffprobe,yt-dlp}",
+      "result": "matches manifest values exactly"
+    },
+    {
+      "what": "packaged launch smoke",
+      "command": "PATH=/usr/bin:/bin <mounted>/Luno.app/Contents/MacOS/luno-desktop (isolated HOME/TMPDIR, 10 s)",
+      "result": "process alive after 10 s; terminated cleanly; no crash"
+    },
+    {
+      "what": "code signature state",
+      "command": "codesign -dv <mounted>/Luno.app",
+      "result": "ad-hoc signing only; no Apple identity (signing/notarization remain blocked)"
+    }
+  ],
+  "checks": [
+    {
+      "command": "npm run typecheck",
+      "exit_code": 0,
+      "status": "PASS"
+    },
+    {
+      "command": "npm test",
+      "exit_code": 0,
+      "status": "PASS",
+      "output": "34 passed"
+    },
+    {
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml",
+      "exit_code": 0,
+      "status": "PASS",
+      "output": "91 passed; 0 failed; 1 ignored"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "status": "PASS"
+    }
+  ],
+  "notes": [
+    "Reviewed binaries are intentionally NOT committed (release-input/bin/ and src-tauri/resources/bin/* are gitignored); the release owner re-supplies them per release, and the provisioner fails closed if they are absent or mismatched.",
+    "ffmpeg/ffprobe are arm64-only host builds; Intel-mac coverage would require universal2 builds (documented decision).",
+    "AD-HOC signed bundle only; APPLE_SIGNING_IDENTITY/notarization credentials are not present and remain blocked for release sign-off."
+  ]
+}

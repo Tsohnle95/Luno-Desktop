@@ -27,3 +27,6 @@ mobile-app/local.properties
 
 # OS metadata
 .DS_Store
+/release-input/bin/
+/src-tauri/resources/bin/*
+!/src-tauri/resources/bin/.gitkeep
