@@ -41,7 +41,7 @@ export type Command =
   | { type: "select_library_root"; payload: { root: string } }
   | { type: "start_download"; payload: { job_id: JobId; destination: string; helper: string } }
   | { type: "retry_download"; payload: { job_id: JobId } }
-  | { type: "load_settings"; payload: { home: string } } | { type: "save_settings"; payload: { home: string; settings: SettingsInput } }
+  | { type: "load_settings"; payload: { home: string } } | { type: "resolve_runtime_home" } | { type: "save_settings"; payload: { home: string; settings: SettingsInput } }
   | { type: "transfer_preview"; payload: { manifest: string; destination: string } }
   | { type: "transfer_export" }
   | { type: "transfer_apply"; payload: { manifest: string; destination: string; approvals: Record<string, string> } }
@@ -76,7 +76,7 @@ const safeInteger = (v: unknown): v is number => Number.isSafeInteger(v);
 export function isContractVersion(v: unknown): v is ContractVersion { return v === CONTRACT_VERSION; }
 function isCommand(v: unknown): v is Command {
   if (!object(v) || typeof v.type !== "string") return false;
-   if (["get_library", "scan_library", "pause", "get_recent", "clear_recent", "transfer_export"].includes(v.type)) return Object.keys(v).length === 1;
+   if (["get_library", "scan_library", "pause", "get_recent", "clear_recent", "transfer_export", "resolve_runtime_home"].includes(v.type)) return Object.keys(v).length === 1;
    if (v.type === "load_config") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && Object.keys(v.payload).length === 1;
     if (v.type === "register_root") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.root === "string" && v.payload.root.trim().length > 0 && Object.keys(v.payload).length === 1;
     if (v.type === "promote_audio_output") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.temporary === "string" && v.payload.temporary.trim().length > 0 && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && Object.keys(v.payload).length === 2;

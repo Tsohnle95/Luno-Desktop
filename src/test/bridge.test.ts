@@ -43,12 +43,13 @@ describe("typed IPC bridge and projection", () => {
     await bridge.play("track-1");
     expect(calls).toHaveLength(2);
     expect((calls[0] as { version: number }).version).toBe(1);
+    await bridge.resolveRuntimeHome();
     await bridge.videoStage("track-1");
     await bridge.videoSeek(1200);
     await bridge.videoFullscreen(true);
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(6);
     await bridge.subscribe(() => {});
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(6);
     expect(() => callback(event({ type: "error", payload: { error: { code: "internal", message: "x", retryable: false } } }))).not.toThrow();
     expect(() => callback({})).toThrow();
     expect(() => callback(event({ type: "playback_snapshot", payload: { snapshot: { queue: [], current_index: null, shuffle: false, repeat: "off", position_ms: -1, duration_ms: null, status: "stopped", generation: 1 } } }))).toThrow();

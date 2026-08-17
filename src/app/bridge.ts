@@ -88,6 +88,7 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
      startDownload: (job_id: JobId, destination: string, helper: string) => send({ type: "start_download", payload: { job_id, destination, helper } }),
      retryDownload: (job_id: JobId) => send({ type: "retry_download", payload: { job_id } }),
      loadSettings: (home: string) => send({ type: "load_settings", payload: { home } }),
+     resolveRuntimeHome: () => send({ type: "resolve_runtime_home" }),
      saveSettings: (home: string, settings: SettingsInput) => send({ type: "save_settings", payload: { home, settings } }),
      transferPreview: (manifest: string, destination: string) => send({ type: "transfer_preview", payload: { manifest, destination } }),
      transferExport: () => send({ type: "transfer_export" }),

@@ -6,6 +6,8 @@ export interface SettingsViewProps {
   lastfmKey?: string;
   keychainStatus?: "available" | "missing" | "error" | "loading";
   musicRoot?: string;
+  libraryRootPath?: string;
+  onLibraryRootSubmit?: (path: string) => void;
   autoDiscovery?: boolean;
   sleepTimer?: SleepTimer;
   mediaKeys?: boolean;
@@ -29,15 +31,22 @@ export interface SettingsViewProps {
 
 const inputStyle = { width: "100%", padding: "11px 12px", color: "var(--luno-text)", background: "var(--luno-bg-3)", border: "1px solid var(--luno-border)", borderRadius: "var(--luno-radius)" };
 const buttonStyle = { border: 0, borderRadius: "var(--luno-radius)", padding: "10px 14px", color: "var(--luno-bg)", background: "var(--luno-green)", fontWeight: 700, cursor: "pointer" };
+const buttonsDisabledStyle = (disabled: boolean) => ({ ...buttonStyle, opacity: disabled ? 0.5 : 1, cursor: disabled ? "not-allowed" : "pointer" });
 
 export function SettingsView({
   lastfmKey = "", keychainStatus = "available", musicRoot = "Not configured", autoDiscovery = false,
   sleepTimer = "Off", mediaKeys = true, loading = false, error = null, onLastfmKeyChange,
-  onChooseMusicRoot, onAutoDiscoveryChange, onSleepTimerChange, onMediaKeysChange, onOpenErrorLog,
+  libraryRootPath, onLibraryRootSubmit, onChooseMusicRoot, onAutoDiscoveryChange, onSleepTimerChange, onMediaKeysChange, onOpenErrorLog,
   transferManifest = "", transferDestination = "", transferResult = "", onTransferManifestChange, onTransferDestinationChange, onTransferPreview, onTransferApply, onTransferExport,
 }: SettingsViewProps) {
   const [key, setKey] = useState(lastfmKey);
   const [keyError, setKeyError] = useState<string | null>(null);
+  const [rootInput, setRootInput] = useState(libraryRootPath ?? "");
+  const [rootError, setRootError] = useState<string | null>(null);
+  const updateRoot = (value: string) => {
+    setRootInput(value);
+    setRootError(value.trim().length > 0 && !value.trim().startsWith("/") ? "Enter an absolute folder path." : null);
+  };
   const updateKey = (event: ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
     setKey(value);
@@ -58,7 +67,7 @@ export function SettingsView({
       <p id="lastfm-status" role="status" style={{ color: keychainStatus === "error" ? "var(--luno-red)" : "var(--luno-text-2)", marginTop: 8 }}>{keychainStatus === "loading" ? "Checking Keychain..." : keychainStatus === "available" ? "Keychain storage available" : keychainStatus === "missing" ? "No Keychain key configured" : "Keychain unavailable. Your key was not saved."}</p>
       <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 20 }}><input type="checkbox" checked={autoDiscovery} onChange={(e) => onAutoDiscoveryChange?.(e.target.checked)} /> Automatic recommendations</label>
     </>)}
-    {section("Storage & Library", <div><label htmlFor="music-root">Music folder</label><div style={{ display: "flex", gap: 10, marginTop: 8 }}><input id="music-root" readOnly value={musicRoot} style={{ ...inputStyle, flex: 1 }} /><button type="button" onClick={onChooseMusicRoot} style={buttonStyle}>Change</button></div><p style={{ color: "var(--luno-text-2)" }}>Library scanning and downloads use this folder.</p></div>)}
+    {section("Storage & Library", onLibraryRootSubmit ? <div><label htmlFor="music-root">Music folder</label><div style={{ display: "flex", gap: 10, marginTop: 8 }}><input id="music-root" value={rootInput} onChange={(e) => updateRoot(e.target.value)} placeholder="/Users/you/Music" aria-describedby="music-root-error" style={{ ...inputStyle, flex: 1 }} /><button type="button" disabled={rootInput.trim().length === 0 || rootError !== null} onClick={() => onLibraryRootSubmit(rootInput)} style={buttonsDisabledStyle(rootInput.trim().length === 0 || rootError !== null)}>Set folder</button></div>{rootError && <p id="music-root-error" role="alert" style={{ color: "var(--luno-red)", margin: "6px 0" }}>{rootError}</p>}<p style={{ color: "var(--luno-text-2)" }}>Enter an absolute folder path; Luno scans it as your music library and downloads land inside it.</p></div> : <div><label htmlFor="music-root">Music folder</label><div style={{ display: "flex", gap: 10, marginTop: 8 }}><input id="music-root" readOnly value={musicRoot} style={{ ...inputStyle, flex: 1 }} /><button type="button" onClick={onChooseMusicRoot} style={buttonStyle}>Change</button></div><p style={{ color: "var(--luno-text-2)" }}>Library scanning and downloads use this folder.</p></div>)}
     {section("Playback Settings", <>
       <label htmlFor="sleep-timer">Sleep timer</label><select id="sleep-timer" value={sleepTimer} onChange={(e) => onSleepTimerChange?.(e.target.value as SleepTimer)} style={{ ...inputStyle, marginTop: 8 }} aria-label="Sleep timer">{["Off", "5 mins", "15 mins", "30 mins", "60 mins"].map(value => <option key={value}>{value}</option>)}</select>
       <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 22 }}><input type="checkbox" checked={mediaKeys} onChange={(e) => onMediaKeysChange?.(e.target.checked)} /> Global media keys (macOS remote commands)</label>

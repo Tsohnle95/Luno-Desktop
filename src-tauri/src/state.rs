@@ -67,6 +67,77 @@ mod tests {
         assert!(!json.contains("/"));
     }
 
+    fn unique_home(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("luno-{label}-{}-{nonce}", std::process::id()))
+    }
+
+    fn default_envelope() -> CommandEnvelope {
+        CommandEnvelope { version: 1, request_id: "boot-test".into(), command: Command::GetLibrary }
+    }
+
+    #[test]
+    fn load_settings_resolves_relative_music_root_against_home() {
+        let home = unique_home("relroot");
+        let music = home.join("Music");
+        std::fs::create_dir_all(&music).unwrap();
+        std::fs::write(home.join(".luno_config.json"), r#"{"music_root":"Music"}"#).unwrap();
+        let state = AppState::new(1);
+        let mut envelope = default_envelope();
+        envelope.command = Command::LoadSettings { home: home.to_string_lossy().into_owned() };
+        let value = state.dispatch(envelope.into()).expect("relative root should resolve");
+        let expected = music.display().to_string();
+        assert_eq!(value.get("music_root").and_then(serde_json::Value::as_str), Some(expected.as_str()));
+        assert_eq!(state.scan_roots(), vec![music]);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn load_settings_rejects_missing_relative_music_root() {
+        let home = unique_home("relroot-missing");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(".luno_config.json"), r#"{"music_root":"MissingFolder"}"#).unwrap();
+        let state = AppState::new(1);
+        let mut envelope = default_envelope();
+        envelope.command = Command::LoadSettings { home: home.to_string_lossy().into_owned() };
+        let error = state.dispatch(envelope.into()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn resolve_runtime_home_returns_the_home_or_reports_unavailable() {
+        let state = AppState::new(1);
+        let mut envelope = default_envelope();
+        envelope.command = Command::ResolveRuntimeHome;
+        match state.dispatch(envelope.into()) {
+            Ok(value) => {
+                let home = value.get("home").and_then(serde_json::Value::as_str).unwrap();
+                assert_eq!(home, std::env::var_os("HOME").unwrap().to_string_lossy());
+            }
+            Err(error) => assert_eq!(error.code, ErrorCode::InvalidRequest),
+        }
+    }
+
+    #[test]
+    fn load_settings_rejects_non_directory_home() {
+        let home = unique_home("relroot-file");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(".luno_config.json"), r#"{"music_root":"Music"}"#).unwrap();
+        let state = AppState::new(1);
+        for envelope in [
+            CommandEnvelope { version: 1, request_id: "boot-file".into(), command: Command::LoadSettings { home: home.join(".luno_config.json").to_string_lossy().into_owned() } },
+            CommandEnvelope { version: 1, request_id: "boot-relative".into(), command: Command::LoadSettings { home: "relative-home".into() } },
+        ] {
+            let error = state.dispatch(envelope).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidRequest);
+        }
+        std::fs::remove_dir_all(&home).ok();
+    }
+
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn playback_commands_report_explicit_backend_unavailability() {
@@ -1487,6 +1558,13 @@ impl AppState {
                 self.start_download(job_id, destination, helper)
             }
             Command::LoadSettings { home } => self.load_config(PathBuf::from(home)),
+            Command::ResolveRuntimeHome => {
+                let home = std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .ok_or_else(|| ContractError::invalid("runtime home is unavailable"))?;
+                validate_home(&home)?;
+                Ok(serde_json::json!({ "home": home.display().to_string() }))
+            }
             Command::SaveSettings { home, settings } => self.save_settings(PathBuf::from(home), settings),
             Command::TransferPreview { manifest, destination } => self.transfer_preview(&manifest, PathBuf::from(destination)),
             Command::TransferExport => self.transfer_export(),
@@ -1637,7 +1715,7 @@ impl AppState {
         }
         let root = root.map(|root| {
             let root = PathBuf::from(root);
-            root
+            if root.is_absolute() { root } else { home.join(&root) }
         });
         if let Some(root) = &root {
             if !root.is_absolute() || root.to_string_lossy().chars().any(char::is_control) || !root.is_dir() {

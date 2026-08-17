@@ -63,6 +63,7 @@ pub enum Command {
     LoadSettings {
         home: String,
     },
+    ResolveRuntimeHome,
     SaveSettings {
         home: String,
         settings: super::types::SettingsInput,
