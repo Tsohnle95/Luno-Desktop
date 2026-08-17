@@ -53,6 +53,13 @@ receipt, not release approval.
   `0fef32a6` (download helper, real sources, M4A output) are committed with
   their native dev-runtime verification notes; destination defaults to
   `Unsorted` under the configured library root.
+- **Structural bundle gate: PASS (2026-08-16, ~20:17 MDT).**
+  `./scripts/verify-desktop-bundle.sh /private/tmp/luno-bundle-app/Luno.app`
+  exited `0` with `bundle inspection and no-developer-PATH smoke passed`,
+  against the packaged app staged from the hash-verified `release-input/bin`
+  binaries. This closes the 2026-08-15 bundle-verifier failure
+  (`non-executable bundled ffmpeg`); the gate remains the structural check and
+  is not replaced by hash checks alone.
 
 ### Remaining Release Prerequisites (INCONCLUSIVE)
 
