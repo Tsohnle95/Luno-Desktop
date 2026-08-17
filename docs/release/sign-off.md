@@ -60,18 +60,37 @@ receipt, not release approval.
   binaries. This closes the 2026-08-15 bundle-verifier failure
   (`non-executable bundled ffmpeg`); the gate remains the structural check and
   is not replaced by hash checks alone.
+- **Packaged download pipeline, helper level: PASS (2026-08-16).** Receipt
+  `docs/verification/receipts/packaged-download-helper-level.md`: the helper
+  bundled in the packaged app, with the bundled `yt-dlp`/`ffmpeg` (sha256
+  hash-matched to the reviewed manifest), performed a real network download
+  (`ytsearch1:never gonna give you up`) under `PATH=/usr/bin:/bin` and an
+  isolated home, exit `0`, producing a 3:33 AAC 44.1 kHz stereo M4A (sha256
+  `079b0977…aaf2` — full track) at `Music/Unsorted`. The packaged-**UI**
+  terminal-state observation is still the only gap in prerequisite 3.
+- **Install mechanics (simulated clean profile): PASS (2026-08-16).** Receipt
+  `docs/verification/receipts/clean-install-simulated.md`: exact-HEAD DMG
+  (sha256 `917e5eec…002a`, 106,810,893 bytes) attach/copy/launch verified
+  under `PATH=/usr/bin:/bin` with isolated home; staged install boots and
+  resolves its bundled helper without any development tools. The real
+  clean-machine install remains a user action (runbook in that receipt).
 
 ### Remaining Release Prerequisites (INCONCLUSIVE)
 
 1. **Signing / notarization: BLOCKED externally.** `security find-identity
    -v -p codesigning` reports `0 valid identities`. No Developer ID signing,
    hardened-runtime signing, notarization, or stapling exists.
-2. **Clean-machine install / rollback:** not performed; requires a clean macOS
-   profile/machine without development PATH tools.
-3. **Packaged real-download completion:** the 2026-08-16 packaged-UI QA run was
-   terminated before the download-completion poll; boot render, settings, and
-   search results were captured, but the terminal job state and post-scan
-   visibility in the packaged app remain unobserved.
+2. **Clean-machine install / rollback:** not performed on a real clean
+   profile/machine. Install **mechanics** were simulated and verified
+   2026-08-16 (exact-HEAD DMG attach/copy/boot under `PATH=/usr/bin:/bin`
+   with isolated home; see `clean-install-simulated.md` for the runbook).
+3. **Packaged real-download completion:** the packaged-**UI** journey
+   (window search rows, job terminal state, post-scan visibility) remains
+   unobserved — the 2026-08-16 packaged-UI QA run was terminated before the
+   download-completion poll. The packaged download pipeline at the helper
+   level now **passes**: a real YouTube download through the bundled helper
+   and bundled binaries landed a full-track M4A in `Music/Unsorted`
+   (`packaged-download-helper-level.md`).
 4. **Physical macOS audio device/codec measurement:** Cargo/unit and native
    playback evidence exist, but an external audible-output measurement on a
    physical device is not recorded.
