@@ -1,6 +1,89 @@
 # Desktop Release Sign-Off
 
-## Gate 7 Fresh Package Receipt: INCONCLUSIVE / BLOCKED
+## Current Receipt: 2026-08-16 (HEAD `0fef32a6` evidence base)
+
+Observed run timestamp: `2026-08-16T19:47-19:52` (local, UTC-6), repository
+root, verified source HEAD `0fef32a6` plus the documentation reconciliation
+commit `d6419c9a` (no runtime change). This is a durable local evidence
+receipt, not release approval.
+
+### Deterministic Gates Re-Run At `0fef32a6`
+
+| Command | Exit | Result |
+|---|---:|---|
+| `npm run typecheck` | 0 | PASS |
+| `npm test` | 0 | PASS — 9 files / 45 tests |
+| `CARGO_NET_OFFLINE=true cargo test --manifest-path src-tauri/Cargo.toml` | 0 | PASS — 98 passed, 1 ignored (interactive login Keychain; pre-existing) |
+| `git diff --check` | 0 | PASS |
+
+### Supply Chain Verified
+
+- `release/desktop-binaries.json` contains reviewed pinned SHA-256 values
+  (zero `REPLACE_WITH_REVIEWED` placeholders) for ffmpeg 7.1.1 + ffprobe 7.1.1
+  (LGPL-only, locally built arm64) and yt-dlp 2025.08.11 (official release).
+- The staged `src-tauri/resources/bin/` executables were hash-rechecked against
+  the manifest: **ffmpeg, ffprobe, yt-dlp all MATCH**. `release/provision.sh`
+  is now tracked and reproduces this staging with hash verification.
+- `scripts/verify-desktop-bundle.sh` remains the structural bundle gate and is
+  not replaced by hash checks alone.
+
+### Resolved Since The 2026-08-15 Receipts
+
+- **Isolated startup panic: RESOLVED.** Receipt
+  `docs/verification/receipts/startup-isolated-home.md` records two fresh
+  packaged launches (`PATH=/usr/bin:/bin`, isolated `HOME`): empty HOME no
+  longer panics (`MigrationStatus::Skipped`, window + AX evidence), and a
+  legacy-config HOME migrates to the correct app-data path additively with
+  backup, no orphan processes. Artifacts under `docs/verification/artifacts/`.
+- **Gate 5:** `docs/verification/receipts/gate5-discover-preview-video.md` —
+  PASS for the opt-in synthetic seam through the real Tauri runtime (native
+  command → IPC → WebView → shutdown). Real-provider, FFmpeg/media, manual
+  journeys, and packaged-runtime parity remain **BLOCKED / unobserved**.
+- **Gate 6:** `docs/verification/receipts/gate6-states-shutdown-r2.md` — PASS
+  **with reservations**: populated library/queue/player, all seven routes,
+  keyboard traversal/activation, error state, download lifecycle
+  (search → select → running → cancel → cancelled), and close-while-work-active
+  shutdown are native-observed. Loading row documented unreachable in the
+  deployed boot order; video row unavailable in the dev stage (documented).
+- **Crossfade: DECIDED, removed from v1.** `docs/decisions/desktop-migration.md`
+  D8 and `src-tauri/src/playback/crossfade.rs` record the deferral; no
+  audible-crossfade claim exists. This is no longer a pending blocker, and the
+  `crossfade` preference is not exposed or persisted by the target.
+- **Production wiring:** `628a7002` (settings boot, editable library root) and
+  `0fef32a6` (download helper, real sources, M4A output) are committed with
+  their native dev-runtime verification notes; destination defaults to
+  `Unsorted` under the configured library root.
+
+### Remaining Release Prerequisites (INCONCLUSIVE)
+
+1. **Signing / notarization: BLOCKED externally.** `security find-identity
+   -v -p codesigning` reports `0 valid identities`. No Developer ID signing,
+   hardened-runtime signing, notarization, or stapling exists.
+2. **Clean-machine install / rollback:** not performed; requires a clean macOS
+   profile/machine without development PATH tools.
+3. **Packaged real-download completion:** the 2026-08-16 packaged-UI QA run was
+   terminated before the download-completion poll; boot render, settings, and
+   search results were captured, but the terminal job state and post-scan
+   visibility in the packaged app remain unobserved.
+4. **Physical macOS audio device/codec measurement:** Cargo/unit and native
+   playback evidence exist, but an external audible-output measurement on a
+   physical device is not recorded.
+5. **Real provider/network journeys** (live Last.fm/YouTube with authorized
+   network) remain unobserved; only loopback/synthetic evidence exists.
+6. **Target video backend:** unavailable in the target; documented as such.
+
+### Verdict
+
+**INCONCLUSIVE / BLOCKED for release approval.** Deterministic gates and the
+documented implementation gates 2-6 are green at `0fef32a6`; release approval
+is still gated on the six prerequisites above, chiefly the external signing
+identity and clean-machine evidence. The local unsigned DMG is a historical
+build artifact, not an approved release artifact. The Python/PyInstaller
+fallback and legacy user data remain the rollback boundary
+(`docs/migration/rollback.md`). The sections below are historical evidence and
+do not reflect the current state.
+
+## HISTORICAL — Gate 7 Fresh Package Receipt (2026-08-15T21:50Z, superseded)
 
 Observed run timestamp: `2026-08-15T21:50:38Z` (UTC; temporary evidence-root
 creation time).
@@ -44,7 +127,7 @@ remains the rollback boundary.
 
 The older historical sections follow.
 
-## Formal Gate 7: INCONCLUSIVE / BLOCKED
+## HISTORICAL — Formal Gate 7 Receipt (2026-08-15T13:19Z, superseded)
 
 Run timestamp: `2026-08-15T13:19:24Z` (UTC). This is a packaged-release
 readiness receipt, not release approval. No commit, push, deploy, publish,
@@ -178,7 +261,7 @@ HEAD `969a83319a96603a3608c041fc8abf28e2f8a3f7` after the first-parent range
 The macOS Tauri release is not approved; retain the Python/PyInstaller fallback
 and legacy user data.
 
-## Evidence
+## HISTORICAL — Evidence (2026-08-14 base, superseded)
 
 - `npm ci`: PASS, exit `0`, 106 packages installed, no vulnerabilities.
 - `npm run typecheck`: PASS, exit `0`.
@@ -197,7 +280,7 @@ and legacy user data.
 - Cargo/unit tests pass, but physical macOS audio backend/device/codec
   target-runtime validation and packaged target playback were not exercised.
 
-## Remaining Blockers
+## HISTORICAL — Remaining Blockers (2026-08-14 view, superseded)
 
 Release is blocked only by unresolved release prerequisites and target evidence:
 
