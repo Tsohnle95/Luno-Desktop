@@ -56,6 +56,16 @@ pub enum Command {
     PreviewNext,
     PreviewPrevious,
     PreviewCancel,
+    DiscoverEnable {
+        #[serde(default)]
+        seeds: Vec<PreviewSeed>,
+    },
+    DiscoverDisable,
+    DiscoverAdvance,
+    Save {
+        key: TrackId,
+        playlist_id: PlaylistId,
+    },
     ValidateDirectUrl {
         url: String,
         destination: String,
@@ -203,6 +213,30 @@ mod tests {
     }
 
     #[test]
+    fn discover_and_save_commands_carry_explicit_destinations() {
+        for command in [
+            r#"{"type":"discover_enable","payload":{"seeds":[{"artist":"Artist","title":"Track"}]}}"#,
+            r#"{"type":"discover_disable"}"#,
+            r#"{"type":"discover_advance"}"#,
+            r#"{"type":"save","payload":{"key":"Artist-Track","playlist_id":"playlist-a"}}"#,
+        ] {
+            let json = format!(r#"{{"version":1,"request_id":"test-1","command":{command}}}"#);
+            assert!(
+                serde_json::from_str::<CommandEnvelope>(&json).is_ok(),
+                "{command}"
+            );
+        }
+        assert!(serde_json::from_str::<CommandEnvelope>(
+            r#"{"version":1,"request_id":"test-1","command":{"type":"save","payload":{"key":"Artist-Track","playlist_id":""}}}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<CommandEnvelope>(
+            r#"{"version":1,"request_id":"test-1","command":{"type":"discover_enable","payload":{"seeds":[]}}}"#
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn event_ids_accept_only_safe_domain_or_delivery_sequences() {
         let envelope = |id: &str| {
             format!(
@@ -256,6 +290,12 @@ pub enum Event {
     },
     PreviewSnapshot {
         snapshot: PreviewSnapshot,
+    },
+    DiscoverSnapshot {
+        snapshot: DiscoverSnapshot,
+    },
+    SaveState {
+        state: SaveState,
     },
     VideoState {
         state: VideoState,

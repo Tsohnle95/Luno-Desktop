@@ -3,7 +3,10 @@ use crate::contracts::events::CommandEnvelope;
 use crate::contracts::events::{
     Event, RootStatus as ContractRootStatus, ShutdownReason, ShutdownState,
 };
-use crate::contracts::types::TrackId;
+use crate::contracts::types::{
+    DiscoverSnapshot, Generation, PlaybackSnapshot, PlaylistId, SaveState, SaveStateKind,
+    TrackId,
+};
 use crate::download::markers::Markers;
 use crate::download::promotion::stage_output;
 use crate::download::sync::{plan, sync_sequential, ItemOutcome, PlaylistEntry, SyncItem};
@@ -18,7 +21,7 @@ use crate::persistence::legacy::read_config;
 use crate::persistence::recovery::{recover, RecoveryResult};
 use crate::runtime::task_registry::SpawnError;
 use crate::state::AppState;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier, Mutex};
@@ -644,14 +647,22 @@ impl Drop for FixtureToolchain {
 
 fn fixture_preview_toolchain() -> (FixtureToolchain, PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
-    let root = std::env::temp_dir().join(format!("luno-gate2-preview-toolchain-lifecycle-{}", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "luno-gate2-preview-toolchain-lifecycle-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let helper = root.join("helper");
-    std::fs::write(&helper, "#!/bin/sh\nprintf 'synthetic preview audio source bytes' > \"$1\"\n").unwrap();
+    // The ID3 prefix keeps the fake payload past media-signature validation.
+    std::fs::write(&helper, "#!/bin/sh\nprintf 'ID3synthetic preview audio source bytes' > \"$1\"\n").unwrap();
     let ffmpeg = root.join("ffmpeg");
-    // `-y -i INPUT -ar ... -f adts -` puts the input at positional argument 3.
-    std::fs::write(&ffmpeg, "#!/bin/sh\ncat \"$3\"\n").unwrap();
+    // `-y -i INPUT -ar ... -f adts -` puts the input at positional argument 3
+    // and streams the output to stdout (`-` is the final argument); saves
+    // remux with `-f mp4 OUTPUT` where the final argument is the file.
+    std::fs::write(&ffmpeg, "#!/bin/sh\nfor last do :; done\nif [ \"$last\" = \"-\" ]; then cat \"$3\"; else cat \"$3\" > \"$last\"; fi\n").unwrap();
     for script in [&helper, &ffmpeg] {
         let mut permissions = std::fs::metadata(script).unwrap().permissions();
         permissions.set_mode(0o755);
@@ -805,6 +816,273 @@ fn preview_tap_without_toolchain_ends_the_session_truthfully() {
     let final_snapshot = preview_snapshots(&state).into_iter().last().expect("snapshots exist");
     assert!(!final_snapshot.active);
     assert!(final_snapshot.unavailable.iter().any(|key| key == "Artist-Track"), "tapped key must be reported unavailable: {final_snapshot:?}");
+    state.cleanup_previews();
+}
+
+fn discover_snapshots(state: &AppState) -> Vec<DiscoverSnapshot> {
+    state.events().iter().filter_map(|envelope| match &envelope.event {
+        Event::DiscoverSnapshot { snapshot } => Some(snapshot.clone()),
+        _ => None,
+    }).collect()
+}
+
+fn playback_snapshots(state: &AppState) -> Vec<PlaybackSnapshot> {
+    state.events().iter().filter_map(|envelope| match &envelope.event {
+        Event::PlaybackSnapshot { snapshot } => Some(snapshot.clone()),
+        _ => None,
+    }).collect()
+}
+
+fn save_states(state: &AppState) -> Vec<SaveState> {
+    state.events().iter().filter_map(|envelope| match &envelope.event {
+        Event::SaveState { state } => Some(state.clone()),
+        _ => None,
+    }).collect()
+}
+
+fn preview_store_root(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("luno-gate2-preview-store-{label}-{}", std::process::id()))
+}
+
+fn wait_until(deadline_seconds: u64, label: &str, mut ready: impl FnMut() -> bool, detail: impl Fn() -> String) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(deadline_seconds);
+    loop {
+        if ready() { return; }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{label} never became ready: {}",
+            detail()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn discover_mode_enables_adopts_advances_and_restores() {
+    let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
+    let state = isolated_preview_state("discover-lifecycle", 16);
+    state.set_preview_toolchain(Some(helper), Some(ffmpeg));
+    let seed = TrackId("seed".into());
+    let next = TrackId("next".into());
+    state.set_playing(seed.clone(), vec![seed.clone(), next.clone()]);
+
+    let recs = ["Artist0-Track0", "Artist1-Track1", "Artist2-Track2", "Artist3-Track3", "Artist4-Track4"];
+    let seeds: Vec<_> = recs.iter().enumerate().map(|(n, _)| preview_seed(&format!("Artist{n}"), &format!("Track{n}"))).collect();
+    let value = state
+        .dispatch(command("discover-enable", Command::DiscoverEnable { seeds: seeds.clone() }))
+        .expect("enable with a playing track must start the session");
+    let snapshot: DiscoverSnapshot = serde_json::from_value(value).unwrap();
+    assert!(snapshot.enabled, "session must start enabled");
+    assert_eq!(snapshot.window, recs);
+    assert_eq!(snapshot.ready, 0, "nothing is staged at enable");
+
+    // Enabling while already running is idempotent: the running session wins.
+    let value = state
+        .dispatch(command("discover-enable-again", Command::DiscoverEnable { seeds: seeds.clone() }))
+        .expect("enabling an active session reports the running one");
+    let snapshot: DiscoverSnapshot = serde_json::from_value(value).unwrap();
+    assert!(snapshot.enabled);
+
+    // The fixture pipeline stages assets; the driver adopts them into the
+    // queue. Waiting for the full window guarantees no worker is still in
+    // flight, so the advance below is deterministic.
+    wait_until(5, "adoption", || {
+        discover_snapshots(&state).iter().any(|snapshot| snapshot.enabled && snapshot.ready == 5 && snapshot.queued >= 1)
+    }, || format!("{:#?}", discover_snapshots(&state)));
+
+    let queue = playback_snapshots(&state).into_iter().last().expect("queue snapshot").queue;
+    assert_eq!(queue.first(), Some(&seed), "the seed leads the projection");
+    assert_eq!(queue.last(), Some(&next), "the seed successor trails the block");
+    assert!(
+        queue.iter().any(|id| id.0 == "Artist0-Track0"),
+        "the adopted recommendation must sit in the queue: {queue:?}"
+    );
+
+    // A queued recommendation starting rolls the window and keeps the session.
+    state.set_playing(TrackId("Artist0-Track0".into()), queue.clone());
+    let latest = discover_snapshots(&state).into_iter().last().expect("snapshot exists");
+    assert!(latest.enabled, "advancing into a recommendation must not end the session: {latest:?}");
+
+    // The explicit advance command mirrors the automatic hook.
+    let value = state
+        .dispatch(command("discover-advance", Command::DiscoverAdvance))
+        .expect("advance must report the session");
+    let snapshot: DiscoverSnapshot = serde_json::from_value(value).unwrap();
+    assert!(snapshot.enabled);
+
+    // Disable restores the captured physical queue.
+    let value = state
+        .dispatch(command("discover-disable", Command::DiscoverDisable))
+        .expect("disable must end the session");
+    let snapshot: DiscoverSnapshot = serde_json::from_value(value).unwrap();
+    assert!(!snapshot.enabled, "disable must turn the session off");
+    let queue = playback_snapshots(&state).into_iter().last().expect("queue snapshot").queue;
+    assert_eq!(queue, vec![seed, next], "the captured queue must be restored");
+
+    wait_until(5, "disable", || {
+        discover_snapshots(&state).iter().any(|snapshot| !snapshot.enabled)
+    }, || format!("{:#?}", discover_snapshots(&state)));
+    state.cleanup_previews();
+}
+
+#[test]
+fn discover_mode_handoff_ends_without_restoring_when_the_queue_is_replaced() {
+    let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
+    let state = isolated_preview_state("discover-handoff", 16);
+    state.set_preview_toolchain(Some(helper), Some(ffmpeg));
+    let seed = TrackId("seed".into());
+    state.set_playing(seed.clone(), vec![seed.clone(), TrackId("next".into())]);
+    state
+        .dispatch(command("handoff-enable", Command::DiscoverEnable {
+            seeds: vec![preview_seed("Artist0", "Track0")],
+        }))
+        .expect("enable must start the session");
+
+    // The user replaces the queue wholesale mid-session.
+    let user_track = TrackId("user-track".into());
+    state.set_playing(user_track.clone(), vec![user_track.clone()]);
+
+    wait_until(5, "handoff", || {
+        discover_snapshots(&state).iter().any(|snapshot| !snapshot.enabled)
+    }, || format!("{:#?}", discover_snapshots(&state)));
+
+    let queue = playback_snapshots(&state).into_iter().last().expect("queue snapshot").queue;
+    assert_eq!(queue, vec![user_track], "a user-replaced queue must be left alone");
+
+    // Staged preview files were deleted (nothing is playing from the block).
+    wait_until(5, "cleanup", || {
+        !preview_store_root("discover-handoff").join("Artist0-Track0.aac").exists()
+    }, || format!("staged file survived teardown: {:#?}", std::fs::read_dir(preview_store_root("discover-handoff")).map(|entries| entries.collect::<Vec<_>>())));
+    state.cleanup_previews();
+}
+
+#[test]
+fn discover_save_promotes_staged_once_with_dedupe_and_rejects_duplicates() {
+    let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
+    let state = isolated_preview_state("save-dedupe", 16);
+    state.set_preview_toolchain(Some(helper), Some(ffmpeg));
+    let lib = fixture_dir("save-library");
+    let playlist_dir = lib.join("playlist-a");
+    fs::create_dir_all(&playlist_dir).unwrap();
+    fs::write(playlist_dir.join("song-a.mp3"), b"fixture song").unwrap();
+    state.replace_library(
+        Generation(7),
+        BTreeMap::from([("playlist-a".to_string(), vec![playlist_dir.join("song-a.mp3")])]),
+    );
+    state.set_playing(TrackId("seed".into()), vec![TrackId("seed".into())]);
+    state
+        .dispatch(command("save-tap", Command::PreviewTap {
+            seeds: vec![preview_seed("Artist0", "Track0")],
+            key: "Artist0-Track0".into(),
+        }))
+        .expect("tap must start a session");
+    wait_until(5, "staged", || {
+        preview_snapshots(&state).iter().any(|snapshot| snapshot.prepared.iter().any(|key| key == "Artist0-Track0"))
+    }, || format!("{:#?}", preview_snapshots(&state)));
+
+    let playlist = PlaylistId("playlist:playlist-a".into());
+    let key = TrackId("Artist0-Track0".into());
+    let value = state
+        .dispatch(command("save-1", Command::Save { key: key.clone(), playlist_id: playlist.clone() }))
+        .expect("staged save must start");
+    assert_eq!(value["state"], "saving");
+
+    // A duplicate request while the first is in flight is rejected.
+    let error = state
+        .dispatch(command("save-2", Command::Save { key: key.clone(), playlist_id: playlist.clone() }))
+        .expect_err("in-flight duplicate save must be rejected");
+    assert_eq!(error.code, crate::contracts::types::ErrorCode::InvalidRequest);
+    assert!(error.message.contains("in progress"), "message: {}", error.message);
+
+    // The promotion completes into the playlist folder as a scannable M4A.
+    wait_until(5, "saved", || {
+        save_states(&state).iter().any(|save| save.state == SaveStateKind::Saved && save.key == key)
+    }, || format!("{:#?}", save_states(&state)));
+    let saved = save_states(&state).into_iter().find(|save| save.state == SaveStateKind::Saved && save.key == key).expect("saved receipt");
+    let target = playlist_dir.join("Artist0 - Track0.m4a");
+    assert_eq!(saved.path.as_deref(), target.to_str(), "saved path mismatch: {saved:?}");
+    assert!(target.is_file(), "the saved file must exist at {target:?}");
+    assert!(
+        preview_store_root("save-dedupe").join("Artist0-Track0.aac").is_file(),
+        "the staged preview must be retained for the temporary queue"
+    );
+    assert!(!saved.already_saved, "first promotion is a fresh save");
+
+    // A later save of the same recommendation dedupes onto the same path.
+    let value = state
+        .dispatch(command("save-3", Command::Save { key: key.clone(), playlist_id: playlist.clone() }))
+        .expect("dedupe save must start");
+    assert_eq!(value["state"], "saving");
+    wait_until(5, "dedupe", || {
+        save_states(&state).iter().filter(|save| save.key == key && save.state == SaveStateKind::Saved && save.already_saved).count() >= 1
+    }, || format!("{:#?}", save_states(&state)));
+    let repeat = save_states(&state).into_iter().find(|save| save.key == key && save.state == SaveStateKind::Saved && save.already_saved).expect("dedupe receipt");
+    assert_eq!(repeat.path.as_deref(), saved.path.as_deref());
+
+    // The in-flight guard releases after completion: a fresh save is accepted again.
+    let _ = state
+        .dispatch(command("save-4", Command::Save { key: key.clone(), playlist_id: playlist.clone() }))
+        .expect("in-flight guard must release after the first promotion completes");
+    state.cleanup_previews();
+}
+
+#[test]
+fn discover_save_requires_explicit_playlist_and_queues_downloads_for_unstaged() {
+    let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
+    let state = isolated_preview_state("save-rules", 16);
+    state.set_preview_toolchain(Some(helper.clone()), Some(ffmpeg));
+    let lib = fixture_dir("save-rules-library");
+    let playlist_dir = lib.join("playlist-a");
+    fs::create_dir_all(&playlist_dir).unwrap();
+    fs::write(playlist_dir.join("song-a.mp3"), b"fixture song").unwrap();
+    state.set_scan_roots(vec![lib.clone()]);
+    state.replace_library(
+        Generation(7),
+        BTreeMap::from([
+            ("playlist-a".to_string(), vec![playlist_dir.join("song-a.mp3")]),
+            ("empty-a".to_string(), Vec::new()),
+        ]),
+    );
+    state.set_playing(TrackId("seed".into()), vec![TrackId("seed".into())]);
+
+    let key = TrackId("Artist0-Track0".into());
+    let destination = PlaylistId("playlist:playlist-a".into());
+
+    // Unknown playlists are rejected before any work.
+    let error = state
+        .dispatch(command("save-unknown", Command::Save { key: key.clone(), playlist_id: PlaylistId("playlist:missing".into()) }))
+        .expect_err("unknown playlists must be rejected");
+    assert_eq!(error.code, crate::contracts::types::ErrorCode::NotFound);
+
+    // A playlist without a directory cannot receive saves.
+    let error = state
+        .dispatch(command("save-nodir", Command::Save { key: key.clone(), playlist_id: PlaylistId("playlist:empty-a".into()) }))
+        .expect_err("playlists without a directory must be rejected");
+    assert!(error.message.contains("no directory"), "message: {}", error.message);
+
+    // Unstaged keys with no downloader configured fail truthfully.
+    let error = state
+        .dispatch(command("save-unstaged", Command::Save { key: key.clone(), playlist_id: destination.clone() }))
+        .expect_err("unstaged saves require a downloader");
+    assert_eq!(error.code, crate::contracts::types::ErrorCode::Unavailable);
+    assert!(error.message.contains("no staged audio"), "message: {}", error.message);
+
+    // With the downloader configured, an unstaged save queues a durable job.
+    state.set_bundle_helper(Some(helper));
+    let value = state
+        .dispatch(command("save-queued", Command::Save { key: key.clone(), playlist_id: destination.clone() }))
+        .expect("unstaged save with a downloader must queue");
+    assert_eq!(value["state"], "queued");
+    wait_until(5, "queued", || {
+        save_states(&state).iter().any(|save| save.state == SaveStateKind::Queued && save.key == key)
+    }, || format!("{:#?}", save_states(&state)));
+    let queued = save_states(&state).into_iter().find(|save| save.state == SaveStateKind::Queued && save.key == key).expect("queued receipt");
+    assert!(queued.job_id.is_some(), "queued saves carry the download job: {queued:?}");
+    wait_until(5, "downloaded", || {
+        // No seed is known for an unstaged save without a Discover session,
+        // so the filename falls back to the recommendation key.
+        playlist_dir.join("Artist0-Track0.m4a").is_file()
+    }, || format!("download never landed in {playlist_dir:?}: {:#?}", std::fs::read_dir(&playlist_dir).map(|entries| entries.collect::<Vec<_>>())));
     state.cleanup_previews();
 }
 

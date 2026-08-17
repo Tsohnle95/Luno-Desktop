@@ -97,6 +97,21 @@ impl QueueState {
         }
         true
     }
+    /// Replaces the visible queue wholesale while keeping the clock position.
+    /// Discover-mode adoption, restoration and handoff rebuild the queue
+    /// through this single entry so the captured physical queue always stays
+    /// restorable.
+    pub fn replace(&mut self, queue: Vec<TrackId>, index: usize) {
+        if index >= queue.len() {
+            self.clear();
+            return;
+        }
+        self.physical = queue;
+        self.original = self.physical.clone();
+        self.current_index = Some(index);
+        self.user_queue_count = 0;
+    }
+
     pub fn record_started(&mut self, track: TrackId, transient: bool) { if transient { return; } self.history.retain(|id| id != &track); self.history.insert(0, track); self.history.truncate(HISTORY_LIMIT); }
     pub fn clear_history(&mut self) { self.history.clear(); }
     pub fn clear(&mut self) { self.physical.clear(); self.original.clear(); self.current_index = None; self.user_queue_count = 0; self.previews.clear(); }

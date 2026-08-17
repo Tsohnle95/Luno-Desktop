@@ -183,9 +183,12 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let helper = root.join("helper");
-        fs::write(&helper, "#!/bin/sh\nprintf 'synthetic preview audio source bytes' > \"$1\"\n").unwrap();
+        // The ID3 prefix keeps the fake payload past media-signature validation.
+        fs::write(&helper, "#!/bin/sh\nprintf 'ID3synthetic preview audio source bytes' > \"$1\"\n").unwrap();
         let ffmpeg = root.join("ffmpeg");
-        fs::write(&ffmpeg, "#!/bin/sh\ncat \"$3\"\n").unwrap();
+        // `-f adts -` streams to stdout (`-` is the final argument); save
+        // remuxes to a file named by the final argument.
+        fs::write(&ffmpeg, "#!/bin/sh\nfor last do :; done\nif [ \"$last\" = \"-\" ]; then cat \"$3\"; else cat \"$3\" > \"$last\"; fi\n").unwrap();
         for script in [&helper, &ffmpeg] {
             let mut permissions = fs::metadata(script).unwrap().permissions();
             permissions.set_mode(0o755);

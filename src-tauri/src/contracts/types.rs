@@ -241,6 +241,43 @@ pub struct PreviewSnapshot {
     pub cancelled: bool,
 }
 
+/// Discover-mode state: the rolling recommendation window, the number of
+/// staged assets, and how many of them are adopted into the playback queue.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoverSnapshot {
+    #[serde(deserialize_with = "safe_u64")]
+    pub generation: u64,
+    pub enabled: bool,
+    pub window: Vec<String>,
+    pub ready: usize,
+    pub queued: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SaveStateKind {
+    Saving,
+    Queued,
+    Saved,
+    Failed,
+}
+
+/// Process-local state of an explicit save-to-playlist request. Staged
+/// recommendations are promoted from the preview store; unstaged ones fall
+/// back to a queued durable download observed through job events.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SaveState {
+    pub key: TrackId,
+    pub playlist_id: PlaylistId,
+    pub state: SaveStateKind,
+    pub already_saved: bool,
+    pub path: Option<String>,
+    pub job_id: Option<JobId>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DownloadJob {

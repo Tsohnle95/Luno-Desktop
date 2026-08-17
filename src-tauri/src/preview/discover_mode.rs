@@ -73,11 +73,20 @@ impl DiscoverMode {
     pub fn recommendations(&self) -> &[TrackId] {
         &self.recommendations
     }
+    pub fn ready_count(&self) -> usize {
+        self.assets.len()
+    }
     pub fn queued_assets(&self) -> &[TrackId] {
         &self.queued
     }
     pub fn physical_queue(&self) -> &[TrackId] {
         &self.physical_queue
+    }
+
+    /// The visible queue projection and its playback position, used by the
+    /// wiring layer to apply adoption and restoration to the playback queue.
+    pub fn projected(&self) -> (Vec<TrackId>, usize) {
+        (self.projected_queue(), self.physical_index)
     }
 
     /// A ready completion is retained for adoption; stale completions cannot

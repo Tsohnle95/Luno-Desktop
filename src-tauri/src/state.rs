@@ -3,9 +3,9 @@ use crate::contracts::{
         Command, CommandEnvelope, Event, EventEnvelope, RepeatMode as ContractRepeatMode, RootStatus, ShutdownEnvelope, ShutdownState,
     },
     types::{
-        ContractError, ErrorCode, Generation, JobId, LibrarySnapshot, Playlist, PreviewSeed,
-        PreviewSnapshot, SessionId, Track, TrackId, CONTRACT_VERSION, MAX_PREVIEW_SEEDS,
-        MAX_SAFE_EVENT_ID,
+        ContractError, DiscoverSnapshot, ErrorCode, Generation, JobId, LibrarySnapshot, Playlist,
+        PlaylistId, PreviewSeed, PreviewSnapshot, SaveState, SaveStateKind, SessionId, Track,
+        TrackId, CONTRACT_VERSION, MAX_PREVIEW_SEEDS, MAX_SAFE_EVENT_ID,
     },
 };
 use crate::domain::identity::TrackMetadata;
@@ -18,6 +18,8 @@ use crate::download::promotion::{promote_output, CollisionPolicy, PromotionError
 use crate::library::favorites::Favorites;
 use crate::library::scanner::{OsFileSystem, ScanOutcome};
 use crate::preview::assets::PreviewAssetStore;
+use crate::preview::discover_mode::{DiscoverAction, DiscoverMode, ReadyAsset};
+use crate::preview::save::{remux_and_promote, PlaylistDestination};
 use crate::preview::session::{PreviewSession, SessionAction};
 use crate::runtime::preview_worker::{prepare_preview, PreviewCompletion};
 #[cfg(target_os = "macos")]
@@ -889,6 +891,12 @@ pub struct AppState {
     preview_cancelled: Arc<AtomicBool>,
     preview_helper: Arc<Mutex<Option<PathBuf>>>,
     preview_ffmpeg: Arc<Mutex<Option<PathBuf>>>,
+    discover: Arc<Mutex<Option<DiscoverMode>>>,
+    discover_seeds: Arc<Mutex<Vec<PreviewSeed>>>,
+    discover_tasks: Arc<Mutex<Vec<String>>>,
+    discover_completions: Arc<Mutex<Option<std::sync::mpsc::Sender<PreviewCompletion>>>>,
+    discover_deferred: Arc<Mutex<Vec<PathBuf>>>,
+    save_in_flight: Arc<Mutex<std::collections::HashSet<TrackId>>>,
     roots: Arc<Mutex<Vec<PathBuf>>>,
     root_statuses: Arc<Mutex<Vec<RootStatus>>>,
     events: Arc<Mutex<Vec<EventEnvelope>>>,
@@ -969,6 +977,12 @@ impl AppState {
             preview_cancelled: Arc::new(AtomicBool::new(false)),
             preview_helper: Arc::new(Mutex::new(None)),
             preview_ffmpeg: Arc::new(Mutex::new(None)),
+            discover: Arc::new(Mutex::new(None)),
+            discover_seeds: Arc::new(Mutex::new(Vec::new())),
+            discover_tasks: Arc::new(Mutex::new(Vec::new())),
+            discover_completions: Arc::new(Mutex::new(None)),
+            discover_deferred: Arc::new(Mutex::new(Vec::new())),
+            save_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
             roots: Arc::new(Mutex::new(Vec::new())),
             root_statuses: Arc::new(Mutex::new(Vec::new())),
             events: Arc::new(Mutex::new(Vec::new())),
@@ -1098,6 +1112,7 @@ impl AppState {
             .ok_or_else(|| ContractError::invalid("preview session could not start"))?;
         *self.preview_session.lock().unwrap() = Some(session);
         *self.preview_seeds.lock().unwrap() = seeds.to_vec();
+        self.purge_discover_deferred();
         self.preview_cancelled.store(false, Ordering::Release);
         // Publish the session-begin snapshot before any worker can complete,
         // so the response is the deterministic entry state; preparation and
@@ -1235,16 +1250,8 @@ impl AppState {
     }
 
     fn ensure_prepared(&self, generation: u64, key: &TrackId) {
-        let query = {
-            let seeds = self.preview_seeds.lock().unwrap();
-            let seed = seeds.iter().find(|seed| {
-                crate::preview::assets::safe_key(&format!("{}-{}", seed.artist.trim(), seed.title.trim()))
-                    .map(|candidate| candidate == key.0)
-                    .unwrap_or(false)
-            });
-            seed.map(|seed| format!("{} {}", seed.artist.trim(), seed.title.trim()))
-        };
-        let Some(query) = query else { return };
+        let Some(query) = self.seed_for(&key.0) else { return };
+        let query = format!("{} {}", query.artist.trim(), query.title.trim());
         let task_key = format!("preview-{generation}-{}", key.0);
         {
             let mut raised = self.preview_tasks.lock().unwrap();
@@ -1332,6 +1339,610 @@ impl AppState {
                 })
             })
     }
+
+    fn seed_matches(seed: &PreviewSeed, key: &str) -> bool {
+        crate::preview::assets::safe_key(&format!("{}-{}", seed.artist.trim(), seed.title.trim()))
+            .map(|candidate| candidate == key)
+            .unwrap_or(false)
+    }
+
+    /// Resolution metadata for a recommendation key, taken from the preview
+    /// session seeds first and the discover seeds second.
+    fn seed_for(&self, key: &str) -> Option<PreviewSeed> {
+        let found = self
+            .preview_seeds
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|seed| Self::seed_matches(seed, key))
+            .cloned();
+        if found.is_some() {
+            return found;
+        }
+        self.discover_seeds
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|seed| Self::seed_matches(seed, key))
+            .cloned()
+    }
+
+    fn sanitize_name(value: &str) -> String {
+        let cleaned: String = value
+            .trim()
+            .chars()
+            .map(|c| {
+                if c.is_ascii_control() || matches!(c, '/' | '\\' | ':') { '-' } else { c }
+            })
+            .collect();
+        if cleaned.is_empty() || cleaned == "." || cleaned == ".." { String::new() } else { cleaned }
+    }
+
+    /// The durable filename for a saved recommendation: the seed identity in
+    /// a scannable M4A container, falling back to the key.
+    fn save_filename(seed: Option<&PreviewSeed>, key: &str) -> String {
+        if let Some(seed) = seed {
+            let artist = Self::sanitize_name(seed.artist.trim());
+            let title = Self::sanitize_name(seed.title.trim());
+            if !artist.is_empty() && !title.is_empty() {
+                let name = format!("{artist} - {title}.m4a");
+                if std::path::Path::new(&name).file_name().and_then(|n| n.to_str()) == Some(name.as_str()) {
+                    return name;
+                }
+            }
+        }
+        format!("{key}.m4a")
+    }
+
+    /// Starts Discover mode: captures the physical queue, adopts every
+    /// recommendation whose asset is already staged, and keeps preparing the
+    /// rolling window through the preview worker pipeline.
+    fn discover_enable(&self, seeds: &[PreviewSeed]) -> Result<Value, ContractError> {
+        if seeds.is_empty() {
+            return Err(ContractError::invalid("no recommendations to play yet"));
+        }
+        let ids = Self::preview_ids(seeds)?;
+        let (queue, index) = {
+            let playback = self.playback.lock().unwrap();
+            if playback.current().is_none() {
+                return Err(ContractError {
+                    code: ErrorCode::Unavailable,
+                    message: "Discover mode needs a playing track".into(),
+                    retryable: false,
+                });
+            }
+            (playback.queue().to_vec(), playback.current_index().unwrap_or(0))
+        };
+        let active = self
+            .discover
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|mode| mode.is_active());
+        if active {
+            return self.discover_snapshot_value();
+        }
+        *self.discover_seeds.lock().unwrap() = seeds.to_vec();
+        self.cancel_discover_tasks();
+        let generation = self.next_generation().0;
+        let mut mode = DiscoverMode::new(generation, queue.clone(), index, ids.clone())
+            .ok_or_else(|| ContractError::invalid("discover session could not start"))?;
+        let ready: Vec<ReadyAsset> = {
+            let store = self.preview_store.lock().unwrap();
+            ids.iter()
+                .filter_map(|id| {
+                    let path = store.ready_path(&id.0).ok()?;
+                    path.is_file().then_some(ReadyAsset { id: id.clone(), path })
+                })
+                .collect()
+        };
+        mode.enable();
+        for asset in ready {
+            let _ = mode.ready_asset(generation, asset);
+        }
+        let projected = mode.projected();
+        *self.discover.lock().unwrap() = Some(mode);
+        self.spawn_discover_driver(generation);
+        self.playback.lock().unwrap().replace(projected.0, projected.1);
+        self.publish_queue_snapshot();
+        self.discover_refill(generation);
+        self.publish_discover_snapshot(generation);
+        self.discover_snapshot_value()
+    }
+
+    fn discover_disable(&self) -> Result<Value, ContractError> {
+        let active = self
+            .discover
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|mode| mode.is_active());
+        if !active {
+            return Ok(Value::Null);
+        }
+        self.end_discover(true);
+        self.discover_snapshot_value()
+    }
+
+    fn discover_advance(&self) -> Result<Value, ContractError> {
+        let active = self
+            .discover
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|mode| mode.is_active());
+        if !active {
+            return Err(ContractError {
+                code: ErrorCode::NotFound,
+                message: "no active discover session".into(),
+                retryable: false,
+            });
+        }
+        // Bind before branching: the guard from the if-let scrutinee would
+        // stay held for the whole statement, deadlocking the re-lock inside
+        // discover_track_started.
+        let current = self.playback.lock().unwrap().current().cloned();
+        if let Some(current) = current {
+            self.discover_track_started(&current);
+        }
+        self.discover_snapshot_value()
+    }
+
+    /// Rolling window + handoff on natural playback movement. Called whenever
+    /// a track starts through the player.
+    fn discover_track_started(&self, track_id: &TrackId) {
+        let generation = match self.discover.lock().unwrap().as_ref() {
+            Some(mode) if mode.is_active() => mode.generation(),
+            _ => return,
+        };
+        let queue = self.playback.lock().unwrap().queue().to_vec();
+        // Bind the action before matching: the lock guard from the scrutinee
+        // would otherwise stay held for the whole match, deadlocking the arms.
+        let handoff = self
+            .discover
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map(|mode| mode.handoff(&queue));
+        match handoff {
+            Some(DiscoverAction::Noop) => {
+                // A user-owned queue replaced the projection: end the session
+                // without touching that queue.
+                self.end_discover(false);
+            }
+            Some(DiscoverAction::Restore { .. }) => {
+                let prepared = self
+                    .discover
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .map(|mode| mode.advance(track_id));
+                if let Some(DiscoverAction::Prepare { id }) = prepared {
+                    self.ensure_discover_prepared(generation, &id);
+                }
+                self.discover_refill(generation);
+                self.discover_sync_queue();
+                self.publish_discover_snapshot(generation);
+            }
+            _ => {}
+        }
+    }
+
+    /// Ends the session. `restore` applies the captured physical queue when
+    /// it is still the session owner; a user-replaced queue is left alone.
+    /// The teardown (task cancellation, staged-file cleanup, disabled
+    /// snapshot) runs even when a handoff already deactivated the session.
+    fn end_discover(&self, restore: bool) {
+        let Some(generation) = self
+            .discover
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|mode| mode.generation())
+        else {
+            return;
+        };
+        let active = self
+            .discover
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|mode| mode.is_active());
+        let action = if active {
+            self.discover.lock().unwrap().as_mut().map(|mode| mode.disable(generation))
+        } else {
+            None
+        };
+        if restore && active {
+            self.apply_discover_action(action);
+        }
+        self.cancel_discover_tasks();
+        self.discover_end_files();
+        self.publish_discover_snapshot(generation);
+    }
+
+    fn apply_discover_action(&self, action: Option<DiscoverAction>) {
+        if let Some(DiscoverAction::QueueChanged { queue, index }
+        | DiscoverAction::Restore { queue, index }) = action
+        {
+            self.playback.lock().unwrap().replace(queue, index);
+            self.publish_queue_snapshot();
+        }
+    }
+
+    /// The discover driver applies worker completions while the session is
+    /// still current, adopts staged assets into the queue, refills the
+    /// rolling window, and publishes the snapshot after every transition.
+    fn spawn_discover_driver(&self, generation: u64) {
+        let (tx, rx) = std::sync::mpsc::channel::<PreviewCompletion>();
+        *self.discover_completions.lock().unwrap() = Some(tx);
+        let state = self.clone();
+        let discover = self.discover.clone();
+        let key = format!("discover-driver-{generation}");
+        self.discover_tasks.lock().unwrap().push(key.clone());
+        let spec = self.generation(key, Generation(generation));
+        let _ = self.submit(spec, move |task_token| {
+            while !state.is_closing() && !task_token.is_cancelled() {
+                let current = discover
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|mode| mode.is_active() && mode.generation() == generation);
+                if !current {
+                    break;
+                }
+                match rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(PreviewCompletion::Prepared { key, path }) => {
+                        let action = discover.lock().unwrap().as_mut().map(|mode| {
+                            mode.ready_asset(
+                                generation,
+                                ReadyAsset {
+                                    id: TrackId(key),
+                                    path,
+                                },
+                            )
+                        });
+                        if let Some(DiscoverAction::Prepare { id }) = action {
+                            state.ensure_discover_prepared(generation, &id);
+                        }
+                        state.discover_refill(generation);
+                        state.discover_sync_queue();
+                        state.publish_discover_snapshot(generation);
+                    }
+                    Ok(PreviewCompletion::Failed { .. }) => {
+                        state.publish_discover_snapshot(generation);
+                    }
+                    Err(_) => {}
+                }
+            }
+        });
+    }
+
+    /// Applies the current queue projection when it changed; the projection
+    /// is always rebuilt from the captured physical queue so restoration
+    /// stays exact.
+    fn discover_sync_queue(&self) {
+        let changed = {
+            let mut discover = self.discover.lock().unwrap();
+            let Some(mode) = discover.as_mut() else { return };
+            let projected = mode.projected();
+            let live = self.playback.lock().unwrap().queue().to_vec();
+            if projected.0 != live {
+                let index = projected.1;
+                self.playback.lock().unwrap().replace(projected.0, index);
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.publish_queue_snapshot();
+        }
+    }
+
+    /// Registers staged assets discovered on disk and raises the first
+    /// missing recommendation; worker completions re-trigger the refill so
+    /// the window keeps rolling under load.
+    fn discover_refill(&self, generation: u64) {
+        let ids: Vec<TrackId> = self
+            .discover
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|mode| mode.recommendations().to_vec())
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return;
+        }
+        let staged: Vec<(TrackId, PathBuf)> = {
+            let store = self.preview_store.lock().unwrap();
+            ids.iter()
+                .filter_map(|id| {
+                    let path = store.ready_path(&id.0).ok()?;
+                    path.is_file().then_some((id.clone(), path))
+                })
+                .collect()
+        };
+        let mut raise: Option<TrackId> = None;
+        {
+            let mut discover = self.discover.lock().unwrap();
+            let Some(mode) = discover.as_mut() else { return };
+            for id in &ids {
+                if mode.path_for(id).is_some() {
+                    continue;
+                }
+                if let Some((_, path)) = staged.iter().find(|(staged_id, _)| staged_id == id) {
+                    let _ = mode.ready_asset(generation, ReadyAsset { id: id.clone(), path: path.clone() });
+                    continue;
+                }
+                if raise.is_none() {
+                    raise = Some(id.clone());
+                }
+            }
+        }
+        if let Some(id) = raise {
+            self.ensure_discover_prepared(generation, &id);
+        }
+    }
+
+    fn ensure_discover_prepared(&self, generation: u64, key: &TrackId) {
+        let Some(query) = self.seed_for(&key.0) else { return };
+        let query = format!("{} {}", query.artist.trim(), query.title.trim());
+        let task_key = format!("discover-{generation}-{}", key.0);
+        {
+            let mut raised = self.discover_tasks.lock().unwrap();
+            if raised.iter().any(|task| task == &task_key) {
+                return;
+            }
+            raised.push(task_key.clone());
+        }
+        let state = self.clone();
+        let store = self.preview_store.clone();
+        let store_generation = self.preview_store.lock().unwrap().current_generation();
+        let helper = self.preview_helper.lock().unwrap().clone();
+        let ffmpeg = self.preview_ffmpeg.lock().unwrap().clone();
+        let key_for_task = key.clone();
+        let generation_capture = generation;
+        let sender = self.discover_completions.lock().unwrap().clone();
+        let spec = self.generation(task_key.clone(), Generation(generation));
+        let _ = self.submit(spec, move |task_token| {
+            let completion = prepare_one(
+                &store,
+                store_generation,
+                &key_for_task,
+                &query,
+                &helper,
+                &ffmpeg,
+                &task_token,
+            );
+            if let Some(sender) = sender {
+                let current = state
+                    .tasks
+                    .is_current(&TaskSpec::new(&task_key, Generation(generation_capture), None));
+                if current { let _ = sender.send(completion); }
+            }
+        });
+    }
+
+    fn cancel_discover_tasks(&self) {
+        let keys: Vec<String> = self.discover_tasks.lock().unwrap().drain(..).collect();
+        for key in keys {
+            self.tasks.cancel_key(&key);
+        }
+        // Bump the store generation so in-flight preview publishes cannot
+        // land after the session ended.
+        self.preview_store.lock().unwrap().begin_generation();
+        *self.discover_completions.lock().unwrap() = None;
+    }
+
+    /// Deletes the session's staged preview files except the currently
+    /// playing one, which is deferred until the next track starts.
+    fn discover_end_files(&self) {
+        let ids: Vec<TrackId> = self
+            .discover
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|mode| mode.recommendations().to_vec())
+            .unwrap_or_default();
+        let playing = self.playback.lock().unwrap().current().cloned();
+        let mut deferred = Vec::new();
+        {
+            let store = self.preview_store.lock().unwrap();
+            for id in ids {
+                let Ok(path) = store.ready_path(&id.0) else { continue };
+                if !path.is_file() {
+                    continue;
+                }
+                if Some(&id) == playing.as_ref() {
+                    deferred.push(path);
+                } else {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+        if !deferred.is_empty() {
+            *self.discover_deferred.lock().unwrap() = deferred;
+        }
+    }
+
+    /// Deletes preview files whose playback ended before cleanup; called at
+    /// the start of every playback action and preview session.
+    fn purge_discover_deferred(&self) {
+        let deferred: Vec<PathBuf> = std::mem::take(&mut *self.discover_deferred.lock().unwrap());
+        for path in deferred {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    fn discover_snapshot(&self) -> Option<DiscoverSnapshot> {
+        self.discover.lock().unwrap().as_ref().map(|mode| DiscoverSnapshot {
+            generation: mode.generation(),
+            enabled: mode.is_active(),
+            window: mode.recommendations().iter().map(|id| id.0.clone()).collect(),
+            ready: mode.ready_count(),
+            queued: mode.queued_assets().len(),
+        })
+    }
+
+    fn publish_discover_snapshot(&self, generation: u64) {
+        if let Some(snapshot) = self.discover_snapshot() {
+            self.publish(self.event(Generation(generation), Event::DiscoverSnapshot { snapshot }));
+        }
+    }
+
+    fn discover_snapshot_value(&self) -> Result<Value, ContractError> {
+        self.discover_snapshot()
+            .map(|snapshot| {
+                serde_json::to_value(snapshot).map_err(|error| ContractError::invalid(error.to_string()))
+            })
+            .unwrap_or_else(|| {
+                Err(ContractError {
+                    code: ErrorCode::NotFound,
+                    message: "no discover session".into(),
+                    retryable: false,
+                })
+            })
+    }
+
+    /// Explicit save-to-playlist: staged recommendations are remuxed into a
+    /// scannable M4A and promoted once per destination; unstaged ones queue a
+    /// durable download through the configured downloader. Duplicate requests
+    /// for the same key are rejected while one is in flight.
+    fn save_preview(&self, key: &TrackId, playlist_id: &PlaylistId) -> Result<Value, ContractError> {
+        let playlist = self
+            .library
+            .lock()
+            .unwrap()
+            .playlists
+            .iter()
+            .find(|playlist| &playlist.id == playlist_id)
+            .cloned()
+            .ok_or_else(|| ContractError {
+                code: ErrorCode::NotFound,
+                message: "playlist not found".into(),
+                retryable: false,
+            })?;
+        let directory = playlist
+            .path
+            .ok_or_else(|| ContractError::invalid("playlist has no directory"))?;
+        let directory = PathBuf::from(directory);
+        {
+            let mut in_flight = self.save_in_flight.lock().unwrap();
+            if in_flight.contains(key) {
+                return Err(ContractError::invalid(
+                    "a save for this recommendation is already in progress",
+                ));
+            }
+            in_flight.insert(key.clone());
+        }
+        let seed = self.seed_for(&key.0);
+        let filename = Self::save_filename(seed.as_ref(), &key.0);
+        let query = seed
+            .map(|seed| format!("{} {}", seed.artist.trim(), seed.title.trim()))
+            .unwrap_or_default();
+        let staged = self
+            .preview_store
+            .lock()
+            .unwrap()
+            .ready_path(&key.0)
+            .ok()
+            .filter(|path| path.is_file());
+        let destination = PlaylistDestination {
+            playlist_id: playlist_id.0.clone(),
+            directory: directory.clone(),
+        };
+        let Some(staged) = staged else {
+            // No staged asset: queue a durable download through the
+            // configured downloader; completion arrives as a job event.
+            let helper = self.bundle_helper.lock().unwrap().clone().ok_or_else(|| {
+                self.save_in_flight.lock().unwrap().remove(key);
+                ContractError {
+                    code: ErrorCode::Unavailable,
+                    message: "no staged audio and no downloader configured".into(),
+                    retryable: true,
+                }
+            })?;
+            let job_id = JobId(format!("save-{}", key.0));
+            let target = directory.join(&filename);
+            if let Err(error) = self.start_download(job_id.clone(), target.clone(), helper, query) {
+                self.save_in_flight.lock().unwrap().remove(key);
+                return Err(error);
+            }
+            self.publish(self.event(Generation(self.next_generation().0), Event::SaveState {
+                state: SaveState {
+                    key: key.clone(),
+                    playlist_id: playlist_id.clone(),
+                    state: SaveStateKind::Queued,
+                    already_saved: false,
+                    path: Some(target.display().to_string()),
+                    job_id: Some(job_id),
+                    error: None,
+                },
+            }));
+            return Ok(serde_json::json!({
+                "key": key.0,
+                "playlist_id": playlist_id.0,
+                "state": "queued",
+            }));
+        };
+        self.publish(self.event(Generation(self.next_generation().0), Event::SaveState {
+            state: SaveState {
+                key: key.clone(),
+                playlist_id: playlist_id.clone(),
+                state: SaveStateKind::Saving,
+                already_saved: false,
+                path: None,
+                job_id: None,
+                error: None,
+            },
+        }));
+        let state = self.clone();
+        let ffmpeg = self.preview_ffmpeg.lock().unwrap().clone();
+        let id_for_task = key.clone();
+        let playlist_for_task = playlist_id.clone();
+        let filename_for_task = filename;
+        let destination_for_task = destination;
+        let generation = self.next_generation().0;
+        let _ = self.submit(self.generation(format!("save-{}", key.0), Generation(generation)), move |_token| {
+            // Release the in-flight guard before publishing so a SaveState
+            // event always implies a fresh save can start.
+            state.save_in_flight.lock().unwrap().remove(&id_for_task);
+            match remux_and_promote(&staged, &filename_for_task, Some(&destination_for_task), ffmpeg.as_deref()) {
+                Ok(receipt) => {
+                    state.publish(state.event(Generation(generation), Event::SaveState {
+                        state: SaveState {
+                            key: id_for_task.clone(),
+                            playlist_id: playlist_for_task.clone(),
+                            state: SaveStateKind::Saved,
+                            already_saved: receipt.already_saved,
+                            path: Some(receipt.path.display().to_string()),
+                            job_id: None,
+                            error: None,
+                        },
+                    }));
+                }
+                Err(error) => {
+                    state.publish(state.event(Generation(generation), Event::SaveState {
+                        state: SaveState {
+                            key: id_for_task.clone(),
+                            playlist_id: playlist_for_task,
+                            state: SaveStateKind::Failed,
+                            already_saved: false,
+                            path: None,
+                            job_id: None,
+                            error: Some(format!("{error:?}")),
+                        },
+                    }));
+                }
+            }
+        });
+        Ok(serde_json::json!({
+            "key": key.0,
+            "playlist_id": playlist_id.0,
+            "state": "saving",
+        }))
+    }
     pub fn root_statuses(&self) -> Vec<RootStatus> {
         self.root_statuses.lock().unwrap().clone()
     }
@@ -1340,6 +1951,16 @@ impl AppState {
     }
     pub fn set_bundle_helper(&self, helper: Option<PathBuf>) {
         *self.bundle_helper.lock().unwrap() = helper;
+    }
+    /// Test/embedding seam: marks a track as the current playback position
+    /// without opening the audio device. Mirrors the real play path so the
+    /// Discover advance/handoff wiring is exercised identically.
+    pub fn set_playing(&self, track_id: TrackId, context: Vec<TrackId>) {
+        self.purge_discover_deferred();
+        self.playback.lock().unwrap().play_with_context(track_id.clone(), context);
+        self.playback.lock().unwrap().record_started(track_id.clone(), false);
+        self.discover_track_started(&track_id);
+        self.publish_queue_snapshot();
     }
     pub fn scan_roots(&self) -> Vec<PathBuf> {
         self.roots.lock().unwrap().clone()
@@ -1795,6 +2416,12 @@ impl AppState {
         for (name, files) in playlists {
             let playlist_id = crate::contracts::types::PlaylistId(format!("playlist:{}", name));
             let mut ids = Vec::new();
+            // Playlists are folders under the library root; the folder is
+            // the destination directory for explicit save-to-playlist.
+            let directory = files
+                .first()
+                .and_then(|first| first.parent().map(|p| p.to_path_buf()))
+                .filter(|dir| files.iter().all(|path| path.parent() == Some(dir.as_path())));
             for path in files {
                 let id = paths
                     .entry(path.clone())
@@ -1839,7 +2466,7 @@ impl AppState {
             playlist_data.push(Playlist {
                 id: playlist_id,
                 name: name.clone(),
-                path: None,
+                path: directory.map(|dir| dir.display().to_string()),
                 url: None,
                 ordered_track_ids: ids,
             });
@@ -1992,6 +2619,10 @@ impl AppState {
             Command::PreviewNext => self.preview_step(true),
             Command::PreviewPrevious => self.preview_step(false),
             Command::PreviewCancel => self.preview_cancel(),
+            Command::DiscoverEnable { seeds } => self.discover_enable(&seeds),
+            Command::DiscoverDisable => self.discover_disable(),
+            Command::DiscoverAdvance => self.discover_advance(),
+            Command::Save { key, playlist_id } => self.save_preview(&key, &playlist_id),
             Command::ValidateDirectUrl { url, destination } => {
                 crate::download::workflows::validate_http_url(&url)
                     .map_err(|_| ContractError::invalid("URL must use http or https"))?;
@@ -2604,6 +3235,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
                 message: "track is not available locally".into(),
                 retryable: false,
             })?;
+        self.purge_discover_deferred();
         self.playback.lock().unwrap().play_with_context(track_id.clone(), context);
         let mut backend = self.audio.lock().map_err(|_| ContractError {
             code: ErrorCode::Internal,
@@ -2624,6 +3256,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
             return Err(ContractError { code: ErrorCode::Unavailable, message: "audio output could not start".into(), retryable: true });
         }
         self.playback.lock().unwrap().record_started(track_id.clone(), false);
+        self.discover_track_started(&track_id);
         self.record_recent(track_id.clone());
         *self.clock.lock().unwrap() = Some(PlaybackClock::new(info.duration));
         if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.start(0.0); }
@@ -2656,6 +3289,10 @@ fn promotion_error(error: PromotionError) -> ContractError {
     fn next_track(&self) -> Result<Value, ContractError> {
         let next = self.playback.lock().unwrap().next().cloned();
         next.map_or_else(|| {
+            // The queue is exhausted. An active Discover session hands the
+            // block back: restore the captured queue at the seed position so
+            // the library is intact when playback resumes.
+            self.end_discover(true);
             if let Ok(mut backend) = self.audio.lock() { backend.stop(); }
             if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.stop(); }
             *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Stopped;
