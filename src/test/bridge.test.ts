@@ -4,6 +4,7 @@ import { createBackendProjection } from "../state/backend_projection";
 import { currentVideoForTrack, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled } from "../app/Shell";
 import type { BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope } from "../shared/contracts";
+import { isCommandEnvelope } from "../shared/contracts";
 
 const nativeInvoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke: nativeInvoke }));
@@ -27,6 +28,12 @@ describe("typed IPC bridge and projection", () => {
       ["migration_status"],
       ["backend_command", { payload: { version: 1 } }],
     ]);
+  });
+
+  it("rejects a start_download envelope without a source and accepts one with it", () => {
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "start_download", payload: { job_id: "j", destination: "/d/j.mp3", helper: "/h" } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "start_download", payload: { job_id: "j", destination: "/d/j.mp3", helper: "/h", source: "ytsearch1:query" } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "bundle_helper_path" } })).toBe(true);
   });
 
   it("uses the required native backend command payload argument shape", () => {
@@ -90,10 +97,16 @@ describe("typed IPC bridge and projection", () => {
     await bridge.loadSettings("/fixture/home");
     await bridge.saveSettings("/fixture/home", { music_root: "/fixture/library", auto_discovery: false, volume: 0.5, sleep_timer: null, global_keys: true, favorite_songs: [] });
     await bridge.transferApply("{}", "/fixture/library", {});
+    await bridge.startDownload("job-1", "/fixture/library/Unsorted/job-1.mp3", "/fixture/bin/luno-download-helper", "scsearch1:fixture query");
+    await bridge.retryDownload("job-1");
+    await bridge.bundleHelper();
+    await bridge.resolveRuntimeHome();
     expect(calls.map((value) => (value as { command: { type: string } }).command.type)).toEqual([
       "validate_direct_url", "preview_csv", "queue_urls", "select_library_root",
-      "load_settings", "save_settings", "transfer_apply",
+      "load_settings", "save_settings", "transfer_apply", "start_download", "retry_download", "bundle_helper_path", "resolve_runtime_home",
     ]);
+    const downloadPayload = (calls.at(-4) as { command: { payload: { source: string } } }).command.payload;
+    expect(downloadPayload.source).toBe("scsearch1:fixture query");
   });
 
   it("accepts only a valid library response for startup readiness", () => {

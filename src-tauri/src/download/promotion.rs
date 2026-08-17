@@ -109,7 +109,7 @@ fn check_cancel(cancelled: Option<&AtomicBool>) -> Result<(), PromotionError> {
 
 fn valid_signature(kind: MediaKind, bytes: &[u8]) -> bool {
     match kind {
-        MediaKind::Audio => bytes.starts_with(b"ID3") || bytes.starts_with(b"fLaC") || bytes.starts_with(b"OggS") || bytes.starts_with(b"RIFF") || looks_like_mp3(bytes),
+        MediaKind::Audio => bytes.starts_with(b"ID3") || bytes.starts_with(b"fLaC") || bytes.starts_with(b"OggS") || bytes.starts_with(b"RIFF") || looks_like_mp3(bytes) || (bytes.len() >= 8 && &bytes[4..8] == b"ftyp"),
         MediaKind::Video => bytes.starts_with(b"\x1a\x45\xdf\xa3") || bytes.starts_with(b"OggS") || (bytes.len() >= 8 && &bytes[4..8] == b"ftyp"),
     }
 }

@@ -211,6 +211,18 @@ fn downloader_output_states_and_atomic_promotion_are_truthful() {
     .unwrap();
     assert_eq!(receipt.bytes, fs::metadata(&receipt.path).unwrap().len());
     assert!(!valid.exists());
+    let m4a = stage_output(root.join("valid.m4a")).unwrap();
+    fs::write(&m4a, b"\x00\x00\x00\x20ftypM4A \x00\x00\x00\x00M4A ").unwrap();
+    let receipt = promote_output(
+        &m4a,
+        root.join("valid.m4a"),
+        Validation::audio(),
+        CollisionPolicy::Reject,
+        None,
+    )
+    .unwrap();
+    assert_eq!(receipt.bytes, fs::metadata(&receipt.path).unwrap().len());
+    assert!(!m4a.exists());
 }
 
 #[test]
@@ -626,6 +638,7 @@ fn target_dispatch_runs_search_settings_and_fake_download_event_path() {
                 job_id: JobId("target-job".into()),
                 destination: destination.to_string_lossy().into_owned(),
                 helper: helper.to_string_lossy().into_owned(),
+                source: String::new(),
             },
         })
         .unwrap();

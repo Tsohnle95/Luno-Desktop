@@ -1,0 +1,47 @@
+#!/bin/sh
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+export PATH="$HERE:$PATH"
+TARGET="${1:-}"
+SOURCE="${2:-${LUNO_DOWNLOAD_SOURCE:-}}"
+if [ -z "$TARGET" ]; then
+  echo "download helper: missing output path" >&2
+  exit 2
+fi
+if [ -z "$SOURCE" ]; then
+  echo "download helper: no download source (URL or search query) was provided" >&2
+  exit 2
+fi
+FF_LOCATION_FLAG=""
+if [ -x "$HERE/ffmpeg" ]; then
+  FF_LOCATION_FLAG="--ffmpeg-location $HERE"
+fi
+TMP="$TARGET.part"
+rm -f "$TMP".*
+if [ -x "$HERE/yt-dlp" ]; then
+  "$HERE/yt-dlp" --no-playlist --no-progress -f 'bestaudio/best' -x --audio-format m4a --audio-quality 0 $FF_LOCATION_FLAG -o "$TMP.%(ext)s" -- "$SOURCE"
+else
+  if command -v yt-dlp >/dev/null 2>&1; then
+    yt-dlp --no-playlist --no-progress -f 'bestaudio/best' -x --audio-format m4a --audio-quality 0 $FF_LOCATION_FLAG -o "$TMP.%(ext)s" -- "$SOURCE"
+  else
+    echo "download helper: yt-dlp is not available" >&2
+    exit 1
+  fi
+fi
+status=$?
+if [ "$status" -ne 0 ]; then
+  rm -f "$TMP".*
+  exit "$status"
+fi
+found=""
+for f in "$TMP".*; do
+  [ -f "$f" ] && found="$f"
+done
+if [ -z "$found" ]; then
+  echo "download helper: download produced no output file" >&2
+  rm -f "$TMP".*
+  exit 1
+fi
+mv "$found" "$TARGET" || { rm -f "$TMP".*; exit 1; }
+rm -f "$TMP".*
+exit 0

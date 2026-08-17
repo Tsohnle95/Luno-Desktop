@@ -198,6 +198,14 @@ fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn resolve_bundle_helper(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let candidates = [
+        app.path().resource_dir().ok()?.join("bin").join("luno-download-helper"),
+        std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from)?.join("resources").join("bin").join("luno-download-helper"),
+    ];
+    candidates.into_iter().find(|path| path.is_file())
+}
+
 fn dirs_fallback_home() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -230,6 +238,8 @@ fn main() {
                 })
                 .map_err(std::io::Error::other)?;
             startup_migration(app.handle()).map_err(std::io::Error::other)?;
+            app.state::<AppState>()
+                .set_bundle_helper(resolve_bundle_helper(app.handle()));
             Ok(())
         })
         .on_window_event(|window, event| {

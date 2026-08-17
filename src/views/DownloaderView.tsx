@@ -4,7 +4,7 @@ import { bridge } from "../app/bridge";
 import { DownloadTabs, type DownloadTab } from "../components/DownloadTabs";
 
 export interface DownloadSearchResult { id: string; title: string; artist?: string; duration?: string; thumbnailUrl?: string }
-export interface DownloadPreview { id: string; title: string; artist?: string }
+export interface DownloadPreview { id: string; title: string; artist?: string; source?: string }
 export interface DuplicateGroup { key: string; tracks: string[] }
 export interface DownloaderViewProps {
   jobs?: Record<string, DownloadJob>; searchResults?: DownloadSearchResult[]; previewTracks?: DownloadPreview[]; duplicateGroups?: DuplicateGroup[]; allowedDuplicates?: string[]; destinations?: string[]; defaultDestination?: string; queue?: string[]; syncPlaylists?: string[]; loading?: boolean; error?: string | null; partialSuccess?: string | null;

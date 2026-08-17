@@ -30,3 +30,4 @@ mobile-app/local.properties
 /release-input/bin/
 /src-tauri/resources/bin/*
 !/src-tauri/resources/bin/.gitkeep
+!/src-tauri/resources/bin/luno-download-helper

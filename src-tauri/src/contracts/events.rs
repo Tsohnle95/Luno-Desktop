@@ -58,8 +58,11 @@ pub enum Command {
         destination: String,
         #[serde(deserialize_with = "super::types::non_empty_string")]
         helper: String,
+        #[serde(default)]
+        source: String,
     },
     RetryDownload { job_id: JobId },
+    BundleHelperPath,
     LoadSettings {
         home: String,
     },

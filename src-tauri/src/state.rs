@@ -138,6 +138,101 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
     }
 
+    fn fixture_helper(home: &Path, name: &str, body: &str) -> PathBuf {
+        let path = home.join(name);
+        std::fs::write(&path, body).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o755);
+        }
+        std::fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    #[test]
+    fn start_download_creates_missing_destination_inside_root_and_passes_source() {
+        let root = unique_home("dl-create");
+        std::fs::create_dir_all(&root).unwrap();
+        let helper = fixture_helper(
+            &root,
+            "capture-helper.sh",
+            "#!/bin/sh\nprintf 'ID3\\003\\000\\000\\000' > \"$1\"\nprintf '%s' \"${2:-none}\" > \"$HOME/captured.source\"\n",
+        );
+        let state = AppState::new(2);
+        state.set_scan_roots(vec![root.clone()]);
+        let destination = root.join("Unsorted").join("job-1.mp3");
+        let mut envelope = default_envelope();
+        envelope.request_id = "dl-create".into();
+        envelope.command = Command::StartDownload {
+            job_id: JobId("job-1".into()),
+            destination: destination.to_string_lossy().into_owned(),
+            helper: helper.to_string_lossy().into_owned(),
+            source: "scsearch1:fixture query".into(),
+        };
+        assert!(state.dispatch(envelope.into()).is_ok());
+        assert!(root.join("Unsorted").is_dir());
+        let mut succeeded = false;
+        for _ in 0..300 {
+            if state.events().iter().any(|envelope| matches!(&envelope.event, Event::JobUpdated { job } if job.id.0 == "job-1" && job.state == crate::contracts::types::JobState::Succeeded)) {
+                succeeded = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(succeeded);
+        assert!(destination.exists());
+        let captured = std::fs::read_to_string(root.join(".luno-gate4-worker-home").join("captured.source")).unwrap();
+        assert_eq!(captured, "scsearch1:fixture query");
+        let retry = state.dispatch(default_envelope_retry("job-1")).unwrap();
+        assert!(retry.get("job_id").is_some());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn default_envelope_retry(job_id: &str) -> CommandEnvelope {
+        CommandEnvelope { version: 1, request_id: "dl-retry".into(), command: Command::RetryDownload { job_id: JobId(job_id.into()) } }
+    }
+
+    #[test]
+    fn start_download_rejects_missing_parent_outside_root() {
+        let root = unique_home("dl-escape");
+        std::fs::create_dir_all(&root).unwrap();
+        let helper = fixture_helper(&root, "simple-helper.sh", "#!/bin/sh\nprintf 'ID3' > \"$1\"\n");
+        let state = AppState::new(2);
+        state.set_scan_roots(vec![root.clone()]);
+        let escape = std::env::temp_dir().join(format!("luno-escape-{}", std::process::id())).join("job.mp3");
+        let mut envelope = default_envelope();
+        envelope.request_id = "dl-escape".into();
+        envelope.command = Command::StartDownload {
+            job_id: JobId("job-escape".into()),
+            destination: escape.to_string_lossy().into_owned(),
+            helper: helper.to_string_lossy().into_owned(),
+            source: "https://example.test/a".into(),
+        };
+        let error = state.dispatch(envelope.into()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn bundle_helper_path_reports_configured_helper_or_unavailable() {
+        let state = AppState::new(1);
+        let mut envelope = default_envelope();
+        envelope.command = Command::BundleHelperPath;
+        let error = state.dispatch(envelope.into()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unavailable);
+        let home = unique_home("bundle-helper");
+        std::fs::create_dir_all(&home).unwrap();
+        let helper = fixture_helper(&home, "luno-download-helper", "#!/bin/sh\nexit 0\n");
+        state.set_bundle_helper(Some(helper.clone()));
+        let mut envelope = default_envelope();
+        envelope.command = Command::BundleHelperPath;
+        let value = state.dispatch(envelope.into()).unwrap();
+        assert_eq!(value.get("helper").and_then(serde_json::Value::as_str), Some(helper.to_string_lossy().as_ref()));
+        std::fs::remove_dir_all(&home).ok();
+    }
+
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn playback_commands_report_explicit_backend_unavailability() {
@@ -802,7 +897,8 @@ pub struct AppState {
     delivery_failure: Arc<Mutex<Option<ContractError>>>,
     supervisor: Arc<Supervisor>,
     downloads: Arc<DownloadCoordinator>,
-    download_requests: Arc<Mutex<BTreeMap<String, (PathBuf, PathBuf)>>>,
+    download_requests: Arc<Mutex<BTreeMap<String, (PathBuf, PathBuf, String)>>>,
+    bundle_helper: Arc<Mutex<Option<PathBuf>>>,
     provider_metadata: Arc<Mutex<BTreeMap<PathBuf, TrackMetadata>>>,
     track_paths: Arc<Mutex<BTreeMap<TrackId, PathBuf>>>,
     current_track: Arc<Mutex<Option<TrackId>>>,
@@ -860,6 +956,7 @@ impl AppState {
             supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())),
             downloads: Arc::new(DownloadCoordinator::new()),
             download_requests: Arc::new(Mutex::new(BTreeMap::new())),
+            bundle_helper: Arc::new(Mutex::new(None)),
             provider_metadata: Arc::new(Mutex::new(BTreeMap::new())),
             track_paths: Arc::new(Mutex::new(BTreeMap::new())),
             current_track: Arc::new(Mutex::new(None)),
@@ -886,6 +983,9 @@ impl AppState {
     }
     pub fn set_scan_roots(&self, roots: Vec<PathBuf>) {
         *self.roots.lock().unwrap() = roots;
+    }
+    pub fn set_bundle_helper(&self, helper: Option<PathBuf>) {
+        *self.bundle_helper.lock().unwrap() = helper;
     }
     pub fn scan_roots(&self) -> Vec<PathBuf> {
         self.roots.lock().unwrap().clone()
@@ -1552,11 +1652,15 @@ impl AppState {
                 self.set_scan_roots(vec![root.clone()]);
                 Ok(serde_json::json!({ "root": root.display().to_string() }))
             }
-            Command::StartDownload { job_id, destination, helper } => self.start_download(job_id, PathBuf::from(destination), PathBuf::from(helper)),
+            Command::StartDownload { job_id, destination, helper, source } => self.start_download(job_id, PathBuf::from(destination), PathBuf::from(helper), source),
             Command::RetryDownload { job_id } => {
-                let (destination, helper) = self.download_requests.lock().unwrap().get(&job_id.0).cloned().ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "download request not found".into(), retryable: false })?;
-                self.start_download(job_id, destination, helper)
+                let (destination, helper, source) = self.download_requests.lock().unwrap().get(&job_id.0).cloned().ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "download request not found".into(), retryable: false })?;
+                self.start_download(job_id, destination, helper, source)
             }
+            Command::BundleHelperPath => match self.bundle_helper.lock().unwrap().as_ref() {
+                Some(helper) => Ok(serde_json::json!({ "helper": helper.display().to_string() })),
+                None => Err(ContractError { code: ErrorCode::Unavailable, message: "bundled download helper is unavailable".into(), retryable: false }),
+            },
             Command::LoadSettings { home } => self.load_config(PathBuf::from(home)),
             Command::ResolveRuntimeHome => {
                 let home = std::env::var_os("HOME")
@@ -1767,26 +1871,46 @@ impl AppState {
         Ok(serde_json::json!({ "saved": true }))
     }
 
-    fn start_download(&self, job_id: JobId, destination: PathBuf, helper: PathBuf) -> Result<Value, ContractError> {
+    fn start_download(&self, job_id: JobId, destination: PathBuf, helper: PathBuf, source: String) -> Result<Value, ContractError> {
         let root = self.scan_roots().first().cloned().ok_or_else(|| ContractError::invalid("no configured library root"))?;
         let root = std::fs::canonicalize(root).map_err(|_| ContractError { code: ErrorCode::NotFound, message: "configured library root is unavailable".into(), retryable: false })?;
         let parent = destination.parent().ok_or_else(|| ContractError::invalid("destination must name a file"))?;
-        let parent = std::fs::canonicalize(parent).map_err(|_| ContractError::invalid("destination directory is unavailable"))?;
+        let parent = if parent.exists() {
+            std::fs::canonicalize(parent).map_err(|_| ContractError::invalid("destination directory is unavailable"))?
+        } else {
+            let ancestor = parent
+                .ancestors()
+                .find(|candidate| candidate.exists())
+                .unwrap_or(std::path::Path::new("/"));
+            let ancestor = std::fs::canonicalize(ancestor).map_err(|_| ContractError::invalid("destination directory is unavailable"))?;
+            if !ancestor.starts_with(&root) {
+                return Err(ContractError::invalid("download helper or destination is unsafe"));
+            }
+            std::fs::create_dir_all(parent).map_err(|_| ContractError::invalid("destination directory is unavailable"))?;
+            std::fs::canonicalize(parent).map_err(|_| ContractError::invalid("destination directory is unavailable"))?
+        };
         if !parent.starts_with(&root) || !helper.is_absolute() || !helper.is_file() {
             return Err(ContractError::invalid("download helper or destination is unsafe"));
         }
-        self.download_requests.lock().unwrap().insert(job_id.0.clone(), (destination.clone(), helper.clone()));
+        let source = source.replace('\r', " ").replace('\n', " ").trim().to_owned();
+        self.download_requests.lock().unwrap().insert(job_id.0.clone(), (destination.clone(), helper.clone(), source.clone()));
         let generation = self.next_generation();
         let job = job_id.clone();
         let coordinator = self.downloads.clone();
         let state = self.clone();
         let helper_for_worker = helper.clone();
+        let source_for_worker = source.clone();
         let receiver = coordinator.events_for(&job.0);
         let worker_home = root.join(".luno-gate4-worker-home");
         std::fs::create_dir_all(&worker_home).map_err(|_| ContractError::invalid("download worker home is unavailable"))?;
         let start_result = coordinator.start(crate::download::coordinator::DownloadRequest { job_id: job.0.clone(), destination }, Box::new(move |temporary, token, progress| {
             if token.is_cancelled() { return Err("cancelled".into()); }
-            let mut child = std::process::Command::new(&helper_for_worker).arg(temporary).env("HOME", &worker_home).spawn().map_err(|_| "download helper could not start".to_string())?;
+            let mut command = std::process::Command::new(&helper_for_worker);
+            command.arg(temporary).env("HOME", &worker_home);
+            if !source_for_worker.is_empty() {
+                command.arg(&source_for_worker).env("LUNO_DOWNLOAD_SOURCE", &source_for_worker);
+            }
+            let mut child = command.spawn().map_err(|_| "download helper could not start".to_string())?;
             loop {
                 if token.is_cancelled() {
                     let _ = child.kill();

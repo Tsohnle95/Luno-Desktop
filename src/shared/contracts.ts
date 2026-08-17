@@ -39,8 +39,9 @@ export type Command =
   | { type: "preview_csv"; payload: { csv: string } }
   | { type: "queue_urls"; payload: { urls: string[] } }
   | { type: "select_library_root"; payload: { root: string } }
-  | { type: "start_download"; payload: { job_id: JobId; destination: string; helper: string } }
+  | { type: "start_download"; payload: { job_id: JobId; destination: string; helper: string; source: string } }
   | { type: "retry_download"; payload: { job_id: JobId } }
+  | { type: "bundle_helper_path" }
   | { type: "load_settings"; payload: { home: string } } | { type: "resolve_runtime_home" } | { type: "save_settings"; payload: { home: string; settings: SettingsInput } }
   | { type: "transfer_preview"; payload: { manifest: string; destination: string } }
   | { type: "transfer_export" }
@@ -76,7 +77,7 @@ const safeInteger = (v: unknown): v is number => Number.isSafeInteger(v);
 export function isContractVersion(v: unknown): v is ContractVersion { return v === CONTRACT_VERSION; }
 function isCommand(v: unknown): v is Command {
   if (!object(v) || typeof v.type !== "string") return false;
-   if (["get_library", "scan_library", "pause", "get_recent", "clear_recent", "transfer_export", "resolve_runtime_home"].includes(v.type)) return Object.keys(v).length === 1;
+   if (["get_library", "scan_library", "pause", "get_recent", "clear_recent", "transfer_export", "resolve_runtime_home", "bundle_helper_path"].includes(v.type)) return Object.keys(v).length === 1;
    if (v.type === "load_config") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && Object.keys(v.payload).length === 1;
     if (v.type === "register_root") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.root === "string" && v.payload.root.trim().length > 0 && Object.keys(v.payload).length === 1;
     if (v.type === "promote_audio_output") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.temporary === "string" && v.payload.temporary.trim().length > 0 && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && Object.keys(v.payload).length === 2;
@@ -86,7 +87,7 @@ function isCommand(v: unknown): v is Command {
     if (v.type === "preview_csv") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.csv === "string" && v.payload.csv.length <= 10_485_760 && Object.keys(v.payload).length === 1;
     if (v.type === "queue_urls") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.urls) && v.payload.urls.every((url) => typeof url === "string" && url.trim().length > 0) && Object.keys(v.payload).length === 1;
     if (v.type === "select_library_root") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.root === "string" && v.payload.root.trim().length > 0 && Object.keys(v.payload).length === 1;
-    if (v.type === "start_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && typeof v.payload.helper === "string" && v.payload.helper.trim().length > 0 && Object.keys(v.payload).length === 3;
+    if (v.type === "start_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && typeof v.payload.helper === "string" && v.payload.helper.trim().length > 0 && typeof v.payload.source === "string" && Object.keys(v.payload).length === 4;
     if (v.type === "retry_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && Object.keys(v.payload).length === 1;
     if (v.type === "load_settings") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && Object.keys(v.payload).length === 1;
     if (v.type === "save_settings") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && object(v.payload.settings) && Object.keys(v.payload.settings).every((key) => ["music_root", "auto_discovery", "volume", "sleep_timer", "global_keys", "favorite_songs"].includes(key)) && Array.isArray(v.payload.settings.favorite_songs) && v.payload.settings.favorite_songs.every((item) => typeof item === "string") && Object.keys(v.payload.settings).length === 6 && Object.keys(v.payload).length === 2;
