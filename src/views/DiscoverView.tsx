@@ -37,7 +37,7 @@ export function DiscoverView({ seed, recommendations, session, saved, playlists,
     if (!state) return { label: "＋ Add", disabled: false };
     if (state.state === "saving") return { label: "Saving…", disabled: true };
     if (state.state === "queued") return { label: "Queued…", disabled: true };
-    if (state.state === "saved") return { label: state.already_saved ? "✓ Saved" : "✓ Saved", disabled: true };
+    if (state.state === "saved") return { label: "✓ Saved", disabled: true };
     return { label: "Retry", disabled: false };
   };
   return <section aria-label="Discover" className="luno-discover">
