@@ -605,6 +605,38 @@ fn command(request_id: &str, command: Command) -> CommandEnvelope {
 }
 
 #[test]
+fn discover_without_key_returns_unavailable_error() {
+    let state = AppState::new(2);
+    let result = state.dispatch(command(
+        "discover-no-key",
+        Command::Discover { artist: "Artist".into(), title: "Track".into(), limit: 5 },
+    ));
+    let error = result.expect_err("discovery without a key must fail truthfully");
+    assert_eq!(error.code, crate::contracts::types::ErrorCode::Unavailable);
+    assert!(error.message.contains("Last.fm"), "message: {}", error.message);
+    assert!(!error.retryable);
+}
+
+#[test]
+fn discover_envelope_rejects_empty_seed_fields() {
+    let invalid = serde_json::from_value::<CommandEnvelope>(serde_json::json!({
+        "version": 1,
+        "request_id": "discover-invalid",
+        "command": { "type": "discover", "payload": { "artist": "   ", "title": "Track", "limit": 5 } }
+    }));
+    assert!(invalid.is_err(), "empty artist must be rejected by the envelope");
+    let parsed = serde_json::from_value::<CommandEnvelope>(serde_json::json!({
+        "version": 1,
+        "request_id": "discover-limit",
+        "command": { "type": "discover", "payload": { "artist": "Artist", "title": "Track", "limit": 21 } }
+    })).expect("limit is not contract-restricted at parse time");
+    match parsed.command {
+        Command::Discover { limit, .. } => assert_eq!(limit, 21, "clamping happens in dispatch"),
+        _ => panic!("unexpected command"),
+    }
+}
+
+#[test]
 fn target_command_boundary_loads_config_registers_root_and_syncs_markers() {
     let home = fixture_dir("command-config");
     let root = home.join("Music");

@@ -2,6 +2,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 pub const CONTRACT_VERSION: u16 = 1;
 pub const MAX_SAFE_EVENT_ID: u64 = 9_007_199_254_740_991;
+pub const MAX_DISCOVER_LIMIT: usize = 20;
+
+pub fn default_discover_limit() -> usize {
+    5
+}
 
 pub(crate) fn non_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where

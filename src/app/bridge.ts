@@ -12,6 +12,8 @@ import {
   type JobId, type SettingsInput,
   parseEventEnvelope,
   isSearchResults,
+  isRecommendationList,
+  type Recommendation,
 } from "../shared/contracts";
 import type { LibrarySnapshot } from "../shared/contracts";
 
@@ -81,6 +83,7 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
     promoteAudioOutput: (temporary: string, destination: string) => send({ type: "promote_audio_output", payload: { temporary, destination } }),
      syncMarkers: (folder: string) => send({ type: "sync_markers", payload: { folder } }),
       searchDownloader: async (query: string, try_soundcloud = true) => { const value = await send<unknown>({ type: "search_downloader", payload: { query, try_soundcloud } }); if (!isSearchResults(value)) throw new Error("invalid downloader search response"); return value; },
+      discover: async (artist: string, title: string, limit = 5) => { const value = await send<unknown>({ type: "discover", payload: { artist, title, limit } }); if (!isRecommendationList(value)) throw new Error("invalid discovery response"); return value; },
       validateDirectUrl: (url: string, destination: string) => send({ type: "validate_direct_url", payload: { url, destination } }),
       previewCsv: (csv: string) => send({ type: "preview_csv", payload: { csv } }),
       queueUrls: (urls: string[]) => send({ type: "queue_urls", payload: { urls } }),

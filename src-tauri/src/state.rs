@@ -8,6 +8,9 @@ use crate::contracts::{
     },
 };
 use crate::domain::identity::TrackMetadata;
+use crate::discovery::service::{
+    DiscoveryError, DiscoveryResult, DiscoveryService, Recommendation,
+};
 use crate::download::coordinator::DownloadCoordinator;
 use crate::download::markers::Markers;
 use crate::download::promotion::{promote_output, CollisionPolicy, PromotionError, Validation};
@@ -873,6 +876,7 @@ pub struct AppState {
     pub tasks: Arc<TaskRegistry>,
     pub migration_status: Arc<Mutex<MigrationStatus>>,
     library: Arc<Mutex<LibrarySnapshot>>,
+    discovery: Arc<Mutex<DiscoveryService>>,
     roots: Arc<Mutex<Vec<PathBuf>>>,
     root_statuses: Arc<Mutex<Vec<RootStatus>>>,
     events: Arc<Mutex<Vec<EventEnvelope>>>,
@@ -932,6 +936,7 @@ impl AppState {
                 tracks: Vec::new(),
                 playlists: Vec::new(),
             })),
+            discovery: Arc::new(Mutex::new(DiscoveryService::new(None))),
             roots: Arc::new(Mutex::new(Vec::new())),
             root_statuses: Arc::new(Mutex::new(Vec::new())),
             events: Arc::new(Mutex::new(Vec::new())),
@@ -977,6 +982,33 @@ impl AppState {
     }
     pub fn library(&self) -> LibrarySnapshot {
         self.library.lock().unwrap().clone()
+    }
+
+    pub fn set_discovery_key(&self, key: Option<String>) {
+        self.discovery.lock().unwrap().set_api_key(key);
+    }
+
+    /// Library tracks expressed as discovery recommendations for
+    /// local-result filtering (per AC-DISC-02: filter local and duplicate
+    /// results before delivery).
+    fn library_recommendations(&self) -> Vec<Recommendation> {
+        self.library()
+            .tracks
+            .into_iter()
+            .filter_map(|track| {
+                let title = track.title.trim().to_owned();
+                let artist = track.artist.unwrap_or_default().trim().to_owned();
+                if title.is_empty() {
+                    return None;
+                }
+                Some(Recommendation {
+                    artist,
+                    title,
+                    match_score: 0.0,
+                    artwork_url: None,
+                })
+            })
+            .collect()
     }
     pub fn root_statuses(&self) -> Vec<RootStatus> {
         self.root_statuses.lock().unwrap().clone()
@@ -1614,6 +1646,25 @@ impl AppState {
                 Ok(serde_json::to_value(sources.into_iter().map(|(provider, query)| {
                     serde_json::json!({ "provider": format!("{provider:?}").to_lowercase(), "query": query })
                 }).collect::<Vec<_>>()).unwrap_or(Value::Null))
+            }
+            Command::Discover { artist, title, limit } => {
+                let limit = limit.clamp(1, crate::contracts::types::MAX_DISCOVER_LIMIT);
+                let mut discovery = self.discovery.lock().unwrap();
+                match discovery.get_similar(&artist, &title, limit, &self.library_recommendations()) {
+                    DiscoveryResult::Success(items) => serde_json::to_value(items).map_err(|error| {
+                        ContractError::invalid(format!("discovery serialization: {error}"))
+                    }),
+                    DiscoveryResult::Error(DiscoveryError::MissingApiKey) => Err(ContractError {
+                        code: ErrorCode::Unavailable,
+                        message: "discovery is unavailable until a Last.fm API key is configured".into(),
+                        retryable: false,
+                    }),
+                    DiscoveryResult::Error(DiscoveryError::Request(message)) => Err(ContractError {
+                        code: ErrorCode::Internal,
+                        message,
+                        retryable: true,
+                    }),
+                }
             }
             Command::ValidateDirectUrl { url, destination } => {
                 crate::download::workflows::validate_http_url(&url)

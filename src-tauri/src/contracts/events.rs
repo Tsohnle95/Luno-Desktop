@@ -39,6 +39,14 @@ pub enum Command {
         query: String,
         try_soundcloud: bool,
     },
+    Discover {
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        artist: String,
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        title: String,
+        #[serde(default = "super::types::default_discover_limit")]
+        limit: usize,
+    },
     ValidateDirectUrl {
         url: String,
         destination: String,

@@ -38,7 +38,13 @@ impl DiscoveryService {
         Self::with_base_url(api_key, "https://ws.audioscrobbler.com/2.0/")
     }
     pub fn with_base_url(api_key: Option<String>, base_url: impl Into<String>) -> Self {
-        Self { api_key, base_url: base_url.into(), client: Client::new(), cache: HashMap::new(), order: VecDeque::new(), generation: AtomicU64::new(0) }
+        Self { api_key, base_url: base_url.into(), client: Self::client(), cache: HashMap::new(), order: VecDeque::new(), generation: AtomicU64::new(0) }
+    }
+    fn client() -> Client {
+        Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("discovery HTTP client")
     }
     pub fn set_api_key(&mut self, key: Option<String>) { self.api_key = key; self.clear_cache(); }
     pub fn clear_cache(&mut self) { self.cache.clear(); self.order.clear(); }

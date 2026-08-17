@@ -251,6 +251,12 @@ fn main() {
             startup_migration(app.handle()).map_err(std::io::Error::other)?;
             app.state::<AppState>()
                 .set_bundle_helper(resolve_bundle_helper(app.handle()));
+            let discovery_key = MacOsKeychain::new()
+                .read_lastfm_key()
+                .ok()
+                .filter(|key| !key.is_empty())
+                .map(|key| String::from_utf8_lossy(&key).into_owned());
+            app.state::<AppState>().set_discovery_key(discovery_key);
             Ok(())
         })
         .on_window_event(|window, event| {

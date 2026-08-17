@@ -35,6 +35,7 @@ export type Command =
   | { type: "promote_audio_output"; payload: { temporary: string; destination: string } }
   | { type: "sync_markers"; payload: { folder: string } } | { type: "toggle_favorite"; payload: { track_id: TrackId } }
   | { type: "search_downloader"; payload: { query: string; try_soundcloud: boolean } }
+  | { type: "discover"; payload: { artist: string; title: string; limit: number } }
   | { type: "validate_direct_url"; payload: { url: string; destination: string } }
   | { type: "preview_csv"; payload: { csv: string } }
   | { type: "queue_urls"; payload: { urls: string[] } }
@@ -74,6 +75,13 @@ const object = (v: unknown): v is Record<string, unknown> => typeof v === "objec
 const exact = (v: unknown, keys: string[]): v is Record<string, unknown> => object(v) && Object.keys(v).length === keys.length && Object.keys(v).every(k => keys.includes(k));
 const nonEmptyId = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
 const safeInteger = (v: unknown): v is number => Number.isSafeInteger(v);
+export interface Recommendation {
+  artist: string;
+  title: string;
+  match_score: number;
+  artwork_url: string | null;
+}
+
 export function isContractVersion(v: unknown): v is ContractVersion { return v === CONTRACT_VERSION; }
 function isCommand(v: unknown): v is Command {
   if (!object(v) || typeof v.type !== "string") return false;
@@ -83,6 +91,7 @@ function isCommand(v: unknown): v is Command {
     if (v.type === "promote_audio_output") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.temporary === "string" && v.payload.temporary.trim().length > 0 && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && Object.keys(v.payload).length === 2;
     if (v.type === "sync_markers") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.folder === "string" && v.payload.folder.trim().length > 0 && Object.keys(v.payload).length === 1;
     if (v.type === "search_downloader") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.query === "string" && v.payload.query.trim().length > 0 && typeof v.payload.try_soundcloud === "boolean" && Object.keys(v.payload).length === 2;
+    if (v.type === "discover") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.artist === "string" && v.payload.artist.trim().length > 0 && typeof v.payload.title === "string" && v.payload.title.trim().length > 0 && typeof v.payload.limit === "number" && Number.isInteger(v.payload.limit) && v.payload.limit >= 1 && v.payload.limit <= 20 && Object.keys(v.payload).length === 3;
     if (v.type === "validate_direct_url") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.url === "string" && typeof v.payload.destination === "string" && v.payload.url.trim().length > 0 && v.payload.destination.trim().length > 0 && Object.keys(v.payload).length === 2;
     if (v.type === "preview_csv") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.csv === "string" && v.payload.csv.length <= 10_485_760 && Object.keys(v.payload).length === 1;
     if (v.type === "queue_urls") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.urls) && v.payload.urls.every((url) => typeof url === "string" && url.trim().length > 0) && Object.keys(v.payload).length === 1;
@@ -147,3 +156,4 @@ export function isEventEnvelope(v: unknown): v is EventEnvelope { return exact(v
 export function parseCommandEnvelope(json: string): CommandEnvelope { const value: unknown = JSON.parse(json); if (!isCommandEnvelope(value)) throw new Error("invalid or unsupported command envelope"); return value; }
 export function parseEventEnvelope(json: string): EventEnvelope { const value: unknown = JSON.parse(json); if (!isEventEnvelope(value)) throw new Error("invalid or unsupported event envelope"); return value; }
 export function isSearchResults(value: unknown): value is SearchResult[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["provider", "query"]) && nonEmptyId(item.provider) && nonEmptyId(item.query)); }
+export function isRecommendationList(value: unknown): value is Recommendation[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["artist", "title", "match_score", "artwork_url"]) && nonEmptyId(item.artist) && nonEmptyId(item.title) && typeof item.match_score === "number" && (item.artwork_url === null || typeof item.artwork_url === "string")); }

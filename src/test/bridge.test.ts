@@ -34,6 +34,10 @@ describe("typed IPC bridge and projection", () => {
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "start_download", payload: { job_id: "j", destination: "/d/j.mp3", helper: "/h" } } })).toBe(false);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "start_download", payload: { job_id: "j", destination: "/d/j.mp3", helper: "/h", source: "ytsearch1:query" } } })).toBe(true);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "bundle_helper_path" } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover", payload: { artist: "Artist", title: "Track", limit: 5 } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover", payload: { artist: "", title: "Track", limit: 5 } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover", payload: { artist: "Artist", title: "Track", limit: 0 } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover", payload: { artist: "Artist", title: "Track", limit: 21 } } })).toBe(false);
   });
 
   it("uses the required native backend command payload argument shape", () => {

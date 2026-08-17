@@ -137,6 +137,21 @@ history and favorites.
    logs, progress, destinations and cancellation.
 9. Port discovery, prefetch, tap sessions, Discover mode, save, cleanup and
    paging with generation/session ownership.
+   - 9W-1 (2026-08-16): production discovery wiring — `discover` command
+     contract (both sides), keychain-key read into `DiscoveryService` at
+     startup, dispatch with library filtering and truthful MissingApiKey /
+     provider-error states, bounded limit; Discover view seeds from the
+     current track with loading/error/empty states. Unit: `DISCOVER` gate
+     (typecheck, 45 frontend, 98 Rust, diff --check).
+   - 9W-2: preview sessions — tap/next/previous/cancel/invalidate commands,
+     `PreviewAssetStore` + encode worker wiring, prefetch window and
+     generation-guarded events.
+   - 9W-3: Discover mode + save — enable/disable/advance, queue adoption
+     handoff, explicit save-to-playlist with dedupe and staged-redownload
+     avoidance.
+   - 9W-4: Discover UI + player integration — artwork/CSP, preview playback
+     through the native player, keyboard/accessibility pass, native
+     verification receipt and sign-off annotation.
 10. Port Song Page/art/video, audio-clock rendering, resize/seek/fullscreen and
     fallback.
 11. Run differential, fake filesystem/subprocess, persistence crash, visual,
