@@ -58,7 +58,7 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── test_discover_mode.py     # Deterministic mocked unit tests for Discover mode (first-five window, rolling refill, handoff teardown)
 ├── test_art_cache.py         # Regression tests for bounded artwork caching
 ├── test_contract_fixtures.py  # Shared library-export compatibility fixture tests
-├── src-tauri/resources/bin/.gitkeep # Tracked empty resource directory; reviewed release binaries are provisioned separately
+├── src-tauri/resources/bin/   # Reviewed release binaries (ffmpeg, ffprobe, yt-dlp) plus the luno-download-helper script, staged via release/provision.sh and hash-pinned by release/desktop-binaries.json
 ├── src-tauri/src/gate3_tests.rs # Deterministic playback, queue, clock, recovery, and synthetic-WAV contract tests
 ├── test_library_transfer.py   # Manifest validation, export, matching, and additive merge tests
 ├── test_media_keys.py        # Deterministic mocked unit tests for media key logic
@@ -74,6 +74,8 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── test_dl.py
 ├── test_focus.py
 ├── test_label_ph.py
+├── scripts/                   # Release supply-chain tooling: provision-desktop-binaries.sh, verify-desktop-bundle.sh
+├── release/                   # Pinned binary manifest (desktop-binaries.json), THIRD_PARTY_NOTICES.md, hash-verifying provisioner (provision.sh)
 │
 └── requirements.txt          # Reproducible Python environment for app/build dependencies
 ```
@@ -147,10 +149,17 @@ including checks at the real `OsFileSystem` scan boundary. The version-1 command
 bridge also exposes validated local audio promotion into a configured library
 root through the existing atomic promotion contract. Gate 4 commands for
 downloader search/direct URL/CSV/URL-queue validation, safe-root selection and
- fake-helper promotion, typed settings persistence, transfer export, and transfer preview/apply
+production download dispatch, typed settings persistence, transfer export, and transfer preview/apply
 dispatch through the same `AppState` event boundary;
 download job snapshots are projected through the React bridge without exposing
-local paths as track identity.
+local paths as track identity. Production downloads run through the bundled
+`luno-download-helper` (resolved via `bundle_helper_path`, resource-dir path
+with a `CARGO_MANIFEST_DIR` fallback for development) with yt-dlp
+`bestaudio/best` extraction converted by the reviewed LGPL FFmpeg into M4A
+(AAC-LC), staged with an atomic rename and promoted on the MP4 `ftyp`
+signature; see `docs/decisions/download-format-m4a.md`. Destinations default to
+`Unsorted` under the configured library root, and destination directories are
+created inside the root when missing.
 Startup migration validates the legacy discovery inputs through
 `validate_existing_path`, which canonicalizes standard macOS system redirects
 (for example `/tmp` -> `/private/tmp`) instead of rejecting them, preserves the
