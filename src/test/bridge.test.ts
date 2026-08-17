@@ -4,6 +4,7 @@ import { createBackendProjection } from "../state/backend_projection";
 import { currentVideoForTrack, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled } from "../app/Shell";
 import type { BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope } from "../shared/contracts";
+import type { SaveState } from "../shared/contracts";
 import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot } from "../shared/contracts";
 
 const nativeInvoke = vi.hoisted(() => vi.fn());
@@ -50,6 +51,27 @@ describe("typed IPC bridge and projection", () => {
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_next", payload: {} } })).toBe(false);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_previous" } })).toBe(true);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_cancel" } })).toBe(true);
+  });
+
+  it("validates save command envelopes", () => {
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "save", payload: { key: "Artist0-Track0", playlist_id: "playlist:playlist-a" } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "save", payload: { key: "", playlist_id: "playlist:playlist-a" } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "save", payload: { key: "Artist0-Track0", playlist_id: "" } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "save", payload: { key: "Artist0-Track0" } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "save" } })).toBe(false);
+  });
+
+  it("validates save_state event envelopes", () => {
+    const base: SaveState = { key: "Artist0-Track0", playlist_id: "playlist:playlist-a", state: "saved", already_saved: false, path: "/library/playlist-a/Artist0 - Track0.m4a", job_id: null, error: null };
+    const saveEvent = (payload: unknown) => event({ type: "save_state", payload: payload as { state: SaveState } });
+    expect(isEventEnvelope(saveEvent({ state: base }))).toBe(true);
+    expect(isEventEnvelope(saveEvent({ state: { ...base, state: "saving" } }))).toBe(true);
+    expect(isEventEnvelope(saveEvent({ state: { ...base, state: "queued" } }))).toBe(true);
+    expect(isEventEnvelope(saveEvent({ state: { ...base, state: "failed", error: "no staged audio" } }))).toBe(true);
+    expect(isEventEnvelope(saveEvent({ state: { ...base, state: "bogus" } }))).toBe(false);
+    expect(isEventEnvelope(saveEvent({ state: { ...base, already_saved: "yes" } }))).toBe(false);
+    expect(isEventEnvelope(saveEvent({ state: { ...base, key: "" } }))).toBe(false);
+    expect(isEventEnvelope(saveEvent({ state: { ...base, extra: 1 } }))).toBe(false);
   });
 
   it("validates preview snapshots and preview_snapshot event envelopes", () => {
@@ -203,6 +225,18 @@ describe("typed IPC bridge and projection", () => {
     store.apply({ ...event({ type: "preview_snapshot", payload: { snapshot: { generation: 8, active: false, current: null, window: [], prepared: [], unavailable: ["Artist-Track"], cancelled: true } } }, 8), event_id: "event-p2" });
     expect(store.getSnapshot().preview).toMatchObject({ generation: 8, active: false, cancelled: true, unavailable: ["Artist-Track"] });
     expect(store.getSnapshot().generations.preview).toBe(8);
+  });
+
+  it("projects save_state events per recommendation key and keeps the latest state", () => {
+    const store = createBackendProjection();
+    const saveEvent = (payload: { state: SaveState }, n: number) => ({ ...event({ type: "save_state", payload }, n), event_id: `event-s${n}` });
+    store.apply(saveEvent({ state: { key: "Artist0-Track0", playlist_id: "playlist:playlist-a", state: "saving", already_saved: false, path: null, job_id: null, error: null } }, 1));
+    expect(store.getSnapshot().saved["Artist0-Track0"]?.state).toBe("saving");
+    store.apply(saveEvent({ state: { key: "Artist0-Track0", playlist_id: "playlist:playlist-a", state: "saved", already_saved: false, path: "/library/playlist-a/Artist0 - Track0.m4a", job_id: null, error: null } }, 2));
+    store.apply(saveEvent({ state: { key: "Artist1-Track1", playlist_id: "playlist:playlist-a", state: "queued", already_saved: false, path: "/library/playlist-a/Artist1 - Track1.m4a", job_id: "save-Artist1-Track1", error: null } }, 3));
+    expect(store.getSnapshot().saved["Artist0-Track0"]).toMatchObject({ state: "saved" });
+    expect(store.getSnapshot().saved["Artist1-Track1"]).toMatchObject({ state: "queued", job_id: "save-Artist1-Track1" });
+    expect(Object.keys(store.getSnapshot().saved)).toEqual(["Artist0-Track0", "Artist1-Track1"]);
   });
 
   it("rejects snapshots whose payload generation disagrees with the envelope", () => {

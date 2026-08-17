@@ -40,6 +40,7 @@ export type Command =
   | { type: "preview_next" }
   | { type: "preview_previous" }
   | { type: "preview_cancel" }
+  | { type: "save"; payload: { key: TrackId; playlist_id: PlaylistId } }
   | { type: "validate_direct_url"; payload: { url: string; destination: string } }
   | { type: "preview_csv"; payload: { csv: string } }
   | { type: "queue_urls"; payload: { urls: string[] } }
@@ -65,6 +66,7 @@ export type Event =
   | { type: "library_root_status"; payload: { root_index: number; status: RootStatus } }
   | { type: "playback_snapshot"; payload: { snapshot: PlaybackSnapshot } }
   | { type: "preview_snapshot"; payload: { snapshot: PreviewSnapshot } }
+  | { type: "save_state"; payload: { state: SaveState } }
   | { type: "video_state"; payload: { state: VideoState } }
   | { type: "track_started"; payload: { track_id: TrackId } }
   | { type: "queue_changed"; payload: { queue: TrackId[] } }
@@ -90,6 +92,17 @@ export interface Recommendation {
 export interface PreviewSeed {
   artist: string;
   title: string;
+}
+
+export type SaveStateKind = "saving" | "queued" | "saved" | "failed";
+export interface SaveState {
+  key: TrackId;
+  playlist_id: PlaylistId;
+  state: SaveStateKind;
+  already_saved: boolean;
+  path: string | null;
+  job_id: JobId | null;
+  error: string | null;
 }
 
 export interface PreviewSnapshot {
@@ -120,6 +133,7 @@ function isCommand(v: unknown): v is Command {
     if (v.type === "discover") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.artist === "string" && v.payload.artist.trim().length > 0 && typeof v.payload.title === "string" && v.payload.title.trim().length > 0 && typeof v.payload.limit === "number" && Number.isInteger(v.payload.limit) && v.payload.limit >= 1 && v.payload.limit <= 20 && Object.keys(v.payload).length === 3;
     if (v.type === "preview_tap") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.key) && Array.isArray(v.payload.seeds) && v.payload.seeds.length >= 1 && v.payload.seeds.length <= 50 && v.payload.seeds.every((seed) => object(seed) && exact(seed, ["artist", "title"]) && nonEmptyId(seed.artist) && nonEmptyId(seed.title)) && Object.keys(v.payload).length === 2;
     if (["preview_next", "preview_previous", "preview_cancel"].includes(v.type)) return Object.keys(v).length === 1;
+    if (v.type === "save") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.key) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 2;
     if (v.type === "validate_direct_url") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.url === "string" && typeof v.payload.destination === "string" && v.payload.url.trim().length > 0 && v.payload.destination.trim().length > 0 && Object.keys(v.payload).length === 2;
     if (v.type === "preview_csv") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.csv === "string" && v.payload.csv.length <= 10_485_760 && Object.keys(v.payload).length === 1;
     if (v.type === "queue_urls") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.urls) && v.payload.urls.every((url) => typeof url === "string" && url.trim().length > 0) && Object.keys(v.payload).length === 1;
@@ -166,6 +180,10 @@ function isEvent(v: unknown): v is Event {
   if (v.type === "library_snapshot") return exact(v.payload, ["snapshot"]) && library(v.payload.snapshot);
    if (v.type === "playback_snapshot") return exact(v.payload, ["snapshot"]) && playback(v.payload.snapshot);
    if (v.type === "preview_snapshot") return exact(v.payload, ["snapshot"]) && isPreviewSnapshot(v.payload.snapshot);
+   if (v.type === "save_state") {
+     const save = v.payload.state;
+     return exact(v.payload, ["state"]) && object(save) && exact(save, ["key", "playlist_id", "state", "already_saved", "path", "job_id", "error"]) && id(save.key) && id(save.playlist_id) && ["saving", "queued", "saved", "failed"].includes(String(save.state)) && typeof save.already_saved === "boolean" && optionalString(save.path) && (save.job_id === null || id(save.job_id)) && (save.error === null || typeof save.error === "string");
+   }
    if (v.type === "video_state") return exact(v.payload, ["state"]) && video(v.payload.state);
   if (v.type === "job_updated") return exact(v.payload, ["job"]) && job(v.payload.job);
   if (v.type === "error") {

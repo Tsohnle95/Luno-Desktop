@@ -1,5 +1,5 @@
 import { isDeliveryErrorEventId } from "../shared/contracts";
-import type { EventEnvelope, LibrarySnapshot, PlaybackSnapshot, DownloadJob, ContractError, ShutdownEnvelope, TrackId, VideoState, Track, PreviewSnapshot } from "../shared/contracts";
+import type { EventEnvelope, LibrarySnapshot, PlaybackSnapshot, DownloadJob, ContractError, ShutdownEnvelope, TrackId, VideoState, Track, PreviewSnapshot, SaveState } from "../shared/contracts";
 import type { Bridge } from "../app/bridge";
 
 export interface BackendProjection {
@@ -8,6 +8,7 @@ export interface BackendProjection {
   preview: PreviewSnapshot | null;
   video: VideoState | null;
   jobs: Record<string, DownloadJob>;
+  saved: Record<string, SaveState>;
   errors: ContractError[];
   recentHistory: TrackId[];
   shutdown: ShutdownEnvelope | null;
@@ -16,7 +17,7 @@ export interface BackendProjection {
 }
 
 export const initialBackendProjection = (): BackendProjection => ({
-  library: null, playback: null, preview: null, video: null, jobs: {}, errors: [], recentHistory: [], shutdown: null,
+  library: null, playback: null, preview: null, video: null, jobs: {}, saved: {}, errors: [], recentHistory: [], shutdown: null,
   generations: { library: -1, playback: -1, preview: -1, video: -1, jobs: -1, errors: -1 }, lastEventIds: {},
 });
 
@@ -56,6 +57,7 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
     case "library_root_status": return next;
     case "playback_snapshot": return { ...next, playback: event.payload.snapshot };
     case "preview_snapshot": return { ...next, preview: event.payload.snapshot };
+    case "save_state": return { ...next, saved: { ...next.saved, [event.payload.state.key]: event.payload.state } };
     case "video_state": return { ...next, video: event.payload.state };
     case "track_started": {
       const playback = next.playback;
