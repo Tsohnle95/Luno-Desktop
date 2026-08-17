@@ -11,8 +11,11 @@ use std::path::PathBuf;
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 const BACKEND_EVENT: &str = "backend-event";
+
+#[cfg(debug_assertions)]
 const GATE5_EVENT: &str = "gate5-smoke-event";
 
+#[cfg(debug_assertions)]
 #[tauri::command(rename_all = "snake_case")]
 fn gate5_smoke(app: tauri::AppHandle, root: String, preview_root: String, video_root: String) -> Result<Value, String> {
     let result = luno_desktop_lib::runtime::gate5_smoke::run(PathBuf::from(root), PathBuf::from(preview_root), PathBuf::from(video_root))?;
@@ -218,9 +221,12 @@ fn dirs_fallback_home() -> Result<PathBuf, String> {
 }
 
 fn main() {
-    tauri::Builder::default()
-        .manage(AppState::new(32))
-        .invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, gate5_smoke])
+    let builder = tauri::Builder::default().manage(AppState::new(32));
+    #[cfg(debug_assertions)]
+    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, gate5_smoke]);
+    #[cfg(not(debug_assertions))]
+    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status]);
+    builder
         .setup(|app| {
             let handle = app.handle().clone();
             app.state::<AppState>()
