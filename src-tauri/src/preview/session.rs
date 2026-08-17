@@ -33,6 +33,7 @@ pub struct PreviewSession {
     physical_index: usize,
     recommendations: Vec<TrackId>,
     paths: HashMap<TrackId, PathBuf>,
+    failed: Vec<TrackId>,
     window_start: usize,
     window_end: usize,
     current: Option<usize>,
@@ -56,6 +57,7 @@ impl PreviewSession {
             physical_index,
             recommendations,
             paths: HashMap::new(),
+            failed: Vec::new(),
             window_start: tapped_index,
             window_end: tapped_index.saturating_add(1 + AHEAD_WINDOW),
             current: None,
@@ -68,6 +70,9 @@ impl PreviewSession {
     pub fn current(&self) -> Option<&TrackId> { self.current.and_then(|i| self.recommendations.get(i)) }
     pub fn window(&self) -> &[TrackId] { &self.recommendations[self.window_start..self.window_end.min(self.recommendations.len())] }
     pub fn prepared(&self) -> usize { self.paths.len() }
+    pub fn prepared_keys(&self) -> Vec<TrackId> { self.paths.keys().cloned().collect() }
+    pub fn is_prepared(&self, id: &TrackId) -> bool { self.paths.contains_key(id) }
+    pub fn unavailable(&self) -> &[TrackId] { &self.failed }
     pub fn physical_queue(&self) -> &[TrackId] { &self.physical_queue }
 
     /// Accepts a completed asset.  A stale completion is ignored and cannot
@@ -86,6 +91,7 @@ impl PreviewSession {
     /// playback.  Later-item failures simply leave a preparation gap.
     pub fn failed_asset(&mut self, generation: u64, id: &TrackId) -> SessionAction {
         if !self.active || generation != self.generation { return SessionAction::Ended; }
+        if !self.failed.contains(id) { self.failed.push(id.clone()); }
         if self.current.is_none() && self.recommendations.get(self.window_start) == Some(id) {
             self.active = false;
             return SessionAction::Ended;

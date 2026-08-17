@@ -36,6 +36,10 @@ export type Command =
   | { type: "sync_markers"; payload: { folder: string } } | { type: "toggle_favorite"; payload: { track_id: TrackId } }
   | { type: "search_downloader"; payload: { query: string; try_soundcloud: boolean } }
   | { type: "discover"; payload: { artist: string; title: string; limit: number } }
+  | { type: "preview_tap"; payload: { seeds: PreviewSeed[]; key: string } }
+  | { type: "preview_next" }
+  | { type: "preview_previous" }
+  | { type: "preview_cancel" }
   | { type: "validate_direct_url"; payload: { url: string; destination: string } }
   | { type: "preview_csv"; payload: { csv: string } }
   | { type: "queue_urls"; payload: { urls: string[] } }
@@ -60,6 +64,7 @@ export type Event =
   | { type: "library_snapshot"; payload: { snapshot: LibrarySnapshot } }
   | { type: "library_root_status"; payload: { root_index: number; status: RootStatus } }
   | { type: "playback_snapshot"; payload: { snapshot: PlaybackSnapshot } }
+  | { type: "preview_snapshot"; payload: { snapshot: PreviewSnapshot } }
   | { type: "video_state"; payload: { state: VideoState } }
   | { type: "track_started"; payload: { track_id: TrackId } }
   | { type: "queue_changed"; payload: { queue: TrackId[] } }
@@ -82,6 +87,27 @@ export interface Recommendation {
   artwork_url: string | null;
 }
 
+export interface PreviewSeed {
+  artist: string;
+  title: string;
+}
+
+export interface PreviewSnapshot {
+  generation: number;
+  active: boolean;
+  current: string | null;
+  window: string[];
+  prepared: string[];
+  unavailable: string[];
+  cancelled: boolean;
+}
+
+/** Mirrors the backend `safe_key`: ASCII alphanumerics, `-` and `_` survive;
+ * everything else collapses to `_`.  This is the session key shared between
+ * the discover rows, the preview session, and the asset store. */
+export const previewKey = (artist: string, title: string): string =>
+  `${artist}-${title}`.replace(/[^a-zA-Z0-9\-_]/g, "_");
+
 export function isContractVersion(v: unknown): v is ContractVersion { return v === CONTRACT_VERSION; }
 function isCommand(v: unknown): v is Command {
   if (!object(v) || typeof v.type !== "string") return false;
@@ -92,6 +118,8 @@ function isCommand(v: unknown): v is Command {
     if (v.type === "sync_markers") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.folder === "string" && v.payload.folder.trim().length > 0 && Object.keys(v.payload).length === 1;
     if (v.type === "search_downloader") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.query === "string" && v.payload.query.trim().length > 0 && typeof v.payload.try_soundcloud === "boolean" && Object.keys(v.payload).length === 2;
     if (v.type === "discover") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.artist === "string" && v.payload.artist.trim().length > 0 && typeof v.payload.title === "string" && v.payload.title.trim().length > 0 && typeof v.payload.limit === "number" && Number.isInteger(v.payload.limit) && v.payload.limit >= 1 && v.payload.limit <= 20 && Object.keys(v.payload).length === 3;
+    if (v.type === "preview_tap") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.key) && Array.isArray(v.payload.seeds) && v.payload.seeds.length >= 1 && v.payload.seeds.length <= 50 && v.payload.seeds.every((seed) => object(seed) && exact(seed, ["artist", "title"]) && nonEmptyId(seed.artist) && nonEmptyId(seed.title)) && Object.keys(v.payload).length === 2;
+    if (["preview_next", "preview_previous", "preview_cancel"].includes(v.type)) return Object.keys(v).length === 1;
     if (v.type === "validate_direct_url") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.url === "string" && typeof v.payload.destination === "string" && v.payload.url.trim().length > 0 && v.payload.destination.trim().length > 0 && Object.keys(v.payload).length === 2;
     if (v.type === "preview_csv") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.csv === "string" && v.payload.csv.length <= 10_485_760 && Object.keys(v.payload).length === 1;
     if (v.type === "queue_urls") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.urls) && v.payload.urls.every((url) => typeof url === "string" && url.trim().length > 0) && Object.keys(v.payload).length === 1;
@@ -137,6 +165,7 @@ function isEvent(v: unknown): v is Event {
    if (v.type === "library_root_status") return exact(v.payload, ["root_index", "status"]) && safeInteger(v.payload.root_index) && v.payload.root_index >= 0 && ["scanned", "missing", "inaccessible"].includes(String(v.payload.status));
   if (v.type === "library_snapshot") return exact(v.payload, ["snapshot"]) && library(v.payload.snapshot);
    if (v.type === "playback_snapshot") return exact(v.payload, ["snapshot"]) && playback(v.payload.snapshot);
+   if (v.type === "preview_snapshot") return exact(v.payload, ["snapshot"]) && isPreviewSnapshot(v.payload.snapshot);
    if (v.type === "video_state") return exact(v.payload, ["state"]) && video(v.payload.state);
   if (v.type === "job_updated") return exact(v.payload, ["job"]) && job(v.payload.job);
   if (v.type === "error") {
@@ -157,3 +186,4 @@ export function parseCommandEnvelope(json: string): CommandEnvelope { const valu
 export function parseEventEnvelope(json: string): EventEnvelope { const value: unknown = JSON.parse(json); if (!isEventEnvelope(value)) throw new Error("invalid or unsupported event envelope"); return value; }
 export function isSearchResults(value: unknown): value is SearchResult[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["provider", "query"]) && nonEmptyId(item.provider) && nonEmptyId(item.query)); }
 export function isRecommendationList(value: unknown): value is Recommendation[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["artist", "title", "match_score", "artwork_url"]) && nonEmptyId(item.artist) && nonEmptyId(item.title) && typeof item.match_score === "number" && (item.artwork_url === null || typeof item.artwork_url === "string")); }
+export function isPreviewSnapshot(value: unknown): value is PreviewSnapshot { return object(value) && exact(value, ["generation", "active", "current", "window", "prepared", "unavailable", "cancelled"]) && typeof value.generation === "number" && Number.isSafeInteger(value.generation) && value.generation >= 0 && typeof value.active === "boolean" && (value.current === null || nonEmptyId(value.current)) && Array.isArray(value.window) && value.window.every(nonEmptyId) && Array.isArray(value.prepared) && value.prepared.every(nonEmptyId) && Array.isArray(value.unavailable) && value.unavailable.every(nonEmptyId) && typeof value.cancelled === "boolean"; }

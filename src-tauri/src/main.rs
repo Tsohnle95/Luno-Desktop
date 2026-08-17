@@ -257,6 +257,17 @@ fn main() {
                 .filter(|key| !key.is_empty())
                 .map(|key| String::from_utf8_lossy(&key).into_owned());
             app.state::<AppState>().set_discovery_key(discovery_key);
+            let preview_helper = resolve_bundle_helper(app.handle());
+            let managed_bin = preview_helper
+                .as_ref()
+                .and_then(|path| path.parent())
+                .map(|parent| parent.to_path_buf());
+            let preview_ffmpeg = luno_desktop_lib::process::executables::discover(
+                luno_desktop_lib::process::executables::ExecutableKind::Ffmpeg,
+                managed_bin.as_deref(),
+            )
+            .ok();
+            app.state::<AppState>().set_preview_toolchain(preview_helper, preview_ffmpeg);
             Ok(())
         })
         .on_window_event(|window, event| {

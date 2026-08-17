@@ -3,6 +3,7 @@ use crate::contracts::events::CommandEnvelope;
 use crate::contracts::events::{
     Event, RootStatus as ContractRootStatus, ShutdownReason, ShutdownState,
 };
+use crate::contracts::types::TrackId;
 use crate::download::markers::Markers;
 use crate::download::promotion::stage_output;
 use crate::download::sync::{plan, sync_sequential, ItemOutcome, PlaylistEntry, SyncItem};
@@ -634,6 +635,177 @@ fn discover_envelope_rejects_empty_seed_fields() {
         Command::Discover { limit, .. } => assert_eq!(limit, 21, "clamping happens in dispatch"),
         _ => panic!("unexpected command"),
     }
+}
+
+struct FixtureToolchain { root: PathBuf }
+impl Drop for FixtureToolchain {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.root); }
+}
+
+fn fixture_preview_toolchain() -> (FixtureToolchain, PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("luno-gate2-preview-toolchain-lifecycle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let helper = root.join("helper");
+    std::fs::write(&helper, "#!/bin/sh\nprintf 'synthetic preview audio source bytes' > \"$1\"\n").unwrap();
+    let ffmpeg = root.join("ffmpeg");
+    // `-y -i INPUT -ar ... -f adts -` puts the input at positional argument 3.
+    std::fs::write(&ffmpeg, "#!/bin/sh\ncat \"$3\"\n").unwrap();
+    for script in [&helper, &ffmpeg] {
+        let mut permissions = std::fs::metadata(script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script, permissions).unwrap();
+    }
+    (FixtureToolchain { root }, helper, ffmpeg)
+}
+
+fn preview_seed(artist: &str, title: &str) -> crate::contracts::types::PreviewSeed {
+    crate::contracts::types::PreviewSeed { artist: artist.into(), title: title.into() }
+}
+
+fn isolated_preview_state(label: &str, task_limit: usize) -> AppState {
+    let root = std::env::temp_dir().join(format!("luno-gate2-preview-store-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    AppState::with_preview_store(
+        crate::preview::assets::PreviewAssetStore::at(&root).expect("isolated preview store"),
+        task_limit,
+    )
+}
+
+fn preview_snapshots(state: &AppState) -> Vec<crate::contracts::types::PreviewSnapshot> {
+    state.events().iter().filter_map(|envelope| match &envelope.event {
+        Event::PreviewSnapshot { snapshot } => Some(snapshot.clone()),
+        _ => None,
+    }).collect()
+}
+
+#[test]
+fn preview_tap_requires_an_active_playback_queue() {
+    let state = AppState::new(2);
+    let result = state.dispatch(command(
+        "preview-empty-queue",
+        Command::PreviewTap {
+            seeds: vec![preview_seed("Artist", "Track")],
+            key: "Artist-Track".into(),
+        },
+    ));
+    let error = result.expect_err("tapping without a playback queue must fail truthfully");
+    assert_eq!(error.code, crate::contracts::types::ErrorCode::Unavailable);
+    assert!(error.message.contains("playback queue"), "message: {}", error.message);
+}
+
+#[test]
+fn preview_tap_rejects_keys_outside_the_seeded_recommendations() {
+    let state = AppState::new(2);
+    let error = state
+        .dispatch(command(
+            "preview-foreign-key",
+            Command::PreviewTap {
+                seeds: vec![preview_seed("Artist", "Track")],
+                key: "Other-Other".into(),
+            },
+        ))
+        .expect_err("foreign keys must be rejected before any session work");
+    assert_eq!(error.code, crate::contracts::types::ErrorCode::InvalidRequest);
+}
+
+#[test]
+fn preview_session_lifecycle_prepares_window_and_reports_snapshots() {
+    let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
+    let state = isolated_preview_state("lifecycle", 16);
+    state.set_preview_toolchain(Some(helper), Some(ffmpeg));
+    state
+        .dispatch(command("preview-queue", Command::AddToQueue {
+            track_ids: vec![TrackId("fixture://queue-a".into()), TrackId("fixture://queue-b".into()), TrackId("fixture://queue-c".into())],
+        }))
+        .expect("queue seeding must succeed");
+    let seeds = vec![
+        preview_seed("Artist0", "Track0"),
+        preview_seed("Artist1", "Track1"),
+        preview_seed("Artist2", "Track2"),
+        preview_seed("Artist3", "Track3"),
+        preview_seed("Artist4", "Track4"),
+        preview_seed("Artist5", "Track5"),
+    ];
+    let value = state
+        .dispatch(command("preview-tap", Command::PreviewTap {
+            seeds: seeds.clone(),
+            key: "Artist0-Track0".into(),
+        }))
+        .expect("tap must start a session");
+    let snapshot: crate::contracts::types::PreviewSnapshot = serde_json::from_value(value).unwrap();
+    assert!(snapshot.active, "session must start active, got: {snapshot:?}\nevts: {:#?}", preview_snapshots(&state));
+    assert_eq!(snapshot.window, vec!["Artist0-Track0", "Artist1-Track1", "Artist2-Track2", "Artist3-Track3", "Artist4-Track4", "Artist5-Track5"]);
+    assert_eq!(snapshot.current, None, "the tapped item becomes current once prepared");
+
+    // The fixture toolchain publishes the tapped asset; wait for the driver
+    // to apply it (this also exercises the real worker pipeline end to end).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let ready = state.events().iter().any(|envelope| match &envelope.event {
+            Event::PreviewSnapshot { snapshot } => snapshot.prepared.iter().any(|key| key == "Artist0-Track0") && snapshot.active && snapshot.current.as_deref() == Some("Artist0-Track0"),
+            _ => false,
+        });
+        if ready { break; }
+        assert!(std::time::Instant::now() < deadline, "prepared asset never landed: {:#?}", preview_snapshots(&state));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(state.events().iter().any(|envelope| match &envelope.event {
+        Event::PreviewSnapshot { snapshot } => snapshot.prepared.contains(&"Artist0-Track0".to_string()) && snapshot.active,
+        _ => false,
+    }), "prepared state must publish through snapshots: {:#?}", preview_snapshots(&state));
+
+    let value = state.dispatch(command("preview-next", Command::PreviewNext))
+        .expect("next must advance the session");
+    let snapshot: crate::contracts::types::PreviewSnapshot = serde_json::from_value(value).unwrap();
+    assert_eq!(snapshot.current, Some("Artist1-Track1".into()));
+    assert!(snapshot.active);
+
+    let value = state.dispatch(command("preview-previous", Command::PreviewPrevious))
+        .expect("previous must step back");
+    let snapshot: crate::contracts::types::PreviewSnapshot = serde_json::from_value(value).unwrap();
+    assert_eq!(snapshot.current, Some("Artist0-Track0".into()));
+
+    let value = state.dispatch(command("preview-cancel", Command::PreviewCancel))
+        .expect("cancel must close the session");
+    let snapshot: crate::contracts::types::PreviewSnapshot = serde_json::from_value(value).unwrap();
+    assert!(snapshot.cancelled, "cancel must be explicit in the snapshot");
+    assert!(!snapshot.active, "session must end on cancel");
+
+    let error = state.dispatch(command("preview-next-after-cancel", Command::PreviewNext)).expect_err("stepping after cancel must be NotFound");
+    assert_eq!(error.code, crate::contracts::types::ErrorCode::NotFound);
+
+    state.cleanup_previews();
+}
+
+#[test]
+fn preview_tap_without_toolchain_ends_the_session_truthfully() {
+    let state = isolated_preview_state("notool", 16);
+    state
+        .dispatch(command("preview-queue-2", Command::AddToQueue {
+            track_ids: vec![TrackId("fixture://queue-x".into())],
+        }))
+        .expect("queue seeding must succeed");
+    let value = state
+        .dispatch(command("preview-tap-no-toolchain", Command::PreviewTap {
+            seeds: vec![preview_seed("Artist", "Track")],
+            key: "Artist-Track".into(),
+        }))
+        .expect("tap must start a session even without a toolchain");
+    let snapshot: crate::contracts::types::PreviewSnapshot = serde_json::from_value(value).unwrap();
+    assert!(snapshot.active);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let ended = preview_snapshots(&state).iter().any(|snapshot| !snapshot.active);
+        if ended { break; }
+        assert!(std::time::Instant::now() < deadline, "missing toolchain must end the session: {:#?}", preview_snapshots(&state));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let final_snapshot = preview_snapshots(&state).into_iter().last().expect("snapshots exist");
+    assert!(!final_snapshot.active);
+    assert!(final_snapshot.unavailable.iter().any(|key| key == "Artist-Track"), "tapped key must be reported unavailable: {final_snapshot:?}");
+    state.cleanup_previews();
 }
 
 #[test]

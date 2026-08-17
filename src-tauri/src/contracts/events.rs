@@ -47,6 +47,15 @@ pub enum Command {
         #[serde(default = "super::types::default_discover_limit")]
         limit: usize,
     },
+    PreviewTap {
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        key: String,
+        #[serde(default)]
+        seeds: Vec<PreviewSeed>,
+    },
+    PreviewNext,
+    PreviewPrevious,
+    PreviewCancel,
     ValidateDirectUrl {
         url: String,
         destination: String,
@@ -244,6 +253,9 @@ pub enum Event {
     },
     PlaybackSnapshot {
         snapshot: PlaybackSnapshot,
+    },
+    PreviewSnapshot {
+        snapshot: PreviewSnapshot,
     },
     VideoState {
         state: VideoState,

@@ -1,0 +1,285 @@
+//! Production preview preparation: fetch a bounded source through the
+//! download helper, encode it to ADTS AAC, and publish it through the
+//! preview store's generation-guarded, size-limited, atomic path.
+//!
+//! The bundled release ffmpeg is an LGPL-only build (no libmp3lame), so
+//! previews are encoded as 44.1 kHz / stereo / 192 kbps AAC ADTS rather
+//! than the legacy loudnorm MP3 profile.
+
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use crate::preview::assets::{AssetError, PreviewAssetStore};
+use crate::runtime::task_registry::CancellationToken;
+
+pub const PREVIEW_SAMPLE_RATE: u32 = 44100;
+pub const PREVIEW_CHANNELS: u32 = 2;
+pub const PREVIEW_BITRATE: &str = "192k";
+
+/// A worker's terminal report to the session driver.
+#[derive(Debug)]
+pub enum PreviewCompletion {
+    Prepared { key: String, path: PathBuf },
+    Failed { key: String },
+}
+
+/// Prepares one recommendation preview.
+///
+/// Stage 1 (resolve, bounded by `RESOLVE_DEADLINE`): the download helper
+/// fetches `query` into a system-temp file.  Stage 2 (download, bounded by
+/// `DOWNLOAD_DEADLINE`): ffmpeg encodes the source to ADTS AAC, streamed
+/// through the store's limited writer and atomically published under
+/// `{safe_key}.aac`.  Both stages honor `token` and the store generation.
+pub fn prepare_preview(
+    store: &PreviewAssetStore,
+    key: &str,
+    generation: u64,
+    query: &str,
+    helper: &Path,
+    ffmpeg: &Path,
+    token: &CancellationToken,
+) -> Result<PathBuf, AssetError> {
+    // The token is the source of truth: a pre-cancelled token aborts before
+    // any work is scheduled.  The bridge below only propagates cancellations
+    // that arrive while a stage is already running.
+    if token.is_cancelled() { return Err(AssetError::Cancelled); }
+    let bridge = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    let token_watcher = token.clone();
+    let bridge_watcher = bridge.clone();
+    let done_watcher = done.clone();
+    thread::spawn(move || {
+        while !done_watcher.load(Ordering::Acquire) {
+            if token_watcher.is_cancelled() {
+                bridge_watcher.store(true, Ordering::Release);
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    });
+
+    let helper_owned = helper.to_path_buf();
+    let ffmpeg_owned = ffmpeg.to_path_buf();
+    let query_for_fetch = query.to_owned();
+    let resolve_bridge = bridge.clone();
+    let bridge_in_resolve = resolve_bridge.clone();
+    let fetched = store.resolve(generation, &resolve_bridge, move || {
+        let output = temp_output("m4a");
+        fetch_source(&helper_owned, &query_for_fetch, &output, &bridge_in_resolve)
+            .map_err(|error| if bridge_in_resolve.load(Ordering::Acquire) { "cancelled".to_owned() } else { error })?;
+        Ok::<PathBuf, String>(output)
+    })?;
+    let download_bridge = bridge.clone();
+    let bridge_in_encode = download_bridge.clone();
+    let fetched_for_encode = fetched.clone();
+    let publish = store.download(key, generation, &download_bridge, move |writer| {
+        encode_adts(&ffmpeg_owned, &fetched_for_encode, writer, &bridge_in_encode)
+    });
+    let _ = fs::remove_file(&fetched);
+    done.store(true, Ordering::Release);
+    publish
+}
+
+fn is_cancelled(cancel: &AtomicBool) -> bool { cancel.load(Ordering::Acquire) }
+
+fn temp_output(extension: &str) -> PathBuf {
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    std::env::temp_dir().join(format!("luno-preview-{}-{}.{}", std::process::id(), stamp, extension))
+}
+
+/// Runs the download helper against the preview query with the same process
+/// contract the downloader uses (output path argument, `LUNO_DOWNLOAD_SOURCE`
+/// environment variable), polling cancellation while the child runs.
+fn fetch_source(helper: &Path, query: &str, output: &Path, cancel: &AtomicBool) -> Result<(), String> {
+    if is_cancelled(cancel) { return Err("cancelled".into()); }
+    let mut child = Command::new(helper)
+        .arg(output)
+        .env("LUNO_DOWNLOAD_SOURCE", query)
+        .spawn()
+        .map_err(|_| "preview download helper could not start".to_string())?;
+    loop {
+        if is_cancelled(cancel) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("cancelled".into());
+        }
+        match child.try_wait().map_err(|_| "preview download helper failed".to_string())? {
+            Some(status) => {
+                if !status.success() {
+                    let _ = fs::remove_file(output);
+                    return Err("preview download helper failed".into());
+                }
+                if !output.is_file() {
+                    return Err("preview download helper produced no output".into());
+                }
+                return Ok(());
+            }
+            None => thread::sleep(Duration::from_millis(5)),
+        }
+    }
+}
+
+/// Streams an ADTS AAC encode of `input` into `writer`, killing the encoder
+/// on cancellation and failing loudly when bytes exceed the store limit.
+fn encode_adts(ffmpeg: &Path, input: &Path, writer: &mut dyn Write, cancel: &AtomicBool) -> Result<(), String> {
+    if is_cancelled(cancel) { return Err("cancelled".into()); }
+    let mut child = Command::new(ffmpeg)
+        .arg("-y")
+        .arg("-i")
+        .arg(input)
+        .arg("-ar")
+        .arg(PREVIEW_SAMPLE_RATE.to_string())
+        .arg("-ac")
+        .arg(PREVIEW_CHANNELS.to_string())
+        .arg("-b:a")
+        .arg(PREVIEW_BITRATE)
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-f")
+        .arg("adts")
+        .arg("-")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "preview encoder could not start".to_string())?;
+    let mut stdout = child.stdout.take().ok_or("preview encoder output unreadable".to_string())?;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        if is_cancelled(cancel) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("cancelled".into());
+        }
+        let read = stdout.read(&mut buffer).map_err(|_| "preview encoder output read failed".to_string())?;
+        if read == 0 { break; }
+        writer.write_all(&buffer[..read]).map_err(|error| error.to_string())?;
+    }
+    let status = child.wait().map_err(|_| "preview encoder failed".to_string())?;
+    if !status.success() { return Err("preview encoder failed".into()); }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::PermissionsExt;
+
+    use crate::process::executables::{discover, ExecutableKind};
+    use crate::preview::assets::PreviewAssetStore;
+
+    use super::*;
+
+    struct TempToolchain { root: PathBuf }
+    impl Drop for TempToolchain { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.root); } }
+
+    fn fixture_scripts(label: &str) -> (TempToolchain, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("luno-preview-toolchain-{}-{}", std::process::id(), label));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        fs::write(&helper, "#!/bin/sh\nprintf 'synthetic preview audio source bytes' > \"$1\"\n").unwrap();
+        let ffmpeg = root.join("ffmpeg");
+        fs::write(&ffmpeg, "#!/bin/sh\ncat \"$3\"\n").unwrap();
+        for script in [&helper, &ffmpeg] {
+            let mut permissions = fs::metadata(script).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(script, permissions).unwrap();
+        }
+        (TempToolchain { root }, helper, ffmpeg)
+    }
+
+    fn wav_bytes() -> Vec<u8> {
+        // One second of deterministic full-scale 16-bit noise at 44.1 kHz
+        // (silence encodes to almost nothing under AAC).
+        let mut bytes = Vec::with_capacity(44 + 44100 * 2);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36u32 + 44100 * 2).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&44100u32.to_le_bytes());
+        bytes.extend_from_slice(&(44100u32 * 2).to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(44100u32 * 2).to_le_bytes());
+        let mut state = 0x1234_5678u32;
+        for _ in 0..44100 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            bytes.extend_from_slice(&((state >> 16) as u16).to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn prepare_publishes_a_generation_guarded_aac_preview() {
+        let (toolchain, helper, ffmpeg) = fixture_scripts("publish");
+        let root = toolchain.root.join("store");
+        let mut store = PreviewAssetStore::at(&root).unwrap();
+        let generation = store.begin_generation();
+        let token = CancellationToken::new();
+        let result = prepare_preview(&store, "artist-track", generation, "artist track", &helper, &ffmpeg, &token);
+        let path = result.expect("preview preparation must succeed with fixture toolchain");
+        assert_eq!(path.file_name().unwrap().to_string_lossy(), "artist-track.aac");
+        let bytes = fs::metadata(&path).unwrap().len();
+        assert!(bytes > 0, "published preview must not be empty");
+        let stale = prepare_preview(&store, "artist-track", generation + 1, "artist track", &helper, &ffmpeg, &token);
+        assert!(matches!(stale, Err(AssetError::StaleGeneration)), "stale generations must not publish: {stale:?}");
+    }
+
+    #[test]
+    fn prepared_previews_are_local_only_and_cleaned_with_the_store() {
+        let (toolchain, helper, ffmpeg) = fixture_scripts("local");
+        let root = toolchain.root.join("store");
+        let mut store = PreviewAssetStore::at(&root).unwrap();
+        let generation = store.begin_generation();
+        let prepared = prepare_preview(&store, "local-only", generation, "local only", &helper, &ffmpeg, &CancellationToken::new()).unwrap();
+        assert!(prepared.starts_with(&root), "previews must stay inside the private store");
+        store.cleanup_session(None).unwrap();
+        assert!(!prepared.exists(), "cleanup must remove published previews");
+    }
+
+    #[test]
+    fn cancelled_tokens_abort_preparation_before_any_work() {
+        let (toolchain, helper, ffmpeg) = fixture_scripts("cancel");
+        let mut store = PreviewAssetStore::at(toolchain.root.join("store")).unwrap();
+        let generation = store.begin_generation();
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = prepare_preview(&store, "artist-track", generation, "artist track", &helper, &ffmpeg, &token);
+        assert!(matches!(result, Err(AssetError::Cancelled)), "pre-cancelled token must abort: {result:?}");
+    }
+
+    #[test]
+    fn real_bundled_ffmpeg_encodes_fetched_wav_to_adts() {
+        let managed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release-input/bin");
+        let Ok(ffmpeg) = discover(ExecutableKind::Ffmpeg, Some(&managed)) else {
+            // The release binary is absent outside packaged fixtures; the
+            // fixture-toolchain tests above already cover the pipeline.
+            return;
+        };
+        let (toolchain, helper, _) = fixture_scripts("real");
+        let root = toolchain.root.join("store");
+        let mut store = PreviewAssetStore::at(&root).unwrap();
+        fs::write(root.join("source.wav"), wav_bytes()).unwrap();
+        std::fs::create_dir_all(root.join("..")).ok();
+        let source = root.join("source.wav");
+        fs::write(&helper, format!("#!/bin/sh\ncp '{}' \"$1\"\n", source.display())).unwrap();
+        let mut permissions = fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper, permissions).unwrap();
+        let generation = store.begin_generation();
+        let prepared = prepare_preview(&store, "encoded", generation, "encoded", &helper, &ffmpeg, &CancellationToken::new())
+            .expect("real encoder must produce a preview");
+        let bytes = fs::metadata(&prepared).unwrap().len();
+        assert!(bytes > 1024, "ADTS encode must be substantially populated, got {bytes} bytes");
+        assert_ne!(bytes, fs::metadata(&source).unwrap().len(), "encode must not pass the source through verbatim");
+    }
+}

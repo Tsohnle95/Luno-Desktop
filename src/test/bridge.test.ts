@@ -4,7 +4,7 @@ import { createBackendProjection } from "../state/backend_projection";
 import { currentVideoForTrack, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled } from "../app/Shell";
 import type { BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope } from "../shared/contracts";
-import { isCommandEnvelope } from "../shared/contracts";
+import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot } from "../shared/contracts";
 
 const nativeInvoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke: nativeInvoke }));
@@ -40,6 +40,29 @@ describe("typed IPC bridge and projection", () => {
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover", payload: { artist: "Artist", title: "Track", limit: 21 } } })).toBe(false);
   });
 
+  it("validates preview command envelopes", () => {
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_tap", payload: { seeds: [{ artist: "Artist", title: "Track" }], key: "Artist-Track" } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_tap", payload: { seeds: [], key: "Artist-Track" } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_tap", payload: { seeds: [{ artist: "", title: "Track" }], key: "Artist-Track" } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_tap", payload: { seeds: [{ artist: "Artist", title: "Track" }, { artist: "B", title: "C" }], key: "Artist-Track" } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_tap", payload: { seeds: [{ artist: "Artist", title: "Track" }], key: "" } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_next" } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_next", payload: {} } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_previous" } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_cancel" } })).toBe(true);
+  });
+
+  it("validates preview snapshots and preview_snapshot event envelopes", () => {
+    const snapshot = { generation: 4, active: true, current: "Artist-Track", window: ["Artist-Track"], prepared: ["Artist-Track"], unavailable: [], cancelled: false };
+    expect(isPreviewSnapshot(snapshot)).toBe(true);
+    expect(isPreviewSnapshot({ ...snapshot, active: "yes" })).toBe(false);
+    expect(isPreviewSnapshot({ ...snapshot, current: 3 })).toBe(false);
+    expect(isPreviewSnapshot({ ...snapshot, window: ["", "x"] })).toBe(false);
+    expect(isPreviewSnapshot({ ...snapshot, extra: 1 })).toBe(false);
+    expect(isEventEnvelope(event({ type: "preview_snapshot", payload: { snapshot } }))).toBe(true);
+    expect(isEventEnvelope(event({ type: "preview_snapshot", payload: { snapshot: { ...snapshot, unavailable: "x" } as unknown as typeof snapshot } }))).toBe(false);
+  });
+
   it("uses the required native backend command payload argument shape", () => {
     const envelope = { version: 1, request_id: "request-1", command: { type: "get_library" } };
     expect(backendCommandArgs(envelope)).toEqual({ payload: envelope });
@@ -67,14 +90,36 @@ describe("typed IPC bridge and projection", () => {
     expect(() => callback(event({ type: "job_updated", payload: { job: { id: "j", kind: "single", state: "running", track_id: null, progress: 2, generation: 1 } } }))).toThrow();
   });
 
+  it("sends preview commands and validates session responses", async () => {
+    const calls: unknown[] = [];
+    const snapshot = { generation: 1, active: true, current: null, window: ["Artist-Track"], prepared: [], unavailable: [], cancelled: false };
+    const bridge = createBridge({
+      invoke: async <T>(_name: string, payload: unknown) => { calls.push(payload); return snapshot as T; },
+      listen: async () => () => {},
+    });
+    await bridge.previewTap([{ artist: "Artist", title: "Track" }], "Artist-Track");
+    await bridge.previewNext();
+    await bridge.previewPrevious();
+    await bridge.previewCancel();
+    expect(calls).toHaveLength(4);
+    const tapped = (calls[0] as { command: { type: string; payload: { seeds: unknown[]; key: string } } }).command;
+    expect(tapped.type).toBe("preview_tap");
+    expect(tapped.payload).toEqual({ seeds: [{ artist: "Artist", title: "Track" }], key: "Artist-Track" });
+    expect((calls[1] as { command: { type: string } }).command.type).toBe("preview_next");
+    expect((calls[2] as { command: { type: string } }).command.type).toBe("preview_previous");
+    expect((calls[3] as { command: { type: string } }).command.type).toBe("preview_cancel");
+    await expect(bridge.previewTap([{ artist: "Artist", title: "Track" }], "Artist-Track")).resolves.toMatchObject({ active: true });
+    const rejecting = createBridge({ invoke: async () => null as never, listen: async () => () => {} });
+    await expect(rejecting.previewNext()).rejects.toThrow("invalid preview session response");
+  });
+
   it("sends context playback and explicit queue commands", async () => {
     const calls: unknown[] = [];
     const bridge = createBridge({
       invoke: async <T>(_name: string, payload: unknown) => { calls.push(payload); return null as T; },
       listen: async () => () => {},
     });
-    await bridge.playWithContext("track-b", ["track-a", "track-b"]);
-    await bridge.next();
+    await bridge.playWithContext("track-b", ["track-a", "track-b"]);    await bridge.next();
     await bridge.previous();
     await bridge.playNext(["track-x"]);
     await bridge.addToQueue(["track-y"]);
@@ -150,6 +195,14 @@ describe("typed IPC bridge and projection", () => {
     store.apply({ ...event({ type: "playback_snapshot", payload: { snapshot: { queue: ["a", "b"], current_index: 1, shuffle: false, repeat: "off", position_ms: 12, duration_ms: 90, status: "playing", generation: 3 } } }, 3), event_id: "event-10" });
     store.apply({ ...event({ type: "queue_changed", payload: { queue: ["b", "a", "x"] } }, 3), event_id: "event-11" });
     expect(store.getSnapshot().playback).toMatchObject({ queue: ["b", "a", "x"], current_index: 1, position_ms: 12, duration_ms: 90 });
+  });
+
+  it("projects preview snapshots and tracks their own generation watermark", () => {
+    const store = createBackendProjection();
+    store.apply({ ...event({ type: "preview_snapshot", payload: { snapshot: { generation: 7, active: true, current: "Artist-Track", window: ["Artist-Track"], prepared: ["Artist-Track"], unavailable: [], cancelled: false } } }, 7), event_id: "event-p1" });
+    store.apply({ ...event({ type: "preview_snapshot", payload: { snapshot: { generation: 8, active: false, current: null, window: [], prepared: [], unavailable: ["Artist-Track"], cancelled: true } } }, 8), event_id: "event-p2" });
+    expect(store.getSnapshot().preview).toMatchObject({ generation: 8, active: false, cancelled: true, unavailable: ["Artist-Track"] });
+    expect(store.getSnapshot().generations.preview).toBe(8);
   });
 
   it("rejects snapshots whose payload generation disagrees with the envelope", () => {

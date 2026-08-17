@@ -64,7 +64,7 @@ impl PreviewAssetStore {
     pub fn current_generation(&self) -> u64 { self.generation }
 
     pub fn ready_path(&self, key: &str) -> Result<PathBuf, AssetError> {
-        let path = self.root.join(format!("{}.mp3", safe_key(key)?));
+        let path = self.root.join(format!("{}.aac", safe_key(key)?));
         contained(&self.root, &path).then_some(path).ok_or(AssetError::InvalidPath)
     }
 
@@ -123,7 +123,7 @@ impl PreviewAssetStore {
     }
 }
 
-fn safe_key(key: &str) -> Result<String, AssetError> {
+pub fn safe_key(key: &str) -> Result<String, AssetError> {
     let value: String = key.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     if value.is_empty() || value == "." || value == ".." { Err(AssetError::InvalidPath) } else { Ok(value) }
 }

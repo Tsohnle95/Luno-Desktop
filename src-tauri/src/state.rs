@@ -3,8 +3,9 @@ use crate::contracts::{
         Command, CommandEnvelope, Event, EventEnvelope, RepeatMode as ContractRepeatMode, RootStatus, ShutdownEnvelope, ShutdownState,
     },
     types::{
-        ContractError, ErrorCode, Generation, JobId, LibrarySnapshot, Playlist, SessionId, Track,
-        TrackId, CONTRACT_VERSION, MAX_SAFE_EVENT_ID,
+        ContractError, ErrorCode, Generation, JobId, LibrarySnapshot, Playlist, PreviewSeed,
+        PreviewSnapshot, SessionId, Track, TrackId, CONTRACT_VERSION, MAX_PREVIEW_SEEDS,
+        MAX_SAFE_EVENT_ID,
     },
 };
 use crate::domain::identity::TrackMetadata;
@@ -16,6 +17,9 @@ use crate::download::markers::Markers;
 use crate::download::promotion::{promote_output, CollisionPolicy, PromotionError, Validation};
 use crate::library::favorites::Favorites;
 use crate::library::scanner::{OsFileSystem, ScanOutcome};
+use crate::preview::assets::PreviewAssetStore;
+use crate::preview::session::{PreviewSession, SessionAction};
+use crate::runtime::preview_worker::{prepare_preview, PreviewCompletion};
 #[cfg(target_os = "macos")]
 use crate::playback::{
     backend::{AudioBackend, BackendError},
@@ -877,6 +881,14 @@ pub struct AppState {
     pub migration_status: Arc<Mutex<MigrationStatus>>,
     library: Arc<Mutex<LibrarySnapshot>>,
     discovery: Arc<Mutex<DiscoveryService>>,
+    preview_store: Arc<Mutex<PreviewAssetStore>>,
+    preview_session: Arc<Mutex<Option<PreviewSession>>>,
+    preview_seeds: Arc<Mutex<Vec<PreviewSeed>>>,
+    preview_tasks: Arc<Mutex<Vec<String>>>,
+    preview_completions: Arc<Mutex<Option<std::sync::mpsc::Sender<PreviewCompletion>>>>,
+    preview_cancelled: Arc<AtomicBool>,
+    preview_helper: Arc<Mutex<Option<PathBuf>>>,
+    preview_ffmpeg: Arc<Mutex<Option<PathBuf>>>,
     roots: Arc<Mutex<Vec<PathBuf>>>,
     root_statuses: Arc<Mutex<Vec<RootStatus>>>,
     events: Arc<Mutex<Vec<EventEnvelope>>>,
@@ -927,6 +939,18 @@ struct ScanState {
 
 impl AppState {
     pub fn new(task_limit: usize) -> Self {
+        Self::with_preview_store(
+            PreviewAssetStore::new().unwrap_or_else(|_| {
+                PreviewAssetStore::at(std::env::temp_dir().join("luno_previews"))
+                    .expect("temporary preview store")
+            }),
+            task_limit,
+        )
+    }
+
+    /// Constructor with a caller-owned preview store.  Tests and embedders
+    /// use this to isolate preview assets instead of the HOME default.
+    pub fn with_preview_store(preview_store: PreviewAssetStore, task_limit: usize) -> Self {
         Self {
             tasks: Arc::new(TaskRegistry::new(task_limit)),
             migration_status: Arc::new(Mutex::new(MigrationStatus::NotRun)),
@@ -937,6 +961,14 @@ impl AppState {
                 playlists: Vec::new(),
             })),
             discovery: Arc::new(Mutex::new(DiscoveryService::new(None))),
+            preview_store: Arc::new(Mutex::new(preview_store)),
+            preview_session: Arc::new(Mutex::new(None)),
+            preview_seeds: Arc::new(Mutex::new(Vec::new())),
+            preview_tasks: Arc::new(Mutex::new(Vec::new())),
+            preview_completions: Arc::new(Mutex::new(None)),
+            preview_cancelled: Arc::new(AtomicBool::new(false)),
+            preview_helper: Arc::new(Mutex::new(None)),
+            preview_ffmpeg: Arc::new(Mutex::new(None)),
             roots: Arc::new(Mutex::new(Vec::new())),
             root_statuses: Arc::new(Mutex::new(Vec::new())),
             events: Arc::new(Mutex::new(Vec::new())),
@@ -988,6 +1020,20 @@ impl AppState {
         self.discovery.lock().unwrap().set_api_key(key);
     }
 
+    /// Resolves the binaries the preview worker shells out to.  The helper
+    /// follows the downloader's process contract; ffmpeg is the bundled
+    /// LGPL build or a PATH fallback.
+    pub fn set_preview_toolchain(&self, helper: Option<PathBuf>, ffmpeg: Option<PathBuf>) {
+        *self.preview_helper.lock().unwrap() = helper;
+        *self.preview_ffmpeg.lock().unwrap() = ffmpeg;
+    }
+
+    /// Removes every published preview asset.  The preview directory is
+    /// disposable by design: nothing outside it references these files.
+    pub fn cleanup_previews(&self) {
+        let _ = self.preview_store.lock().unwrap().cleanup_session(None);
+    }
+
     /// Library tracks expressed as discovery recommendations for
     /// local-result filtering (per AC-DISC-02: filter local and duplicate
     /// results before delivery).
@@ -1009,6 +1055,282 @@ impl AppState {
                 })
             })
             .collect()
+    }
+
+    fn preview_ids(seeds: &[PreviewSeed]) -> Result<Vec<TrackId>, ContractError> {
+        seeds
+            .iter()
+            .map(|seed| {
+                let key = crate::preview::assets::safe_key(&format!("{}-{}", seed.artist.trim(), seed.title.trim()))
+                    .map_err(|error| ContractError::invalid(format!("{error:?}")))?;
+                TrackId::new(key)
+            })
+            .collect()
+    }
+
+    /// Begins (or restarts) a preview session around the tapped
+    /// recommendation, captures the physical playback queue, raises the
+    /// prefetch window, and reports the session projection.
+    fn preview_tap(&self, seeds: &[PreviewSeed], key: &str) -> Result<Value, ContractError> {
+        if seeds.is_empty() || seeds.len() > MAX_PREVIEW_SEEDS {
+            return Err(ContractError::invalid("preview seeds must contain between 1 and 50 items"));
+        }
+        let ids = Self::preview_ids(seeds)?;
+        let tapped = TrackId::new(key)?;
+        if !ids.iter().any(|id| id == &tapped) {
+            return Err(ContractError::invalid("tapped preview key is not among the seeds"));
+        }
+        let (queue, index) = {
+            let playback = self.playback.lock().unwrap();
+            let queue = playback.queue().to_vec();
+            if queue.is_empty() {
+                return Err(ContractError {
+                    code: ErrorCode::Unavailable,
+                    message: "a preview session requires an active playback queue".into(),
+                    retryable: false,
+                });
+            }
+            (queue, playback.current_index().unwrap_or(0))
+        };
+        self.cancel_preview_tasks();
+        let generation: u64 = self.next_generation().0;
+        let session = PreviewSession::start(generation, queue, index, ids, &tapped)
+            .ok_or_else(|| ContractError::invalid("preview session could not start"))?;
+        *self.preview_session.lock().unwrap() = Some(session);
+        *self.preview_seeds.lock().unwrap() = seeds.to_vec();
+        self.preview_cancelled.store(false, Ordering::Release);
+        // Publish the session-begin snapshot before any worker can complete,
+        // so the response is the deterministic entry state; preparation and
+        // subsequent transitions arrive as preview_snapshot events.
+        self.publish_preview_snapshot(generation);
+        let value = self.preview_snapshot_value()?;
+        self.spawn_preview_driver(generation);
+        self.ensure_window_prepared(generation);
+        Ok(value)
+    }
+
+    fn preview_step(&self, forward: bool) -> Result<Value, ContractError> {
+        let generation = {
+            let session = self.preview_session.lock().unwrap();
+            let Some(session) = session.as_ref() else {
+                return Err(ContractError {
+                    code: ErrorCode::NotFound,
+                    message: "no active preview session".into(),
+                    retryable: false,
+                });
+            };
+            if !session.is_active() {
+                return Err(ContractError {
+                    code: ErrorCode::NotFound,
+                    message: "no active preview session".into(),
+                    retryable: false,
+                });
+            }
+            session.generation()
+        };
+        let action = {
+            let mut session = self.preview_session.lock().unwrap();
+            let session = session.as_mut().expect("guarded above");
+            if forward { session.next() } else { session.previous() }
+        };
+        match action {
+            SessionAction::Play(_) | SessionAction::Wait(_) => {
+                self.ensure_current_prepared(generation);
+                self.publish_preview_snapshot(generation);
+                self.preview_snapshot_value()
+            }
+            SessionAction::LeaveToNext { .. } | SessionAction::ReturnToSeed { .. } | SessionAction::Ended => {
+                self.cancel_preview_tasks();
+                self.publish_preview_snapshot(generation);
+                self.preview_snapshot_value()
+            }
+        }
+    }
+
+    fn preview_cancel(&self) -> Result<Value, ContractError> {
+        let generation = {
+            let mut session = self.preview_session.lock().unwrap();
+            let Some(session) = session.as_mut() else {
+                return Err(ContractError {
+                    code: ErrorCode::NotFound,
+                    message: "no active preview session".into(),
+                    retryable: false,
+                });
+            };
+            session.invalidate(self.next_generation().0);
+            session.generation()
+        };
+        self.preview_cancelled.store(true, Ordering::Release);
+        self.cancel_preview_tasks();
+        self.publish_preview_snapshot(generation);
+        self.preview_snapshot_value()
+    }
+
+    /// The session driver applies worker completions while the session is
+    /// still current and publishes a snapshot after every transition.
+    fn spawn_preview_driver(&self, generation: u64) {
+        let (tx, rx) = std::sync::mpsc::channel::<PreviewCompletion>();
+        *self.preview_completions.lock().unwrap() = Some(tx);
+        let state = self.clone();
+        let session = self.preview_session.clone();
+        let key = format!("preview-driver-{generation}");
+        self.preview_tasks.lock().unwrap().push(key.clone());
+        let spec = self.generation(key, Generation(generation));
+        let _ = self.submit(spec, move |task_token| {
+            while !state.is_closing() && !task_token.is_cancelled() {
+                let current = session.lock().unwrap().as_ref().is_some_and(|s| s.is_active() && s.generation() == generation);
+                if !current { break; }
+                match rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(PreviewCompletion::Prepared { key, path }) => {
+                        let action = session.lock().unwrap().as_mut().map(|s| s.prepared_asset(generation, TrackId(key.clone()), path)).unwrap_or(SessionAction::Ended);
+                        state.publish_preview_snapshot(generation);
+                        state.handle_session_action(action, generation);
+                    }
+                    Ok(PreviewCompletion::Failed { key }) => {
+                        let id = TrackId::new(key.clone()).unwrap_or_else(|_| TrackId(key.clone()));
+                        let action = session.lock().unwrap().as_mut().map(|s| s.failed_asset(generation, &id)).unwrap_or(SessionAction::Ended);
+                        state.publish_preview_snapshot(generation);
+                        state.handle_session_action(action, generation);
+                    }
+                    Err(_) => {}
+                }
+            }
+        });
+    }
+
+    fn handle_session_action(&self, action: SessionAction, generation: u64) {
+        match action {
+            SessionAction::Play(key) => {
+                // Audio routing into the native player lands with the
+                // player-integration unit (9W-4); the snapshot already
+                // carries the current selection and prepared set.
+                let _ = (key, generation);
+            }
+            SessionAction::Wait(key) => {
+                self.ensure_prepared(generation, &key);
+            }
+            SessionAction::LeaveToNext { .. } | SessionAction::ReturnToSeed { .. } | SessionAction::Ended => {
+                self.cancel_preview_tasks();
+            }
+        }
+    }
+
+    fn ensure_window_prepared(&self, generation: u64) {
+        let keys = {
+            let session = self.preview_session.lock().unwrap();
+            session.as_ref().map(|s| s.window().to_vec()).unwrap_or_default()
+        };
+        for key in keys {
+            let prepared = self.preview_session.lock().unwrap().as_ref().is_some_and(|s| s.is_prepared(&key));
+            if !prepared { self.ensure_prepared(generation, &key); }
+        }
+    }
+
+    fn ensure_current_prepared(&self, generation: u64) {
+        let current = { self.preview_session.lock().unwrap().as_ref().and_then(|s| s.current().cloned()) };
+        if let Some(key) = current {
+            let prepared = self.preview_session.lock().unwrap().as_ref().is_some_and(|s| s.is_prepared(&key));
+            if !prepared { self.ensure_prepared(generation, &key); }
+        }
+    }
+
+    fn ensure_prepared(&self, generation: u64, key: &TrackId) {
+        let query = {
+            let seeds = self.preview_seeds.lock().unwrap();
+            let seed = seeds.iter().find(|seed| {
+                crate::preview::assets::safe_key(&format!("{}-{}", seed.artist.trim(), seed.title.trim()))
+                    .map(|candidate| candidate == key.0)
+                    .unwrap_or(false)
+            });
+            seed.map(|seed| format!("{} {}", seed.artist.trim(), seed.title.trim()))
+        };
+        let Some(query) = query else { return };
+        let task_key = format!("preview-{generation}-{}", key.0);
+        {
+            let mut raised = self.preview_tasks.lock().unwrap();
+            if raised.iter().any(|task| task == &task_key) { return; }
+            raised.push(task_key.clone());
+        }
+        let state = self.clone();
+        let store = self.preview_store.clone();
+        // The store and session generations are independent counters; the
+        // store's own download() gates publishes against its generation, so
+        // tasks capture the store generation at raise time.
+        let store_generation = self.preview_store.lock().unwrap().current_generation();
+        let helper = self.preview_helper.lock().unwrap().clone();
+        let ffmpeg = self.preview_ffmpeg.lock().unwrap().clone();
+        let key_for_task = key.clone();
+        let generation_capture = generation;
+        let sender = self.preview_completions.lock().unwrap().clone();
+        let spec = self.generation(task_key.clone(), Generation(generation));
+        let _ = self.submit(spec, move |task_token| {
+            let completion = prepare_one(&store, store_generation, &key_for_task, &query, &helper, &ffmpeg, &task_token);
+            if let Some(sender) = sender {
+                let current = state
+                    .tasks
+                    .is_current(&TaskSpec::new(&task_key, Generation(generation_capture), None));
+                if current { let _ = sender.send(completion); }
+            }
+        });
+    }
+}
+
+fn prepare_one(
+    store: &Arc<Mutex<PreviewAssetStore>>,
+    store_generation: u64,
+    key: &TrackId,
+    query: &str,
+    helper: &Option<PathBuf>,
+    ffmpeg: &Option<PathBuf>,
+    task_token: &crate::runtime::task_registry::CancellationToken,
+) -> PreviewCompletion {
+    let failed = || PreviewCompletion::Failed { key: key.0.clone() };
+    let (Some(helper), Some(ffmpeg)) = (helper, ffmpeg) else { return failed(); };
+    let store = store.lock().unwrap();
+    match prepare_preview(&store, &key.0, store_generation, query, helper, ffmpeg, task_token) {
+        Ok(path) => PreviewCompletion::Prepared { key: key.0.clone(), path },
+        Err(_) => failed(),
+    }
+}
+
+impl AppState {
+    fn cancel_preview_tasks(&self) {
+        let keys: Vec<String> = self.preview_tasks.lock().unwrap().drain(..).collect();
+        for key in keys { self.tasks.cancel_key(&key); }
+        // Bump the store generation so in-flight publishes cannot land
+        // after a handoff or a fresh session.
+        self.preview_store.lock().unwrap().begin_generation();
+    }
+
+    fn preview_snapshot(&self) -> Option<PreviewSnapshot> {
+        let session = self.preview_session.lock().unwrap();
+        session.as_ref().map(|session| PreviewSnapshot {
+            generation: session.generation(),
+            active: session.is_active(),
+            current: session.current().map(|id| id.0.clone()),
+            window: session.window().iter().map(|id| id.0.clone()).collect(),
+            prepared: session.prepared_keys().into_iter().map(|id| id.0).collect(),
+            unavailable: session.unavailable().iter().map(|id| id.0.clone()).collect(),
+            cancelled: self.preview_cancelled.load(Ordering::Acquire),
+        })
+    }
+
+    fn publish_preview_snapshot(&self, generation: u64) {
+        if let Some(snapshot) = self.preview_snapshot() {
+            self.publish(self.event(Generation(generation), Event::PreviewSnapshot { snapshot }));
+        }
+    }
+
+    fn preview_snapshot_value(&self) -> Result<Value, ContractError> {
+        self.preview_snapshot()
+            .map(|snapshot| serde_json::to_value(snapshot).map_err(|error| ContractError::invalid(error.to_string())))
+            .unwrap_or_else(|| {
+                Err(ContractError {
+                    code: ErrorCode::NotFound,
+                    message: "no active preview session".into(),
+                    retryable: false,
+                })
+            })
     }
     pub fn root_statuses(&self) -> Vec<RootStatus> {
         self.root_statuses.lock().unwrap().clone()
@@ -1666,6 +1988,10 @@ impl AppState {
                     }),
                 }
             }
+            Command::PreviewTap { key, seeds } => self.preview_tap(&seeds, &key),
+            Command::PreviewNext => self.preview_step(true),
+            Command::PreviewPrevious => self.preview_step(false),
+            Command::PreviewCancel => self.preview_cancel(),
             Command::ValidateDirectUrl { url, destination } => {
                 crate::download::workflows::validate_http_url(&url)
                     .map_err(|_| ContractError::invalid("URL must use http or https"))?;

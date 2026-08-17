@@ -3,6 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub const CONTRACT_VERSION: u16 = 1;
 pub const MAX_SAFE_EVENT_ID: u64 = 9_007_199_254_740_991;
 pub const MAX_DISCOVER_LIMIT: usize = 20;
+pub const MAX_PREVIEW_SEEDS: usize = 50;
 
 pub fn default_discover_limit() -> usize {
     5
@@ -211,6 +212,33 @@ pub enum PlaybackStatus {
     Playing,
     Paused,
     Failed,
+}
+
+/// One recommendation offered to a preview session.  The session key is the
+/// normalized `artist-title` safe key, mirrored by the frontend `previewKey`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewSeed {
+    #[serde(deserialize_with = "non_empty_string")]
+    pub artist: String,
+    #[serde(deserialize_with = "non_empty_string")]
+    pub title: String,
+}
+
+/// Projection of the active preview session, published on every transition.
+/// Artwork and metadata live with the discover results; only keys are signed
+/// into the snapshot so the frontend can map rows to states.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewSnapshot {
+    #[serde(deserialize_with = "safe_u64")]
+    pub generation: u64,
+    pub active: bool,
+    pub current: Option<String>,
+    pub window: Vec<String>,
+    pub prepared: Vec<String>,
+    pub unavailable: Vec<String>,
+    pub cancelled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -19,6 +19,7 @@ pub mod migration {
 }
 pub mod runtime {
     pub mod gate5_smoke;
+    pub mod preview_worker;
     pub mod shutdown;
     pub mod task_registry;
 }
@@ -84,3 +85,4 @@ mod gate3_tests;
 mod gate4_tests;
 #[cfg(test)]
 mod gate5_tests;
+

@@ -1,28 +1,30 @@
 import { isDeliveryErrorEventId } from "../shared/contracts";
-import type { EventEnvelope, LibrarySnapshot, PlaybackSnapshot, DownloadJob, ContractError, ShutdownEnvelope, TrackId, VideoState, Track } from "../shared/contracts";
+import type { EventEnvelope, LibrarySnapshot, PlaybackSnapshot, DownloadJob, ContractError, ShutdownEnvelope, TrackId, VideoState, Track, PreviewSnapshot } from "../shared/contracts";
 import type { Bridge } from "../app/bridge";
 
 export interface BackendProjection {
   library: LibrarySnapshot | null;
   playback: PlaybackSnapshot | null;
+  preview: PreviewSnapshot | null;
   video: VideoState | null;
   jobs: Record<string, DownloadJob>;
   errors: ContractError[];
   recentHistory: TrackId[];
   shutdown: ShutdownEnvelope | null;
-  generations: { library: number; playback: number; video: number; jobs: number; errors: number };
-  lastEventIds: Partial<Record<"library" | "playback" | "video" | "jobs" | "errors" | "control", string>>;
+  generations: { library: number; playback: number; preview: number; video: number; jobs: number; errors: number };
+  lastEventIds: Partial<Record<"library" | "playback" | "preview" | "video" | "jobs" | "errors" | "control", string>>;
 }
 
 export const initialBackendProjection = (): BackendProjection => ({
-  library: null, playback: null, video: null, jobs: {}, errors: [], recentHistory: [], shutdown: null,
-  generations: { library: -1, playback: -1, video: -1, jobs: -1, errors: -1 }, lastEventIds: {},
+  library: null, playback: null, preview: null, video: null, jobs: {}, errors: [], recentHistory: [], shutdown: null,
+  generations: { library: -1, playback: -1, preview: -1, video: -1, jobs: -1, errors: -1 }, lastEventIds: {},
 });
 
 type Domain = keyof BackendProjection["generations"];
 function domainOf(type: EventEnvelope["event"]["type"]): Domain | "control" {
   if (type === "library_snapshot" || type === "library_root_status") return "library";
   if (type === "playback_snapshot" || type === "track_started" || type === "queue_changed") return "playback";
+  if (type === "preview_snapshot") return "preview";
   if (type === "video_state") return "video";
   if (type === "job_updated") return "jobs";
   if (type === "error") return "errors";
@@ -37,6 +39,7 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
   const domain = domainOf(envelope.event.type);
   const payloadGeneration = domain === "library" && envelope.event.type === "library_snapshot" ? envelope.event.payload.snapshot.generation
     : domain === "playback" && envelope.event.type === "playback_snapshot" ? envelope.event.payload.snapshot.generation
+    : domain === "preview" && envelope.event.type === "preview_snapshot" ? envelope.event.payload.snapshot.generation
     : domain === "video" && envelope.event.type === "video_state" ? envelope.event.payload.state.generation
     : domain === "jobs" && envelope.event.type === "job_updated" ? envelope.event.payload.job.generation
     : null;
@@ -52,6 +55,7 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
     case "library_snapshot": return { ...next, library: event.payload.snapshot };
     case "library_root_status": return next;
     case "playback_snapshot": return { ...next, playback: event.payload.snapshot };
+    case "preview_snapshot": return { ...next, preview: event.payload.snapshot };
     case "video_state": return { ...next, video: event.payload.state };
     case "track_started": {
       const playback = next.playback;
