@@ -199,11 +199,16 @@ fn startup_migration(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 fn resolve_bundle_helper(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let candidates = [
-        app.path().resource_dir().ok()?.join("bin").join("luno-download-helper"),
-        std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from)?.join("resources").join("bin").join("luno-download-helper"),
-    ];
-    candidates.into_iter().find(|path| path.is_file())
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = app.path().resource_dir().ok() {
+        candidates.push(dir.join("bin").join("luno-download-helper"));
+    }
+    if let Some(dir) = std::env::var_os("CARGO_MANIFEST_DIR") {
+        candidates.push(PathBuf::from(dir).join("resources").join("bin").join("luno-download-helper"));
+    }
+    let resolved = candidates.iter().find(|path| path.is_file()).cloned();
+    eprintln!("bundle helper candidates: {candidates:?} -> {resolved:?}");
+    resolved
 }
 
 fn dirs_fallback_home() -> Result<PathBuf, String> {
