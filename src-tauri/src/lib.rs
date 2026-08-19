@@ -37,6 +37,7 @@ pub mod download {
 }
 pub mod state;
 pub mod library {
+    pub mod artwork;
     pub mod favorites;
     pub mod duplicates;
     pub mod index;

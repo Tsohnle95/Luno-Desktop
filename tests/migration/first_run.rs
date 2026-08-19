@@ -1,7 +1,20 @@
 use luno_desktop_lib::migration::first_run::*;
+use luno_desktop_lib::migration::legacy_readers::retry_entries_budget;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Serializes the process-global entry budget so parallel tests cannot
+/// override each other's `LUNO_MIGRATION_ENTRY_BUDGET` while a bounded
+/// inspection is running (see `tests/migration/legacy_readers.rs`).
+fn with_budget(budget: usize, f: impl FnOnce()) {
+    static BUDGET_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = BUDGET_LOCK.lock().unwrap();
+    std::env::set_var("LUNO_MIGRATION_ENTRY_BUDGET", budget.to_string());
+    f();
+    std::env::remove_var("LUNO_MIGRATION_ENTRY_BUDGET");
+}
 
 fn tempdir() -> PathBuf {
     let path = std::env::temp_dir().join(format!("luno-first-run-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
@@ -286,18 +299,20 @@ fn completed_migration_is_idempotent_and_preserves_target_state() {
 #[cfg(target_os = "macos")]
 #[test]
 fn completed_retry_rejects_oversized_preview_inventory() {
-    let root = tempdir();
-    let p = paths(&root);
-    fs::create_dir_all(&p.target_root).unwrap();
-    fs::create_dir_all(&p.preview_dir).unwrap();
-    fs::write(p.version_record(), r#"{"migration":"desktop-first-run","version":1,"completed":true}"#).unwrap();
-    for index in 0..=luno_desktop_lib::migration::legacy_readers::MAX_RETRY_ENTRIES {
-        fs::write(p.preview_dir.join(format!("preview-{index}")), b"x").unwrap();
-    }
-    let error = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap_err();
-    assert!(matches!(error, MigrationError::Io(message) if message.contains("legacy input inventory failed") && message.contains("retry inspection exceeded")));
-    assert!(p.version_record().is_file());
-    fs::remove_dir_all(root).unwrap();
+    with_budget(256, || {
+        let root = tempdir();
+        let p = paths(&root);
+        fs::create_dir_all(&p.target_root).unwrap();
+        fs::create_dir_all(&p.preview_dir).unwrap();
+        fs::write(p.version_record(), r#"{"migration":"desktop-first-run","version":1,"completed":true}"#).unwrap();
+        for index in 0..=retry_entries_budget() {
+            fs::write(p.preview_dir.join(format!("preview-{index}")), b"x").unwrap();
+        }
+        let error = migrate(&p, &MigrationOptions::default(), &mut TestKeychain).unwrap_err();
+        assert!(matches!(error, MigrationError::Io(message) if message.contains("legacy input inventory failed") && message.contains("retry inspection exceeded")));
+        assert!(p.version_record().is_file());
+        fs::remove_dir_all(root).unwrap();
+    });
 }
 
 #[cfg(target_os = "macos")]

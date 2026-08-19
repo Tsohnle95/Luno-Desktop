@@ -100,6 +100,19 @@ fn migration_status(state: tauri::State<'_, AppState>) -> Result<MigrationStatus
         .map_err(|_| "migration status unavailable".into())
 }
 
+#[tauri::command]
+async fn track_artwork(
+    state: tauri::State<'_, AppState>,
+    track_id: String,
+) -> Result<Option<String>, String> {
+    // Extraction reads audio files (ID3/symphonia probe); keep it off the
+    // main thread so scrolling rows requesting artwork never jank the UI.
+    let app = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || app.track_artwork(&track_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[cfg(target_os = "macos")]
 fn migration_failed(app: &tauri::AppHandle, reason: String) -> Result<(), String> {
     *app.state::<AppState>()
@@ -223,9 +236,9 @@ fn dirs_fallback_home() -> Result<PathBuf, String> {
 fn main() {
     let builder = tauri::Builder::default().manage(AppState::new(32));
     #[cfg(debug_assertions)]
-    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, gate5_smoke]);
+    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, gate5_smoke]);
     #[cfg(not(debug_assertions))]
-    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status]);
+    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork]);
     builder
         .setup(|app| {
             let handle = app.handle().clone();

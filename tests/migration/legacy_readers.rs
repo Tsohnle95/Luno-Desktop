@@ -1,11 +1,24 @@
 use luno_desktop_lib::migration::legacy_readers::*;
 use std::fs;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn tempdir() -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("luno-legacy-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
     fs::create_dir(&path).unwrap();
     path
+}
+
+/// Serializes the process-global entry budget so parallel tests cannot
+/// override each other's `LUNO_MIGRATION_ENTRY_BUDGET` while a bounded
+/// inspection is running. Override-testing uses a tiny budget so the
+/// oversized fixtures stay cheap.
+fn with_budget(budget: usize, f: impl FnOnce()) {
+    static BUDGET_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = BUDGET_LOCK.lock().unwrap();
+    std::env::set_var("LUNO_MIGRATION_ENTRY_BUDGET", budget.to_string());
+    f();
+    std::env::remove_var("LUNO_MIGRATION_ENTRY_BUDGET");
 }
 
 #[test]
@@ -80,66 +93,75 @@ fn retry_inventory_reports_unknown_files_without_recursing_home() {
 
 #[test]
 fn retry_inventory_budget_is_reserved_for_preview_and_music_roots() {
-    let root = tempdir();
-    let music = root.join("music");
-    let preview = root.join(".luno_previews");
-    fs::create_dir_all(&music).unwrap();
-    fs::create_dir_all(&preview).unwrap();
-    for index in 0..(MAX_RETRY_ENTRIES / 4) {
-        fs::write(music.join(format!("track-{index}")), b"x").unwrap();
-        fs::write(preview.join(format!("preview-{index}")), b"x").unwrap();
-    }
-    let files = inventory_retry_files(&root, Some(&music), &preview, &root.join("target")).unwrap();
-    assert!(files.iter().any(|path| path.starts_with(&music)));
-    assert!(files.iter().any(|path| path.starts_with(&preview)));
-    fs::remove_dir_all(root).unwrap();
+    with_budget(256, || {
+        let root = tempdir();
+        let music = root.join("music");
+        let preview = root.join(".luno_previews");
+        fs::create_dir_all(&music).unwrap();
+        fs::create_dir_all(&preview).unwrap();
+        let budget = retry_entries_budget();
+        for index in 0..(budget / 4) {
+            fs::write(music.join(format!("track-{index}")), b"x").unwrap();
+            fs::write(preview.join(format!("preview-{index}")), b"x").unwrap();
+        }
+        let files = inventory_retry_files(&root, Some(&music), &preview, &root.join("target")).unwrap();
+        assert!(files.iter().any(|path| path.starts_with(&music)));
+        assert!(files.iter().any(|path| path.starts_with(&preview)));
+        fs::remove_dir_all(root).unwrap();
+    });
 }
 
 #[test]
 fn retry_inventory_rejects_oversized_preview_without_unbounded_listing() {
-    let root = tempdir();
-    let preview = root.join(".luno_previews");
-    fs::create_dir_all(&preview).unwrap();
-    for index in 0..=(MAX_RETRY_ENTRIES / 2) {
-        fs::write(preview.join(format!("preview-{index}")), b"x").unwrap();
-    }
-    let error = inventory_retry_files(&root, None, &preview, &root.join("target")).unwrap_err();
-    assert!(error.contains("retry inspection exceeded"));
-    fs::remove_dir_all(root).unwrap();
+    with_budget(256, || {
+        let root = tempdir();
+        let preview = root.join(".luno_previews");
+        fs::create_dir_all(&preview).unwrap();
+        for index in 0..=(retry_entries_budget() / 2) {
+            fs::write(preview.join(format!("preview-{index}")), b"x").unwrap();
+        }
+        let error = inventory_retry_files(&root, None, &preview, &root.join("target")).unwrap_err();
+        assert!(error.contains("retry inspection exceeded"));
+        fs::remove_dir_all(root).unwrap();
+    });
 }
 
 #[test]
 fn legacy_detection_rejects_oversized_preview_without_unbounded_listing() {
-    let root = tempdir();
-    let preview = root.join(".luno_previews");
-    fs::create_dir_all(&preview).unwrap();
-    for index in 0..=MAX_RETRY_ENTRIES {
-        fs::write(preview.join(format!("preview-{index}")), b"x").unwrap();
-    }
-    assert!(has_legacy_data(&root, Some(&preview)).unwrap());
-    let state = read_legacy(&root, Some(&preview));
-    assert_eq!(state.preview_files, Vec::<std::path::PathBuf>::new());
-    assert!(state.warnings.iter().any(|warning| warning.message.contains("preview inventory exceeded")));
-    fs::remove_dir_all(root).unwrap();
+    with_budget(256, || {
+        let root = tempdir();
+        let preview = root.join(".luno_previews");
+        fs::create_dir_all(&preview).unwrap();
+        for index in 0..=retry_entries_budget() {
+            fs::write(preview.join(format!("preview-{index}")), b"x").unwrap();
+        }
+        assert!(has_legacy_data(&root, Some(&preview)).unwrap());
+        let state = read_legacy(&root, Some(&preview));
+        assert_eq!(state.preview_files, Vec::<std::path::PathBuf>::new());
+        assert!(state.warnings.iter().any(|warning| warning.message.contains("preview inventory exceeded")));
+        fs::remove_dir_all(root).unwrap();
+    });
 }
 
 #[test]
 fn nested_marker_inventory_is_bounded_sorted_and_reports_overflow() {
-    let root = tempdir();
-    let music = root.join("music");
-    fs::create_dir(&music).unwrap();
-    fs::write(root.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, music.display())).unwrap();
-    for index in 0..(MAX_RETRY_ENTRIES / 2 + 1) {
-        let directory = music.join(format!("playlist-{index:04}"));
-        fs::create_dir(&directory).unwrap();
-        fs::write(directory.join(if index == MAX_RETRY_ENTRIES / 2 { ".downloaded.txt" } else { ".downloaded_vids" }), if index == MAX_RETRY_ENTRIES / 2 { "old title VID1\n" } else { "VID2\n" }).unwrap();
-    }
-    assert!(marker_files(&root).unwrap_err().contains("legacy marker inspection exceeded"));
-    assert!(has_legacy_data(&root, None).unwrap());
-    let state = read_legacy(&root, None);
-    assert!(state.downloaded_ids.contains("VID1"));
-    assert!(state.warnings.iter().any(|warning| warning.message.contains("legacy marker inspection exceeded")));
-    fs::remove_dir_all(root).unwrap();
+    with_budget(256, || {
+        let root = tempdir();
+        let music = root.join("music");
+        fs::create_dir(&music).unwrap();
+        fs::write(root.join(".luno_config.json"), format!(r#"{{"music_root":"{}"}}"#, music.display())).unwrap();
+        for index in 0..(retry_entries_budget() / 2 + 1) {
+            let directory = music.join(format!("playlist-{index:04}"));
+            fs::create_dir(&directory).unwrap();
+            fs::write(directory.join(if index == retry_entries_budget() / 2 { ".downloaded.txt" } else { ".downloaded_vids" }), if index == retry_entries_budget() / 2 { "old title VID1\n" } else { "VID2\n" }).unwrap();
+        }
+        assert!(marker_files(&root).unwrap_err().contains("legacy marker inspection exceeded"));
+        assert!(has_legacy_data(&root, None).unwrap());
+        let state = read_legacy(&root, None);
+        assert!(state.downloaded_ids.contains("VID1"));
+        assert!(state.warnings.iter().any(|warning| warning.message.contains("legacy marker inspection exceeded")));
+        fs::remove_dir_all(root).unwrap();
+    });
 }
 
 #[cfg(unix)]

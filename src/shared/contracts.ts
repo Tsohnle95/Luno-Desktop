@@ -53,7 +53,7 @@ export type Command =
   | { type: "transfer_export" }
   | { type: "transfer_apply"; payload: { manifest: string; destination: string; approvals: Record<string, string> } }
   | { type: "record_recent"; payload: { track_id: TrackId } } | { type: "get_recent" } | { type: "clear_recent" }
-  | { type: "pause" } | { type: "seek"; payload: { position_ms: number } }
+  | { type: "pause" } | { type: "seek"; payload: { position_ms: number } } | { type: "set_volume"; payload: { volume: number } }
   | { type: "video_source"; payload: { track_id: TrackId } } | { type: "video_stage"; payload: { track_id: TrackId } }
   | { type: "video_play" } | { type: "video_pause" } | { type: "video_seek"; payload: { position_ms: number } }
   | { type: "video_resize"; payload: { width: number; height: number } } | { type: "video_fullscreen"; payload: { fullscreen: boolean } }
@@ -153,6 +153,7 @@ function isCommand(v: unknown): v is Command {
    if (v.type === "set_repeat") return exact(v, ["type", "payload"]) && object(v.payload) && ["off", "one", "all"].includes(String(v.payload.repeat)) && Object.keys(v.payload).length === 1;
    if (["video_play", "video_pause"].includes(v.type)) return Object.keys(v).length === 1;
    if (["seek", "video_seek"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.position_ms === "number" && Number.isSafeInteger(v.payload.position_ms) && v.payload.position_ms >= 0 && Object.keys(v.payload).length === 1;
+   if (v.type === "set_volume") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.volume === "number" && Number.isFinite(v.payload.volume) && v.payload.volume >= 0 && v.payload.volume <= 1 && Object.keys(v.payload).length === 1;
    if (["video_source", "video_stage"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && Object.keys(v.payload).length === 1;
     if (v.type === "video_resize") return exact(v, ["type", "payload"]) && object(v.payload) && safeInteger(v.payload.width) && v.payload.width > 0 && safeInteger(v.payload.height) && v.payload.height > 0 && Object.keys(v.payload).length === 2;
    if (v.type === "video_fullscreen") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.fullscreen === "boolean" && Object.keys(v.payload).length === 1;

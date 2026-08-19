@@ -14,6 +14,6 @@ export function Artwork({ src, alt = "", size = 44, className, fallback }: Artwo
   const showImage = Boolean(src) && src !== failedSrc;
   const style = { width: size, height: size, flex: `0 0 ${typeof size === "number" ? `${size}px` : size}` };
   return <span className={`luno-artwork${className ? ` ${className}` : ""}`} style={style} aria-hidden={alt ? undefined : true}>
-    {showImage ? <img src={src!} alt={alt} onError={() => setFailedSrc(src!)} /> : (fallback ?? <span className="luno-artwork-fallback" aria-label={alt || "Artwork unavailable"}>♫</span>)}
+    {showImage ? <img src={src!} alt={alt} decoding="async" loading="lazy" onError={() => setFailedSrc(src!)} /> : (fallback ?? <span className="luno-artwork-fallback" aria-label={alt || "Artwork unavailable"}>♫</span>)}
   </span>;
 }

@@ -5,8 +5,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-pub const MAX_RETRY_ENTRIES: usize = 4096;
 pub const MAX_RETRY_DEPTH: usize = 32;
+
+/// Default bound for all bounded entry inspections. 4,096 was too small for a
+/// real library: a 4,000-song tree with folder art routinely exceeds that many
+/// directory entries, which turned a legitimate first-run migration into a hard
+/// startup failure. The bound is still a deliberate safety stop against
+/// pathological trees, just one that accommodates real libraries.
+pub const DEFAULT_RETRY_ENTRIES: usize = 1_048_576;
+
+/// Entry budget for bounded inspections. Tests override it with
+/// `LUNO_MIGRATION_ENTRY_BUDGET` to trip the bound cheaply; callers read it at
+/// use time, so a single-process override applies to every inspection.
+pub fn retry_entries_budget() -> usize {
+    std::env::var("LUNO_MIGRATION_ENTRY_BUDGET")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|count| *count > 0)
+        .unwrap_or(DEFAULT_RETRY_ENTRIES)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Warning { pub path: PathBuf, pub message: String }
@@ -116,8 +133,8 @@ pub fn read_preview_inventory(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     let mut inspected = 0;
     for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        if inspected >= MAX_RETRY_ENTRIES {
-            return Err(format!("preview inventory exceeded {} entries", MAX_RETRY_ENTRIES));
+        if inspected >= retry_entries_budget() {
+            return Err(format!("preview inventory exceeded {} entries", retry_entries_budget()));
         }
         inspected += 1;
         let entry = entry.map_err(|e| e.to_string())?;
@@ -155,8 +172,8 @@ pub fn inventory_retry_files(legacy_root: &Path, music_root: Option<&Path>, prev
     let mut files = BTreeSet::new();
     // Reserve half the inspection budget for each explicit discovery surface so
     // a large HOME envelope cannot starve the configured music root (or vice versa).
-    let discovery_budget = MAX_RETRY_ENTRIES / 2;
-    let music_budget = MAX_RETRY_ENTRIES - discovery_budget;
+    let discovery_budget = retry_entries_budget() / 2;
+    let music_budget = retry_entries_budget() - discovery_budget;
     let excluded: [&Path; 2] = [preview_dir.as_path(), target_root.as_path()];
     let mut envelope_budget = discovery_budget / 2;
     let mut preview_budget = discovery_budget - envelope_budget;
@@ -178,7 +195,7 @@ fn inventory_preview(root: &Path, files: &mut BTreeSet<PathBuf>, budget: &mut us
     if !safe_directory(root) { return Ok(()); }
     let mut discovered = Vec::new();
     for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
-        if *budget == 0 { return Err(format!("retry inspection exceeded {} entries", MAX_RETRY_ENTRIES)); }
+        if *budget == 0 { return Err(format!("retry inspection exceeded {} entries", retry_entries_budget())); }
         *budget -= 1;
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
@@ -194,7 +211,7 @@ fn inventory_preview(root: &Path, files: &mut BTreeSet<PathBuf>, budget: &mut us
 fn inventory_direct(root: &Path, excluded: &[&Path], files: &mut BTreeSet<PathBuf>, budget: &mut usize) -> Result<(), String> {
     if !safe_directory(root) { return Ok(()); }
     for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
-        if *budget == 0 { return Err(format!("retry inspection exceeded {} entries", MAX_RETRY_ENTRIES)); }
+        if *budget == 0 { return Err(format!("retry inspection exceeded {} entries", retry_entries_budget())); }
         *budget -= 1;
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
@@ -214,7 +231,7 @@ fn find_marker_roots(root: &Path, marker_roots: &mut Vec<PathBuf>, budget: &mut 
         let mut has_marker = false;
         let mut directories = Vec::new();
         for entry in fs::read_dir(&directory).map_err(|e| e.to_string())? {
-            if *budget == 0 { return Err(format!("retry inspection exceeded {} entries", MAX_RETRY_ENTRIES)); }
+            if *budget == 0 { return Err(format!("retry inspection exceeded {} entries", retry_entries_budget())); }
             *budget -= 1;
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
@@ -279,7 +296,7 @@ pub fn marker_files_excluding(root: &Path, excluded_roots: &[&Path]) -> Result<V
         if depth > MAX_RETRY_DEPTH { continue; }
         let mut entries = Vec::new();
         for entry in fs::read_dir(&directory).map_err(|e| e.to_string())? {
-            if inspected >= MAX_RETRY_ENTRIES { return Err(format!("legacy marker inspection exceeded {} entries", MAX_RETRY_ENTRIES)); }
+            if inspected >= retry_entries_budget() { return Err(format!("legacy marker inspection exceeded {} entries", retry_entries_budget())); }
             inspected += 1;
             entries.push(entry.map_err(|e| e.to_string())?);
         }

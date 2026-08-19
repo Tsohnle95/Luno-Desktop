@@ -15,6 +15,7 @@ use crate::discovery::service::{
 use crate::download::coordinator::DownloadCoordinator;
 use crate::download::markers::Markers;
 use crate::download::promotion::{promote_output, CollisionPolicy, PromotionError, Validation};
+use crate::library::artwork::TrackArtwork;
 use crate::library::favorites::Favorites;
 use crate::library::scanner::{OsFileSystem, ScanOutcome};
 use crate::preview::assets::PreviewAssetStore;
@@ -114,6 +115,25 @@ mod tests {
         envelope.command = Command::LoadSettings { home: home.to_string_lossy().into_owned() };
         let error = state.dispatch(envelope.into()).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidRequest);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn load_settings_seeds_persisted_volume_into_engine_state() {
+        let home = unique_home("volseed");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(".luno_config.json"), r#"{"volume":0.35}"#).unwrap();
+        let state = AppState::new(1);
+        let mut envelope = default_envelope();
+        envelope.command = Command::LoadSettings { home: home.to_string_lossy().into_owned() };
+        let value = state.dispatch(envelope.into()).expect("persisted volume should load");
+        assert_eq!(value.get("volume").and_then(serde_json::Value::as_f64), Some(0.35));
+        let stored = *state.volume.lock().unwrap();
+        assert!(
+            (stored - 0.35).abs() < 1e-6,
+            "persisted volume must seed the engine so the first track plays at the saved level, got {stored}"
+        );
         std::fs::remove_dir_all(&home).ok();
     }
 
@@ -925,6 +945,7 @@ pub struct AppState {
     bundle_helper: Arc<Mutex<Option<PathBuf>>>,
     provider_metadata: Arc<Mutex<BTreeMap<PathBuf, TrackMetadata>>>,
     track_paths: Arc<Mutex<BTreeMap<TrackId, PathBuf>>>,
+    artwork: Arc<TrackArtwork>,
     current_track: Arc<Mutex<Option<TrackId>>>,
     playback: Arc<Mutex<QueueState>>,
     clock: Arc<Mutex<Option<PlaybackClock>>>,
@@ -936,6 +957,11 @@ pub struct AppState {
     playback_status: Arc<Mutex<crate::contracts::types::PlaybackStatus>>,
     #[cfg(target_os = "macos")]
     audio: Arc<Mutex<Box<dyn AudioBackend + Send>>>,
+    /// Intended master volume (`0.0..=1.0`). Tracked at the state level so the
+    /// value survives backend state replacement on every track load, seeded
+    /// from persisted settings, and is reapplied whenever a new track starts.
+    #[cfg(target_os = "macos")]
+    volume: Arc<Mutex<f32>>,
 }
 
 type ScanWork = Arc<dyn Fn(&[PathBuf], CancellationToken) -> ScanOutcome + Send + Sync>;
@@ -959,6 +985,17 @@ impl AppState {
     /// Constructor with a caller-owned preview store.  Tests and embedders
     /// use this to isolate preview assets instead of the HOME default.
     pub fn with_preview_store(preview_store: PreviewAssetStore, task_limit: usize) -> Self {
+        let track_paths: Arc<Mutex<BTreeMap<TrackId, PathBuf>>> =
+            Arc::new(Mutex::new(BTreeMap::new()));
+        let artwork_resolver = {
+            let track_paths = track_paths.clone();
+            move |track_id: &str| {
+                track_paths
+                    .lock()
+                    .ok()
+                    .and_then(|paths| paths.get(&TrackId(track_id.to_string())).cloned())
+            }
+        };
         Self {
             tasks: Arc::new(TaskRegistry::new(task_limit)),
             migration_status: Arc::new(Mutex::new(MigrationStatus::NotRun)),
@@ -1009,7 +1046,8 @@ impl AppState {
             download_requests: Arc::new(Mutex::new(BTreeMap::new())),
             bundle_helper: Arc::new(Mutex::new(None)),
             provider_metadata: Arc::new(Mutex::new(BTreeMap::new())),
-            track_paths: Arc::new(Mutex::new(BTreeMap::new())),
+            track_paths: track_paths.clone(),
+            artwork: Arc::new(TrackArtwork::new(artwork_resolver)),
             current_track: Arc::new(Mutex::new(None)),
             playback: Arc::new(Mutex::new(QueueState::new())),
             clock: Arc::new(Mutex::new(None)),
@@ -1024,10 +1062,19 @@ impl AppState {
             playback_status: Arc::new(Mutex::new(crate::contracts::types::PlaybackStatus::Stopped)),
             #[cfg(target_os = "macos")]
             audio: Arc::new(Mutex::new(Box::new(CpalSymphoniaBackend::new()))),
+            #[cfg(target_os = "macos")]
+            volume: Arc::new(Mutex::new(1.0)),
         }
     }
     pub fn library(&self) -> LibrarySnapshot {
         self.library.lock().unwrap().clone()
+    }
+
+    /// Lazily extracted embedded artwork for a library track, as a `data:`
+    /// URL. Returns `Ok(None)` for tracks outside the current snapshot or
+    /// without embedded art; extraction failures are silent by design.
+    pub fn track_artwork(&self, track_id: &str) -> Result<Option<String>, String> {
+        Ok(self.artwork.artwork(track_id))
     }
 
     pub fn set_discovery_key(&self, key: Option<String>) {
@@ -2747,7 +2794,7 @@ impl AppState {
                 }
             }
             #[cfg(not(target_os = "macos"))]
-            Command::Play { .. } | Command::PlayWithContext { .. } | Command::Next | Command::Previous | Command::Pause | Command::Seek { .. } => Err(ContractError {
+            Command::Play { .. } | Command::PlayWithContext { .. } | Command::Next | Command::Previous | Command::Pause | Command::Seek { .. } | Command::SetVolume { .. } => Err(ContractError {
                 code: ErrorCode::Unavailable,
                 message: "audio backend unavailable on this platform".into(),
                 retryable: false,
@@ -2764,6 +2811,8 @@ impl AppState {
             Command::Pause => self.pause_track(),
             #[cfg(target_os = "macos")]
             Command::Seek { position_ms } => self.seek_track(position_ms),
+            #[cfg(target_os = "macos")]
+            Command::SetVolume { volume } => self.set_volume(volume),
             Command::VideoSource { .. }
             | Command::VideoStage { .. }
             | Command::VideoPlay
@@ -2835,6 +2884,18 @@ impl AppState {
             }
         }
         self.set_scan_roots(root.clone().into_iter().collect());
+        // Apply the persisted master volume to engine state so the first track
+        // after startup plays at the saved level before the user touches the
+        // slider. The backend itself is a no-op until a track is loaded; the
+        // stored value is what `start_selected_track` reapplies on load.
+        #[cfg(target_os = "macos")]
+        if let Some(volume) = config.volume {
+            let volume = volume.clamp(0.0, 1.0) as f32;
+            *self.volume.lock().unwrap() = volume;
+            if let Ok(mut backend) = self.audio.lock() {
+                backend.set_volume(volume);
+            }
+        }
         if let Some(paths) = config.favorite_songs {
             let mut favorites = self.favorites.lock().unwrap();
             for path in paths {
@@ -3120,7 +3181,8 @@ fn promotion_error(error: PromotionError) -> ContractError {
             BackendError::UnsupportedFormat(_)
             | BackendError::Io(_)
             | BackendError::Decode(_)
-            | BackendError::Device(_) => ErrorCode::Unavailable,
+            | BackendError::Device(_)
+            | BackendError::Cancelled => ErrorCode::Unavailable,
         };
         ContractError {
             code,
@@ -3237,23 +3299,82 @@ fn promotion_error(error: PromotionError) -> ContractError {
             })?;
         self.purge_discover_deferred();
         self.playback.lock().unwrap().play_with_context(track_id.clone(), context);
-        let mut backend = self.audio.lock().map_err(|_| ContractError {
-            code: ErrorCode::Internal,
-            message: "audio backend lock failed".into(),
-            retryable: false,
+        // Acknowledge the selection immediately. Decoding runs on a runtime
+        // task (`playback-load`) so the UI thread never blocks on audio
+        // loading; a newer selection cancels the previous task by key.
+        let ack = self.playback_snapshot(
+            *self.playback_status.lock().unwrap(),
+            Duration::ZERO,
+            None,
+        );
+        self.publish_playback(ack.clone(), Some(track_id.clone()));
+        let load_state = self.clone();
+        let generation = ack.generation;
+        self.submit(self.generation("playback-load", generation), move |token| {
+            load_state.start_selected_track(track_id, path, token);
+        })
+        .map_err(|_| ContractError {
+            code: ErrorCode::Busy,
+            message: "playback worker is unavailable".into(),
+            retryable: true,
         })?;
-        let info = match backend.load(&path) {
-            Ok(info) => info,
-            Err(error) => {
-                drop(backend);
-                self.recover_from_backend_error(error);
-                return Err(ContractError { code: ErrorCode::Unavailable, message: "audio track could not be loaded".into(), retryable: true });
+        serde_json::to_value(ack).map_err(|e| ContractError {
+            code: ErrorCode::Internal,
+            message: e.to_string(),
+            retryable: false,
+        })
+    }
+
+    /// Decode and start a selected track on the runtime task thread. Decoding
+    /// never holds the audio lock, so pause/seek/next commands stay responsive
+    /// while a large file loads; a superseded request (cancelled token) stops
+    /// decoding at the next packet and never starts playback.
+    #[cfg(target_os = "macos")]
+    fn start_selected_track(
+        &self,
+        track_id: TrackId,
+        path: PathBuf,
+        token: crate::runtime::task_registry::CancellationToken,
+    ) {
+        if token.is_cancelled() || self.is_closing() {
+            return;
+        }
+        // Snapshot the intended volume before locking audio so `set_volume`
+        // (volume-then-audio lock order) can never deadlock against this task.
+        let desired_volume = *self.volume.lock().unwrap();
+        let info = {
+            let mut backend = match self.audio.lock() {
+                Ok(backend) => backend,
+                Err(_) => return,
+            };
+            match backend.load_streaming(&path) {
+                Ok(info) => {
+                    // A fresh load replaces the output state; reapply the
+                    // intended volume so the new track starts at the level the
+                    // user set (covers tracks chosen before any playback).
+                    backend.set_volume(desired_volume);
+                    info
+                }
+                Err(error) => {
+                    drop(backend);
+                    self.recover_from_backend_error(error);
+                    return;
+                }
             }
         };
-        if let Err(error) = backend.play() {
-            drop(backend);
-            self.recover_from_backend_error(error);
-            return Err(ContractError { code: ErrorCode::Unavailable, message: "audio output could not start".into(), retryable: true });
+        if token.is_cancelled() || self.is_closing() {
+            return;
+        }
+        {
+            let mut backend = match self.audio.lock() {
+                Ok(backend) => backend,
+                Err(_) => return,
+            };
+            if let Err(error) = backend.play() {
+                drop(backend);
+                self.recover_from_backend_error(error);
+                return;
+            }
         }
         self.playback.lock().unwrap().record_started(track_id.clone(), false);
         self.discover_track_started(&track_id);
@@ -3278,11 +3399,6 @@ fn promotion_error(error: PromotionError) -> ContractError {
                 if heartbeat_state.heartbeat_tick().is_err() { break; }
             }
         });
-        serde_json::to_value(snapshot).map_err(|e| ContractError {
-            code: ErrorCode::Internal,
-            message: e.to_string(),
-            retryable: false,
-        })
     }
 
     #[cfg(target_os = "macos")]
@@ -3373,6 +3489,19 @@ fn promotion_error(error: PromotionError) -> ContractError {
             message: e.to_string(),
             retryable: false,
         })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_volume(&self, volume: f32) -> Result<Value, ContractError> {
+        let volume = volume.clamp(0.0, 1.0);
+        // Record the intended volume first (guards are dropped before the
+        // audio lock is taken below, keeping a single lock order), then apply
+        // it to the live backend so current playback responds immediately.
+        *self.volume.lock().unwrap() = volume;
+        if let Ok(mut backend) = self.audio.lock() {
+            backend.set_volume(volume);
+        }
+        Ok(Value::Null)
     }
 
     #[cfg(target_os = "macos")]

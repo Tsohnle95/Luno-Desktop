@@ -60,6 +60,8 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── test_contract_fixtures.py  # Shared library-export compatibility fixture tests
 ├── src-tauri/resources/bin/   # Reviewed release binaries (ffmpeg, ffprobe, yt-dlp) plus the luno-download-helper script, staged via release/provision.sh and hash-pinned by release/desktop-binaries.json
 ├── src-tauri/src/gate3_tests.rs # Deterministic playback, queue, clock, recovery, and synthetic-WAV contract tests
+├── src-tauri/src/library/artwork.rs # Lazy embedded-artwork extraction (ID3 APIC, ISO-BMFF covr, FLAC PICTURE) served as data: URLs through a bounded in-memory cache (`ARTWORK_CACHE_BYTES`, 64 MiB)
+├── src/state/track_artwork.ts   # React hook that lazily fetches embedded artwork only for the currently visible rows (module-level cache + in-flight dedupe)
 ├── test_library_transfer.py   # Manifest validation, export, matching, and additive merge tests
 ├── test_media_keys.py        # Deterministic mocked unit tests for media key logic
 ├── test_downloader_sync.py   # Deterministic mocked tests for playlist synchronization
@@ -152,7 +154,49 @@ downloader search/direct URL/CSV/URL-queue validation, safe-root selection and
 production download dispatch, typed settings persistence, transfer export, and transfer preview/apply
 dispatch through the same `AppState` event boundary;
 download job snapshots are projected through the React bridge without exposing
-local paths as track identity. Production downloads run through the bundled
+local paths as track identity. The Tauri target serves album art lazily:
+library rows carry no `artwork_url` (the scan intentionally avoids reading
+metadata for every file); the visible rows call the `track_artwork` command,
+which resolves the track id to its scanned path, extracts the first embedded
+picture through Symphonia, and returns a `data:` URL backed by a 64 MiB-bound
+in-memory cache (`src-tauri/src/library/artwork.rs`). The React Home/Library
+list is a virtualized 56 px-row list whose scroll container is the list body
+itself (header and actions stay fixed), so scrolling windowed rows never
+stalls; the virtualization window is driven by the LIVE DOM scroll position:
+the scroll handler stores `scrollRef.scrollTop` and the rAF callback reads
+that freshest value at frame time (one state update per frame, but never a
+stale event-time capture), with the DOM scroller and state both reset to 0 on
+scope/query/sort changes; playlist/scope navigation (All Music, Unsorted,
+Favorites, user playlists) lives in the sidebar's `Playlists` slot rather than
+inside the track list, so music categories can never crowd out the songs; the
+"Video preview unavailable; artwork fallback is active." runtime
+status is shown only on the Song page, where video preview is relevant.
+The footer mini player is a two-row bar: album art + title/artist on the
+left (click opens the Song page), centered transport controls, favorite +
+volume on the right, and a wide centered scrubber (up to 72% of the app
+width) along the bottom; the debug "IPC contract vN" label is not part of
+the footer. Both sliders are ref-driven and pointer-owned: the range inputs
+carry no controlled `value` (only `defaultValue`), the browser owns the thumb
+during the gesture (the app never calls `setPointerCapture` on a native range
+input — WKWebView keeps that capture indefinitely, gluing the thumb to the
+pointer with no `pointerup`), and the gesture ends on window-level
+`pointerup`/`pointercancel` listeners that are active only while a drag is in
+progress, so a release anywhere still commits. The volume slider tracks the
+thumb live while dragging (frame-coalesced `set_volume` commands, latest
+value wins) and commits once more on release, persisting `settings.volume` —
+the audio level follows the drag instead of jumping at release; the gesture is
+never ended by button-less `pointermove`, because WKWebView can report
+`buttons: 0` mid-drag and that would commit a stale value and swallow the real
+release. After a seek the thumb rests at the
+committed position until the backend `position` is within 200 ms of it on
+either side (so backward seeks do not snap back to the stale pre-seek
+position), falling back to the live position after ~1.5 s; the volume slider
+mirrors the persisted `settings.volume` when idle. The master volume is
+tracked in `AppState` (seeded from the loaded config) and carried across
+`load_streaming` output-state replacement on every track change, so a slider
+setting survives next/previous/auto-advance and a restart instead of snapping
+back to full volume.
+Production downloads run through the bundled
 `luno-download-helper` (resolved via `bundle_helper_path`, resource-dir path
 with a `CARGO_MANIFEST_DIR` fallback for development) with yt-dlp
 `bestaudio/best` extraction converted by the reviewed LGPL FFmpeg into M4A
@@ -168,7 +212,12 @@ full shape of not-yet-created targets such as
 unresolved for explicit leaf checks. Migration input or execution failures
 never abort app setup: they are recorded as a bounded `MigrationStatus::Failed`
 reason and the app opens with empty state; empty isolated HOME surfaces as
-`MigrationStatus::Skipped`.
+`MigrationStatus::Skipped`. Bounded entry inspections (marker files, preview
+inventory, retry inventory) use a default budget of 1,048,576 directory entries
+(`DEFAULT_RETRY_ENTRIES`, overridable via `LUNO_MIGRATION_ENTRY_BUDGET`); the
+former 4,096 bound was too small for ordinary libraries — a 4,000-song tree
+with folder art trips it, turning a legitimate first-run migration into a
+startup failure banner.
 
 ---
 
@@ -188,7 +237,7 @@ reason and the app opens with empty state; empty isolated HOME surfaces as
 3. Live queue/history/favorite path references are updated, then the generation-tagged library scan refreshes search, ordering, and the Unsorted view
 
 ### Playback
-1. User clicks track → the React bridge sends `play_with_context(track_id, context)`; the Rust macOS migration surface resolves the track ID to its scanned local path, replaces `AppState`'s `QueueState`, decodes through Symphonia, and streams normalized 44.1 kHz stereo samples through cpal. Rust non-macOS audio and all Rust video commands remain explicitly unavailable.
+1. User clicks track → the React bridge sends `play_with_context(track_id, context)`; the Rust macOS migration surface resolves the track ID to its scanned local path, replaces `AppState`'s `QueueState`, and returns an acknowledgment snapshot immediately. The backend **streams**: it probes the file for duration, starts a producer thread that decodes incrementally into a ~2-second buffer ahead of the cpal output callback, and publishes the `Playing` snapshot once the output stream starts — audio begins in under a second instead of after a full-file decode (a newer selection cancels the previous `playback-load` task before it starts). **Seeking** uses Symphonia coarse seek (with an early copy of the seek target out of the state mutex to avoid a self-deadlock) and lands in hundreds of milliseconds; playback resumes from the target. **Volume** is a `set_volume` command that scales output samples in `0..=1`. Rust non-macOS audio and all Rust video commands remain explicitly unavailable.
 2. Sets `queue` to `context_list` (or the playlist containing `path`)
 3. Sets `queue_idx` to track's position
 4. The Rust target's `AppState` replaces the authoritative queue context, loads the selected track through `CpalSymphoniaBackend`, starts the cancellation-owned heartbeat, records non-preview history, and publishes snapshots including queue/index/status/position/duration/shuffle/repeat.

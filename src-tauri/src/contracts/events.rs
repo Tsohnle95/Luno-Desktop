@@ -151,6 +151,9 @@ pub enum Command {
         #[serde(deserialize_with = "super::types::safe_u64")]
         position_ms: u64,
     },
+    SetVolume {
+        volume: f32,
+    },
     VideoSource {
         track_id: TrackId,
     },

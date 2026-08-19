@@ -124,6 +124,10 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
       if (!Number.isSafeInteger(position_ms) || position_ms < 0) return Promise.reject(new Error("position_ms must be a non-negative integer"));
       return send({ type: "seek", payload: { position_ms } });
     },
+    setVolume: (volume: number) => {
+      if (!Number.isFinite(volume) || volume < 0 || volume > 1) return Promise.reject(new Error("volume must be within [0, 1]"));
+      return send({ type: "set_volume", payload: { volume } });
+    },
     videoSource: (track_id: TrackId) => send({ type: "video_source", payload: { track_id } }),
     videoStage: (track_id: TrackId) => send({ type: "video_stage", payload: { track_id } }),
     videoPlay: () => send("video_play"),
@@ -134,6 +138,10 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
     migrationStatus: async (): Promise<MigrationStatus> => {
       const value = await transport.invoke<unknown>("migration_status", null);
       return parseMigrationStatus(value);
+    },
+    trackArtwork: async (trackId: TrackId): Promise<string | null> => {
+      const value = await transport.invoke<unknown>("track_artwork", { trackId });
+      return typeof value === "string" && value.startsWith("data:") ? value : null;
     },
     cancelJob: (job_id: string) => send({ type: "cancel_job", payload: { job_id } }),
      shutdown: (reason: ShutdownReason) => send({ type: "shutdown", payload: { reason } }),

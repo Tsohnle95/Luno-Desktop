@@ -23,5 +23,7 @@ unicode-normalization = "0.1"
 thiserror = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+base64 = "0.22"
 cpal = "0.15"
+id3 = "1"
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "isomp4", "flac", "wav", "pcm"] }

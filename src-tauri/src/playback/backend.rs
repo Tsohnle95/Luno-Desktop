@@ -44,10 +44,21 @@ pub enum BackendError {
     NotLoaded,
     #[error("seek position is invalid: {0}")]
     InvalidSeek(f64),
+    #[error("load cancelled by a newer playback request")]
+    Cancelled,
 }
 
 pub trait AudioBackend {
     fn load(&mut self, path: &Path) -> Result<TrackInfo, BackendError>;
+    /// Load a track for streaming playback: decode happens on a background
+    /// thread that stays just ahead of the output, so a click starts audio in
+    /// a fraction of a second instead of after a full-file decode. The default
+    /// implementation falls back to (dual-purpose) `load`.
+    fn load_streaming(&mut self, path: &Path) -> Result<TrackInfo, BackendError> {
+        self.load(path)
+    }
+    /// Master volume in `0.0..=1.0`, applied to the samples the backend emits.
+    fn set_volume(&mut self, _volume: f32) {}
     fn play(&mut self) -> Result<(), BackendError>;
     fn pause(&mut self) -> Result<(), BackendError>;
     fn seek(&mut self, position: Duration) -> Result<(), BackendError>;
