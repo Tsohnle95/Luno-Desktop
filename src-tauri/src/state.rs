@@ -336,6 +336,37 @@ mod tests {
     }
 
     #[test]
+    fn same_stem_files_in_different_folders_get_distinct_track_ids() {
+        let state = AppState::new(1);
+        // No " - " separator and no tags: both files derive the identical
+        // metadata id. They must still stay distinct, playable tracks.
+        let unsorted = PathBuf::from("/music/Unsorted/song.m4a");
+        let favorites = PathBuf::from("/music/Favorites/song.m4a");
+
+        let snapshot = state.replace_library(
+            Generation(1),
+            BTreeMap::from([
+                (String::from("Unsorted"), vec![unsorted.clone()]),
+                (String::from("Favorites"), vec![favorites.clone()]),
+            ]),
+        );
+
+        assert_eq!(snapshot.tracks.len(), 2);
+        let ids: Vec<_> = snapshot.tracks.iter().map(|track| track.id.0.clone()).collect();
+        assert_ne!(ids[0], ids[1], "colliding metadata ids must be discriminated");
+        assert!(ids.iter().all(|id| id.starts_with("metadata:")));
+        for track in &snapshot.tracks {
+            assert_eq!(track.artist, None);
+            let resolved = state.track_paths.lock().unwrap().get(&track.id).cloned();
+            assert_eq!(resolved.is_some(), true);
+        }
+        // Each id resolves to its OWN file.
+        let first = state.track_paths.lock().unwrap().get(&snapshot.tracks[0].id).cloned().unwrap();
+        let second = state.track_paths.lock().unwrap().get(&snapshot.tracks[1].id).cloned().unwrap();
+        assert_ne!(first, second);
+    }
+
+    #[test]
     fn failed_event_delivery_preserves_event_until_acknowledged() {
         let state = AppState::new(1);
         state.set_event_sink(StdArc::new(|_| Err("emit failed".into())));
@@ -943,6 +974,13 @@ pub struct AppState {
     downloads: Arc<DownloadCoordinator>,
     download_requests: Arc<Mutex<BTreeMap<String, (PathBuf, PathBuf, String)>>>,
     bundle_helper: Arc<Mutex<Option<PathBuf>>>,
+    video_root: Arc<Mutex<Option<PathBuf>>>,
+    video_stager: Arc<Mutex<Option<crate::video::staging::VideoStage>>>,
+    video_current: Arc<Mutex<Option<crate::contracts::events::VideoState>>>,
+    video_cancel: Arc<Mutex<Arc<AtomicBool>>>,
+    video_helper: Arc<Mutex<Option<PathBuf>>>,
+    video_ffmpeg_dir: Arc<Mutex<Option<PathBuf>>>,
+    discovery_configured: Arc<AtomicBool>,
     provider_metadata: Arc<Mutex<BTreeMap<PathBuf, TrackMetadata>>>,
     track_paths: Arc<Mutex<BTreeMap<TrackId, PathBuf>>>,
     artwork: Arc<TrackArtwork>,
@@ -1045,6 +1083,13 @@ impl AppState {
             downloads: Arc::new(DownloadCoordinator::new()),
             download_requests: Arc::new(Mutex::new(BTreeMap::new())),
             bundle_helper: Arc::new(Mutex::new(None)),
+            video_root: Arc::new(Mutex::new(None)),
+            video_stager: Arc::new(Mutex::new(None)),
+            video_current: Arc::new(Mutex::new(None)),
+            video_cancel: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))),
+            video_helper: Arc::new(Mutex::new(None)),
+            video_ffmpeg_dir: Arc::new(Mutex::new(None)),
+            discovery_configured: Arc::new(AtomicBool::new(false)),
             provider_metadata: Arc::new(Mutex::new(BTreeMap::new())),
             track_paths: track_paths.clone(),
             artwork: Arc::new(TrackArtwork::new(artwork_resolver)),
@@ -1078,7 +1123,159 @@ impl AppState {
     }
 
     pub fn set_discovery_key(&self, key: Option<String>) {
+        self.discovery_configured.store(key.is_some(), Ordering::Release);
         self.discovery.lock().unwrap().set_api_key(key);
+    }
+
+    /// Whether a Last.fm API key is configured (drives honest settings UI).
+    pub fn has_discovery_key(&self) -> bool {
+        self.discovery_configured.load(Ordering::Acquire)
+    }
+
+    /// Installs the app-lifetime video store + helper binaries. Called once
+    /// from Tauri setup; the store lives OUTSIDE the music library root.
+    pub fn set_video_runtime(&self, root: PathBuf, ytdlp: Option<PathBuf>, ffmpeg_dir: Option<PathBuf>) {
+        let library_root = self.roots.lock().unwrap().first().cloned();
+        match crate::video::staging::VideoStage::at(&root, library_root.as_deref()) {
+            Ok(stager) => { *self.video_stager.lock().unwrap() = Some(stager); }
+            Err(error) => { eprintln!("video storage unavailable at {}: {error:?}", root.display()); }
+        }
+        *self.video_root.lock().unwrap() = Some(root);
+        *self.video_helper.lock().unwrap() = ytdlp;
+        *self.video_ffmpeg_dir.lock().unwrap() = ffmpeg_dir;
+    }
+
+    fn publish_video_state(&self) {
+        if let Some(video) = self.video_current.lock().unwrap().clone() {
+            let generation = video.generation;
+            self.publish(self.event(generation, Event::VideoState { state: video }));
+        }
+    }
+
+    fn video_snapshot_json(&self) -> Value {
+        match self.video_current.lock().unwrap().clone() {
+            Some(video) => crate::video::runtime::video_state_json(&video),
+            None => serde_json::json!({
+                "track_id": null, "source_url": null, "staged_path": null,
+                "status": "not_checked", "position_ms": 0, "fullscreen": false,
+                "generation": 0,
+            }),
+        }
+    }
+
+    /// VideoSource/VideoStage entry point: fast-path an already-staged track,
+    /// otherwise publish `loading` and spawn the resolve+download worker.
+    fn video_stage_track(&self, track_id: TrackId) -> Result<Value, ContractError> {
+        {
+            let current = self.video_current.lock().unwrap().clone();
+            if let Some(video) = current {
+                if video.track_id.as_ref() == Some(&track_id)
+                    && matches!(video.status, crate::contracts::events::VideoStatus::Ready | crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Paused)
+                {
+                    return Ok(crate::video::runtime::video_state_json(&video));
+                }
+            }
+        }
+        let helper = self.video_helper.lock().unwrap().clone().ok_or_else(|| ContractError {
+            code: ErrorCode::Unavailable,
+            message: "video search is unavailable until the download helper is configured".into(),
+            retryable: false,
+        })?;
+        // A staging worker holds this lock for the whole download; never pile
+        // blocked dispatches behind it — refuse quickly instead.
+        let stager_ready = match self.video_stager.try_lock() {
+            Ok(guard) => guard.is_some(),
+            Err(_) => return Err(ContractError { code: ErrorCode::Busy, message: "another video is still staging".into(), retryable: true }),
+        };
+        if !stager_ready {
+            return Err(ContractError {
+                code: ErrorCode::Unavailable,
+                message: "video storage is unavailable".into(),
+                retryable: false,
+            });
+        }
+        let (artist, title) = {
+            let snapshot = self.library();
+            let track = snapshot.tracks.iter().find(|track| track.id == track_id);
+            match track {
+                Some(track) => (track.artist.clone(), track.title.clone()),
+                None => return Err(ContractError { code: ErrorCode::NotFound, message: "track not found in library".into(), retryable: false }),
+            }
+        };
+        let generation = self.next_generation().0;
+        // Cancel any in-flight staging for a previous track.
+        self.video_cancel.lock().unwrap().store(true, Ordering::Release);
+        let cancel = Arc::new(AtomicBool::new(false));
+        *self.video_cancel.lock().unwrap() = Arc::clone(&cancel);
+        *self.video_current.lock().unwrap() = Some(crate::contracts::events::VideoState {
+            track_id: Some(track_id.clone()),
+            source_url: None,
+            staged_path: None,
+            status: crate::contracts::events::VideoStatus::Loading,
+            position_ms: 0,
+            fullscreen: false,
+            generation: Generation(generation),
+        });
+        self.publish_video_state();
+
+        let state = self.clone();
+        let _ = self.submit(self.generation(format!("video-{generation}"), Generation(generation)), move |_token| {
+            let outcome = {
+                let mut stager_guard = state.video_stager.lock().unwrap();
+                match stager_guard.as_mut() {
+                    Some(stager) => match crate::video::runtime::stage_track(
+                        &helper,
+                        state.video_ffmpeg_dir.lock().unwrap().as_deref(),
+                        stager,
+                        artist.as_deref(),
+                        &title,
+                        &cancel,
+                    ) {
+                        Ok(outcome) => outcome,
+                        Err(error) => crate::video::runtime::VideoOutcome::Unavailable(format!("video staging failed: {error:?}")),
+                    },
+                    // Never exit silently — an unpublished worker leaves the
+                    // UI stuck on "loading" forever.
+                    None => crate::video::runtime::VideoOutcome::Unavailable("video storage is unavailable".into()),
+                }
+            };
+            let next_status = match &outcome {
+                crate::video::runtime::VideoOutcome::Staged { .. } => crate::contracts::events::VideoStatus::Ready,
+                crate::video::runtime::VideoOutcome::Unavailable(_) => crate::contracts::events::VideoStatus::Unavailable,
+            };
+            let source_url = match &outcome {
+                crate::video::runtime::VideoOutcome::Staged { source_url, .. } => Some(source_url.clone()),
+                crate::video::runtime::VideoOutcome::Unavailable(_) => None,
+            };
+            let staged_path = match &outcome {
+                crate::video::runtime::VideoOutcome::Staged { staged_path, .. } => Some(staged_path.display().to_string()),
+                crate::video::runtime::VideoOutcome::Unavailable(_) => None,
+            };
+            // A newer request superseded this one while we worked.
+            if cancel.load(Ordering::Acquire) { return; }
+            *state.video_current.lock().unwrap() = Some(crate::contracts::events::VideoState {
+                track_id: Some(track_id),
+                source_url,
+                staged_path,
+                status: next_status,
+                position_ms: 0,
+                fullscreen: false,
+                generation: Generation(generation),
+            });
+            state.publish_video_state();
+        });
+        Ok(self.video_snapshot_json())
+    }
+
+    fn video_mutate(&self, mutate: impl FnOnce(&mut crate::contracts::events::VideoState)) -> Result<Value, ContractError> {
+        let mut guard = self.video_current.lock().unwrap();
+        match guard.as_mut() {
+            Some(video) if video.staged_path.is_some() || matches!(video.status, crate::contracts::events::VideoStatus::Paused | crate::contracts::events::VideoStatus::Playing) => {
+                mutate(video);
+                Ok(crate::video::runtime::video_state_json(video))
+            }
+            _ => Err(ContractError { code: ErrorCode::NotFound, message: "no active video".into(), retryable: false }),
+        }
     }
 
     /// Resolves the binaries the preview worker shells out to.  The helper
@@ -1952,10 +2149,14 @@ impl AppState {
         let destination_for_task = destination;
         let generation = self.next_generation().0;
         let _ = self.submit(self.generation(format!("save-{}", key.0), Generation(generation)), move |_token| {
-            // Release the in-flight guard before publishing so a SaveState
-            // event always implies a fresh save can start.
+            let outcome =
+                remux_and_promote(&staged, &filename_for_task, Some(&destination_for_task), ffmpeg.as_deref());
+            // Release the in-flight guard only AFTER promotion settles, before
+            // publishing so a SaveState event still implies a fresh save can
+            // start. Releasing at worker START would let two racing saves pass
+            // the dedupe check and promote the same recommendation twice.
             state.save_in_flight.lock().unwrap().remove(&id_for_task);
-            match remux_and_promote(&staged, &filename_for_task, Some(&destination_for_task), ffmpeg.as_deref()) {
+            match outcome {
                 Ok(receipt) => {
                     state.publish(state.event(Generation(generation), Event::SaveState {
                         state: SaveState {
@@ -2458,6 +2659,7 @@ impl AppState {
     ) -> LibrarySnapshot {
         self.track_paths.lock().unwrap().clear();
         let mut paths = BTreeMap::<PathBuf, TrackId>::new();
+        let mut seen_ids = std::collections::HashSet::<String>::new();
         let mut tracks = Vec::new();
         let mut playlist_data = Vec::new();
         for (name, files) in playlists {
@@ -2470,44 +2672,60 @@ impl AppState {
                 .and_then(|first| first.parent().map(|p| p.to_path_buf()))
                 .filter(|dir| files.iter().all(|path| path.parent() == Some(dir.as_path())));
             for path in files {
-                let id = paths
-                    .entry(path.clone())
-                    .or_insert_with(|| {
-                        let metadata = self
-                            .provider_metadata
-                            .lock()
-                            .unwrap()
-                            .get(&path)
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                crate::domain::identity::filename_metadata(&path.to_string_lossy())
-                            });
-                        let id = TrackId(crate::domain::identity::track_id(&metadata));
-                        self.track_paths
-                            .lock()
-                            .unwrap()
-                            .insert(id.clone(), path.clone());
-                        let favorite = self.favorites.lock().unwrap().contains(&path);
-                        tracks.push(Track {
-                            id: id.clone(),
-                            path: None,
-                            title: metadata.title,
-                            artist: (!metadata.artist.is_empty()).then_some(metadata.artist),
-                            album: None,
-                            duration_ms: (metadata.duration_ms != 0)
-                                .then_some(metadata.duration_ms),
-                            artwork_url: None,
-                            favorite,
-                            provider: metadata.provider.map(|provider| {
-                                crate::contracts::types::ProviderId {
-                                    provider: provider.provider,
-                                    id: provider.id,
-                                }
-                            }),
-                        });
-                        id
-                    })
-                    .clone();
+                if let Some(existing) = paths.get(&path) {
+                    ids.push(existing.clone());
+                    continue;
+                }
+                let metadata = self
+                    .provider_metadata
+                    .lock()
+                    .unwrap()
+                    .get(&path)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        crate::domain::identity::filename_metadata(&path.to_string_lossy())
+                    });
+                let candidate = TrackId(crate::domain::identity::track_id(&metadata));
+                // Filename-only metadata cannot distinguish "Unsorted/song.m4a"
+                // from "Favorites/song.m4a" (or repeated downloads of one
+                // source): both derive the SAME metadata id, which previously
+                // collapsed them into one logical track — duplicated rows,
+                // queues that always play the first copy. Keep the FIRST
+                // occurrence canonical (persisted favorite ids survive);
+                // discriminate every later collision by path hash.
+                let id = if seen_ids.contains(candidate.0.as_str()) {
+                    TrackId(format!(
+                        "{}#{}",
+                        candidate.0,
+                        crate::domain::identity::path_discriminator(&path)
+                    ))
+                } else {
+                    candidate
+                };
+                seen_ids.insert(id.0.clone());
+                paths.insert(path.clone(), id.clone());
+                self.track_paths
+                    .lock()
+                    .unwrap()
+                    .insert(id.clone(), path.clone());
+                let favorite = self.favorites.lock().unwrap().contains(&path);
+                tracks.push(Track {
+                    id: id.clone(),
+                    path: None,
+                    title: metadata.title,
+                    artist: (!metadata.artist.is_empty()).then_some(metadata.artist),
+                    album: None,
+                    duration_ms: (metadata.duration_ms != 0)
+                        .then_some(metadata.duration_ms),
+                    artwork_url: None,
+                    favorite,
+                    provider: metadata.provider.map(|provider| {
+                        crate::contracts::types::ProviderId {
+                            provider: provider.provider,
+                            id: provider.id,
+                        }
+                    }),
+                });
                 ids.push(id);
             }
             playlist_data.push(Playlist {
@@ -2813,17 +3031,13 @@ impl AppState {
             Command::Seek { position_ms } => self.seek_track(position_ms),
             #[cfg(target_os = "macos")]
             Command::SetVolume { volume } => self.set_volume(volume),
-            Command::VideoSource { .. }
-            | Command::VideoStage { .. }
-            | Command::VideoPlay
-            | Command::VideoPause
-            | Command::VideoSeek { .. }
-            | Command::VideoResize { .. }
-            | Command::VideoFullscreen { .. } => Err(ContractError {
-                code: ErrorCode::Unavailable,
-                message: "video backend unavailable".into(),
-                retryable: false,
-            }),
+            Command::VideoSource { track_id } => self.video_stage_track(track_id),
+            Command::VideoStage { track_id } => self.video_stage_track(track_id),
+            Command::VideoPlay => self.video_mutate(|video| video.status = crate::contracts::events::VideoStatus::Playing),
+            Command::VideoPause => self.video_mutate(|video| video.status = crate::contracts::events::VideoStatus::Paused),
+            Command::VideoSeek { position_ms } => self.video_mutate(|video| video.position_ms = position_ms as u64),
+            Command::VideoResize { .. } => Ok(Value::Null),
+            Command::VideoFullscreen { fullscreen } => self.video_mutate(|video| video.fullscreen = fullscreen),
             Command::Shutdown { reason } => {
                 let report =
                     self.shutdown_events_locked(reason, Duration::from_millis(500), &admission);

@@ -143,6 +143,18 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
       const value = await transport.invoke<unknown>("track_artwork", { trackId });
       return typeof value === "string" && value.startsWith("data:") ? value : null;
     },
+    discoveryKeyStatus: async (): Promise<{ configured: boolean }> => {
+      const value = await transport.invoke<unknown>("discovery_key_status", null);
+      return typeof value === "object" && value !== null && typeof (value as { configured?: unknown }).configured === "boolean"
+        ? (value as { configured: boolean })
+        : { configured: false };
+    },
+    saveDiscoveryKey: async (key: string): Promise<{ configured: boolean }> => {
+      const value = await transport.invoke<unknown>("save_discovery_key", { key });
+      return typeof value === "object" && value !== null && typeof (value as { configured?: unknown }).configured === "boolean"
+        ? (value as { configured: boolean })
+        : { configured: false };
+    },
     cancelJob: (job_id: string) => send({ type: "cancel_job", payload: { job_id } }),
      shutdown: (reason: ShutdownReason) => send({ type: "shutdown", payload: { reason } }),
      gate5Smoke: (root: string, preview_root: string, video_root: string) => transport.invoke<Gate5SmokeResult>("gate5_smoke", { root, preview_root, video_root }),

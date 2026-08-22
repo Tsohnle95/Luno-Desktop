@@ -66,7 +66,7 @@ function App() {
     };
   }, []);
 
-  return <><Shell backendProjection={projection} bridge={bridge} backendAvailable={backendAvailable} />{gate2SmokeConfig && <Gate2Smoke bridge={bridge} config={gate2SmokeConfig} />}{gate3SmokeConfig && <Gate3Smoke bridge={bridge} config={gate3SmokeConfig} />}{gate4SmokeConfig && <Gate4Smoke bridge={bridge} config={gate4SmokeConfig} />}{gate5SmokeConfig && <Gate5Smoke bridge={bridge} config={gate5SmokeConfig} />}</>;
+  return <><Shell backendProjection={projection} bridge={bridge} backendAvailable={backendAvailable} videoConnected={backendAvailable} />{gate2SmokeConfig && <Gate2Smoke bridge={bridge} config={gate2SmokeConfig} />}{gate3SmokeConfig && <Gate3Smoke bridge={bridge} config={gate3SmokeConfig} />}{gate4SmokeConfig && <Gate4Smoke bridge={bridge} config={gate4SmokeConfig} />}{gate5SmokeConfig && <Gate5Smoke bridge={bridge} config={gate5SmokeConfig} />}</>;
 }
 
 createRoot(root).render(

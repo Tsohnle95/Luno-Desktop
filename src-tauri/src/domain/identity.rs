@@ -65,4 +65,11 @@ pub fn filename_metadata(path: &str) -> TrackMetadata {
     TrackMetadata { title, artist, duration_ms: 0, provider: None }
 }
 
+/// Short stable discriminator for files whose filename metadata cannot tell
+/// them apart (same stem in different folders). Appended to the metadata id
+/// on collision so distinct files stay distinct tracks.
+pub fn path_discriminator(path: &std::path::Path) -> String {
+    format!("{:08x}", stable_hash(&path.to_string_lossy()))
+}
+
 pub fn duplicate_key_for(metadata: &TrackMetadata) -> String { duplicate_metadata_key(&metadata.artist, &metadata.title) }

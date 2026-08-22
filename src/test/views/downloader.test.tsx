@@ -4,6 +4,9 @@ import { DownloaderView } from "../../views/DownloaderView";
 import { LibraryView } from "../../views/LibraryView";
 
 const runningJob = { id: "job-1", kind: "single" as const, state: "running" as const, track_id: null, progress: 0.5, generation: 1 };
+const libraryTrack = (id: string, title: string, album: string | null, favorite = false) => ({ id, path: null, title, artist: "Artist", album, duration_ms: 90_000, artwork_url: null, favorite, provider: null });
+const snapshot = { version: 1 as const, generation: 1, tracks: [libraryTrack("a", "Zed", "Chaos 93"), libraryTrack("b", "Alpha", null, true)], playlists: [] };
+const playback = { queue: ["a"], current_index: 0, shuffle: false, repeat: "off" as const, status: "playing" as const, position_ms: 1000, duration_ms: 90_000, generation: 1 };
 
 describe("Gate 6 downloader view", () => {
   it("renders disclosure buttons with aria-expanded instead of native details", () => {
@@ -45,5 +48,36 @@ describe("Gate 6 library view", () => {
     const html = renderToStaticMarkup(<LibraryView loading={true} />);
     expect(html).toContain('role="status"');
     expect(html).toContain("Loading library...");
+  });
+
+  it("renders the Spotify-style hero with scope title, meta, and action row", () => {
+    const html = renderToStaticMarkup(<LibraryView snapshot={snapshot} playback={playback} />);
+    expect(html).toContain("All Music");
+    expect(html).toContain("2 songs");
+    expect(html).toContain('aria-label="Play All Music"');
+    expect(html).toContain('aria-label="Enable shuffle"');
+    expect(html).toContain('aria-label="Scan library for changes"');
+    expect(html).toContain('aria-label="Sort tracks"');
+    expect(html).toContain("luno-table-head");
+  });
+
+  it("keeps the virtualized 56px row list with column cells and favorite toggles", () => {
+    const html = renderToStaticMarkup(<LibraryView snapshot={snapshot} playback={playback} />);
+    expect((html.match(/luno-track-row/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect(html).toContain('aria-label="Add Zed to favorites"');
+    expect(html).toContain("Alpha");
+  });
+
+  it("resolves album scopes from client-side album groups", () => {
+    const html = renderToStaticMarkup(<LibraryView snapshot={snapshot} playback={playback} selectedScope="album:Chaos 93" />);
+    expect(html).toContain("Album");
+    expect(html).toContain('aria-label="Play Chaos 93"');
+  });
+
+  it("scrolls the hero away and pins only the column head", () => {
+    const html = renderToStaticMarkup(<LibraryView snapshot={snapshot} playback={playback} />);
+    expect(html).toContain("luno-hero");
+    expect(html).toContain("luno-table-head");
+    expect(html).toContain("luno-track-scroller");
   });
 });

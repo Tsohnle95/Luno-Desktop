@@ -62,6 +62,9 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── src-tauri/src/gate3_tests.rs # Deterministic playback, queue, clock, recovery, and synthetic-WAV contract tests
 ├── src-tauri/src/library/artwork.rs # Lazy embedded-artwork extraction (ID3 APIC, ISO-BMFF covr, FLAC PICTURE) served as data: URLs through a bounded in-memory cache (`ARTWORK_CACHE_BYTES`, 64 MiB)
 ├── src/state/track_artwork.ts   # React hook that lazily fetches embedded artwork only for the currently visible rows (module-level cache + in-flight dedupe)
+├── src/state/play_stats.ts      # Client-side listening stats for Home: localStorage play counters, download-completion journal, deterministic Made-for-you shuffle, popularity ranking (all tolerant of missing/corrupt storage)
+├── src/components/icons.tsx     # Inline SVG icon set (stroke-based, aria-hidden) used by the top bar, transport, and action clusters
+├── src/views/HomeView.tsx       # Home dashboard (greeting + six mobile-parity card sections: Made for you / Favorited songs / Recently played / Most popular songs / Most popular playlists / Recently downloaded); default landing view of the library route
 ├── test_library_transfer.py   # Manifest validation, export, matching, and additive merge tests
 ├── test_media_keys.py        # Deterministic mocked unit tests for media key logic
 ├── test_downloader_sync.py   # Deterministic mocked tests for playlist synchronization
@@ -70,6 +73,7 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── src/app/gate5Smoke.tsx    # Development-only real-bridge discovery/preview/artwork/video staging smoke probe
 ├── src/test/gate3_smoke.test.ts # Deterministic command/event lifecycle coverage for the Gate 3 probe
 ├── src-tauri/src/gate5_tests.rs # Deterministic target-policy fixtures for discovery, previews, artwork, video, and shutdown
+├── src-tauri/src/video/runtime.rs # Live video pipeline: yt-dlp YouTube search (relevance-filtered), ≤720p MP4 download into the staging store, cancellation, and VideoState JSON
 ├── src-tauri/src/runtime/gate5_smoke.rs # Opt-in native Gate 5 command seam using caller-provided synthetic fixture roots
 ├── test_tkvideo.py            # Ad-hoc Tk/video experiment (not part of the app)
 ├── pytest.ini                 # Default pytest collection excludes dependency-bound ad-hoc scripts
@@ -153,29 +157,136 @@ root through the existing atomic promotion contract. Gate 4 commands for
 downloader search/direct URL/CSV/URL-queue validation, safe-root selection and
 production download dispatch, typed settings persistence, transfer export, and transfer preview/apply
 dispatch through the same `AppState` event boundary;
+ALL Tauri command handlers run their dispatch inside
+`spawn_blocking` — sync commands would execute on the MAIN thread, and
+blocking work there (Last.fm discovery uses a 10 s-timeout `reqwest::blocking`
+client; downloader search shells out to yt-dlp) froze the entire window for
+tens of seconds per track change. The frontend additionally fetches discovery
+data ONLY while its surface is visible: Song Page recommendations require
+route `song_page`, and the Discover feed requires route/embed `discover`.
 download job snapshots are projected through the React bridge without exposing
-local paths as track identity. The Tauri target serves album art lazily:
+local paths as track identity. Track IDs derive from filename metadata
+(`Artist - Title.ext` — the FIRST `" - "` splits artist from title; no
+separator means artist is empty and rows show "Unknown artist"). When two
+files would derive the SAME id (same stem in different folders, or repeated
+downloads of one source), the first occurrence keeps the canonical id and
+later collisions append `#<8-hex path hash>` so distinct files stay distinct,
+playable tracks (this previously collapsed them into ONE song that appeared
+on every row/page). Downloads are named `Artist - Title.<ext>` whenever their
+metadata is known for exactly this reason. The Tauri target serves album art
+lazily:
 library rows carry no `artwork_url` (the scan intentionally avoids reading
 metadata for every file); the visible rows call the `track_artwork` command,
 which resolves the track id to its scanned path, extracts the first embedded
 picture through Symphonia, and returns a `data:` URL backed by a 64 MiB-bound
-in-memory cache (`src-tauri/src/library/artwork.rs`). The React Home/Library
-list is a virtualized 56 px-row list whose scroll container is the list body
-itself (header and actions stay fixed), so scrolling windowed rows never
-stalls; the virtualization window is driven by the LIVE DOM scroll position:
-the scroll handler stores `scrollRef.scrollTop` and the rAF callback reads
-that freshest value at frame time (one state update per frame, but never a
-stale event-time capture), with the DOM scroller and state both reset to 0 on
-scope/query/sort changes; playlist/scope navigation (All Music, Unsorted,
-Favorites, user playlists) lives in the sidebar's `Playlists` slot rather than
+in-memory cache (`src-tauri/src/library/artwork.rs`). The desktop window is a
+Spotify-style frame: a black shell with rounded floating panels and a compact
+(56 px) full-width top bar. Sidebar and queue panel widths are USER-RESIZABLE:
+the shell's grid columns are pixel-driven state (`sidebarWidth` 240–440,
+`queueWidth` 240–480) and two absolutely-positioned `.luno-resize-handle`
+separators (8px INVISIBLE hit strips at the pane boundaries — the col-resize
+cursor is the only affordance, no hover/drag highlight — with
+pointer-captured drags) resize them; handles render only while their pane is
+visible. The Tauri window uses `titleBarStyle: "Overlay"`
+with `hiddenTitle` (tauri.conf.json), so the webview is full-height, the
+traffic lights float over the bar's left side (`.luno-history` carries a
+72 px left margin to clear them), and the header strip carries
+`data-tauri-drag-region` for window dragging (the attribute must ALSO sit on
+the structural children `.luno-history`, `.luno-top-nav`, and
+`.luno-top-center`, because Tauri's drag script matches the exact mousedown
+target; the capability file MUST include `core:window:allow-start-dragging`
+because `core:window:default` does not grant it, and Shell ADDITIONALLY calls
+`getCurrentWindow().startDragging()` directly from the header's pointerdown
+handler for any non-interactive target — belt-and-braces so dragging works
+even when the injected script's target matching fails). Bar order: back/forward history
+→ `Primary navigation` holding ONLY a centered [Home pill + "What do you want
+to play?" search] group → green profile avatar absolutely pinned into the FAR
+top-right corner with equal ~1rem offsets (top 10px, right 10px). The search drives the library filter,
+and BOTH the nav group and search are not rendered while route is `settings`.
+The avatar opens
+the dedicated two-pane settings page, which takes over the ENTIRE window
+(focus mode hides the sidebar and queue panels for route `settings` and sets
+the grid template to `minmax(0,0fr) minmax(content-min,1fr) minmax(0,0fr)` —
+BOTH side tracks must collapse to zero because a hidden queue otherwise still
+reserves its 240px minimum as dead black space — with panel gaps zeroed and
+the main radius removed for one seamless surface; every shell pane owns
+a FIXED grid slot — sidebar col 1, main col 2, queue col 3 — so hiding a pane
+collapses its track to zero width instead of reshuffling `main` into an empty
+column, which previously black-screened the page). Its
+left rail is the app's sole navigation surface outside Home: one flat,
+icon-free tab list (text-only buttons are the standard rail treatment)
+(Home / Recent Songs / Discover / Downloader / Error Log, then the settings
+categories Library / Discovery / Playback / Transfer / Troubleshooting; the
+"Go to" section header and Song Page entry were removed by product decision).
+Rail tabs do NOT navigate away — except **Home**, which always exits to the
+home dashboard: Shell keeps a `settingsScreen` state and passes
+the matching view element (Recent, Discover, Downloader, or
+Error Log) through the `screen` prop, so the screen renders inside the
+settings surface on the right of the rail (picking a settings category closes
+the embedded screen via `onScreenClosed`). The profile avatar is a TOGGLE:
+clicking it opens settings, clicking again returns to the last non-settings
+route (`lastNonSettingsRoute` ref).
+All settings panels stay mounted with `hidden` on inactive ones while only
+the active category renders on the right; the content pane stretches to the
+FULL remaining width (no max-width cap) and embedded rail screens fill it via
+`.luno-settings-screen`; Error Log is also reachable from
+Troubleshooting's "Open logs". The "Your Library"
+sidebar is collapsible, with pinned All Music/Favorites/Unsorted rows plus
+Playlists/Albums chips whose entries are artwork-backed cards with song
+counts, filterable client-side. Startup migration
+status is intentionally silent — `migration_status` still feeds the shell's
+`data-migration-state` attribute, but completed/skipped/failed text is never
+rendered. All scrollers set `overscroll-behavior: none`, so rubber-banding can
+never reveal blank negative space. Album groups are derived client-side from
+track album metadata and open as `album:<name>` library scopes. Route
+`library` has two faces: the HomeView dashboard is the DEFAULT landing view
+(time-based greeting plus six mobile-parity card rows in order: **Made for
+you** (deterministic shuffle of catalogue ids keyed to membership, 50),
+**Favorited songs**, **Recently played**, **Most popular songs**,
+**Most popular playlists** ({n} plays subtitle, opens the playlist scope),
+and **Recently downloaded**; each section header may carry a "Show all" link
+into library/recent/downloader), and
+opening any sidebar scope or typing a search swaps in LibraryView; both Home
+affordances (nav Home pill) return to the dashboard. Because the backend keeps
+no play counters and completed jobs die at shutdown, Home popularity is
+CLIENT-SIDE (`src/state/play_stats.ts`): localStorage play counters are
+bumped when `recentHistory` grows a NEW head (mount priming prevents startup
+inflation), and succeeded download jobs are journalled per track
+(newest-first, deduped) so "Most popular" and "Recently downloaded" survive
+restarts without touching the versioned IPC contract. LibraryView scrolls as
+ONE page: the hero (scope gradient keyed by name hash, cover mosaic of up to
+four artworks, eyebrow, title, meta) scrolls away with the content, and ONLY
+the column head (`# / Title / Album / Playlist / duration`) stays pinned via
+sticky positioning as a direct child of the page scroller. The virtualization
+window subtracts the measured hero height + 36 px head ("rows start" offset)
+from the live scroll position (local scroll = scrollTop − rowsStart). That
+list remains a virtualized 56 px-row list whose
+window is driven by the LIVE DOM scroll position: the scroll handler stores
+`scrollRef.scrollTop` and the rAF callback reads that freshest value at frame
+time (one state update per frame, but never a stale event-time capture), with
+the DOM scroller and state both reset to 0 on scope/query/sort changes;
+playlist/scope navigation lives in the sidebar's `Playlists` slot rather than
 inside the track list, so music categories can never crowd out the songs; the
-"Video preview unavailable; artwork fallback is active." runtime
-status is shown only on the Song page, where video preview is relevant.
-The footer mini player is a two-row bar: album art + title/artist on the
-left (click opens the Song page), centered transport controls, favorite +
-volume on the right, and a wide centered scrubber (up to 72% of the app
-width) along the bottom; the debug "IPC contract vN" label is not part of
-the footer. Both sliders are ref-driven and pointer-owned: the range inputs
+"Video preview unavailable; artwork fallback is active." runtime status is
+shown only on the Song page, where video preview is relevant. The right queue
+panel has Spotify-style chrome: Queue / Recently played tabs plus a close
+button (reopened from the player bar's queue toggle), a Shuffle/Repeat/Clear
+tool row, a Now playing card, and a "Next from: <playlist>" section derived
+from the playlist containing the current track; row management actions are an
+absolutely-positioned overlay revealed on hover/focus (they reserve NO layout
+space, which keeps titles full-width in the narrow panel) while preserving
+backend queue indices. The aside itself never scrolls — `.luno-queue-body` is
+the single scroll container (no nested `luno-scroll`) — and queue/recent rows
+resolve embedded artwork lazily through the same `track_artwork` hook as the
+library list. `queueTracks`/`recentTracks` in the shell are memoized behind
+joined-id string keys so playback-heartbeat snapshots (position-only changes)
+cannot re-render the panel and stall scrolling. The footer mini player is a two-row bar: album art +
+title/artist on the left (click opens the Song page), centered transport
+controls including shuffle/repeat toggles mirroring the playback snapshot,
+favorite + mute + volume + a queue-panel toggle on the right, and a wide
+centered scrubber (up to 72% of the app width) along the bottom; the debug
+"IPC contract vN" label is not part of the footer. Both sliders are ref-driven
+and pointer-owned: the range inputs
 carry no controlled `value` (only `defaultValue`), the browser owns the thumb
 during the gesture (the app never calls `setPointerCapture` on a native range
 input — WKWebView keeps that capture indefinitely, gluing the thumb to the
@@ -237,7 +348,7 @@ startup failure banner.
 3. Live queue/history/favorite path references are updated, then the generation-tagged library scan refreshes search, ordering, and the Unsorted view
 
 ### Playback
-1. User clicks track → the React bridge sends `play_with_context(track_id, context)`; the Rust macOS migration surface resolves the track ID to its scanned local path, replaces `AppState`'s `QueueState`, and returns an acknowledgment snapshot immediately. The backend **streams**: it probes the file for duration, starts a producer thread that decodes incrementally into a ~2-second buffer ahead of the cpal output callback, and publishes the `Playing` snapshot once the output stream starts — audio begins in under a second instead of after a full-file decode (a newer selection cancels the previous `playback-load` task before it starts). **Seeking** uses Symphonia coarse seek (with an early copy of the seek target out of the state mutex to avoid a self-deadlock) and lands in hundreds of milliseconds; playback resumes from the target. **Volume** is a `set_volume` command that scales output samples in `0..=1`. Rust non-macOS audio and all Rust video commands remain explicitly unavailable.
+1. User clicks track → the React bridge sends `play_with_context(track_id, context)`; the Rust macOS migration surface resolves the track ID to its scanned local path, replaces `AppState`'s `QueueState`, and returns an acknowledgment snapshot immediately. The backend **streams**: it probes the file for duration, starts a producer thread that decodes incrementally into a ~2-second buffer ahead of the cpal output callback, and publishes the `Playing` snapshot once the output stream starts — audio begins in under a second instead of after a full-file decode (a newer selection cancels the previous `playback-load` task before it starts). **Seeking** uses Symphonia coarse seek (with an early copy of the seek target out of the state mutex to avoid a self-deadlock) and lands in hundreds of milliseconds; playback resumes from the target. **Volume** is a `set_volume` command that scales output samples in `0..=1`. Rust non-macOS audio remains explicitly unavailable; Rust VIDEO commands are LIVE (see Song Video Preview).
 2. Sets `queue` to `context_list` (or the playlist containing `path`)
 3. Sets `queue_idx` to track's position
 4. The Rust target's `AppState` replaces the authoritative queue context, loads the selected track through `CpalSymphoniaBackend`, starts the cancellation-owned heartbeat, records non-preview history, and publishes snapshots including queue/index/status/position/duration/shuffle/repeat.
@@ -270,11 +381,16 @@ startup failure banner.
 3. Worker reads `mutagen.mp3.MP3` → rejects oversized APIC payloads/images → extracts, crops, and resizes via `PIL.Image`
 4. Returns `ImageTk.PhotoImage` via a bounded `controller.after(0, ...)` callback; stale path cache entries are pruned after each library update
 
-### Song Video Preview
-1. The Song Page's discreet Video control probes YouTube with yt-dlp on a worker thread. Resolution searches up to 10 results across up to three query variants (`artist - title`, `title artist`, and title-only), deduplicates IDs, requires title relevance and artist evidence when an artist is known, and constructs canonical watch URLs from IDs; it does not begin playback or download during the probe.
-2. After a successful probe, yt-dlp downloads one merged MP4 into `~/.luno_previews`, outside the library scan. Preview lookup, preload, and current-track adoption share the same artist/title fallback and filename key. The existing audio engine continues playing normally.
-3. System FFmpeg decodes frames ahead into a small timestamped buffer using the source video's measured frame rate; Tk selects the newest frame due against the audio clock instead of pacing or dropping frames on a fixed timer. The single-song media stage spans the available content width at a responsive 16:9 rectangle with reduced surrounding content height; artwork is crop-filled without distortion and video is aspect-fitted with letterboxing as needed. The video renderer is resized/restarted when the stage changes dimensions and staged adoption waits for Tk layout realization, preventing a square-first player or stale-size video after window resizing. Title and artist typography is intentionally compact to prioritize the media stage. The camera icon is the only hover trigger; its borderless popup is flush with the trigger and uses pointer containment polling across the icon and popup, so repeated hover transitions and diagonal movement do not cross a dead zone. The popup provides separate current-video load, next-video preload, auto-preload, and fullscreen actions, with explicit current/next ready, downloading, unavailable, and not-checked status. Menu actions withdraw the popup before running and are scheduled on the main loop so the popup cannot intercept the rest of the application. Play adopts an existing staged file before probing, transient probe failures retry once, and page-level F/Escape bindings open/close fullscreen with cleanup. Fullscreen closes its window before stopping FFmpeg asynchronously so Escape/F cannot strand a black or frozen window. The menu shows a spinner only while preload jobs are active. The audio engine's elapsed position is the video clock: pause stops decoding and resume starts a new decoder at the current timestamp; scrubbing explicitly interrupts the active decoder, clears buffered frames, and restarts without allowing an independent stream to drift. Missing FFmpeg, unavailable sources, or failed downloads leave normal artwork/audio intact.
-4. The Song Page `Preload next` checkbox resolves/downloads both the current track and immediate successor into the same temporary directory. Each path has a terminal `ready` or `unavailable` state so redraws do not retry failed lookups indefinitely. It is triggered directly from `LunoEngine.play_current()` after each track starts, uses the same playlist/folder artist fallback as foreground lookup, and is independent of Song Page redraw timing. A green animated spinner indicates active downloads only; a grey static marker indicates idle or unavailable state. When the current track's preload completes, it starts at the audio engine's live timestamp; when the successor becomes current, its staged video is adopted automatically. These files remain outside `_library` and the audio queue.
+### Song Video Preview (React/Tauri — live)
+1. Opening the Song Page fires `bridge.videoStage(trackId)` once the backend is available. `Command::VideoSource`/`VideoStage` fast-path an already-staged track; otherwise they publish a `loading` VideoState event and spawn a task-registry worker (`video-<generation>`).
+2. The worker (`src-tauri/src/video/runtime.rs`) searches YouTube via the discovered yt-dlp binary (`ytsearch5:`, three query forms via `video::source::lookup` relevance/dedupe rules), downloads the best ≤720p MP4 with `--merge-output-format mp4` into the app-lifetime staging store at `<app_data>/videos` (OUTSIDE the library root; yt-dlp gets `--ffmpeg-location` from the managed bin dir), then adopts it through `VideoStage::external_destination` + `adopt`. Every outcome publishes a `video_state` event (`ready`+staged path, or `unavailable`); a newer request cancels the previous one through an AtomicBool and generation guard.
+3. The webview plays the staged file through the Tauri asset protocol: main.rs widens `asset_protocol_scope` to the video store, and the CSP carries `media-src 'self' asset: http://asset.localhost blob:`. The frontend converts `staged_path` via `convertFileSrc`; `<video>` time is corrected toward the authoritative AUDIO position (0.2 s tolerance) by VideoStage, and play/pause/seek/fullscreen commands mutate + republish the shared VideoState. Format policy (`video::runtime::download_video`): `-f "bv*[vcodec^=avc1][height<=720]+ba/bv*[vcodec^=avc1][height<=720]/b" --merge-output-format mp4` — YouTube frequently serves ONLY segmented HLS here (no progressive MP4s), container filters match nothing, and WKWebView plays H.264/AAC natively (never VP9/AV1); ffmpeg merges. Completed downloads are reused when the same video id is requested again, and every staging run begins its OWN store generation — `adopt` rejects foreign counters (StaleGeneration), which previously discarded every finished download.
+4. `main.tsx` passes `videoConnected={backendAvailable}` so the Song Page's connection badge reflects IPC truth; without a configured helper the stage degrades to artwork exactly as before. `currentVideoForTrack` correlates video state by TRACK IDENTITY ONLY — video events and playback snapshots carry INDEPENDENT generation counters, and comparing them (an earlier implementation) made every staged video invisible; event ordering is guaranteed by the sequenced publication queue. The Song Page media slot also exposes an explicit green **Load music video** control (top-left of the stage, becomes "Retry music video" after a failed attempt, hidden while loading or once a source is playing) wired to the same staging request. Worker progress prints `[luno-video]` traces (candidate count, download start/reuse, staged path, failures) to stderr; a staging request that cannot start (store missing or another download holding the store) publishes Unavailable/Busy instead of exiting silently, which previously left the UI on "loading" forever.
+
+### Discovery & Recommendations (Last.fm)
+1. The Last.fm API key lives ONLY in the macOS Keychain (`com.ty.luno`), read at startup into the discovery service. Settings ▸ Discovery saves/clears it live through the non-contract `save_discovery_key` / `discovery_key_status` Tauri commands (the same pattern as `track_artwork`), so Discover and Song Page recommendations start working without a restart.
+2. The Song Page's "Recommended for this song" section is wired for the first time in React: Shell calls `Command::Discover { artist, title, limit: 10 }` seeded by the current track, rendering honest idle/loading/error(+Retry)/ready states, match scores, tap-to-preview (shared `preview_tap` session machinery) and save-to-playlist (first non-Unsorted playlist) actions.
+3. Downloads/discover mode were already fully implemented end-to-end (search → preview → save/download with the bundled helper); the missing pieces were this key management surface and the song-page wiring above.
 
 ### Export / Import
 1. Export actions snapshot `_library` and selected paths, then build the manifest and probe metadata on a worker thread.

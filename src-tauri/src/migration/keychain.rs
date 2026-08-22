@@ -27,6 +27,14 @@ impl MacOsKeychain {
         { Err("macOS Keychain is unavailable on this platform".into()) }
     }
 
+    /// Stores (or replaces) the Last.fm API key in the macOS Keychain.
+    pub fn save_lastfm_key(&mut self, key: &str) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        { security::set(&self.service, &self.account, key.as_bytes()).map(|_| ()) }
+        #[cfg(not(target_os = "macos"))]
+        { let _ = key; Err("macOS Keychain is unavailable on this platform".into()) }
+    }
+
     pub fn read_lastfm_key(&mut self) -> Result<Vec<u8>, String> {
         #[cfg(target_os = "macos")]
         { security::get(&self.service, &self.account) }

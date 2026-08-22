@@ -34,7 +34,7 @@ fn drain_pending_events(app: &tauri::AppHandle, state: &AppState) -> Result<(), 
 }
 
 #[tauri::command]
-fn backend_command(
+async fn backend_command(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     payload: Value,
@@ -52,15 +52,24 @@ fn backend_command(
             retryable: false,
         })
     })?;
-    let result = state.dispatch(envelope);
-    drain_pending_events(&app, &state).map_err(|error| {
-        error_json(ContractError {
-            code: luno_desktop_lib::contracts::types::ErrorCode::Internal,
-            message: error,
-            retryable: true,
-        })
-    })?;
-    result.map_err(error_json)
+    // Dispatch MUST leave the main thread: commands may block on network
+    // (Last.fm discovery) or process spawns (yt-dlp search), and a sync
+    // command would freeze the whole window for their duration.
+    let app_state = state.inner().clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = app_state.dispatch(envelope);
+        if let Err(error) = drain_pending_events(&handle, &app_state) {
+            return Err(error_json(ContractError {
+                code: luno_desktop_lib::contracts::types::ErrorCode::Internal,
+                message: error,
+                retryable: true,
+            }));
+        }
+        result.map_err(error_json)
+    })
+    .await
+    .map_err(|error| format!("command worker failed: {error}"))?
 }
 
 fn dispatch_target(app: &tauri::AppHandle, state: &AppState, command: luno_desktop_lib::contracts::events::Command) -> Result<Value, String> {
@@ -70,19 +79,33 @@ fn dispatch_target(app: &tauri::AppHandle, state: &AppState, command: luno_deskt
     result
 }
 
-#[tauri::command]
-fn downloader_search(app: tauri::AppHandle, state: tauri::State<'_, AppState>, query: String, try_soundcloud: bool) -> Result<Value, String> {
-    dispatch_target(&app, &state, luno_desktop_lib::contracts::events::Command::SearchDownloader { query, try_soundcloud })
+/// Target dispatch that keeps the (possibly blocking) command work OFF the
+/// main thread — yt-dlp searches and settings IO must never stall the window.
+async fn dispatch_target_async(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    command: luno_desktop_lib::contracts::events::Command,
+) -> Result<Value, String> {
+    let inner = state.inner().clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || dispatch_target(&handle, &inner, command))
+        .await
+        .map_err(|error| format!("command worker failed: {error}"))?
 }
 
 #[tauri::command]
-fn settings_load(app: tauri::AppHandle, state: tauri::State<'_, AppState>, home: String) -> Result<Value, String> {
-    dispatch_target(&app, &state, luno_desktop_lib::contracts::events::Command::LoadSettings { home })
+async fn downloader_search(app: tauri::AppHandle, state: tauri::State<'_, AppState>, query: String, try_soundcloud: bool) -> Result<Value, String> {
+    dispatch_target_async(app, state, luno_desktop_lib::contracts::events::Command::SearchDownloader { query, try_soundcloud }).await
 }
 
 #[tauri::command]
-fn transfer_preview(app: tauri::AppHandle, state: tauri::State<'_, AppState>, manifest: String, destination: String) -> Result<Value, String> {
-    dispatch_target(&app, &state, luno_desktop_lib::contracts::events::Command::TransferPreview { manifest, destination })
+async fn settings_load(app: tauri::AppHandle, state: tauri::State<'_, AppState>, home: String) -> Result<Value, String> {
+    dispatch_target_async(app, state, luno_desktop_lib::contracts::events::Command::LoadSettings { home }).await
+}
+
+#[tauri::command]
+async fn transfer_preview(app: tauri::AppHandle, state: tauri::State<'_, AppState>, manifest: String, destination: String) -> Result<Value, String> {
+    dispatch_target_async(app, state, luno_desktop_lib::contracts::events::Command::TransferPreview { manifest, destination }).await
 }
 
 fn error_json(error: ContractError) -> String {
@@ -111,6 +134,27 @@ async fn track_artwork(
     tauri::async_runtime::spawn_blocking(move || app.track_artwork(&track_id))
         .await
         .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn discovery_key_status(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    Ok(serde_json::json!({ "configured": state.has_discovery_key() }))
+}
+
+/// Stores or clears the Last.fm API key. The key lives in the macOS Keychain
+/// (never in settings files) and is applied to the discovery service live.
+#[tauri::command]
+fn save_discovery_key(state: tauri::State<'_, AppState>, key: String) -> Result<Value, String> {
+    let trimmed = key.trim().to_string();
+    let mut keychain = MacOsKeychain::new();
+    if trimmed.is_empty() {
+        keychain.remove_lastfm_key()?;
+        state.set_discovery_key(None);
+    } else {
+        keychain.save_lastfm_key(&trimmed)?;
+        state.set_discovery_key(Some(trimmed));
+    }
+    Ok(serde_json::json!({ "configured": state.has_discovery_key() }))
 }
 
 #[cfg(target_os = "macos")]
@@ -236,9 +280,9 @@ fn dirs_fallback_home() -> Result<PathBuf, String> {
 fn main() {
     let builder = tauri::Builder::default().manage(AppState::new(32));
     #[cfg(debug_assertions)]
-    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, gate5_smoke]);
+    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, discovery_key_status, save_discovery_key, gate5_smoke]);
     #[cfg(not(debug_assertions))]
-    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork]);
+    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, discovery_key_status, save_discovery_key]);
     builder
         .setup(|app| {
             let handle = app.handle().clone();
@@ -281,6 +325,26 @@ fn main() {
             )
             .ok();
             app.state::<AppState>().set_preview_toolchain(preview_helper, preview_ffmpeg);
+            // Video staging: a disposable store OUTSIDE the music library plus
+            // the discovered yt-dlp/ffmpeg pair. The asset-protocol scope is
+            // widened to the store so <video> can stream staged files.
+            let video_root = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir().join("luno-desktop"))
+                .join("videos");
+            fs::create_dir_all(&video_root).map_err(std::io::Error::other)?;
+            let ffmpeg_dir = managed_bin.as_deref().map(PathBuf::from);
+            let video_ytdlp = luno_desktop_lib::process::executables::discover(
+                luno_desktop_lib::process::executables::ExecutableKind::YtDlp,
+                managed_bin.as_deref(),
+            )
+            .ok();
+            app.state::<AppState>().set_video_runtime(video_root.clone(), video_ytdlp, ffmpeg_dir);
+            {
+                let scope = app.asset_protocol_scope();
+                scope.allow_directory(&video_root, false).map_err(std::io::Error::other)?;
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

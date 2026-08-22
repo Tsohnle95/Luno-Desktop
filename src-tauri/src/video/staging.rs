@@ -30,6 +30,9 @@ impl VideoStage {
         Ok(Self { root, library_root: library_root.map(Path::to_path_buf), generation: 0 })
     }
     pub fn root(&self) -> &Path { &self.root }
+    /// Destination for an externally-produced MP4 (yt-dlp writes to a PATH,
+    /// not a writer handle). Pair with `adopt` once the file exists.
+    pub fn external_destination(&self, slot: Slot, key: &str) -> Result<PathBuf, StageError> { self.destination(slot, key) }
     pub fn begin_generation(&mut self) -> u64 { self.generation += 1; self.generation }
     pub fn state(&self, slot: Slot, generation: u64) -> StagedVideo { StagedVideo { slot, generation, state: StageState::NotChecked, path: None } }
     pub fn adopt(&self, slot: Slot, generation: u64, path: impl AsRef<Path>) -> Result<StagedVideo, StageError> {

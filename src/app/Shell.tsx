@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "../styles/tokens.css";
 import "../styles/layout.css";
 import { SettingsView } from "../views/SettingsView";
 import { ErrorLogView } from "../views/ErrorLogView";
-import { LibraryView, libraryPlaylists, playlistTracks, type LibraryScope } from "../views/LibraryView";
+import { HomeView } from "../views/HomeView";
+import { LibraryView, libraryPlaylists, libraryAlbums, playlistTracks, albumScope, type LibraryScope } from "../views/LibraryView";
 import { RecentView } from "../views/RecentView";
 import { SongPageView } from "../views/SongPageView";
 import { DownloaderView } from "../views/DownloaderView";
@@ -12,11 +14,16 @@ import { DiscoverView } from "../views/DiscoverView";
 import type { BackendProjection } from "../state/backend_projection";
 import { currentTrack } from "../state/backend_projection";
 import { useTrackArtwork } from "../state/track_artwork";
+import { bumpPlayCount, loadDownloadJournal, loadPlayCounts, madeForYouIds, popularTrackIds, recordDownloadCompletions, saveDownloadJournal, savePlayCounts, type DownloadEntry, type PlayCounts } from "../state/play_stats";
 import type { Bridge, MigrationStatus } from "./bridge";
 import { type Recommendation, type SearchResult, type SettingsInput, type Track } from "../shared/contracts";
+import { previewKey } from "../shared/contracts";
+import type { RecommendationState } from "../components/Recommendations";
 import { Queue } from "../components/Queue";
 import { PlayerBar } from "../components/PlayerBar";
 import type { VideoStageStatus } from "../components/VideoStage";
+import type { SettingsNavLink } from "../views/SettingsView";
+import { IconChevronLeft, IconChevronRight, IconClose, IconDownload, IconHeart, IconHome, IconLibrary, IconMusicNote, IconSearch, IconUser } from "../components/icons";
 
 export const ROUTES = ["library", "recent", "discover", "downloader", "settings", "song_page", "error_log"] as const;
 export type Route = (typeof ROUTES)[number];
@@ -56,18 +63,63 @@ export function playRecentTrack(bridge: Pick<Bridge, "play"> | undefined, track:
 }
 
 export function currentVideoForTrack(projection: Pick<BackendProjection, "playback" | "video">, trackId: string): BackendProjection["video"] {
+  // Correlate by TRACK IDENTITY only: video state and playback snapshots use
+  // independent generation counters on the backend, so comparing generations
+  // here could never match and every staged video stayed invisible. Event
+  // ordering is already guaranteed by the sequenced publication queue, so
+  // `projection.video` is always the LATEST known state for its track.
   const video = projection.video;
-  return video?.track_id === trackId && projection.playback?.generation === video.generation ? video : null;
+  return video?.track_id === trackId ? video : null;
 }
 
 export function videoCommandsEnabled(available: boolean, connected: boolean, source: string | null, status: VideoStageStatus | undefined): boolean {
   return available && connected && !!source && !!status && !["not-checked", "loading", "unavailable", "error", "fallback"].includes(status);
 }
 
+interface SidebarEntry { key: string; label: string; subtitle: string; scope: LibraryScope; kind: "all" | "favorites" | "unsorted" | "playlist" | "album"; artId?: string }
+
+const songs = (count: number) => `${count} ${count === 1 ? "song" : "songs"}`;
+
+function buildSidebarEntries(snapshot: BackendProjection["library"], chip: "playlists" | "albums"): SidebarEntry[] {
+  const entries: SidebarEntry[] = [
+    { key: "pin-all", label: "All Music", subtitle: songs(snapshot?.tracks.length ?? 0), scope: "all", kind: "all" },
+    { key: "pin-favorites", label: "Favorites", subtitle: songs(snapshot?.tracks.filter((track) => track.favorite).length ?? 0), scope: "favorites", kind: "favorites" },
+    { key: "pin-unsorted", label: "Unsorted", subtitle: songs(snapshot?.playlists.find((playlist) => playlist.name.toLowerCase() === "unsorted")?.ordered_track_ids.length ?? 0), scope: "unsorted", kind: "unsorted" },
+  ];
+  if (chip === "playlists") {
+    for (const playlist of libraryPlaylists(snapshot)) entries.push({ key: playlist.id, label: playlist.name, subtitle: songs(playlistTracks(snapshot, playlist).length), scope: playlist.id, kind: "playlist", artId: playlist.ordered_track_ids[0] });
+  } else {
+    for (const album of libraryAlbums(snapshot)) entries.push({ key: albumScope(album.name), label: album.name, subtitle: songs(album.tracks.length), scope: albumScope(album.name), kind: "album", artId: album.tracks[0].id });
+  }
+  return entries;
+}
+
 export function Shell({ views = {}, queue, player, bridge, backendProjection, backendAvailable, videoConnected }: ShellProps) {
-  const [route, setRoute] = useState<Route>("library");
+  const [history, setHistory] = useState<{ stack: Route[]; index: number }>({ stack: ["library"], index: 0 });
+  const route = history.stack[history.index];
+  const navigate = (next: Route) => setHistory((current) => {
+    if (current.stack[current.index] === next) return current;
+    const stack = [...current.stack.slice(0, current.index + 1), next];
+    return { stack, index: stack.length - 1 };
+  });
+  const goBack = () => setHistory((current) => ({ ...current, index: Math.max(0, current.index - 1) }));
+  const goForward = () => setHistory((current) => ({ ...current, index: Math.min(current.stack.length - 1, current.index + 1) }));
+  const [queueOpen, setQueueOpen] = useState(true);
+  const [panelRecent, setPanelRecent] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarChip, setSidebarChip] = useState<"playlists" | "albums">("playlists");
+  const [sidebarQuery, setSidebarQuery] = useState("");
+  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
+  const [libraryQuery, setLibraryQuery] = useState("");
   const [libraryScope, setLibraryScope] = useState<LibraryScope>("all");
-  const projection = useSyncExternalStore(backendProjection?.subscribe ?? (() => () => {}), backendProjection?.getSnapshot ?? (() => ({ library: null, playback: null } as BackendProjection)));
+  // The Home dashboard is the default landing view; opening any library scope
+  // (or typing a search) swaps in the full LibraryView list.
+  const [libraryHome, setLibraryHome] = useState(true);
+  // Inside the settings page, rail tabs embed their screen on the right side
+  // of the SAME settings surface instead of leaving it — except Home, which
+  // always exits back to the home dashboard.
+  const [settingsScreen, setSettingsScreen] = useState<SettingsNavLink | null>(null);
+  const projection = useSyncExternalStore(backendProjection?.subscribe ?? (() => () => {}), backendProjection?.getSnapshot ?? (() => ({ library: null, playback: null } as BackendProjection)), backendProjection?.getSnapshot ?? (() => ({ library: null, playback: null } as BackendProjection)));
   const [migrationStatus, setMigrationStatus] = useState<MigrationStatus | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [downloadSources, setDownloadSources] = useState<SearchResult[]>([]);
@@ -150,8 +202,18 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     const safeId = next.id.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24) || "item";
     const jobId = `dl-${Date.now()}-${safeId}`;
     const extension = fixtureDestination ? "mp3" : "m4a";
+    // The library scanner derives Artist/Title from the FILENAME ("Artist - Title.ext"),
+    // so name downloads after their metadata whenever we know it — otherwise
+    // every downloaded song shows up as "Unknown artist".
+    const row = csvPreview.find((item) => item.id === next.id || item.source === next.source);
+    const label = [row?.artist, row?.title].filter(Boolean).join(" - ")
+      .replace(/[\\/:*?"<>|]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 96);
+    const filename = label ? `${label}.${extension}` : `${jobId}.${extension}`;
     setActiveDownloadJob({ jobId });
-    runCommand(bridge?.startDownload(jobId, `${downloadBase}/${jobId}.${extension}`, downloadHelperPath, next.source.replace(/\r|\n/g, " ").trim()));
+    runCommand(bridge?.startDownload(jobId, `${downloadBase}/${filename}`, downloadHelperPath, next.source.replace(/\r|\n/g, " ").trim()));
   };
   useEffect(() => {
     if (!activeDownloadJob) return;
@@ -173,11 +235,55 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const footerArtwork = useTrackArtwork(track ? [track.id] : [], bridge ? (id) => bridge.trackArtwork(id) : undefined);
   const currentArtwork = track ? (footerArtwork[track.id] ?? track.artwork_url) : null;
   const tracks = projection.library?.tracks ?? [];
-  const queueTracks = projection.playback?.queue.map((id) => tracks.find((item) => item.id === id)).filter((item): item is Track => !!item) ?? [];
+  // String keys keep these lists referentially stable across playback
+  // heartbeats — otherwise every position snapshot would re-render the whole
+  // queue panel and make scrolling feel broken.
+  const queueKey = projection.playback?.queue.join("\u0000") ?? "";
+  const recentKey = projection.recentHistory.join("\u0000");
+  const tracksKey = `${projection.library?.generation ?? 0}`;
+  const queueTracks = useMemo(() => projection.playback?.queue.map((id) => tracks.find((item) => item.id === id)).filter((item): item is Track => !!item) ?? [], [queueKey, tracksKey]);
   const currentVideo = track ? currentVideoForTrack(projection, track.id) : null;
   const connectedVideo = videoConnected === true;
   const discoverSeed = track?.artist && track.title ? { artist: track.artist, title: track.title } : null;
+  // ---- Song Page recommendations (Last.fm similar tracks, mobile parity) ----
+  const [songRecs, setSongRecs] = useState<{ items: Recommendation[]; state: RecommendationState; error: string | null }>({ items: [], state: "idle", error: null });
+  const [songRecRefresh, setSongRecRefresh] = useState(0);
   useEffect(() => {
+    // Only fetch while the Song Page is actually open — otherwise every
+    // skip/track change would fire a network request nobody sees.
+    if (route !== "song_page" || !discoverSeed || !bridge) {
+      setSongRecs((current) => (current.state === "idle" ? current : { items: [], state: "idle", error: null }));
+      return;
+    }
+    let active = true;
+    setSongRecs((current) => ({ items: current.items, state: "loading", error: null }));
+    bridge.discover(discoverSeed.artist, discoverSeed.title, 10)
+      .then((items) => { if (active) setSongRecs({ items, state: "ready", error: null }); })
+      .catch((error) => { if (active) setSongRecs({ items: [], state: "error", error: normalizeRuntimeCommandError(error) }); });
+    return () => { active = false; };
+  }, [route, discoverSeed?.artist, discoverSeed?.title, songRecRefresh, bridge]);
+  // ---- Last.fm API key presence (Keychain) for honest discovery UI ----
+  const [discoveryKeyConfigured, setDiscoveryKeyConfigured] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!bridge) return;
+    let active = true;
+    bridge.discoveryKeyStatus()
+      .then((status) => { if (active) setDiscoveryKeyConfigured(status.configured); })
+      .catch(() => { if (active) setDiscoveryKeyConfigured(false); });
+    return () => { active = false; };
+  }, [bridge]);
+  const saveLastfmKey = (key: string) => {
+    runBridgeCommand(bridge?.saveDiscoveryKey(key).then((status) => setDiscoveryKeyConfigured(status.configured)), setCommandError);
+  };
+  // Stage the song video when its page opens (worker runs on the backend).
+  useEffect(() => {
+    if (route !== "song_page" || !track || !available || !bridge) return;
+    bridge.videoStage(track.id).catch(() => undefined);
+  }, [route, track?.id, available, bridge]);
+  useEffect(() => {
+    // Only fetch while a Discover surface is visible (route or settings-rail
+    // embed) — otherwise every track change fires an unseen network request.
+    if (route !== "discover" && settingsScreen !== "discover") return;
     if (!discoverSeed || !bridge) { setDiscover((current) => ({ ...current, items: [], error: null })); return; }
     let active = true;
     setDiscover((current) => ({ ...current, loading: true, error: null }));
@@ -185,30 +291,212 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       .then((items) => { if (active) setDiscover({ items, loading: false, error: null }); })
       .catch((error) => { if (active) setDiscover({ items: [], loading: false, error: normalizeRuntimeCommandError(error) }); });
     return () => { active = false; };
-  }, [discoverSeed?.artist, discoverSeed?.title, discoverRefresh, bridge]);
+  }, [route, settingsScreen, discoverSeed?.artist, discoverSeed?.title, discoverRefresh, bridge]);
   const videoSrc = safeVideoSource(currentVideo?.source_url, currentVideo?.staged_path);
   const videoStatus = (currentVideo?.status === "not_checked" ? "not-checked" : currentVideo?.status) as VideoStageStatus | undefined;
   const videoActive = videoCommandsEnabled(available, connectedVideo, videoSrc, videoStatus);
   const video = track ? { src: videoSrc, status: videoStatus, positionMs: currentVideo?.position_ms ?? 0, playing: videoActive && currentVideo?.status === "playing", artworkUrl: currentArtwork, onResize: (size: { width: number; height: number }) => { if (videoActive) runCommand(bridge?.videoResize(size.width, size.height)); }, onSeek: (positionMs: number) => { if (videoActive) runCommand(bridge?.videoSeek(positionMs)); }, onPause: (positionMs: number) => { if (videoActive) { runCommand(bridge?.videoPause()); runCommand(bridge?.videoSeek(positionMs)); } }, onResume: (positionMs: number) => { if (videoActive) { runCommand(bridge?.videoSeek(positionMs)); runCommand(bridge?.videoPlay()); } }, onEnded: () => { if (videoActive) runCommand(bridge?.videoPause()); }, onFullscreenChange: (fullscreen: boolean) => { if (videoActive) runCommand(bridge?.videoFullscreen(fullscreen)); } } : undefined;
-  const recentTracks = projection.recentHistory.map((id) => tracks.find((item) => item.id === id)).filter((item): item is Track => !!item);
-   const content = views[route] ?? (route === "library" ? <LibraryView snapshot={projection.library} loading={!projection.library || projection.library.generation <= 0} playback={projection.playback} backendAvailable={available} selectedScope={libraryScope} onScopeChange={setLibraryScope} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onScan={() => runCommand(bridge?.scanLibrary())} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} /> : route === "recent" ? <RecentView tracks={recentTracks} playback={projection.playback} backendAvailable={available} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} /> : route === "discover" ? <DiscoverView seed={discoverSeed} recommendations={discover.items} session={projection.preview} saved={projection.saved} playlists={projection.library?.playlists ?? []} loading={discover.loading} error={discover.error} onRefresh={() => setDiscoverRefresh((value) => value + 1)} onTap={(key) => runCommand(bridge?.previewTap(discover.items.slice(0, 50).map((item) => ({ artist: item.artist, title: item.title })), key))} onNext={() => runCommand(bridge?.previewNext())} onPrevious={() => runCommand(bridge?.previewPrevious())} onCancel={() => runCommand(bridge?.previewCancel())} onSave={(key, playlistId) => runCommand(bridge?.saveRecommendation(key, playlistId))} /> : route === "downloader" ? <DownloaderView error={commandError} jobs={projection.jobs} destinations={fixtureDestination ? [fixtureDestination] : libraryRootPath ? [`${libraryRootPath}/Unsorted`] : []} searchResults={downloadSources.map((item) => ({ id: item.query, title: item.query, artist: item.provider }))} previewTracks={csvPreview} onSearch={(query) => { if (bridge) bridge.searchDownloader(query).then((value) => setDownloadSources(value)).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onPreview={(value, kind) => { if (!bridge) return; if (kind === "csv") bridge.previewCsv(value).then((result) => { const rows = (result as { rows?: Array<{ id: string; title: string; artist?: string; url?: string }> }).rows ?? []; setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: row.url }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onDownload={(ids) => { if (!downloadBase || !downloadHelperPath) { setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured."); return; } for (const id of ids) downloadQueueRef.current.push({ id, source: sourceForDownload(id).replace(/\r|\n/g, " ").trim() }); startNextDownload(); }} onDirectUrl={(url, destination) => runCommand(bridge?.validateDirectUrl(url, destination))} onQueueUrl={(url) => runCommand(bridge?.queueUrls([url]))} onSync={(_, destination) => { if (!destination.startsWith("/")) { setCommandError("Sync requires the configured library folder, not a playlist label."); return; } runCommand(bridge?.syncMarkers(destination)); }} onCancel={(jobId) => runCommand(bridge?.cancelJob(jobId))} onRetry={(jobId) => { if (!downloadHelperPath) { setCommandError("Download retry is unavailable until the download helper is configured."); return; } runCommand(bridge?.retryDownload(jobId)); }} /> : route === "settings" ? <SettingsView musicRoot={musicRoot} autoDiscovery={settings.auto_discovery ?? false} mediaKeys={settings.global_keys ?? true} transferManifest={transferManifest} transferDestination={transferDestination} transferResult={transferResult} error={commandError} libraryRootPath={viteEnv?.DEV ? undefined : libraryRootPath ?? undefined} onLibraryRootSubmit={viteEnv?.DEV ? undefined : submitLibraryRoot} onChooseMusicRoot={viteEnv?.DEV ? chooseRoot : undefined} onAutoDiscoveryChange={(value) => saveSettings({ ...settings, auto_discovery: value })} onMediaKeysChange={(value) => saveSettings({ ...settings, global_keys: value })} onTransferManifestChange={setTransferManifest} onTransferDestinationChange={setTransferDestination} onTransferExport={() => { if (!available) { setCommandError("Transfer export is unavailable until the backend is connected."); return; } runBridgeCommand(bridge?.transferExport().then((result) => { const manifest = (result as { manifest?: string }).manifest ?? ""; setTransferManifest(manifest); setTransferResult(manifest ? "Exported manifest is ready for review." : "Export returned no manifest."); }), setCommandError); }} onTransferPreview={() => runBridgeCommand(bridge?.transferPreview(transferManifest, transferDestination).then((result) => setTransferResult(JSON.stringify(result))), setCommandError)} onTransferApply={() => runBridgeCommand(bridge?.transferApply(transferManifest, transferDestination, {}).then((result) => setTransferResult(JSON.stringify(result))), setCommandError)} onOpenErrorLog={() => setRoute("error_log")} /> : route === "error_log" ? <ErrorLogView /> : route === "song_page" ? <SongPageView track={track} backendAvailable={available} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
-  return <div className="luno-shell" data-route={route} data-backend-state={available ? "available" : "unavailable"} data-video-state={connectedVideo ? "connected" : "unconnected"} data-migration-state={migrationStatus?.status ?? "unknown"}>
+  const recentTracks = useMemo(() => projection.recentHistory.map((id) => tracks.find((item) => item.id === id)).filter((item): item is Track => !!item), [recentKey, tracksKey]);
+
+  // ---- Local listening stats (Home "Most popular" / "Recently downloaded") ----
+  // The backend keeps no play counters, so plays are counted client-side and
+  // persisted in localStorage; download completions are journalled the same
+  // way because succeeded jobs do not survive an app restart.
+  const [playCounts, setPlayCounts] = useState<PlayCounts>(() => loadPlayCounts());
+  const [downloadJournal, setDownloadJournal] = useState<DownloadEntry[]>(() => loadDownloadJournal());
+  const primedStatsRef = useRef(false);
+  const countedTrackRef = useRef<string | null>(null);
+  useEffect(() => {
+    const head = projection.recentHistory[0] ?? null;
+    // Prime on mount WITHOUT counting so reopening the app doesn't inflate the
+    // last-played track; every subsequent new head is one real play.
+    if (!primedStatsRef.current) { primedStatsRef.current = true; countedTrackRef.current = head; return; }
+    if (!head || head === countedTrackRef.current) return;
+    countedTrackRef.current = head;
+    setPlayCounts((current) => {
+      const next = bumpPlayCount(current, head);
+      savePlayCounts(next);
+      return next;
+    });
+  }, [recentKey]);
+  const jobStatesRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    const additions: DownloadEntry[] = [];
+    for (const job of Object.values(projection.jobs)) {
+      const previous = jobStatesRef.current.get(job.id);
+      jobStatesRef.current.set(job.id, job.state);
+      if (job.state === "succeeded" && previous !== "succeeded" && job.track_id) additions.push({ trackId: job.track_id, at: Date.now() });
+    }
+    if (additions.length === 0) return;
+    setDownloadJournal((current) => {
+      const next = recordDownloadCompletions(current, additions);
+      saveDownloadJournal(next);
+      return next;
+    });
+  }, [projection.jobs]);
+
+  const tracksById = useMemo(() => {
+    const map: Record<string, Track> = {};
+    for (const item of tracks) map[item.id] = item;
+    return map;
+  }, [tracksKey]);
+  // Made-for-you: deterministic sample keyed to catalogue membership (same
+  // policy as mobile) — stable across re-renders, reshuffled when tracks are
+  // added or removed.
+  const madeForYouTracks = useMemo(() => madeForYouIds(Object.keys(tracksById), 50).map((id) => tracksById[id]).filter((item): item is Track => !!item), [tracksKey]);
+  const popularTracks = useMemo(() => popularTrackIds(playCounts, 20).map((id) => tracksById[id]).filter((item): item is Track => !!item), [playCounts, tracksKey]);
+  const popularPlaylists = useMemo(() => (projection.library?.playlists ?? [])
+    .map((playlist) => ({ playlist, plays: playlist.ordered_track_ids.reduce((sum, id) => sum + (playCounts[id] ?? 0), 0) }))
+    .filter((entry) => entry.plays > 0)
+    .sort((a, b) => b.plays - a.plays || a.playlist.name.localeCompare(b.playlist.name))
+    .slice(0, 10), [projection.library, playCounts]);
+  const downloadedTracks = useMemo(() => {
+    const seen = new Set<string>();
+    const resolved: Track[] = [];
+    for (const entry of downloadJournal) {
+      const item = tracksById[entry.trackId];
+      if (item && !seen.has(item.id)) { seen.add(item.id); resolved.push(item); }
+    }
+    return resolved.slice(0, 50);
+  }, [downloadJournal, tracksKey]);
+
+  // ---- Sidebar ("Your Library") ----
+  const sidebarEntries = useMemo(() => buildSidebarEntries(projection.library, sidebarChip), [projection.library, sidebarChip]);
+  const visibleSidebarEntries = useMemo(() => {
+    const needle = sidebarQuery.trim().toLocaleLowerCase();
+    return needle ? sidebarEntries.filter((entry) => entry.label.toLocaleLowerCase().includes(needle)) : sidebarEntries;
+  }, [sidebarEntries, sidebarQuery]);
+  const artworkFetcher = bridge ? (id: string) => bridge.trackArtwork(id) : undefined;
+  const sidebarArtwork = useTrackArtwork(visibleSidebarEntries.map((entry) => entry.artId).filter((id): id is string => !!id), artworkFetcher);
+  const nextFromLabel = useMemo(() => {
+    if (!track || !projection.library) return null;
+    const owner = projection.library.playlists.find((playlist) => playlist.ordered_track_ids.includes(track.id));
+    return owner && owner.name.toLowerCase() !== "unsorted" ? owner.name : null;
+  }, [projection.library, track?.id]);
+  // The profile avatar is a settings TOGGLE: open on click, and clicking it
+  // again returns to whatever screen was open before settings.
+  const lastNonSettingsRoute = useRef<Route>("library");
+  useEffect(() => { if (route !== "settings") lastNonSettingsRoute.current = route; }, [route]);
+  const toggleSettings = () => { if (route === "settings") navigate(lastNonSettingsRoute.current); else navigate("settings"); };
+
+  // Native window dragging from the top bar. The injected data-tauri-drag-region
+  // script needs exact-target matches AND the start-dragging permission, so we
+  // ALSO call the window API directly on any press over non-interactive chrome.
+  const startWindowDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, input, select, textarea, a, form")) return;
+    try {
+      if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+      void getCurrentWindow().startDragging();
+    } catch { /* dragging is unavailable outside the Tauri runtime */ }
+  };
+
+  // ---- Resizable panels: pixel columns + draggable divider handles ----
+  const [sidebarWidth, setSidebarWidth] = useState(300);
+  const [queueWidth, setQueueWidth] = useState(320);
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const [shellWidth, setShellWidth] = useState(0);
+  useEffect(() => {
+    const element = shellRef.current;
+    if (!element) return;
+    const update = () => setShellWidth(element.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  const startPanelDrag = (kind: "sidebar" | "queue") => (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const handle = event.currentTarget;
+    const startX = event.clientX;
+    const startWidth = kind === "sidebar" ? sidebarWidth : queueWidth;
+    try { handle.setPointerCapture(event.pointerId); } catch { /* pointer may vanish; drag still works via listeners */ }
+    const move = (e: PointerEvent) => {
+      const delta = e.clientX - startX;
+      if (kind === "sidebar") setSidebarWidth(Math.round(Math.min(440, Math.max(240, startWidth + delta))));
+      else setQueueWidth(Math.round(Math.min(480, Math.max(240, startWidth - delta))));
+    };
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  };
+
+  const homeViewEl = <HomeView allTracksCount={tracks.length} madeForYou={madeForYouTracks} favorites={tracks.filter((track) => track.favorite)} recentTracks={recentTracks} popularTracks={popularTracks} popularPlaylists={popularPlaylists} recentlyDownloaded={downloadedTracks} onPlayTrack={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onOpenLibrary={() => setLibraryHome(false)} onOpenRecent={() => navigate("recent")} onOpenDownloader={() => navigate("downloader")} onOpenPlaylist={(playlistId) => { setLibraryScope(playlistId); setLibraryHome(false); navigate("library"); }} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} backendAvailable={available} />;
+  const recentViewEl = <RecentView tracks={recentTracks} playback={projection.playback} backendAvailable={available} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />;
+  const discoverViewEl = <DiscoverView seed={discoverSeed} recommendations={discover.items} session={projection.preview} saved={projection.saved} playlists={projection.library?.playlists ?? []} loading={discover.loading} error={discover.error} onRefresh={() => setDiscoverRefresh((value) => value + 1)} onTap={(key) => runCommand(bridge?.previewTap(discover.items.slice(0, 50).map((item) => ({ artist: item.artist, title: item.title })), key))} onNext={() => runCommand(bridge?.previewNext())} onPrevious={() => runCommand(bridge?.previewPrevious())} onCancel={() => runCommand(bridge?.previewCancel())} onSave={(key, playlistId) => runCommand(bridge?.saveRecommendation(key, playlistId))} />;
+  const downloaderViewEl = <DownloaderView error={commandError} jobs={projection.jobs} destinations={fixtureDestination ? [fixtureDestination] : libraryRootPath ? [`${libraryRootPath}/Unsorted`] : []} searchResults={downloadSources.map((item) => ({ id: item.query, title: item.query, artist: item.provider }))} previewTracks={csvPreview} onSearch={(query) => { if (bridge) bridge.searchDownloader(query).then((value) => setDownloadSources(value)).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onPreview={(value, kind) => { if (!bridge) return; if (kind === "csv") bridge.previewCsv(value).then((result) => { const rows = (result as { rows?: Array<{ id: string; title: string; artist?: string; url?: string }> }).rows ?? []; setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: row.url }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onDownload={(ids) => { if (!downloadBase || !downloadHelperPath) { setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured."); return; } for (const id of ids) downloadQueueRef.current.push({ id, source: sourceForDownload(id).replace(/\r|\n/g, " ").trim() }); startNextDownload(); }} onDirectUrl={(url, destination) => runCommand(bridge?.validateDirectUrl(url, destination))} onQueueUrl={(url) => runCommand(bridge?.queueUrls([url]))} onSync={(_, destination) => { if (!destination.startsWith("/")) { setCommandError("Sync requires the configured library folder, not a playlist label."); return; } runCommand(bridge?.syncMarkers(destination)); }} onCancel={(jobId) => runCommand(bridge?.cancelJob(jobId))} onRetry={(jobId) => { if (!downloadHelperPath) { setCommandError("Download retry is unavailable until the download helper is configured."); return; } runCommand(bridge?.retryDownload(jobId)); }} />;
+  const errorLogViewEl = <ErrorLogView />;
+  const settingsScreens: Record<SettingsNavLink, ReactNode> = { home: homeViewEl, recent: recentViewEl, discover: discoverViewEl, downloader: downloaderViewEl, error_log: errorLogViewEl };
+
+   const content = views[route] ?? (route === "library" ? (libraryHome ? homeViewEl : <LibraryView snapshot={projection.library} loading={!projection.library || projection.library.generation <= 0} playback={projection.playback} backendAvailable={available} selectedScope={libraryScope} query={libraryQuery} onQueryChange={setLibraryQuery} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onShuffle={() => runCommand(bridge?.toggleShuffle())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onScan={() => runCommand(bridge?.scanLibrary())} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />) : route === "recent" ? recentViewEl : route === "discover" ? discoverViewEl : route === "downloader" ? downloaderViewEl : route === "settings" ? <SettingsView lastfmKey="" keychainStatus={discoveryKeyConfigured === null ? "loading" : discoveryKeyConfigured ? "available" : "missing"} onSaveLastfmKey={available ? saveLastfmKey : undefined} musicRoot={musicRoot} autoDiscovery={settings.auto_discovery ?? false} mediaKeys={settings.global_keys ?? true} transferManifest={transferManifest} transferDestination={transferDestination} transferResult={transferResult} error={commandError} libraryRootPath={viteEnv?.DEV ? undefined : libraryRootPath ?? undefined} onLibraryRootSubmit={viteEnv?.DEV ? undefined : submitLibraryRoot} onChooseMusicRoot={viteEnv?.DEV ? chooseRoot : undefined} onAutoDiscoveryChange={(value) => saveSettings({ ...settings, auto_discovery: value })} onMediaKeysChange={(value) => saveSettings({ ...settings, global_keys: value })} onTransferManifestChange={setTransferManifest} onTransferDestinationChange={setTransferDestination} onTransferExport={() => { if (!available) { setCommandError("Transfer export is unavailable until the backend is connected."); return; } runBridgeCommand(bridge?.transferExport().then((result) => { const manifest = (result as { manifest?: string }).manifest ?? ""; setTransferManifest(manifest); setTransferResult(manifest ? "Exported manifest is ready for review." : "Export returned no manifest."); }), setCommandError); }} onTransferPreview={() => runBridgeCommand(bridge?.transferPreview(transferManifest, transferDestination).then((result) => setTransferResult(JSON.stringify(result))), setCommandError)} onTransferApply={() => runBridgeCommand(bridge?.transferApply(transferManifest, transferDestination, {}).then((result) => setTransferResult(JSON.stringify(result))), setCommandError)} onOpenErrorLog={() => navigate("error_log")} activeScreen={settingsScreen} screen={settingsScreen ? settingsScreens[settingsScreen] : null} onNavigate={(target) => { if (target === "home") { setSettingsScreen(null); navigate("library"); setLibraryHome(true); } else setSettingsScreen(target); }} onScreenClosed={() => setSettingsScreen(null)} /> : route === "error_log" ? errorLogViewEl : route === "song_page" ? <SongPageView track={track} backendAvailable={available} recommendations={songRecs.items} recommendationState={songRecs.state} recommendationError={songRecs.error} hasApiKey={discoveryKeyConfigured !== false} sessionActive={!!projection.preview?.active} onRetryRecommendations={() => setSongRecRefresh((value) => value + 1)} onRefreshRecommendations={() => setSongRecRefresh((value) => value + 1)} onPreviewRecommendation={(item) => runCommand(bridge?.previewTap(songRecs.items.slice(0, 50).map((entry) => ({ artist: entry.artist, title: entry.title })), previewKey(item.artist, item.title)))} onSaveRecommendation={(item) => { const playlists = projection.library?.playlists ?? []; const target = playlists.find((playlist) => playlist.name.toLowerCase() !== "unsorted") ?? playlists[0]; if (!target) { setCommandError("Create a playlist before saving recommendations."); return; } runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), target.id)); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} onLoadVideo={() => { if (track && available) bridge?.videoStage(track.id).catch(() => undefined); }} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
+
+  const showSidebar = !sidebarCollapsed && route !== "settings";
+  const narrowViewport = shellWidth > 0 && shellWidth < 1100;
+  const showQueue = queueOpen && route !== "settings" && !narrowViewport;
+  const focusMode = route === "settings";
+
+  return <div ref={shellRef} className={`luno-shell${queueOpen ? "" : " no-queue"}${sidebarCollapsed ? " no-sidebar" : ""}${focusMode ? " focus-mode" : ""}`} style={{ gridTemplateColumns: `${showSidebar ? sidebarWidth : 0}px minmax(var(--luno-content-min), 1fr) ${showQueue ? queueWidth : 0}px` }} data-route={route} data-backend-state={available ? "available" : "unavailable"} data-video-state={connectedVideo ? "connected" : "unconnected"} data-migration-state={migrationStatus?.status ?? "unknown"}>
+    <header className="luno-topbar" data-tauri-drag-region onPointerDown={startWindowDrag}>
+      {sidebarCollapsed && <button className="luno-icon-button" type="button" aria-label="Show library sidebar" onClick={() => setSidebarCollapsed(false)}><IconLibrary size={15} /></button>}
+      <div className="luno-history" data-tauri-drag-region>
+        <button className="luno-icon-button" type="button" aria-label="Go back" disabled={history.index === 0} onClick={goBack}><IconChevronLeft size={16} /></button>
+        <button className="luno-icon-button" type="button" aria-label="Go forward" disabled={history.index >= history.stack.length - 1} onClick={goForward}><IconChevronRight size={16} /></button>
+      </div>
+      {route !== "settings" && <nav className="luno-top-nav" aria-label="Primary navigation" data-tauri-drag-region>
+        <div className="luno-top-center" data-tauri-drag-region>
+          <button className="luno-home-button" type="button" aria-label="Home" aria-current={route === "library" ? "page" : undefined} title="Home" onClick={() => { navigate("library"); setLibraryHome(true); }}><IconHome size={16} /></button>
+          <form className="luno-search" role="search" onSubmit={(event) => event.preventDefault()}>
+            <IconSearch size={15} />
+            <input aria-label="What do you want to play?" placeholder="What do you want to play?" value={libraryQuery} onChange={(event) => { navigate("library"); setLibraryQuery(event.target.value); if (event.target.value) setLibraryHome(false); }} />
+            {libraryQuery && <button className="luno-icon-button" type="button" aria-label="Clear search" onClick={() => setLibraryQuery("")}><IconClose size={11} /></button>}
+          </form>
+        </div>
+      </nav>}
+      <button className="luno-user-avatar" type="button" aria-label={route === "settings" ? "Close settings" : "Open settings"} title={route === "settings" ? "Close settings" : "Settings"} aria-current={route === "settings" ? "page" : undefined} onClick={toggleSettings}><IconUser size={16} /></button>
+    </header>
     <aside className="luno-sidebar" data-slot="sidebar">
-      <div className="luno-brand" aria-label="Luno">Luno</div>
-      <nav className="luno-nav" aria-label="Primary navigation"><ul className="luno-nav-list">
-        {ROUTES.map((item) => <li key={item}><button className="luno-nav-button" type="button" aria-current={route === item ? "page" : undefined} onClick={() => setRoute(item)}>{routeLabels[item]}</button></li>)}
-      </ul></nav>
-      <div className="luno-playlists luno-scroll" data-slot="playlists" aria-label="Playlists">
-        <p className="luno-playlists-label">Playlists</p>
-        <button className="luno-nav-button" type="button" aria-current={libraryScope === "all" ? "page" : undefined} onClick={() => setLibraryScope("all")}>All Music ({projection.library?.tracks.length ?? 0})</button>
-        <button className="luno-nav-button" type="button" aria-current={libraryScope === "unsorted" ? "page" : undefined} onClick={() => setLibraryScope("unsorted")}>Unsorted</button>
-        <button className="luno-nav-button" type="button" aria-current={libraryScope === "favorites" ? "page" : undefined} onClick={() => setLibraryScope("favorites")}>Favorites ({projection.library?.tracks.filter((track) => track.favorite).length ?? 0})</button>
-        {libraryPlaylists(projection.library).map((playlist) => <button className="luno-nav-button" type="button" key={playlist.id} aria-current={libraryScope === playlist.id || libraryScope === playlist.name ? "page" : undefined} onClick={() => setLibraryScope(playlist.id)}>{playlist.name} ({playlistTracks(projection.library, playlist).length})</button>)}
+      <div className="luno-lib-head">
+        <h2 className="luno-lib-head-title">Your Library</h2>
+        <button className="luno-icon-button" type="button" aria-label="Hide library sidebar" onClick={() => setSidebarCollapsed(true)}><IconLibrary size={16} /></button>
+      </div>
+      <div className="luno-lib-tools">
+        <button className="luno-chip" type="button" aria-label="Show playlists" aria-pressed={sidebarChip === "playlists"} onClick={() => setSidebarChip("playlists")}>Playlists</button>
+        <button className="luno-chip" type="button" aria-label="Show albums" aria-pressed={sidebarChip === "albums"} onClick={() => setSidebarChip("albums")}>Albums</button>
+        <button className="luno-icon-button" type="button" style={{ marginLeft: "auto" }} aria-label="Filter your library" aria-expanded={sidebarSearchOpen} onClick={() => { setSidebarSearchOpen((open) => !open); setSidebarQuery(""); }}><IconSearch size={13} /></button>
+      </div>
+      {sidebarSearchOpen && <div style={{ padding: "0 16px 10px" }}><input className="luno-lib-filter" autoFocus aria-label="Filter playlists" placeholder="Filter…" value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} /></div>}
+      <div className="luno-playlist-list luno-scroll" data-slot="playlists" aria-label="Playlists">
+        {visibleSidebarEntries.map((entry) => {
+          const active = libraryScope === entry.scope;
+          const art = entry.artId ? sidebarArtwork[entry.artId] : undefined;
+          return <button className="luno-playlist-card" type="button" key={`${entry.kind}-${entry.key}`} aria-current={active ? "page" : undefined}
+            onClick={() => { setLibraryScope(entry.scope); setLibraryHome(false); navigate("library"); }}>
+            {entry.kind === "favorites"
+              ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #4c8bf5, #b3b3b3)" }}><IconHeart size={18} /></span>
+              : entry.kind === "all"
+                ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #1db954, #158a3e)" }}><IconMusicNote size={18} /></span>
+                : entry.kind === "unsorted"
+                  ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #3e3e3e, #181818)" }}><IconDownload size={16} /></span>
+                  : art
+                    ? <span className="luno-artwork" style={{ width: 48, height: 48, flex: "0 0 48px", borderRadius: 5 }}><img src={art} alt="" decoding="async" /></span>
+                    : <span className="luno-playlist-pin" style={{ fontSize: 20 }}>♫</span>}
+            <span className="luno-playlist-copy"><strong>{entry.label}</strong><small>{entry.subtitle}</small></span>
+          </button>;
+        })}
+        {visibleSidebarEntries.length === 0 && <p style={{ padding: "8px 10px", color: "var(--luno-text-2)", fontSize: 13 }}>{sidebarChip === "albums" ? "No albums with metadata yet." : sidebarQuery ? "No matching playlists." : "No playlists yet."}</p>}
       </div>
     </aside>
-        <main className="luno-main" data-slot="main" aria-disabled={!available}>{(!available || !connectedVideo || migrationStatus || commandError) && <div className="luno-runtime-status" role="status">{!available && <span data-state="backend-unavailable">Backend unavailable; runtime commands are unavailable.</span>}{commandError && <span data-state="command-rejected">{commandError}</span>}{!connectedVideo && route === "song_page" && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}{migrationStatus?.status === "completed" && <span data-state="migration-completed">Migration completed.</span>}{migrationStatus?.status === "skipped" && <span data-state="migration-skipped">Migration skipped: {migrationStatus.reason}</span>}{migrationStatus?.status === "failed" && <span data-state="migration-failed">Migration failed: {migrationStatus.reason}</span>}</div>}<div className="luno-main-content luno-scroll">{content}</div></main>
-       <aside className="luno-queue luno-scroll" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={queueTracks} currentIndex={projection.playback?.current_index} shuffle={projection.playback?.shuffle} repeat={projection.playback?.repeat} backendAvailable={available} onPlay={(item) => runCommand(bridge?.playWithContext(item.id, queueTracks.map((track) => track.id)))} onPlayNext={(item) => runCommand(bridge?.playNext([item.id]))} onAddToQueue={(item) => runCommand(bridge?.addToQueue([item.id]))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} onClear={() => runCommand(bridge?.clearQueue())} onShuffle={() => runCommand(bridge?.toggleShuffle())} onRepeat={(mode) => runCommand(bridge?.setRepeat(mode))} />}</aside>
-        <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={track} playback={projection.playback} artwork={currentArtwork} volume={settings.volume ?? 1} backendAvailable={available} onPlayPause={() => runCommand(projection.playback?.status === "playing" ? bridge?.pause() : track && bridge?.playWithContext(track.id, queueTracks.map((item) => item.id)))} onNext={() => runCommand(bridge?.next())} onPrevious={() => runCommand(bridge?.previous())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onSeek={(positionMs) => runCommand(bridge?.seek(positionMs))} onVolume={(value) => runCommand(bridge?.setVolume(value))} onVolumeCommit={(value) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }} onOpenTrack={() => setRoute("song_page")} />}</footer>
+        <main className="luno-main" data-slot="main" aria-disabled={!available}>{(!available || !connectedVideo || commandError) && <div className="luno-runtime-status" role="status">{!available && <span data-state="backend-unavailable">Backend unavailable; runtime commands are unavailable.</span>}{commandError && <span data-state="command-rejected">{commandError}</span>}{!connectedVideo && route === "song_page" && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}</div>}<div className="luno-main-content luno-scroll">{content}</div></main>
+       <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : queueTracks} currentIndex={panelRecent ? null : projection.playback?.current_index} recent={panelRecent} shuffle={projection.playback?.shuffle} repeat={projection.playback?.repeat} backendAvailable={available} onClose={() => { setQueueOpen(false); setPanelRecent(false); }} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => runCommand(bridge?.playWithContext(item.id, (panelRecent ? recentTracks : queueTracks).map((track) => track.id)))} onPlayNext={(item) => runCommand(bridge?.playNext([item.id]))} onAddToQueue={(item) => runCommand(bridge?.addToQueue([item.id]))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} onClear={() => runCommand(bridge?.clearQueue())} onShuffle={() => runCommand(bridge?.toggleShuffle())} onRepeat={(mode) => runCommand(bridge?.setRepeat(mode))} />}</aside>
+        <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={track} playback={projection.playback} artwork={currentArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} queueOpen={queueOpen} onToggleQueue={() => setQueueOpen((open) => !open)} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => runCommand(projection.playback?.status === "playing" ? bridge?.pause() : track && bridge?.playWithContext(track.id, queueTracks.map((item) => item.id)))} onNext={() => runCommand(bridge?.next())} onPrevious={() => runCommand(bridge?.previous())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onSeek={(positionMs) => runCommand(bridge?.seek(positionMs))} onVolume={(value) => runCommand(bridge?.setVolume(value))} onVolumeCommit={(value) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }} onOpenTrack={() => navigate("song_page")} />}</footer>
+    {showSidebar && <div className="luno-resize-handle" style={{ left: 8 + sidebarWidth - 4 }} role="separator" aria-orientation="vertical" aria-label="Resize library panel width" onPointerDown={startPanelDrag("sidebar")} />}
+    {showQueue && <div className="luno-resize-handle" style={{ left: Math.max(0, shellWidth - (focusMode ? 0 : 8) - queueWidth - 4) }} role="separator" aria-orientation="vertical" aria-label="Resize queue panel width" onPointerDown={startPanelDrag("queue")} />}
   </div>;
 }
 

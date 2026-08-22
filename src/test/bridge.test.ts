@@ -255,10 +255,13 @@ describe("typed IPC bridge and projection", () => {
     expect(safeVideoSource("https://example.test/video.mp4", "/tmp/../outside.mp4")).toBe("https://example.test/video.mp4");
   });
 
-  it("ignores video state from an older playback generation when returning to a track", () => {
-    const stale = { track_id: "track-1", source_url: "https://example.test/old.mp4", staged_path: null, status: "ready" as const, position_ms: 10, fullscreen: false, generation: 1 };
-    expect(currentVideoForTrack({ playback: { queue: ["track-1"], current_index: 0, shuffle: false, repeat: "off", position_ms: 0, duration_ms: null, status: "playing", generation: 2 }, video: stale }, "track-1")).toBeNull();
-    expect(currentVideoForTrack({ playback: { queue: ["track-1"], current_index: 0, shuffle: false, repeat: "off", position_ms: 0, duration_ms: null, status: "playing", generation: 2 }, video: { ...stale, generation: 2 } }, "track-1")?.source_url).toContain("old.mp4");
+  it("keeps the latest video state for the current track regardless of playback generation", () => {
+    // Video and playback generations are INDEPENDENT counters on the backend;
+    // correlation is by track identity, with event ordering guaranteed upstream.
+    const staged = { track_id: "track-1", source_url: "https://example.test/old.mp4", staged_path: null, status: "ready" as const, position_ms: 10, fullscreen: false, generation: 1 };
+    expect(currentVideoForTrack({ playback: { queue: ["track-1"], current_index: 0, shuffle: false, repeat: "off", position_ms: 0, duration_ms: null, status: "playing", generation: 2 }, video: staged }, "track-1")?.source_url).toContain("old.mp4");
+    expect(currentVideoForTrack({ playback: { queue: ["track-1"], current_index: 0, shuffle: false, repeat: "off", position_ms: 0, duration_ms: null, status: "playing", generation: 2 }, video: { ...staged, track_id: "track-2" } }, "track-1")).toBeNull();
+    expect(currentVideoForTrack({ playback: null, video: staged }, "track-1")?.source_url).toContain("old.mp4");
   });
 
   it("does not enable video commands for artwork fallback", () => {

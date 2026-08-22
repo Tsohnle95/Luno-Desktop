@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { PlaybackSnapshot, Track } from "../shared/contracts";
 import { Artwork } from "./Artwork";
+import { IconPlay, IconPause, IconQueueList, IconRepeat, IconShuffle, IconSkipBack, IconSkipForward, IconVolume } from "./icons";
 
 export interface PlayerBarProps {
   track?: Track | null;
@@ -19,6 +20,14 @@ export interface PlayerBarProps {
   onFavoriteToggle?: (track: Track) => void;
   onOpenTrack?: (track: Track) => void;
   backendAvailable?: boolean;
+  /** Engine shuffle/repeat mirrors for the Spotify-style transport cluster. */
+  shuffle?: boolean;
+  repeat?: "off" | "one" | "all";
+  onToggleShuffle?: () => void;
+  onCycleRepeat?: () => void;
+  /** Queue panel visibility toggle in the right action cluster. */
+  queueOpen?: boolean;
+  onToggleQueue?: () => void;
 }
 
 const formatTime = (ms: number) => { const seconds = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`; };
@@ -38,7 +47,7 @@ const clamp = (value: number, min: number, max: number) => Math.min(Math.max(min
  * the committed position until the backend catches up (no snap-back). The
  * volume slider mirrors the persisted volume value when idle.
  */
-export function PlayerBar({ track = null, playback = null, artwork = null, volume = 1, accent = "var(--luno-green)", onPlayPause, onNext, onPrevious, onSeek, onVolume, onVolumeCommit, onFavoriteToggle, onOpenTrack, backendAvailable = true }: PlayerBarProps) {
+export function PlayerBar({ track = null, playback = null, artwork = null, volume = 1, accent = "var(--luno-green)", onPlayPause, onNext, onPrevious, onSeek, onVolume, onVolumeCommit, onFavoriteToggle, onOpenTrack, backendAvailable = true, shuffle = false, repeat = "off", onToggleShuffle, onCycleRepeat, queueOpen = true, onToggleQueue }: PlayerBarProps) {
   const position = playback?.position_ms ?? 0;
   const duration = playback?.duration_ms ?? 0;
   const playing = playback?.status === "playing";
@@ -192,6 +201,17 @@ export function PlayerBar({ track = null, playback = null, artwork = null, volum
     if (current !== v) el.value = String(v);
   }, [volume]);
 
+  // ---- Volume mute toggle: remembers the last audible level ----
+  const [muted, setMuted] = useState(false);
+  const lastAudibleRef = useRef(volume > 0 ? volume : 1);
+  if (volume > 0) lastAudibleRef.current = volume;
+  const commitVolumeValue = (value: number) => { if (onVolumeCommit) onVolumeCommit(value); else onVolume?.(value); };
+  const toggleMute = () => {
+    if (!backendAvailable) return;
+    if (muted) { setMuted(false); commitVolumeValue(clamp(lastAudibleRef.current, 0, 1)); }
+    else { setMuted(true); commitVolumeValue(0); }
+  };
+
   return <div className="luno-player-bar" style={{ "--luno-player-accent": accent } as CSSProperties} aria-disabled={!backendAvailable}>
     <div className="luno-player-row">
       <button className="luno-player-track" type="button" disabled={!backendAvailable || !track} onClick={() => track && onOpenTrack?.(track)}>
@@ -199,12 +219,16 @@ export function PlayerBar({ track = null, playback = null, artwork = null, volum
         <span className="luno-player-copy"><strong title={track?.title ?? undefined}>{track?.title ?? "Nothing playing"}</strong><small>{track?.artist ?? ""}</small></span>
       </button>
       <div className="luno-transport" role="group" aria-label="Transport controls">
-        <button type="button" aria-label="Previous track" disabled={!backendAvailable} onClick={onPrevious}>⏮</button>
-        <button className="luno-transport-play" type="button" aria-label={playing ? "Pause" : "Play"} disabled={!backendAvailable || !track} onClick={onPlayPause}>{playing ? "Ⅱ" : "▶"}</button>
-        <button type="button" aria-label="Next track" disabled={!backendAvailable} onClick={onNext}>⏭</button>
+        <button type="button" aria-label={shuffle ? "Disable shuffle" : "Enable shuffle"} aria-pressed={shuffle} disabled={!backendAvailable || !onToggleShuffle} onClick={onToggleShuffle}><IconShuffle size={16} /></button>
+        <button type="button" aria-label="Previous track" disabled={!backendAvailable} onClick={onPrevious}><IconSkipBack size={18} /></button>
+        <button className="luno-transport-play" type="button" aria-label={playing ? "Pause" : "Play"} disabled={!backendAvailable || !track} onClick={onPlayPause}>{playing ? <IconPause size={16} /> : <IconPlay size={16} />}</button>
+        <button type="button" aria-label="Next track" disabled={!backendAvailable} onClick={onNext}><IconSkipForward size={18} /></button>
+        <button type="button" aria-label={`Repeat ${repeat}`} aria-pressed={repeat !== "off"} disabled={!backendAvailable || !onCycleRepeat} onClick={onCycleRepeat}>{repeat === "one" ? "①" : <IconRepeat size={16} />}</button>
       </div>
       <div className="luno-player-actions">
-        <button type="button" aria-label={track?.favorite ? "Remove from favorites" : "Add to favorites"} disabled={!backendAvailable || !track} onClick={() => track && onFavoriteToggle?.(track)}>{track?.favorite ? "★" : "☆"}</button>
+        <button type="button" aria-label={queueOpen ? "Close queue panel" : "Open queue panel"} aria-pressed={queueOpen} disabled={!onToggleQueue} onClick={onToggleQueue}><IconQueueList size={17} /></button>
+        <button type="button" className={`luno-favorite${track?.favorite ? " is-on" : ""}`} aria-label={track?.favorite ? "Remove from favorites" : "Add to favorites"} disabled={!backendAvailable || !track} onClick={() => track && onFavoriteToggle?.(track)}>{track?.favorite ? "★" : "☆"}</button>
+        <button type="button" aria-label={muted || volume <= 0 ? "Unmute" : "Mute"} aria-pressed={muted || volume <= 0} disabled={!backendAvailable} onClick={toggleMute}><IconVolume size={16} /></button>
         <label className="luno-volume"><span className="sr-only">Volume</span><input ref={volumeRef} defaultValue={clamp(volume, 0, 1)} aria-label="Volume" type="range" min="0" max="1" step="0.01" disabled={!backendAvailable} onChange={(event) => previewVolume(Number(event.currentTarget.value))} onPointerDown={startVolumeDrag} onPointerUp={commitVolume} onPointerCancel={commitVolume} onKeyUp={commitVolumeKeyboard} /></label>
       </div>
     </div>

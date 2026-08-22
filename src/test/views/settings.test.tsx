@@ -24,3 +24,27 @@ describe("Settings library root", () => {
     expect(html).toContain('value="Music"');
   });
 });
+
+describe("Settings navigation rail", () => {
+  it("exposes home, app destinations, and every settings category as flat tabs", () => {
+    const html = renderToStaticMarkup(<SettingsView />);
+    expect(html).toContain("Home");
+    expect(html).toContain("Recent Songs");
+    expect(html).toContain("Discover");
+    expect(html).toContain("Downloader");
+    expect(html).toContain("Error Log");
+    expect(html).toContain("Playback");
+    expect(html).toContain("Transfer");
+    expect(html).toContain("Troubleshooting");
+    expect(html).not.toContain("Go to");
+    expect(html).not.toContain("Song Page");
+    expect(html).toContain('aria-label="Settings"');
+  });
+
+  it("renders an embedded rail screen in place of the settings panels", () => {
+    const html = renderToStaticMarkup(<SettingsView screen={<div>Embedded screen</div>} activeScreen="recent" />);
+    expect(html).toContain("Embedded screen");
+    expect(html).not.toContain("Storage &amp; Library");
+    expect((html.match(/aria-current="true"/g) ?? []).length).toBe(1);
+  });
+});
