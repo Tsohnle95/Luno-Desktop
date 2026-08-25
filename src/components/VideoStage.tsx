@@ -137,7 +137,7 @@ export function DownloadRing({ progress, size = 64 }: { progress: number | null;
 
 /** Self-contained chrome for the loading/download overlay (any host view). */
 const stageChromeStyles = `
-.luno-video-loading { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; background:rgba(0,0,0,.35); }
+.luno-video-loading { position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; background:rgba(0,0,0,.35); }
 .luno-video-progress { position:relative; width:64px; height:64px; display:inline-flex; align-items:center; justify-content:center; }
 .luno-video-progress svg { width:64px; height:64px; overflow:visible; }
 .luno-video-progress circle { fill:none; stroke-width:3.5; }

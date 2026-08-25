@@ -120,10 +120,10 @@ const songPageStyles = `
 .luno-video-stage { position:relative; width:100%; height:100%; background:var(--luno-bg-3); }
 .luno-video-stage video, .luno-video-stage .luno-artwork { display:block; width:100% !important; height:100% !important; object-fit:contain; }
 .luno-video-stage .luno-artwork img { object-fit:cover; }
-.luno-video-status { position:absolute; inset:auto 12px 12px; margin:0; padding:7px 10px; border-radius:6px; background:rgba(0,0,0,.7); color:var(--luno-text-2); text-align:center; }
+.luno-video-status { position:absolute; inset:auto 12px 12px; z-index:5; margin:0; padding:7px 10px; border-radius:6px; background:rgba(0,0,0,.7); color:var(--luno-text-2); text-align:center; }
 .luno-video-fullscreen { position:absolute; right:10px; top:10px; border:0; border-radius:6px; padding:6px 9px; color:var(--luno-text); background:rgba(0,0,0,.7); cursor:pointer; }
-.luno-video-hover-controls { position:absolute; right:10px; top:10px; display:flex; gap:6px; align-items:center; opacity:0; pointer-events:none; transition:opacity .15s ease; }
-.luno-video-stage:hover .luno-video-hover-controls { opacity:1; pointer-events:auto; }
+.luno-video-hover-controls { position:absolute; right:10px; top:10px; z-index:6; display:flex; gap:6px; align-items:center; opacity:0; pointer-events:none; transition:opacity .15s ease; }
+.luno-video-stage:hover .luno-video-hover-controls, .luno-video-stage:focus-within .luno-video-hover-controls { opacity:1; pointer-events:auto; }
 .luno-video-hover-controls .luno-video-fullscreen { position:static; }
 .luno-video-mode-mini { position:relative; width:38px; height:22px; border:0; border-radius:999px; background:rgba(255,255,255,.28); cursor:pointer; transition:background .15s ease; }
 .luno-video-mode-mini.is-on { background:var(--luno-green,#1db954); }
