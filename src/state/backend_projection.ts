@@ -96,8 +96,31 @@ export function createBackendProjection() {
     getSnapshot: () => state,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); },
     apply: (event: EventEnvelope) => { const next = reduceBackendProjection(state, event); if (next !== state) { state = next; listeners.forEach((listener) => listener()); } },
+    applyVideoSnapshot: (video: VideoState) => { const next = mergeVideoSnapshot(state, video); if (next !== state) { state = next; listeners.forEach((listener) => listener()); } },
     reset: () => { state = initialBackendProjection(); listeners.forEach((listener) => listener()); },
   };
+}
+
+/// Pull-based reconciliation for video state. Video reaches the UI almost
+/// entirely through PUSHED `video_state` events; if one is lost (event burst,
+/// listener attach timing), the song page sat on "Loading video preview..."
+/// forever because nothing ever re-checked. The video_stage command RESPONSE
+/// carries the same authoritative state — this merge lets the UI absorb it.
+/// Event-id/generation sequencing is intentionally untouched: snapshots fill
+/// gaps, they do not participate in ordering.
+export function mergeVideoSnapshot(state: BackendProjection, incoming: VideoState): BackendProjection {
+  const current = state.video;
+  if (current && current.track_id === incoming.track_id) {
+    // Never walk a live playback session backwards to a pre-play state.
+    if ((current.status === "playing" || current.status === "paused") && (incoming.status === "ready" || incoming.status === "loading")) return state;
+    const unchanged = current.status === incoming.status
+      && current.staged_path === incoming.staged_path
+      && current.source_url === incoming.source_url
+      && current.position_ms === incoming.position_ms
+      && current.download_progress === incoming.download_progress;
+    if (unchanged) return state;
+  }
+  return { ...state, video: incoming };
 }
 
 export function subscribeBackendProjection(bridge: Pick<Bridge, "subscribe">, projection: ReturnType<typeof createBackendProjection>) {

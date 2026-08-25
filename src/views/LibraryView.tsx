@@ -32,11 +32,43 @@ export function libraryAlbums(snapshot: LibrarySnapshot | null | undefined): Arr
 export const ALBUM_SCOPE_PREFIX = "album:";
 export const albumScope = (albumName: string): LibraryScope => `${ALBUM_SCOPE_PREFIX}${albumName}`;
 
+/**
+ * Fold text for filter comparison: macOS smart punctuation turns a typed '
+ * into U+2019 (so "l'in" never matched "L'indécis"), accents and dash
+ * variants should not block matches either. Applied to BOTH query and row
+ * text before the substring check.
+ */
+export function normalizeFilterText(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[\u2018\u2019\u201c\u201d]/g, "'")
+    .replace(/[\u2013\u2014]/g, "-")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
 /** Deterministic gradient pick so every scope keeps a stable hero color. */
 export function scopeGradient(name: string): string {
   let hash = 0;
   for (const char of name) hash = ((hash * 31) + char.charCodeAt(0)) >>> 0;
   return `var(--luno-gradient-${hash % 10})`;
+}
+
+/**
+ * Pure virtualized-window math so the clamp behavior is unit-testable.
+ * `scrollTop` is the live page scroll, `anchorHeight` is hero + column head,
+ * `count` is the (possibly tiny) filtered list length. The window ALWAYS
+ * contains at least min(count, 1) rows when count > 0: a stale scroll offset
+ * past a shrunken list used to render an empty window over existing rows —
+ * songs "disappeared" while still present and playable.
+ */
+export function virtualWindow(scrollTop: number, anchorHeight: number, count: number, overscan = 20): { start: number; end: number } {
+  if (count <= 0) return { start: 0, end: 0 };
+  const localTop = Math.max(0, scrollTop - anchorHeight);
+  const start = Math.max(0, Math.min(Math.floor(localTop / 56), count - 1));
+  return { start, end: Math.min(start + overscan, count) };
 }
 
 export interface LibraryViewProps {
@@ -104,11 +136,22 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [scrollTop, setScrollTop] = useState(0);
   const [filterOpen, setFilterOpen] = useState(false);
-  const showFilter = filterOpen || query !== "";
+  // The in-view filter box opens ONLY via its own toggle button. Auto-mounting
+  // it whenever the TOP search had text (`query !== ""`) spawned a phantom
+  // focused input under the hero artwork and stole focus mid-typing.
+  const showFilter = filterOpen;
+  // Fold smart punctuation / accents on BOTH sides before matching so a typed
+  // "l'in" (macOS inserts U+2019) still finds "L'indécis".
+  const needle = useMemo(() => normalizeFilterText(query), [query]);
   const tracks = useMemo(() => {
-    const filtered = scopeTracks(snapshot, selectedScope).filter((track) => `${track.title} ${track.artist ?? ""} ${track.album ?? ""}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+    const filtered = scopeTracks(snapshot, selectedScope).filter((track) => normalizeFilterText(`${track.title} ${track.artist ?? ""} ${track.album ?? ""}`).includes(needle));
     return sort === "Recently added" ? filtered : sortLibraryTracks(filtered, sort);
-  }, [snapshot, selectedScope, query, sort]);
+  }, [snapshot, selectedScope, needle, sort]);
+  // Unfiltered scope size: the hero must report the LIBRARY size even when the
+  // active query matches nothing — a zero-match filter previously made the hero
+  // read "0 songs" and the empty state claim "No songs in All Music", which
+  // looked exactly like the library had been wiped.
+  const scopeSize = useMemo(() => scopeTracks(snapshot, selectedScope).length, [snapshot, selectedScope]);
   const playlists = libraryPlaylists(snapshot);
   const playing = playback?.current_index == null ? null : playback.queue[playback.current_index];
   const isAlbumScope = selectedScope.startsWith(ALBUM_SCOPE_PREFIX);
@@ -170,12 +213,8 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
 
   // Clamp scrollTop into a defensible range derived from the full page height,
   // then translate it into the row coordinate space under the hero + head.
-  const maxScrollTop = Math.max(0, anchorHeight + tracks.length * 56 - 1);
-  const clampedScrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop));
-  const localTop = Math.max(0, clampedScrollTop - anchorHeight);
-  const startIndex = Math.floor(localTop / 56);
-  const overscan = 20;
-  const visible = tracks.slice(startIndex, Math.ceil(localTop / 56) + overscan);
+  const { start: startIndex, end: endIndex } = virtualWindow(scrollTop, anchorHeight, tracks.length);
+  const visible = tracks.slice(startIndex, endIndex);
   const artwork = useTrackArtwork(visible.map((track) => track.id), onArtwork);
   const coverArtwork = useTrackArtwork(tracks.slice(0, 8).map((track) => track.id), onArtwork);
   const play = (track: Track) => { if (backendAvailable) onPlay?.(track, tracks); };
@@ -206,7 +245,7 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
             <div className="luno-hero-info">
               <p className="luno-hero-eyebrow">{eyebrow}</p>
               <h1>{scopeName}</h1>
-              <p className="luno-hero-meta"><strong>Luno</strong> • {tracks.length} song{tracks.length === 1 ? "" : "s"}{formatTotal(totalMs)}</p>
+              <p className="luno-hero-meta"><strong>Luno</strong> • {scopeSize} song{scopeSize === 1 ? "" : "s"}{formatTotal(totalMs)}{query && tracks.length !== scopeSize ? ` • ${tracks.length} match${tracks.length === 1 ? "" : "es"}` : ""}</p>
             </div>
           </div>
           <div className="luno-hero-actions">
@@ -233,9 +272,10 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
       {loading ? <p role="status" className="luno-track-empty">Loading library...</p>
         : error ? <div role="alert" className="luno-track-empty">{error}<button type="button" disabled={!backendAvailable} onClick={onScan}>Retry</button></div>
           : !snapshot ? <p className="luno-track-empty">Library is not available.</p>
-            : tracks.length === 0 ? <p className="luno-track-empty">No songs in {scopeName}.</p>
+            : tracks.length === 0 && scopeSize > 0 ? <p className="luno-track-empty">No matches for “{query}” in {scopeName} — showing all {scopeSize} songs once you clear the search.</p>
+              : tracks.length === 0 ? <p className="luno-track-empty">No songs in {scopeName}.</p>
               : <div style={{ height: tracks.length * 56, position: "relative" }}>
-                <div style={{ transform: `translateY(${Math.floor(localTop / 56) * 56}px)` }}>{visible.map((track, index) => <div role="listitem" key={`${track.id}:${startIndex + index}`} onClick={(event) => toggleSelection(track, event)}><TrackRow track={track} artwork={artwork[track.id] ?? track.artwork_url} index={startIndex + index} playlistName={isAlbumScope ? track.album ?? scopeName : scopeName} selected={selected.has(track.id)} playing={playing === track.id} onClick={play} onFavoriteToggle={onFavoriteToggle} onContextMenu={onContextMenu} backendAvailable={backendAvailable} /></div>)}</div>
+                <div style={{ transform: `translateY(${startIndex * 56}px)` }}>{visible.map((track, index) => <div role="listitem" key={`${track.id}:${startIndex + index}`} onClick={(event) => toggleSelection(track, event)}><TrackRow track={track} artwork={artwork[track.id] ?? track.artwork_url} index={startIndex + index} playlistName={isAlbumScope ? track.album ?? scopeName : scopeName} selected={selected.has(track.id)} playing={playing === track.id} onClick={play} onFavoriteToggle={onFavoriteToggle} onContextMenu={onContextMenu} backendAvailable={backendAvailable} /></div>)}</div>
               </div>}
     </div>
   </section>;

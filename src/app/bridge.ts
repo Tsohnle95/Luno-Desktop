@@ -59,7 +59,7 @@ export const tauriTransport: BridgeTransport = {
 };
 
 let requestSequence = 0;
-type UnitCommand = "get_library" | "scan_library" | "pause" | "video_play" | "video_pause" | "get_recent" | "clear_recent" | "next" | "previous" | "clear_queue" | "toggle_shuffle";
+type UnitCommand = "get_library" | "scan_library" | "pause" | "resume" | "video_play" | "video_pause" | "get_recent" | "clear_recent" | "next" | "previous" | "clear_queue" | "toggle_shuffle";
 
 function envelope(command: Command | UnitCommand): CommandEnvelope {
   const request_id = `frontend-${Date.now()}-${requestSequence++}`;
@@ -130,11 +130,13 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
     },
     videoSource: (track_id: TrackId) => send({ type: "video_source", payload: { track_id } }),
     videoStage: (track_id: TrackId) => send({ type: "video_stage", payload: { track_id } }),
+    setVideoMode: (enabled: boolean) => send({ type: "set_video_mode", payload: { enabled } }),
     videoPlay: () => send("video_play"),
     videoPause: () => send("video_pause"),
     videoSeek: (position_ms: number) => send({ type: "video_seek", payload: { position_ms } }),
     videoResize: (width: number, height: number) => send({ type: "video_resize", payload: { width, height } }),
     videoFullscreen: (fullscreen: boolean) => send({ type: "video_fullscreen", payload: { fullscreen } }),
+    resume: () => send("resume"),
     migrationStatus: async (): Promise<MigrationStatus> => {
       const value = await transport.invoke<unknown>("migration_status", null);
       return parseMigrationStatus(value);

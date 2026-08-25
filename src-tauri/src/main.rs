@@ -141,17 +141,24 @@ fn discovery_key_status(state: tauri::State<'_, AppState>) -> Result<Value, Stri
     Ok(serde_json::json!({ "configured": state.has_discovery_key() }))
 }
 
-/// Stores or clears the Last.fm API key. The key lives in the macOS Keychain
-/// (never in settings files) and is applied to the discovery service live.
+/// Stores or clears the Last.fm API key in the app-data key file (0600).
+/// Never touches the macOS Keychain — that item is legacy read-only seed
+/// material and must not generate prompts.
 #[tauri::command]
-fn save_discovery_key(state: tauri::State<'_, AppState>, key: String) -> Result<Value, String> {
+fn save_discovery_key(app: tauri::AppHandle, state: tauri::State<'_, AppState>, key: String) -> Result<Value, String> {
     let trimmed = key.trim().to_string();
-    let mut keychain = MacOsKeychain::new();
     if trimmed.is_empty() {
-        keychain.remove_lastfm_key()?;
+        if let Some(path) = discovery_key_path(&app) {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("could not clear discovery key: {error}")),
+            }
+        }
         state.set_discovery_key(None);
     } else {
-        keychain.save_lastfm_key(&trimmed)?;
+        let path = discovery_key_path(&app).ok_or_else(|| "app data directory is unavailable".to_string())?;
+        write_key_file(&path, trimmed.as_bytes()).map_err(|error| format!("could not store discovery key: {error}"))?;
         state.set_discovery_key(Some(trimmed));
     }
     Ok(serde_json::json!({ "configured": state.has_discovery_key() }))
@@ -277,7 +284,69 @@ fn dirs_fallback_home() -> Result<PathBuf, String> {
         .ok_or_else(|| "HOME is not available".into())
 }
 
+fn discovery_key_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|root| root.join("lastfm-key"))
+}
+
+/// Write the discovery key with owner-only permissions (0600).
+fn write_key_file(path: &PathBuf, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    fn apply_mode(options: &mut std::fs::OpenOptions) {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    fn apply_mode(_options: &mut std::fs::OpenOptions) {}
+    let mut options = std::fs::OpenOptions::new();
+    apply_mode(&mut options);
+    let mut file = options.write(true).create(true).truncate(true).open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// The Last.fm API key lives in a 0600 file under app data. The macOS Keychain
+/// is consulted AT MOST ONCE per install — silently, via kSecUseAuthenticationUI
+/// =Deny, which structurally cannot raise a prompt — purely to seed that file.
+/// Startup therefore never triggers a Keychain dialog again.
+fn load_discovery_key(app: &tauri::AppHandle) -> Option<String> {
+    let path = discovery_key_path(app)?;
+    if let Ok(existing) = fs::read_to_string(&path) {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    let key = MacOsKeychain::new().try_read_lastfm_key_silent()?;
+    let key = String::from_utf8_lossy(&key).trim().to_string();
+    if key.is_empty() {
+        return None;
+    }
+    if let Err(error) = write_key_file(&path, key.as_bytes()) {
+        eprintln!("[luno-discovery] could not persist lastfm-key file: {error}");
+    } else {
+        eprintln!("[luno-discovery] seeded lastfm-key file from keychain (one-time)");
+    }
+    Some(key)
+}
+
 fn main() {
+    // Single-instance guard: all installs share ~/.luno_config.json and the
+    // app-data store, so a second concurrent instance last-writer-wins the
+    // config (this once flipped video_mode back off mid-download). Claim a
+    // localhost port; if it is taken, a Luno is already running — exit.
+    // Isolated QA fixtures set LUNO_INSTANCE_PORT to run side-by-side.
+    let guard_port: u16 = std::env::var("LUNO_INSTANCE_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(48713);
+    match std::net::TcpListener::bind(("127.0.0.1", guard_port)) {
+        Ok(listener) => std::mem::forget(listener),
+        Err(_) => {
+            eprintln!("[luno] another Luno instance is already running; exiting this duplicate.");
+            return;
+        }
+    }
     let builder = tauri::Builder::default().manage(AppState::new(32));
     #[cfg(debug_assertions)]
     let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, discovery_key_status, save_discovery_key, gate5_smoke]);
@@ -308,11 +377,7 @@ fn main() {
             startup_migration(app.handle()).map_err(std::io::Error::other)?;
             app.state::<AppState>()
                 .set_bundle_helper(resolve_bundle_helper(app.handle()));
-            let discovery_key = MacOsKeychain::new()
-                .read_lastfm_key()
-                .ok()
-                .filter(|key| !key.is_empty())
-                .map(|key| String::from_utf8_lossy(&key).into_owned());
+            let discovery_key = load_discovery_key(app.handle());
             app.state::<AppState>().set_discovery_key(discovery_key);
             let preview_helper = resolve_bundle_helper(app.handle());
             let managed_bin = preview_helper

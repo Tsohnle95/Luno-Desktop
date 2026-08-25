@@ -35,6 +35,17 @@ impl MacOsKeychain {
         { let _ = key; Err("macOS Keychain is unavailable on this platform".into()) }
     }
 
+    /// Silent read for the one-time seed of the plaintext key file. Passes
+    /// kSecUseAuthenticationUI=Deny so this call is structurally incapable of
+    /// raising a Keychain prompt: if the caller's identity lacks ACL access,
+    /// it simply fails and startup proceeds without the key.
+    pub fn try_read_lastfm_key_silent(&mut self) -> Option<Vec<u8>> {
+        #[cfg(target_os = "macos")]
+        { security::get_silent(&self.service, &self.account) }
+        #[cfg(not(target_os = "macos"))]
+        { None }
+    }
+
     pub fn read_lastfm_key(&mut self) -> Result<Vec<u8>, String> {
         #[cfg(target_os = "macos")]
         { security::get(&self.service, &self.account) }
@@ -162,6 +173,94 @@ mod security {
         let result = unsafe { std::slice::from_raw_parts(data, length as usize) }.to_vec();
         unsafe { SecKeychainItemFreeContent(ptr::null(), data); CFRelease(item); }
         Ok(result)
+    }
+
+    /// Modern-API read that CANNOT prompt: kSecUseAuthenticationUI=Deny makes
+    /// securityd refuse any UI interaction, so an identity without ACL access
+    /// simply gets errSecInteractionNotAllowed instead of a dialog.
+    pub fn get_silent(service_name: &str, account_name: &str) -> Option<Vec<u8>> {
+        use std::ffi::CString;
+
+        type CFTypeRef = *const c_void;
+        type CFDictionaryRef = *const c_void;
+        type CFDataRef = *const c_void;
+        const K_CF_STRING_ENCODING_UTF8: UInt32 = 0x0800_0100;
+        const ERR_SEC_ITEM_NOT_FOUND_SILENT: OsStatus = -25300;
+        const ERR_SEC_INTERACTION_NOT_ALLOWED: OsStatus = -25308;
+
+        #[link(name = "Security", kind = "framework")]
+        unsafe extern "C" {
+            static kSecClass: CFTypeRef;
+            static kSecClassGenericPassword: CFTypeRef;
+            static kSecAttrService: CFTypeRef;
+            static kSecAttrAccount: CFTypeRef;
+            static kSecReturnData: CFTypeRef;
+            static kSecUseAuthenticationUI: CFTypeRef;
+            fn SecItemCopyMatching(query: CFDictionaryRef, result: *mut CFTypeRef) -> OsStatus;
+        }
+        #[link(name = "CoreFoundation", kind = "framework")]
+        unsafe extern "C" {
+            static kCFBooleanTrue: CFTypeRef;
+            static kCFCopyStringDictionaryKeyCallBacks: u8;
+            static kCFTypeDictionaryValueCallBacks: u8;
+            fn CFStringCreateWithCString(alloc: *const c_void, c_str: *const u8, encoding: UInt32) -> CFTypeRef;
+            fn CFDictionaryCreateMutable(alloc: *const c_void, capacity: isize, key_callbacks: *const c_void, value_callbacks: *const c_void) -> *mut c_void;
+            fn CFDictionarySetValue(dict: *mut c_void, key: CFTypeRef, value: CFTypeRef);
+            fn CFDataGetLength(data: CFDataRef) -> isize;
+            fn CFDataGetBytePtr(data: CFDataRef) -> *const u8;
+        }
+
+        let c_service = CString::new(service_name).ok();
+        let c_account = CString::new(account_name).ok();
+        let query = unsafe {
+            CFDictionaryCreateMutable(
+                ptr::null(), 0,
+                &kCFCopyStringDictionaryKeyCallBacks as *const u8 as *const c_void,
+                &kCFTypeDictionaryValueCallBacks as *const u8 as *const c_void,
+            )
+        };
+        let (c_service, c_account) = match (c_service, c_account) {
+            (Some(service), Some(account)) => (service, account),
+            _ => { unsafe { CFRelease(query) }; return None; }
+        };
+        let deny = unsafe {
+            // kSecUseAuthenticationUIDeny is not exported as a linkable symbol;
+            // the framework compares string CONTENT, so build "Deny" directly.
+            CFStringCreateWithCString(ptr::null(), b"Deny\0".as_ptr(), K_CF_STRING_ENCODING_UTF8)
+        };
+        let owned = [
+            unsafe { CFStringCreateWithCString(ptr::null(), c_service.as_ptr() as *const u8, K_CF_STRING_ENCODING_UTF8) },
+            unsafe { CFStringCreateWithCString(ptr::null(), c_account.as_ptr() as *const u8, K_CF_STRING_ENCODING_UTF8) },
+            deny,
+        ];
+        if owned.iter().any(|item| item.is_null()) {
+            unsafe { CFRelease(query) };
+            owned.iter().for_each(|item| if !item.is_null() { unsafe { CFRelease(*item) } });
+            return None;
+        }
+        unsafe {
+            CFDictionarySetValue(query, kSecClass, kSecClassGenericPassword);
+            CFDictionarySetValue(query, kSecAttrService, owned[0]);
+            CFDictionarySetValue(query, kSecAttrAccount, owned[1]);
+            CFDictionarySetValue(query, kSecReturnData, kCFBooleanTrue);
+            CFDictionarySetValue(query, kSecUseAuthenticationUI, owned[2]);
+        }
+
+        let mut result: CFTypeRef = ptr::null();
+        let status = unsafe { SecItemCopyMatching(query as CFDictionaryRef, &mut result) };
+        unsafe { CFRelease(query) };
+        owned.iter().for_each(|item| unsafe { CFRelease(*item) });
+        if status != 0 || result.is_null() {
+            // Item missing (-25300) or access denied without UI (-25308):
+            // both mean "no silent key available" — never an error worth raising.
+            let _ = (ERR_SEC_ITEM_NOT_FOUND_SILENT, ERR_SEC_INTERACTION_NOT_ALLOWED);
+            return None;
+        }
+        let length = unsafe { CFDataGetLength(result as CFDataRef) };
+        if length <= 0 { unsafe { CFRelease(result) }; return None; }
+        let bytes = unsafe { std::slice::from_raw_parts(CFDataGetBytePtr(result as CFDataRef), length as usize) }.to_vec();
+        unsafe { CFRelease(result) };
+        Some(bytes)
     }
 
     pub fn remove(service_name: &str, account_name: &str) -> Result<(), String> {

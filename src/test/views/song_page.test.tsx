@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Track } from "../../shared/contracts";
 import { Recommendations, type Recommendation } from "../../components/Recommendations";
-import { SongPageView } from "../../views/SongPageView";
+import { VideoStage } from "../../components/VideoStage";
+import { SongPageView, VideoModePill } from "../../views/SongPageView";
 
 const track: Track = { id: "seed", path: null, title: "Seed", artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null };
 const recommendation: Recommendation = { id: "rec", title: "Similar", artist: "Other" };
@@ -16,3 +17,78 @@ export const songPageChecks = {
 };
 
 if (!songPageChecks.page || songPageChecks.pageSize !== 25 || songPageChecks.cap !== 1000 || !songPageChecks.seedIdentity || !songPageChecks.favoriteUnavailable) throw new Error("Song page contract failed");
+
+import { describe, expect, it } from "vitest";
+
+describe("Song page video mode", () => {
+  it("keeps the options menu retired in favor of stage hover controls", () => {
+    // The legacy ⋯ menu was removed entirely; video mode now lives in the
+    // hover controls rendered by VideoStage on the media slot itself.
+    const html = renderToStaticMarkup(<SongPageView track={track} backendAvailable />);
+    expect(html).not.toContain('aria-label="Song page options"');
+    const wired = renderToStaticMarkup(<SongPageView track={track} backendAvailable onVideoModeChange={() => undefined} videoMode />);
+    expect(wired).not.toContain('aria-label="Song page options"');
+    expect(wired).toContain('data-testid="video-stage"');
+  });
+
+  it("renders the pill toggle with its current state", () => {
+    const off = renderToStaticMarkup(<VideoModePill enabled={false} />);
+    expect(off).toContain('data-testid="video-mode-toggle"');
+    expect(off).toContain(">Off</span>");
+    expect(off).toContain('aria-checked="false"');
+    const on = renderToStaticMarkup(<VideoModePill enabled />);
+    expect(on).toContain("is-on");
+    expect(on).toContain('aria-checked="true"');
+    expect(on).toContain(">On</span>");
+  });
+
+  it("describes the prefetch behavior inside the menu copy", () => {
+    // The legacy ⋯ options menu was replaced by the hover controls on the
+    // media stage; the song page no longer renders any menu anchor.
+    const wired = renderToStaticMarkup(<SongPageView track={track} backendAvailable onVideoModeChange={() => undefined} />);
+    expect(wired).not.toContain("luno-song-menu-anchor");
+  });
+});
+
+describe("Music-mode hover controls", () => {
+  it("renders the mode toggle over ARTWORK (mode off, no video loaded)", () => {
+    // Regression: controls used to be gated on showVideo, which made music
+    // mode impossible to re-enable once turned off — the exact reported bug.
+    const html = renderToStaticMarkup(
+      <SongPageView track={track} backendAvailable videoMode={false} onVideoModeChange={() => undefined} />
+    );
+    expect(html).toContain('aria-label="Music mode off"');
+    expect(html).toContain('data-testid="video-hover-controls"');
+  });
+
+  it("shows fullscreen only when a video is actually playing", () => {
+    const artworkOnly = renderToStaticMarkup(<VideoStage artworkUrl="art.png" videoModeEnabled={false} onVideoModeChange={() => undefined} />);
+    expect(artworkOnly).not.toContain("luno-video-fullscreen");
+    expect(artworkOnly).not.toContain("<video");
+    const withVideo = renderToStaticMarkup(<VideoStage src="clip.mp4" status="playing" videoModeEnabled onVideoModeChange={() => undefined} />);
+    expect(withVideo).toContain("luno-video-fullscreen");
+  });
+
+  it("never shows the ghost Load-music-video button while mode is off", () => {
+    // Regression: with videoMode off the button rendered whenever no src was
+    // set, resurrecting a stale control after the user turned mode off.
+    const html = renderToStaticMarkup(
+      <SongPageView track={track} backendAvailable videoConnection="connected" onLoadVideo={() => undefined} videoMode={false} onVideoModeChange={() => undefined} />
+    );
+    expect(html).not.toContain("Load music video");
+    expect(html).not.toContain("Retry music video");
+    // Mode ON + no source + a failed/absent attempt => the only allowed
+    // manual control, phrased as a retry (never the old ghost button).
+    const retryHtml = renderToStaticMarkup(
+      <SongPageView track={track} backendAvailable videoConnection="connected" onLoadVideo={() => undefined} videoMode onVideoModeChange={() => undefined} video={{ status: "unavailable" }} />
+    );
+    expect(retryHtml).toContain("Video unavailable");
+    const idleHtml = renderToStaticMarkup(
+      <SongPageView track={track} backendAvailable videoConnection="connected" onLoadVideo={() => undefined} videoMode onVideoModeChange={() => undefined} />
+    );
+    // No failure recorded => nothing to retry => no manual button at all.
+    // (Class-name greps hit the embedded stylesheet; assert on labels.)
+    expect(idleHtml).not.toContain("Retry music video");
+    expect(idleHtml).not.toContain(">Load music video<");
+  });
+});

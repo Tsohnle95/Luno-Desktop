@@ -20,9 +20,9 @@
     },
     {
       "name": "yt-dlp",
-      "version": "2025.08.11",
-      "source": "official GitHub release 2025.08.11 yt-dlp_macos (universal2)",
-      "sha256": "8001c730007495a26de24d7fcf6c72e76bc24c47bdde2cfd86d51e21626bd7e4",
+      "version": "2026.08.19",
+      "source": "official GitHub release 2026.08.19 yt-dlp_macos (universal2)",
+      "sha256": "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202",
       "license_notice": "THIRD_PARTY_NOTICES.md#yt-dlp"
     }
   ]

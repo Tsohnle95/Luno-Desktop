@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite src --host localhost --port 1420 --strictPort",
-    "build": "tsc --noEmit && vite build src --outDir ../dist",
+    "build": "tsc --noEmit && vite build src --emptyOutDir --outDir ../dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "tauri": "tauri"

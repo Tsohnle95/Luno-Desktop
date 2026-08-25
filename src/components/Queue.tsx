@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import type { Track } from "../shared/contracts";
 import { Artwork } from "./Artwork";
-import { IconClose } from "./icons";
 import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
 
 export interface QueueProps {
@@ -14,15 +13,9 @@ export interface QueueProps {
   onAddToQueue?: (track: Track) => void;
   onRemove?: (index: number) => void;
   onReorder?: (from: number, to: number) => void;
-  onClear?: () => void;
-  onShuffle?: () => void;
-  onRepeat?: (mode: "off" | "one" | "all") => void;
-  shuffle?: boolean;
-  repeat?: "off" | "one" | "all";
   backendAvailable?: boolean;
-  /** Panel chrome: tab switcher + close button (Spotify-style header). */
+  /** Panel chrome: tab switcher header. Panels open/close by edge-drag only. */
   recentLabel?: string | null;
-  onClose?: () => void;
   onTabChange?: (recent: boolean) => void;
   /** Section label above the upcoming rows ("Next from: <scope>"). */
   nextFromLabel?: string | null;
@@ -30,7 +23,7 @@ export interface QueueProps {
   onArtwork?: ArtworkFetcher;
 }
 
-export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onFavoriteToggle, onPlayNext, onAddToQueue, onRemove, onReorder, onClear, onShuffle, onRepeat, shuffle = false, repeat = "off", backendAvailable = true, recentLabel = null, onClose, onTabChange, nextFromLabel = null, onArtwork }: QueueProps) {
+export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onFavoriteToggle, onPlayNext, onAddToQueue, onRemove, onReorder, backendAvailable = true, recentLabel = null, onTabChange, nextFromLabel = null, onArtwork }: QueueProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollTop = useRef(0);
   useLayoutEffect(() => {
@@ -45,16 +38,10 @@ export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onF
   // hook means re-renders never re-request the same track ids.
   const artwork = useTrackArtwork(visible.map((track) => track.id), onArtwork);
   return <div className="luno-queue-panel">
-    {(onTabChange || onClose) && <header className="luno-queue-head">
+    {onTabChange && <header className="luno-queue-head">
       <button className="luno-queue-tab" type="button" aria-label="Queue tab" aria-pressed={!recent} disabled={!onTabChange} onClick={() => onTabChange?.(false)}>Queue</button>
       <button className="luno-queue-tab" type="button" aria-pressed={recent} disabled={!onTabChange} onClick={() => onTabChange?.(true)}>{recentLabel ?? "Recently played"}</button>
-      {onClose && <button className="luno-icon-button luno-queue-close" type="button" aria-label="Close queue panel" onClick={onClose}><IconClose size={14} /></button>}
     </header>}
-    {!recent && <div className="luno-queue-tools">
-      <button className="luno-pill" type="button" aria-label={shuffle ? "Disable shuffle" : "Enable shuffle"} aria-pressed={shuffle} disabled={!backendAvailable} onClick={onShuffle}>Shuffle</button>
-      <button className="luno-pill" type="button" aria-label={`Repeat ${repeat}`} aria-pressed={repeat !== "off"} disabled={!backendAvailable} onClick={() => onRepeat?.(repeat === "off" ? "all" : repeat === "all" ? "one" : "off")}>Repeat: {repeat}</button>
-      <button className="luno-pill" type="button" aria-label="Clear queue" disabled={!backendAvailable || !tracks.length} onClick={onClear}>Clear</button>
-    </div>}
     <div ref={scrollRef} className="luno-queue-body luno-scroll" onScroll={rememberScroll}>
       {current && !recent ? <>
         <h2 className="luno-queue-section">Now playing</h2>

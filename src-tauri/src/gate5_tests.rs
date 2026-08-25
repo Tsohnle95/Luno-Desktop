@@ -418,6 +418,39 @@ fn ref_video_source_and_staging_use_canonical_relevant_isolated_assets() {
     assert!(fs::read_dir(stage.root()).unwrap().next().is_none());
 }
 
+/// Regression for the live failure where the ONLY strict candidate was a
+/// licensed upload YouTube refuses to every downloader client ("not available
+/// on this app"), leaving staging with zero alternates. Relaxed matches must
+/// follow strict ones as fallback material while word-soup results stay out.
+#[test]
+fn ref_video_lookup_offers_relaxed_fallbacks_after_strict_matches() {
+    fn candidate(id: &str, title: &str, uploader: Option<&str>) -> VideoCandidate {
+        VideoCandidate { id: id.into(), title: title.into(), artist: uploader.map(str::to_string), url: String::new() }
+    }
+    // Real-world shape of the "Playtime [full EP]" failure.
+    let results = lookup(Some("L'indécis"), "Playtime [full EP]", |query| match query {
+        q if q.contains(" - ") => vec![
+            candidate("exact-licensed", "L'indécis - Playtime [full EP]", Some("Chillhop Music")),
+            // Word soup sharing two title words but no artist anywhere.
+            candidate("soup-1", "🔴 LIVE: Playtime with Friends (Full Episodes)", Some("Non-stop cartoons")),
+            candidate("soup-2", "POPPY PLAYTIME ALL CHAPTERS FULL Game", None),
+            // Partial overlap WITH artist evidence -> relaxed fallback.
+            candidate("artist-mix", "PLAYTIME EP Release Party - 2H Mix", Some("L'indécis")),
+        ],
+        _ => vec![
+            candidate("reupload", "L'Indécis - Playtime (Full Album)", Some("The Mellow Mix")),
+            candidate("low-overlap", "L'indécis - Full Performance (Live Session)", Some("Chillhop Music")),
+        ],
+    });
+    let ids: Vec<&str> = results.iter().map(|source| source.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        // Strict first; relaxed ties keep query-form encounter order.
+        vec!["exact-licensed", "artist-mix", "reupload"],
+        "strict first, then relaxed best-overlap; word soup and low overlap rejected"
+    );
+}
+
 #[derive(Default)]
 struct FakeDecoder {
     starts: Vec<Duration>,

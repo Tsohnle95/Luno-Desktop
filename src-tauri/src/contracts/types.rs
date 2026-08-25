@@ -308,6 +308,10 @@ pub struct SettingsInput {
     pub sleep_timer: Option<serde_json::Value>,
     pub global_keys: Option<bool>,
     pub favorite_songs: Vec<String>,
+    /// Song-page video mode: auto-stage the current track's music video and
+    /// pre-download the next five queue videos. Absent = off.
+    #[serde(default)]
+    pub video_mode: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

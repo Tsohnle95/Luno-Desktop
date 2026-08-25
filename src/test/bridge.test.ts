@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { backendCommandArgs, createBridge, isValidLibraryResponse, parseMigrationStatus, tauriTransport } from "../app/bridge";
-import { createBackendProjection } from "../state/backend_projection";
+import { createBackendProjection, mergeVideoSnapshot } from "../state/backend_projection";
 import { currentVideoForTrack, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled } from "../app/Shell";
 import type { BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope } from "../shared/contracts";
@@ -311,6 +311,28 @@ describe("typed IPC bridge and projection", () => {
     store.apply({ ...deliveryError, event_id: "delivery-error-2" });
     store.apply({ ...event({ type: "error", payload: { error: { code: "internal", message: "next", retryable: false } } }, 2), event_id: "event-2" });
     expect(store.getSnapshot().errors.map((error) => error.message)).toEqual(["domain", "delivery", "delivery", "next"]);
-    expect(store.getSnapshot().lastEventIds.errors).toBe("event-2");
+        expect(store.getSnapshot().lastEventIds.errors).toBe("event-2");
+  });
+
+  it("mergeVideoSnapshot absorbs a Ready response after a lost Loading event", () => {
+    const store = createBackendProjection();
+    // Simulates the stranded case: the pushed video_state event never
+    // arrived, so projection.video is still null when the song page polls.
+    const ready = { track_id: "track-1", source_url: "https://example.test/v.mp4", staged_path: "/tmp/v.mp4", status: "ready" as const, position_ms: 0, fullscreen: false, generation: 4 };
+    const next = mergeVideoSnapshot(store.getSnapshot(), ready);
+    expect(next.video?.status).toBe("ready");
+  });
+
+  it("mergeVideoSnapshot does not walk a live session backwards to ready/loading", () => {
+    const store = createBackendProjection();
+    store.apply(event({ type: "video_state", payload: { state: { track_id: "track-1", source_url: "https://example.test/v.mp4", staged_path: "/tmp/v.mp4", status: "playing", position_ms: 5000, fullscreen: false, generation: 5 } } }, 5));
+    const stale = mergeVideoSnapshot(store.getSnapshot(), { track_id: "track-1", source_url: "https://example.test/v.mp4", staged_path: "/tmp/v.mp4", status: "ready", position_ms: 0, fullscreen: false, generation: 4 });
+    expect(stale).toBe(store.getSnapshot());
+  });
+
+  it("mergeVideoSnapshot is a no-op when nothing changed", () => {
+    const store = createBackendProjection();
+    const state = { ...store.getSnapshot(), video: { track_id: "track-1", source_url: null, staged_path: null, status: "loading" as const, position_ms: 0, fullscreen: false, generation: 2 } };
+    expect(mergeVideoSnapshot(state, { track_id: "track-1", source_url: null, staged_path: null, status: "loading", position_ms: 0, fullscreen: false, generation: 2 })).toBe(state);
   });
 });

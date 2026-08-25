@@ -63,6 +63,10 @@ struct OutputState {
     volume: f32,
     /// Frame target requested by `seek`; consumed by the producer thread.
     seek_to: Option<u64>,
+    /// cpal reported an error on the live output stream (device switched,
+    /// unplugged). A flagged stream is torn down and rebuilt by the next
+    /// `play()` instead of receiving samples nobody can hear.
+    failed: bool,
 }
 
 enum StreamCommand {
@@ -110,6 +114,13 @@ impl CpalSymphoniaBackend {
             },
         );
         Ok((probed.format, track, duration))
+    }
+
+    /// Probes a file's duration WITHOUT constructing or locking any backend
+    /// state, so callers can keep potentially-slow storage (cold disk,
+    /// iCloud materialization) OFF the shared audio mutex.
+    pub fn probe_duration(path: &Path) -> Result<Option<Duration>, BackendError> {
+        Ok(Self::open_track(path)?.2)
     }
 
     fn producer_loop(
@@ -254,7 +265,15 @@ impl CpalSymphoniaBackend {
             sample_rate: cpal::SampleRate(SAMPLE_RATE),
             buffer_size: cpal::BufferSize::Default,
         };
-        let error = |error| eprintln!("audio output stream error: {error}");
+        let error = {
+            let state = state.clone();
+            move |error| {
+                eprintln!("audio output stream error: {error}");
+                if let Ok(mut state) = state.lock() {
+                    state.failed = true;
+                }
+            }
+        };
         device
             .build_output_stream(
                 &config,
@@ -372,6 +391,13 @@ impl AudioBackend for CpalSymphoniaBackend {
     }
 
     fn load_streaming(&mut self, path: &Path) -> Result<TrackInfo, BackendError> {
+        self.load_streaming_with_duration(path, None)
+    }
+
+    /// `known_duration` lets callers run the (potentially slow — cold disk,
+    /// iCloud materialization) file probe OUTSIDE the audio mutex; the swap-in
+    /// below then only touches in-memory state and thread spawns.
+    fn load_streaming_with_duration(&mut self, path: &Path, known_duration: Option<Duration>) -> Result<TrackInfo, BackendError> {
         let ext = path
             .extension()
             .and_then(|x| x.to_str())
@@ -390,7 +416,10 @@ impl AudioBackend for CpalSymphoniaBackend {
             .as_ref()
             .map(|state| state.lock().map(|state| state.volume).unwrap_or(1.0))
             .unwrap_or(1.0);
-        let (_, _, duration) = Self::open_track(path)?;
+        let duration = match known_duration {
+            Some(duration) => Some(duration),
+            None => Self::open_track(path)?.2,
+        };
         let info = TrackInfo {
             path: path.to_path_buf(),
             duration,
@@ -406,6 +435,7 @@ impl AudioBackend for CpalSymphoniaBackend {
             ended: false,
             volume: prior_volume.clamp(0.0, 1.0),
             seek_to: None,
+            failed: false,
         }));
         self.spawn_producer(path.to_path_buf(), state.clone())?;
         self.state = Some(state);
@@ -421,7 +451,14 @@ impl AudioBackend for CpalSymphoniaBackend {
 
     fn play(&mut self) -> Result<(), BackendError> {
         let state = self.state.as_ref().ok_or(BackendError::NotLoaded)?.clone();
-        if self.commands.is_none() {
+        let stream_failed = {
+            let mut guard = state.lock().unwrap();
+            let failed = guard.failed;
+            guard.failed = false;
+            failed
+        };
+        if self.commands.is_none() || stream_failed {
+            self.stop_stream();
             self.start_stream(state.clone())?;
         }
         state.lock().unwrap().playing = true;

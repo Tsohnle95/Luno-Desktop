@@ -20,7 +20,9 @@ receipt, not release approval.
 
 - `release/desktop-binaries.json` contains reviewed pinned SHA-256 values
   (zero `REPLACE_WITH_REVIEWED` placeholders) for ffmpeg 7.1.1 + ffprobe 7.1.1
-  (LGPL-only, locally built arm64) and yt-dlp 2025.08.11 (official release).
+  (LGPL-only, locally built arm64) and yt-dlp 2026.08.19 (official release;
+  refreshed from 2025.08.11 on 2026-08-22 after YouTube began refusing the
+  stale client for nearly all current content).
 - The staged `src-tauri/resources/bin/` executables were hash-rechecked against
   the manifest: **ffmpeg, ffprobe, yt-dlp all MATCH**. `release/provision.sh`
   is now tracked and reproduces this staging with hash verification.

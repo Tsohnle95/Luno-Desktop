@@ -226,7 +226,7 @@ export function PlayerBar({ track = null, playback = null, artwork = null, volum
         <button type="button" aria-label={`Repeat ${repeat}`} aria-pressed={repeat !== "off"} disabled={!backendAvailable || !onCycleRepeat} onClick={onCycleRepeat}>{repeat === "one" ? "①" : <IconRepeat size={16} />}</button>
       </div>
       <div className="luno-player-actions">
-        <button type="button" aria-label={queueOpen ? "Close queue panel" : "Open queue panel"} aria-pressed={queueOpen} disabled={!onToggleQueue} onClick={onToggleQueue}><IconQueueList size={17} /></button>
+        {onToggleQueue && <button type="button" aria-label={queueOpen ? "Close queue panel" : "Open queue panel"} aria-pressed={queueOpen} onClick={onToggleQueue}><IconQueueList size={17} /></button>}
         <button type="button" className={`luno-favorite${track?.favorite ? " is-on" : ""}`} aria-label={track?.favorite ? "Remove from favorites" : "Add to favorites"} disabled={!backendAvailable || !track} onClick={() => track && onFavoriteToggle?.(track)}>{track?.favorite ? "★" : "☆"}</button>
         <button type="button" aria-label={muted || volume <= 0 ? "Unmute" : "Mute"} aria-pressed={muted || volume <= 0} disabled={!backendAvailable} onClick={toggleMute}><IconVolume size={16} /></button>
         <label className="luno-volume"><span className="sr-only">Volume</span><input ref={volumeRef} defaultValue={clamp(volume, 0, 1)} aria-label="Volume" type="range" min="0" max="1" step="0.01" disabled={!backendAvailable} onChange={(event) => previewVolume(Number(event.currentTarget.value))} onPointerDown={startVolumeDrag} onPointerUp={commitVolume} onPointerCancel={commitVolume} onKeyUp={commitVolumeKeyboard} /></label>

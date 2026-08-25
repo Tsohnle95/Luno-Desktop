@@ -43,7 +43,7 @@ describe("Gate 6 player bar", () => {
     expect(html).toContain("All Music");
     expect(html).toContain("Favorites");
     expect(html).toContain('data-slot="queue"');
-    expect(html).toContain('aria-label="Close queue panel"');
+    expect(html).not.toContain('aria-label="Close queue panel"');
     expect(html).toContain('aria-label="Queue tab"');
     expect(html).toContain(">Recently played</button>");
     expect(html).toContain("Now playing");
@@ -71,10 +71,27 @@ describe("Gate 6 player bar", () => {
     expect((region.match(/aria-current="page"/g) ?? []).length).toBe(1);
   });
 
-  it("wires the player transport to shuffle, repeat, and the queue toggle", () => {
+  it("wires the player transport to shuffle and repeat; panels are drag-managed", () => {
     const html = renderToStaticMarkup(<Shell backendProjection={projection} backendAvailable={false} />);
     expect(html).toContain('aria-label="Enable shuffle"');
     expect(html).toContain('aria-label="Repeat off"');
-    expect(html).toContain('aria-label="Close queue panel"');
+    // Panels have NO close/open buttons anymore — both dividers stay mounted
+    // (even while a panel is collapsed) so edge-drags snap them closed/open.
+    expect(html).not.toContain('aria-label="Close queue panel"');
+    expect(html).toContain('aria-label="Resize library panel width"');
+    expect(html).toContain('aria-label="Resize queue panel width"');
+  });
+
+  it("surfaces the latest backend error event in the runtime status strip", () => {
+    const failingProjection = {
+      getSnapshot: (): BackendProjection => {
+        const snapshot = projection.getSnapshot();
+        return { ...snapshot, errors: [{ code: "internal", message: "boom", retryable: true }] };
+      },
+      subscribe: () => () => {},
+    };
+    const html = renderToStaticMarkup(<Shell backendProjection={failingProjection} backendAvailable={false} />);
+    expect(html).toContain('data-state="backend-error"');
+    expect(html).toContain("boom");
   });
 });

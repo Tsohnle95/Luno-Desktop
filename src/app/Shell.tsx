@@ -31,7 +31,7 @@ export const routeLabels: Record<Route, string> = {
   library: "Home", recent: "Recent", discover: "Discover", downloader: "Downloader", settings: "Settings", song_page: "Song", error_log: "Error Log",
 };
 
-export interface ShellProps { views?: Partial<Record<Route, ReactNode>>; queue?: ReactNode; player?: ReactNode; bridge?: Bridge; backendProjection?: { getSnapshot: () => BackendProjection; subscribe: (listener: () => void) => () => void }; backendAvailable?: boolean; videoConnected?: boolean; }
+export interface ShellProps { views?: Partial<Record<Route, ReactNode>>; queue?: ReactNode; player?: ReactNode; bridge?: Bridge; backendProjection?: { getSnapshot: () => BackendProjection; subscribe: (listener: () => void) => () => void; applyVideoSnapshot?: (video: import("../shared/contracts").VideoState) => void }; backendAvailable?: boolean; videoConnected?: boolean; }
 
 export function clampScrollTop(scrollTop: number, scrollHeight: number, clientHeight: number): number {
   return Math.min(Math.max(0, scrollTop), Math.max(0, scrollHeight - clientHeight));
@@ -111,6 +111,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [sidebarQuery, setSidebarQuery] = useState("");
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
   const [libraryQuery, setLibraryQuery] = useState("");
+  const [videoMode, setVideoMode] = useState(false);
   const [libraryScope, setLibraryScope] = useState<LibraryScope>("all");
   // The Home dashboard is the default landing view; opening any library scope
   // (or typing a search) swaps in the full LibraryView list.
@@ -151,6 +152,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         setMusicRoot(item.music_root);
         setLibraryRootPath(item.music_root);
       }
+      if (typeof item.video_mode === "boolean") setVideoMode(item.video_mode);
     };
     if (fixtureHome) {
       bridge.loadSettings(fixtureHome).then(applySettings).catch((error) => setCommandError(normalizeRuntimeCommandError(error)));
@@ -262,7 +264,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       .catch((error) => { if (active) setSongRecs({ items: [], state: "error", error: normalizeRuntimeCommandError(error) }); });
     return () => { active = false; };
   }, [route, discoverSeed?.artist, discoverSeed?.title, songRecRefresh, bridge]);
-  // ---- Last.fm API key presence (Keychain) for honest discovery UI ----
+  // ---- Last.fm API key presence (app-data key file) for honest discovery UI ----
   const [discoveryKeyConfigured, setDiscoveryKeyConfigured] = useState<boolean | null>(null);
   useEffect(() => {
     if (!bridge) return;
@@ -277,8 +279,35 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   };
   // Stage the song video when its page opens (worker runs on the backend).
   useEffect(() => {
-    if (route !== "song_page" || !track || !available || !bridge) return;
-    bridge.videoStage(track.id).catch(() => undefined);
+    // Stage the song video when its page opens. The command RESPONSE carries
+    // the authoritative video state — absorb it so the page never depends
+    // solely on a pushed event (a lost video_state event used to strand the
+    // stage on "Loading video preview..." forever). While Loading, poll the
+    // snapshot as a self-healing reconciliation path.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    const absorb = (snapshot: unknown) => {
+      if (cancelled || !snapshot || typeof snapshot !== "object" || !("status" in (snapshot as Record<string, unknown>))) return;
+      backendProjection?.applyVideoSnapshot?.(snapshot as NonNullable<BackendProjection["video"]>);
+    };
+    const request = () => {
+      if (cancelled || !track || !available || !bridge) return;
+      bridge.videoStage(track.id)
+        .then(absorb)
+        .catch(() => undefined);
+    };
+    request();
+    const tick = () => {
+      if (cancelled) return;
+      const id = track?.id;
+      if (!id) return;
+      const current = backendProjection?.getSnapshot().video ?? null;
+      if (!current || current.track_id !== id || current.status !== "loading") return;
+      request();
+      timer = setTimeout(tick, 2000);
+    };
+    timer = setTimeout(tick, 2000);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [route, track?.id, available, bridge]);
   useEffect(() => {
     // Only fetch while a Discover surface is visible (route or settings-rail
@@ -293,9 +322,38 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     return () => { active = false; };
   }, [route, settingsScreen, discoverSeed?.artist, discoverSeed?.title, discoverRefresh, bridge]);
   const videoSrc = safeVideoSource(currentVideo?.source_url, currentVideo?.staged_path);
-  const videoStatus = (currentVideo?.status === "not_checked" ? "not-checked" : currentVideo?.status) as VideoStageStatus | undefined;
+  // A <video> whose source the webview cannot decode (e.g. Opus-in-MP4 from
+  // older staging) must degrade to artwork instead of sitting as a black box.
+  const [videoFailedFor, setVideoFailedFor] = useState<string | null>(null);
+  useEffect(() => { setVideoFailedFor(null); }, [videoSrc]);
+  const videoFailed = videoSrc !== null && videoFailedFor === videoSrc;
+  const rawVideoStatus = (currentVideo?.status === "not_checked" ? "not-checked" : currentVideo?.status) as VideoStageStatus | undefined;
+  const videoStatus: VideoStageStatus | undefined = videoFailed ? "error" : rawVideoStatus;
   const videoActive = videoCommandsEnabled(available, connectedVideo, videoSrc, videoStatus);
-  const video = track ? { src: videoSrc, status: videoStatus, positionMs: currentVideo?.position_ms ?? 0, playing: videoActive && currentVideo?.status === "playing", artworkUrl: currentArtwork, onResize: (size: { width: number; height: number }) => { if (videoActive) runCommand(bridge?.videoResize(size.width, size.height)); }, onSeek: (positionMs: number) => { if (videoActive) runCommand(bridge?.videoSeek(positionMs)); }, onPause: (positionMs: number) => { if (videoActive) { runCommand(bridge?.videoPause()); runCommand(bridge?.videoSeek(positionMs)); } }, onResume: (positionMs: number) => { if (videoActive) { runCommand(bridge?.videoSeek(positionMs)); runCommand(bridge?.videoPlay()); } }, onEnded: () => { if (videoActive) runCommand(bridge?.videoPause()); }, onFullscreenChange: (fullscreen: boolean) => { if (videoActive) runCommand(bridge?.videoFullscreen(fullscreen)); } } : undefined;
+  // Video MODE is the user's intent: when it is OFF the song page shows
+  // artwork, even if this track's video happens to be staged.
+  const videoModeActive = videoActive && videoMode;
+  // TRANSPORT AUTHORITY: the <video> follows the AUDIO status directly —
+  // pausing the song pauses the picture in the same render, even if a
+  // video_state event were delayed or lost. Deriving this from
+  // currentVideo.status instead relied on a second event stream staying in
+  // lockstep and was exactly what let the clip keep playing while the song
+  // was paused. VideoStage additionally holds a clip that reached its end,
+  // so "audio playing + finished video" stays on the final frame here too.
+  const audioPlaying = projection.playback?.status === "playing";
+  // POSITION AUTHORITY: the <video> syncs against the AUDIO transport clock
+  // (`playback.position_ms`), which the backend publishes synchronously on
+  // every seek/pause/resume command AND every heartbeat tick. Feeding sync
+  // from the video-event stream instead added a second, slower hop: scrubbing
+  // lagged behind until the next video tick and pause/resume corrections ran
+  // on stale positions (the visible jump). VideoState position remains for
+  // bookkeeping only.
+  const audioPositionMs = projection.playback?.position_ms ?? 0;
+  // DOWNLOAD RING: any active staging job for THIS track shows the green
+  // progress ring on the media stage — gated on loading status, NOT on video
+  // mode (mode only decides whether the staged src auto-plays).
+  const downloadProgress = currentVideo?.status === "loading" ? currentVideo.download_progress ?? null : null;
+  const video = track ? { src: videoModeActive ? videoSrc : null, status: videoModeActive || videoStatus === "loading" ? videoStatus : "not-checked", positionMs: audioPositionMs, downloadProgress, playing: videoModeActive && audioPlaying, artworkUrl: currentArtwork, onResize: (size: { width: number; height: number }) => { if (videoModeActive) runCommand(bridge?.videoResize(size.width, size.height)); }, onSeek: (positionMs: number) => { if (videoModeActive) runCommand(bridge?.videoSeek(positionMs)); }, onPause: (positionMs: number) => { if (videoModeActive) { runCommand(bridge?.videoPause()); runCommand(bridge?.videoSeek(positionMs)); } }, onResume: (positionMs: number) => { if (videoModeActive) { runCommand(bridge?.videoSeek(positionMs)); runCommand(bridge?.videoPlay()); } }, onEnded: () => { if (videoModeActive) runCommand(bridge?.videoPause()); }, onError: () => { if (videoModeActive || videoSrc) setVideoFailedFor(videoSrc); }, onFullscreenChange: (fullscreen: boolean) => { if (!available) return; /* CSS-driven only: window.setFullscreen() blacks out the whole window over the CSS hide-transition and can stay black on exit in WKWebView. */ if (videoModeActive) runCommand(bridge?.videoFullscreen(fullscreen)); } } : undefined;
   const recentTracks = useMemo(() => projection.recentHistory.map((id) => tracks.find((item) => item.id === id)).filter((item): item is Track => !!item), [recentKey, tracksKey]);
 
   // ---- Local listening stats (Home "Most popular" / "Recently downloaded") ----
@@ -395,6 +453,10 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // ---- Resizable panels: pixel columns + draggable divider handles ----
   const [sidebarWidth, setSidebarWidth] = useState(300);
   const [queueWidth, setQueueWidth] = useState(320);
+  /** Dragging a divider into this distance from its window edge snaps the
+   * panel closed; pulling back out past it snaps open at minimum width. */
+  const PANEL_SNAP_CLOSE_PX = 150;
+  const PANEL_MIN_WIDTH = 240;
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [shellWidth, setShellWidth] = useState(0);
   useEffect(() => {
@@ -411,11 +473,24 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     const handle = event.currentTarget;
     const startX = event.clientX;
     const startWidth = kind === "sidebar" ? sidebarWidth : queueWidth;
+    const collapsedAtStart = kind === "sidebar" ? sidebarCollapsed : !queueOpen;
     try { handle.setPointerCapture(event.pointerId); } catch { /* pointer may vanish; drag still works via listeners */ }
+    // PANEL SNAP: dragging a panel into the last ~90px before its edge CLOSES
+    // it; pulling an edge back out past that line snaps it OPEN at its
+    // minimum width. There are no dedicated close/open buttons anymore.
+    const distanceFromEdge = (e: PointerEvent) => kind === "sidebar" ? e.clientX : shellWidth - e.clientX;
     const move = (e: PointerEvent) => {
-      const delta = e.clientX - startX;
-      if (kind === "sidebar") setSidebarWidth(Math.round(Math.min(440, Math.max(240, startWidth + delta))));
-      else setQueueWidth(Math.round(Math.min(480, Math.max(240, startWidth - delta))));
+      const fromEdge = distanceFromEdge(e);
+      if (fromEdge < PANEL_SNAP_CLOSE_PX) {
+        // Snap zone → panel closed. (Sidebar collapses; queue closes.)
+        if (kind === "sidebar") setSidebarCollapsed(true);
+        else { setQueueOpen(false); setPanelRecent(false); }
+        return;
+      }
+      const dragged = Math.round(collapsedAtStart ? fromEdge : startWidth + (kind === "sidebar" ? e.clientX - startX : startX - e.clientX));
+      if (dragged < PANEL_MIN_WIDTH) return; // stay closed until past the snap line
+      if (kind === "sidebar") { setSidebarCollapsed(false); setSidebarWidth(Math.round(Math.min(440, Math.max(240, dragged)))); }
+      else { setQueueOpen(true); setQueueWidth(Math.round(Math.min(480, Math.max(240, dragged)))); }
     };
     const up = () => {
       handle.removeEventListener("pointermove", move);
@@ -434,26 +509,26 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const errorLogViewEl = <ErrorLogView />;
   const settingsScreens: Record<SettingsNavLink, ReactNode> = { home: homeViewEl, recent: recentViewEl, discover: discoverViewEl, downloader: downloaderViewEl, error_log: errorLogViewEl };
 
-   const content = views[route] ?? (route === "library" ? (libraryHome ? homeViewEl : <LibraryView snapshot={projection.library} loading={!projection.library || projection.library.generation <= 0} playback={projection.playback} backendAvailable={available} selectedScope={libraryScope} query={libraryQuery} onQueryChange={setLibraryQuery} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onShuffle={() => runCommand(bridge?.toggleShuffle())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onScan={() => runCommand(bridge?.scanLibrary())} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />) : route === "recent" ? recentViewEl : route === "discover" ? discoverViewEl : route === "downloader" ? downloaderViewEl : route === "settings" ? <SettingsView lastfmKey="" keychainStatus={discoveryKeyConfigured === null ? "loading" : discoveryKeyConfigured ? "available" : "missing"} onSaveLastfmKey={available ? saveLastfmKey : undefined} musicRoot={musicRoot} autoDiscovery={settings.auto_discovery ?? false} mediaKeys={settings.global_keys ?? true} transferManifest={transferManifest} transferDestination={transferDestination} transferResult={transferResult} error={commandError} libraryRootPath={viteEnv?.DEV ? undefined : libraryRootPath ?? undefined} onLibraryRootSubmit={viteEnv?.DEV ? undefined : submitLibraryRoot} onChooseMusicRoot={viteEnv?.DEV ? chooseRoot : undefined} onAutoDiscoveryChange={(value) => saveSettings({ ...settings, auto_discovery: value })} onMediaKeysChange={(value) => saveSettings({ ...settings, global_keys: value })} onTransferManifestChange={setTransferManifest} onTransferDestinationChange={setTransferDestination} onTransferExport={() => { if (!available) { setCommandError("Transfer export is unavailable until the backend is connected."); return; } runBridgeCommand(bridge?.transferExport().then((result) => { const manifest = (result as { manifest?: string }).manifest ?? ""; setTransferManifest(manifest); setTransferResult(manifest ? "Exported manifest is ready for review." : "Export returned no manifest."); }), setCommandError); }} onTransferPreview={() => runBridgeCommand(bridge?.transferPreview(transferManifest, transferDestination).then((result) => setTransferResult(JSON.stringify(result))), setCommandError)} onTransferApply={() => runBridgeCommand(bridge?.transferApply(transferManifest, transferDestination, {}).then((result) => setTransferResult(JSON.stringify(result))), setCommandError)} onOpenErrorLog={() => navigate("error_log")} activeScreen={settingsScreen} screen={settingsScreen ? settingsScreens[settingsScreen] : null} onNavigate={(target) => { if (target === "home") { setSettingsScreen(null); navigate("library"); setLibraryHome(true); } else setSettingsScreen(target); }} onScreenClosed={() => setSettingsScreen(null)} /> : route === "error_log" ? errorLogViewEl : route === "song_page" ? <SongPageView track={track} backendAvailable={available} recommendations={songRecs.items} recommendationState={songRecs.state} recommendationError={songRecs.error} hasApiKey={discoveryKeyConfigured !== false} sessionActive={!!projection.preview?.active} onRetryRecommendations={() => setSongRecRefresh((value) => value + 1)} onRefreshRecommendations={() => setSongRecRefresh((value) => value + 1)} onPreviewRecommendation={(item) => runCommand(bridge?.previewTap(songRecs.items.slice(0, 50).map((entry) => ({ artist: entry.artist, title: entry.title })), previewKey(item.artist, item.title)))} onSaveRecommendation={(item) => { const playlists = projection.library?.playlists ?? []; const target = playlists.find((playlist) => playlist.name.toLowerCase() !== "unsorted") ?? playlists[0]; if (!target) { setCommandError("Create a playlist before saving recommendations."); return; } runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), target.id)); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} onLoadVideo={() => { if (track && available) bridge?.videoStage(track.id).catch(() => undefined); }} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
+   const content = views[route] ?? (route === "library" ? (libraryHome ? homeViewEl : <LibraryView snapshot={projection.library} loading={!projection.library || projection.library.generation <= 0} playback={projection.playback} backendAvailable={available} selectedScope={libraryScope} query={libraryQuery} onQueryChange={setLibraryQuery} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onShuffle={() => runCommand(bridge?.toggleShuffle())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onScan={() => runCommand(bridge?.scanLibrary())} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />) : route === "recent" ? recentViewEl : route === "discover" ? discoverViewEl : route === "downloader" ? downloaderViewEl : route === "settings" ? <SettingsView lastfmKey="" keychainStatus={discoveryKeyConfigured === null ? "loading" : discoveryKeyConfigured ? "available" : "missing"} onSaveLastfmKey={available ? saveLastfmKey : undefined} musicRoot={musicRoot} autoDiscovery={settings.auto_discovery ?? false} mediaKeys={settings.global_keys ?? true} transferManifest={transferManifest} transferDestination={transferDestination} transferResult={transferResult} error={commandError} libraryRootPath={viteEnv?.DEV ? undefined : libraryRootPath ?? undefined} onLibraryRootSubmit={viteEnv?.DEV ? undefined : submitLibraryRoot} onChooseMusicRoot={viteEnv?.DEV ? chooseRoot : undefined} onAutoDiscoveryChange={(value) => saveSettings({ ...settings, auto_discovery: value })} onMediaKeysChange={(value) => saveSettings({ ...settings, global_keys: value })} onTransferManifestChange={setTransferManifest} onTransferDestinationChange={setTransferDestination} onTransferExport={() => { if (!available) { setCommandError("Transfer export is unavailable until the backend is connected."); return; } runBridgeCommand(bridge?.transferExport().then((result) => { const manifest = (result as { manifest?: string }).manifest ?? ""; setTransferManifest(manifest); setTransferResult(manifest ? "Exported manifest is ready for review." : "Export returned no manifest."); }), setCommandError); }} onTransferPreview={() => runBridgeCommand(bridge?.transferPreview(transferManifest, transferDestination).then((result) => setTransferResult(JSON.stringify(result))), setCommandError)} onTransferApply={() => runBridgeCommand(bridge?.transferApply(transferManifest, transferDestination, {}).then((result) => setTransferResult(JSON.stringify(result))), setCommandError)} onOpenErrorLog={() => navigate("error_log")} activeScreen={settingsScreen} screen={settingsScreen ? settingsScreens[settingsScreen] : null} onNavigate={(target) => { if (target === "home") { setSettingsScreen(null); navigate("library"); setLibraryHome(true); } else setSettingsScreen(target); }} onScreenClosed={() => setSettingsScreen(null)} /> : route === "error_log" ? errorLogViewEl : route === "song_page" ? <SongPageView track={track} backendAvailable={available} recommendations={songRecs.items} recommendationState={songRecs.state} recommendationError={songRecs.error} hasApiKey={discoveryKeyConfigured !== false} sessionActive={!!projection.preview?.active} onRetryRecommendations={() => setSongRecRefresh((value) => value + 1)} onRefreshRecommendations={() => setSongRecRefresh((value) => value + 1)} onPreviewRecommendation={(item) => runCommand(bridge?.previewTap(songRecs.items.slice(0, 50).map((entry) => ({ artist: entry.artist, title: entry.title })), previewKey(item.artist, item.title)))} onSaveRecommendation={(item) => { const playlists = projection.library?.playlists ?? []; const target = playlists.find((playlist) => playlist.name.toLowerCase() !== "unsorted") ?? playlists[0]; if (!target) { setCommandError("Create a playlist before saving recommendations."); return; } runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), target.id)); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} onLoadVideo={() => { if (track && available) bridge?.videoStage(track.id).catch(() => undefined); }} videoMode={videoMode} onVideoModeChange={(enabled) => { setVideoMode(enabled); runCommand(bridge?.setVideoMode(enabled)); }} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
 
   const showSidebar = !sidebarCollapsed && route !== "settings";
   const narrowViewport = shellWidth > 0 && shellWidth < 1100;
   const showQueue = queueOpen && route !== "settings" && !narrowViewport;
   const focusMode = route === "settings";
 
-  return <div ref={shellRef} className={`luno-shell${queueOpen ? "" : " no-queue"}${sidebarCollapsed ? " no-sidebar" : ""}${focusMode ? " focus-mode" : ""}`} style={{ gridTemplateColumns: `${showSidebar ? sidebarWidth : 0}px minmax(var(--luno-content-min), 1fr) ${showQueue ? queueWidth : 0}px` }} data-route={route} data-backend-state={available ? "available" : "unavailable"} data-video-state={connectedVideo ? "connected" : "unconnected"} data-migration-state={migrationStatus?.status ?? "unknown"}>
+  return <div ref={shellRef} className={`luno-shell${queueOpen ? "" : " no-queue"}${sidebarCollapsed ? " no-sidebar" : ""}${focusMode ? " focus-mode" : ""}`} style={{ gridTemplateColumns: `${showSidebar ? sidebarWidth : 0}px minmax(0, 1fr) ${showQueue ? queueWidth : 0}px` }} data-route={route} data-backend-state={available ? "available" : "unavailable"} data-video-state={connectedVideo ? "connected" : "unconnected"} data-migration-state={migrationStatus?.status ?? "unknown"}>
     <header className="luno-topbar" data-tauri-drag-region onPointerDown={startWindowDrag}>
-      {sidebarCollapsed && <button className="luno-icon-button" type="button" aria-label="Show library sidebar" onClick={() => setSidebarCollapsed(false)}><IconLibrary size={15} /></button>}
-      <div className="luno-history" data-tauri-drag-region>
+
+      <div className="luno-history">
         <button className="luno-icon-button" type="button" aria-label="Go back" disabled={history.index === 0} onClick={goBack}><IconChevronLeft size={16} /></button>
         <button className="luno-icon-button" type="button" aria-label="Go forward" disabled={history.index >= history.stack.length - 1} onClick={goForward}><IconChevronRight size={16} /></button>
       </div>
-      {route !== "settings" && <nav className="luno-top-nav" aria-label="Primary navigation" data-tauri-drag-region>
-        <div className="luno-top-center" data-tauri-drag-region>
+      {route !== "settings" && <nav className="luno-top-nav" aria-label="Primary navigation">
+        <div className="luno-top-center">
           <button className="luno-home-button" type="button" aria-label="Home" aria-current={route === "library" ? "page" : undefined} title="Home" onClick={() => { navigate("library"); setLibraryHome(true); }}><IconHome size={16} /></button>
           <form className="luno-search" role="search" onSubmit={(event) => event.preventDefault()}>
             <IconSearch size={15} />
-            <input aria-label="What do you want to play?" placeholder="What do you want to play?" value={libraryQuery} onChange={(event) => { navigate("library"); setLibraryQuery(event.target.value); if (event.target.value) setLibraryHome(false); }} />
+            <input aria-label="What do you want to play?" placeholder="What do you want to play?" value={libraryQuery} onFocus={(event) => event.currentTarget.select()} onMouseUp={(event) => { if (libraryQuery) event.currentTarget.select(); }} onChange={(event) => { navigate("library"); setLibraryQuery(event.target.value); if (event.target.value) setLibraryHome(false); }} onKeyDown={(event) => { if (event.key === "Escape") setLibraryQuery(""); }} />
             {libraryQuery && <button className="luno-icon-button" type="button" aria-label="Clear search" onClick={() => setLibraryQuery("")}><IconClose size={11} /></button>}
           </form>
         </div>
@@ -463,7 +538,6 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     <aside className="luno-sidebar" data-slot="sidebar">
       <div className="luno-lib-head">
         <h2 className="luno-lib-head-title">Your Library</h2>
-        <button className="luno-icon-button" type="button" aria-label="Hide library sidebar" onClick={() => setSidebarCollapsed(true)}><IconLibrary size={16} /></button>
       </div>
       <div className="luno-lib-tools">
         <button className="luno-chip" type="button" aria-label="Show playlists" aria-pressed={sidebarChip === "playlists"} onClick={() => setSidebarChip("playlists")}>Playlists</button>
@@ -492,11 +566,11 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         {visibleSidebarEntries.length === 0 && <p style={{ padding: "8px 10px", color: "var(--luno-text-2)", fontSize: 13 }}>{sidebarChip === "albums" ? "No albums with metadata yet." : sidebarQuery ? "No matching playlists." : "No playlists yet."}</p>}
       </div>
     </aside>
-        <main className="luno-main" data-slot="main" aria-disabled={!available}>{(!available || !connectedVideo || commandError) && <div className="luno-runtime-status" role="status">{!available && <span data-state="backend-unavailable">Backend unavailable; runtime commands are unavailable.</span>}{commandError && <span data-state="command-rejected">{commandError}</span>}{!connectedVideo && route === "song_page" && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}</div>}<div className="luno-main-content luno-scroll">{content}</div></main>
-       <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : queueTracks} currentIndex={panelRecent ? null : projection.playback?.current_index} recent={panelRecent} shuffle={projection.playback?.shuffle} repeat={projection.playback?.repeat} backendAvailable={available} onClose={() => { setQueueOpen(false); setPanelRecent(false); }} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => runCommand(bridge?.playWithContext(item.id, (panelRecent ? recentTracks : queueTracks).map((track) => track.id)))} onPlayNext={(item) => runCommand(bridge?.playNext([item.id]))} onAddToQueue={(item) => runCommand(bridge?.addToQueue([item.id]))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} onClear={() => runCommand(bridge?.clearQueue())} onShuffle={() => runCommand(bridge?.toggleShuffle())} onRepeat={(mode) => runCommand(bridge?.setRepeat(mode))} />}</aside>
-        <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={track} playback={projection.playback} artwork={currentArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} queueOpen={queueOpen} onToggleQueue={() => setQueueOpen((open) => !open)} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => runCommand(projection.playback?.status === "playing" ? bridge?.pause() : track && bridge?.playWithContext(track.id, queueTracks.map((item) => item.id)))} onNext={() => runCommand(bridge?.next())} onPrevious={() => runCommand(bridge?.previous())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onSeek={(positionMs) => runCommand(bridge?.seek(positionMs))} onVolume={(value) => runCommand(bridge?.setVolume(value))} onVolumeCommit={(value) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }} onOpenTrack={() => navigate("song_page")} />}</footer>
-    {showSidebar && <div className="luno-resize-handle" style={{ left: 8 + sidebarWidth - 4 }} role="separator" aria-orientation="vertical" aria-label="Resize library panel width" onPointerDown={startPanelDrag("sidebar")} />}
-    {showQueue && <div className="luno-resize-handle" style={{ left: Math.max(0, shellWidth - (focusMode ? 0 : 8) - queueWidth - 4) }} role="separator" aria-orientation="vertical" aria-label="Resize queue panel width" onPointerDown={startPanelDrag("queue")} />}
+        <main className="luno-main" data-slot="main" aria-disabled={!available}>{(() => { const backendError = projection.errors.length ? projection.errors[projection.errors.length - 1].message : null; return (!available || !connectedVideo || commandError || backendError) && <div className="luno-runtime-status" role="status">{!available && <span data-state="backend-unavailable">Backend unavailable; runtime commands are unavailable.</span>}{commandError && <span data-state="command-rejected">{commandError}</span>}{backendError && <span data-state="backend-error">{backendError}</span>}{!connectedVideo && route === "song_page" && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}</div>; })()}<div className="luno-main-content luno-scroll">{content}</div></main>
+       <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : queueTracks} currentIndex={panelRecent ? null : projection.playback?.current_index} recent={panelRecent} backendAvailable={available} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => runCommand(bridge?.playWithContext(item.id, (panelRecent ? recentTracks : queueTracks).map((track) => track.id)))} onPlayNext={(item) => runCommand(bridge?.playNext([item.id]))} onAddToQueue={(item) => runCommand(bridge?.addToQueue([item.id]))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} />}</aside>
+        <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={track} playback={projection.playback} artwork={currentArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => runCommand(projection.playback?.status === "playing" ? bridge?.pause() : projection.playback?.status === "paused" ? bridge?.resume() : track && bridge?.playWithContext(track.id, queueTracks.map((item) => item.id)))} onNext={() => runCommand(bridge?.next())} onPrevious={() => runCommand(bridge?.previous())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onSeek={(positionMs) => runCommand(bridge?.seek(positionMs))} onVolume={(value) => runCommand(bridge?.setVolume(value))} onVolumeCommit={(value) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }} onOpenTrack={() => navigate("song_page")} />}</footer>
+    {route !== "settings" && <div className="luno-resize-handle" style={{ left: showSidebar ? 8 + sidebarWidth - 4 : 2 }} role="separator" aria-orientation="vertical" aria-label="Resize library panel width" onPointerDown={startPanelDrag("sidebar")} />}
+    {route !== "settings" && !narrowViewport && <div className="luno-resize-handle" style={{ left: showQueue ? Math.max(0, shellWidth - 8 - queueWidth - 4) : Math.max(2, shellWidth - 6) }} role="separator" aria-orientation="vertical" aria-label="Resize queue panel width" onPointerDown={startPanelDrag("queue")} />}
   </div>;
 }
 

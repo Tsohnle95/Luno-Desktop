@@ -65,6 +65,151 @@ pub enum MigrationStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RED repro (2026-08-23): search shows a song row, clicking it errors
+    /// "track is not available locally". Track IDs are filename-derived; when
+    /// two files share a stem, whichever the scan visits FIRST keeps the plain
+    /// id and the other gets `#hash`. Unsorted orders by mtime, so touching or
+    /// re-downloading one copy flips plain-id ownership on the next scan —
+    /// every previously-rendered row/queue entry silently stops resolving.
+    #[test]
+    fn duplicate_stem_ids_stay_stable_when_no_files_change() {
+        use std::fs;
+        let state = AppState::new(1);
+        let root = std::env::temp_dir().join(format!("luno-dup-stem-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("Unsorted")).unwrap();
+        fs::write(root.join("Unsorted/Dup Artist - Same Song.mp3"), b"a").unwrap();
+        fs::write(root.join("Unsorted/Dup Artist - Same Song.m4a"), b"b").unwrap();
+        state.set_scan_roots(vec![root.clone()]);
+
+        // Scan 1: capture both derived ids.
+        let generation = state.scan_async().expect("scan accepted");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while state.library().tracks.len() < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let first: Vec<String> = state.library().tracks.iter().map(|t| t.id.0.clone()).collect();
+        assert_eq!(first.len(), 2, "both files must appear after scan 1");
+        assert!(first.iter().any(|id| id.contains('#')), "collision must be discriminated");
+
+        // No file added/removed — only mtimes change (touch one copy).
+        let mp3 = root.join("Unsorted/Dup Artist - Same Song.mp3");
+        let m4a = root.join("Unsorted/Dup Artist - Same Song.m4a");
+        let older = fs::metadata(&mp3).unwrap().modified().unwrap();
+        fs::write(&m4a, b"b2").unwrap(); // newer mtime for the m4a
+
+        let _ = state.scan_async().expect("scan 2 accepted");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let second: Vec<String> = state.library().tracks.iter().map(|t| t.id.0.clone()).collect();
+            if second.len() == 2 && second != first && std::time::Instant::now() < deadline {
+                break;
+            }
+            if second.len() != 2 && std::time::Instant::now() >= deadline {
+                panic!("library lost tracks after rescan");
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let second: Vec<String> = state.library().tracks.iter().map(|t| t.id.0.clone()).collect();
+        assert_eq!(second.len(), 2, "both files must still exist after rescan");
+        assert_eq!(
+            first,
+            second,
+            "track ids must be stable across rescans when no files are added or removed"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Video mode must survive a save→load round trip and the backend-side
+    /// toggle must persist immediately.
+    #[test]
+    fn video_mode_round_trips_through_settings() {
+        let state = AppState::new(1);
+        let home = std::env::temp_dir().join(format!("luno-video-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+
+        // Backend-side toggle persists without any frontend round-trip.
+        state.set_video_mode(true).expect("toggle accepted");
+        let raw = std::fs::read_to_string(home.join(".luno_config.json"));
+        // No settings home captured yet -> nothing written; capture it first.
+        assert!(raw.is_err(), "nothing should persist before load_config");
+        *state.settings_home.lock().unwrap() = Some(home.clone());
+        state.set_video_mode(false).expect("toggle accepted");
+        let raw = std::fs::read_to_string(home.join(".luno_config.json")).unwrap();
+        assert!(raw.contains("\"video_mode\": false"), "disabled mode persisted: {raw}");
+
+        // Legacy reader accepts an existing file that carries video_mode.
+        std::fs::write(
+            home.join(".luno_config.json"),
+            r#"{"music_root": "/", "video_mode": true}"#,
+        )
+        .unwrap();
+        let config = crate::persistence::legacy::read_config(&home.join(".luno_config.json")).unwrap();
+        assert_eq!(config.video_mode, Some(true));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn scan_with_all_roots_unreadable_preserves_library() {
+        use crate::library::scanner::{RootStatus as ScanRootStatus, ScanError, ScanOutcome};
+        use std::collections::BTreeMap;
+        use std::sync::Mutex;
+
+        let state = AppState::new(1);
+        // Seed a non-empty library the way a successful scan would.
+        let mut playlists = BTreeMap::new();
+        playlists.insert(
+            "Unsorted".to_string(),
+            vec![PathBuf::from("/music/Fixture Artist - Fixture Song 1.m4a")],
+        );
+        state.replace_library(Generation(1), playlists);
+        assert_eq!(state.library().tracks.len(), 1);
+
+        let delivered: StdArc<Mutex<Vec<String>>> = StdArc::new(Mutex::new(Vec::new()));
+        let sink_delivered = delivered.clone();
+        state.set_event_sink(StdArc::new(move |event| {
+            if matches!(event.event, Event::Error { .. }) {
+                sink_delivered.lock().unwrap().push(format!("{event:?}"));
+            }
+            Ok(())
+        }));
+
+        // Every root unreadable -> the previous library must survive and an
+        // explanatory error must be published instead of an empty snapshot.
+        let generation = state
+            .scan_async_with(|_, token| ScanOutcome {
+                playlists: BTreeMap::new(),
+                roots: vec![(PathBuf::from("/gone"), ScanRootStatus::Missing)],
+                errors: Vec::<ScanError>::new(),
+            })
+            .expect("scan accepted");
+        let _ = generation;
+        for _ in 0..100 {
+            if !delivered.lock().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(
+            state.library().tracks.len(),
+            1,
+            "library must not be wiped when all roots are unreadable"
+        );
+        assert!(
+            delivered
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|message| message.contains("keeping previous library")),
+            "expected a 'keeping previous library' error event"
+        );
+    }
+
     #[test]
     fn migration_status_is_sanitized_diagnostic_data() {
         let status = MigrationStatus::Completed {
@@ -364,6 +509,118 @@ mod tests {
         let first = state.track_paths.lock().unwrap().get(&snapshot.tracks[0].id).cloned().unwrap();
         let second = state.track_paths.lock().unwrap().get(&snapshot.tracks[1].id).cloned().unwrap();
         assert_ne!(first, second);
+    }
+
+    /// RED repro (2026-08-23 evening): with video mode ON the song page sat on
+    /// "Loading video preview..." forever even though the staging store held
+    /// the fully downloaded MP4. Drives the REAL pipeline: play a queued
+    /// track, kick the video-mode pipeline exactly as the play hook does, and
+    /// require the current track to reach Ready. Network-dependent,
+    /// hence #[ignore] — run explicitly:
+    ///   cargo test --lib video_mode_auto_stage_reaches_ready -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn video_mode_auto_stage_reaches_ready() {
+        fn command(request_id: &str, cmd: Command) -> CommandEnvelope {
+            CommandEnvelope { version: CONTRACT_VERSION, request_id: request_id.into(), command: cmd }
+        }
+        let state = AppState::new(8);
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let bin = std::path::PathBuf::from(&manifest_dir).join("resources").join("bin");
+        let video_root = std::env::temp_dir().join(format!("luno-video-mode-e2e-{}", std::process::id()));
+        state.set_video_runtime(video_root.clone(), Some(bin.join("yt-dlp")), Some(bin.clone()));
+
+        let music_dir = std::env::temp_dir().join(format!("luno-video-mode-lib-{}", std::process::id()));
+        let playlist_dir = music_dir.join("Unsorted");
+        std::fs::create_dir_all(&playlist_dir).unwrap();
+        let mut ids = Vec::new();
+        for name in ["Rick Astley - Never Gonna Give You Up.m4a", "Fixture Artist Two - Second Song.m4a", "Fixture Artist Three - Third Song.m4a"] {
+            let path = playlist_dir.join(name);
+            std::fs::write(&path, b"placeholder audio bytes").unwrap();
+            ids.push(path);
+        }
+        let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), ids)]));
+        let track_id = |title: &str| snapshot.tracks.iter().find(|t| t.title == title).map(|t| t.id.clone()).unwrap();
+        let first = track_id("Never Gonna Give You Up");
+
+        // Persisted home so the backend-side toggle can save; then enable mode.
+        let home = std::env::temp_dir().join(format!("luno-video-mode-home-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        *state.settings_home.lock().unwrap() = Some(home.clone());
+        let result = state.dispatch(command("vm-on", Command::SetVideoMode { enabled: true }));
+        eprintln!("[e2e] set_video_mode -> {result:?}");
+
+        // Play the first track with a queue behind it (prefetch targets).
+        state.set_playing(first.clone(), snapshot.tracks.iter().map(|t| t.id.clone()).collect());
+        // Mirror the play_with_context hook exactly.
+        state.kick_video_pipeline();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
+        let mut final_status = String::from("timeout");
+        while std::time::Instant::now() < deadline {
+            for envelope in state.pending_events() {
+                if let crate::contracts::events::Event::VideoState { state: video } = &envelope.event {
+                    if video.track_id.as_ref() == Some(&first) {
+                        eprintln!("[e2e] video event: status={:?} staged={:?} gen={}", video.status, video.staged_path, video.generation.0);
+                        final_status = format!("{:?}", video.status);
+                    }
+                }
+            }
+            if final_status.contains("Ready") || final_status.contains("Unavailable") { break; }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        eprintln!("[e2e] FINAL STATUS for current track: {final_status}");
+        let entries: Vec<_> = std::fs::read_dir(&video_root).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>()).unwrap_or_default();
+        eprintln!("[e2e] staged files: {entries:?} (prefetch populates next-*.mp4 when the synthetic titles match YouTube results)");
+        assert_eq!(final_status, "Ready", "current track must reach Ready with video mode on");
+    }
+
+    #[test]
+    #[ignore]
+    fn video_stage_real_pipeline() {
+        fn command(request_id: &str, cmd: Command) -> CommandEnvelope {
+            CommandEnvelope { version: CONTRACT_VERSION, request_id: request_id.into(), command: cmd }
+        }
+        let state = AppState::new(4);
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let bin = std::path::PathBuf::from(&manifest_dir).join("resources").join("bin");
+        assert!(bin.join("yt-dlp").is_file(), "bundled yt-dlp missing");
+        let video_root = std::env::temp_dir().join(format!("luno-video-e2e-{}", std::process::id()));
+        state.set_video_runtime(video_root.clone(), Some(bin.join("yt-dlp")), Some(bin.clone()));
+
+        // A file whose FILENAME parses into artist/title like real libraries.
+        let music_dir = std::env::temp_dir().join(format!("luno-video-lib-{}", std::process::id()));
+        let playlist_dir = music_dir.join("Unsorted");
+        std::fs::create_dir_all(&playlist_dir).unwrap();
+        let track_path = playlist_dir.join("Rick Astley - Never Gonna Give You Up.m4a");
+        std::fs::write(&track_path, b"placeholder audio bytes").unwrap();
+        state.replace_library(
+            Generation(1),
+            BTreeMap::from([(String::from("Unsorted"), vec![track_path])]),
+        );
+        let track_id = {
+            let paths = state.track_paths.lock().unwrap();
+            paths.keys().next().cloned().expect("library must expose the fixture track")
+        };
+
+        let result = state.dispatch(command("video-e2e", Command::VideoStage { track_id: track_id.clone() }));
+        eprintln!("[e2e] dispatch acknowledged: {result:?}");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
+        let mut final_status = String::from("timeout");
+        while std::time::Instant::now() < deadline {
+            for envelope in state.pending_events() {
+                if let crate::contracts::events::Event::VideoState { state: video } = &envelope.event {
+                    eprintln!("[e2e] video event: status={:?} staged={:?} gen={}", video.status, video.staged_path, video.generation.0);
+                    final_status = format!("{:?}", video.status);
+                }
+            }
+            if final_status.contains("Ready") || final_status.contains("Unavailable") { break; }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        eprintln!("[e2e] FINAL STATUS: {final_status}");
+        let entries: Vec<_> = std::fs::read_dir(&video_root).map(|rd| rd.flatten().map(|e| e.path()).collect::<Vec<_>>()).unwrap_or_default();
+        eprintln!("[e2e] staged files: {entries:?}");
+        assert!(final_status == "Ready" || final_status == "Unavailable", "pipeline never settled (stuck loading)");
     }
 
     #[test]
@@ -975,8 +1232,7 @@ pub struct AppState {
     download_requests: Arc<Mutex<BTreeMap<String, (PathBuf, PathBuf, String)>>>,
     bundle_helper: Arc<Mutex<Option<PathBuf>>>,
     video_root: Arc<Mutex<Option<PathBuf>>>,
-    video_stager: Arc<Mutex<Option<crate::video::staging::VideoStage>>>,
-    video_current: Arc<Mutex<Option<crate::contracts::events::VideoState>>>,
+    video_stager: Arc<Mutex<Option<crate::video::staging::VideoStage>>>,    video_current: Arc<Mutex<Option<crate::contracts::events::VideoState>>>,
     video_cancel: Arc<Mutex<Arc<AtomicBool>>>,
     video_helper: Arc<Mutex<Option<PathBuf>>>,
     video_ffmpeg_dir: Arc<Mutex<Option<PathBuf>>>,
@@ -1000,6 +1256,32 @@ pub struct AppState {
     /// from persisted settings, and is reapplied whenever a new track starts.
     #[cfg(target_os = "macos")]
     volume: Arc<Mutex<f32>>,
+    /// Stall watchdog for the macOS heartbeat: `Some((last_position, ticks))`
+    /// while status is Playing and the backend position has stopped advancing.
+    /// A silent cpal stream death (device switch) freezes `played_frames`
+    /// without any error callback; without this watchdog the track sat frozen
+    /// forever and play/pause clicks appeared to do nothing.
+    #[cfg(target_os = "macos")]
+    playback_stall: Arc<Mutex<Option<(std::time::Duration, u32)>>>,
+    /// Song-page video mode (persisted in `.luno_config.json`). When true the
+    /// backend auto-stages the playing track's music video and sequentially
+    /// pre-downloads the next five queue videos so each handoff is instant.
+    video_mode_enabled: Arc<Mutex<bool>>,
+    /// Serializes video-mode prefetch passes: one loop at a time.
+    video_prefetch_running: Arc<Mutex<bool>>,
+    /// TrackIds with a live staging worker. The song-page effect and the
+    /// video-mode auto-stager can both fire for the same track within
+    /// milliseconds; without this dedupe two workers race through the same
+    /// multi-second search and each publishes over the other.
+    video_staging_inflight: Arc<Mutex<std::collections::HashSet<TrackId>>>,
+    /// Live download percentage for the CURRENT track's staging worker.
+    video_download_progress: Arc<crate::video::runtime::VideoProgress>,
+    /// Cancellation for the CURRENT prefetch pass. Replaced on every kick;
+    /// a stale flag means the pass was superseded and must stop.
+    video_prefetch_cancel: Arc<Mutex<Arc<AtomicBool>>>,
+    /// Runtime home captured at load time so backend-side setting changes can
+    /// persist immediately without an extra IPC round-trip.
+    settings_home: Arc<Mutex<Option<PathBuf>>>,
 }
 
 type ScanWork = Arc<dyn Fn(&[PathBuf], CancellationToken) -> ScanOutcome + Send + Sync>;
@@ -1109,6 +1391,14 @@ impl AppState {
             audio: Arc::new(Mutex::new(Box::new(CpalSymphoniaBackend::new()))),
             #[cfg(target_os = "macos")]
             volume: Arc::new(Mutex::new(1.0)),
+            #[cfg(target_os = "macos")]
+            playback_stall: Arc::new(Mutex::new(None)),
+            video_mode_enabled: Arc::new(Mutex::new(false)),
+            video_prefetch_running: Arc::new(Mutex::new(false)),
+            video_staging_inflight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            video_download_progress: Arc::new(crate::video::runtime::VideoProgress::new()),
+            video_prefetch_cancel: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))),
+            settings_home: Arc::new(Mutex::new(None)),
         }
     }
     pub fn library(&self) -> LibrarySnapshot {
@@ -1140,9 +1430,10 @@ impl AppState {
             Ok(stager) => { *self.video_stager.lock().unwrap() = Some(stager); }
             Err(error) => { eprintln!("video storage unavailable at {}: {error:?}", root.display()); }
         }
-        *self.video_root.lock().unwrap() = Some(root);
-        *self.video_helper.lock().unwrap() = ytdlp;
-        *self.video_ffmpeg_dir.lock().unwrap() = ffmpeg_dir;
+        *self.video_root.lock().unwrap() = Some(root.clone());
+        *self.video_helper.lock().unwrap() = ytdlp.clone();
+        *self.video_ffmpeg_dir.lock().unwrap() = ffmpeg_dir.clone();
+        eprintln!("[luno-video] runtime ready: store={} yt-dlp={:?} ffmpeg-dir={:?}", root.display(), ytdlp, ffmpeg_dir);
     }
 
     fn publish_video_state(&self) {
@@ -1202,6 +1493,17 @@ impl AppState {
                 None => return Err(ContractError { code: ErrorCode::NotFound, message: "track not found in library".into(), retryable: false }),
             }
         };
+        eprintln!("[luno-video] stage request {track_id:?} artist={artist:?} title={title:?}");
+        // Dedupe concurrent kicks for the SAME track: whoever is already
+        // staging it will publish Loading → Ready/Unavailable; piling a second
+        // worker on just re-runs the search and races the publication.
+        {
+            let mut inflight = self.video_staging_inflight.lock().unwrap();
+            if !inflight.insert(track_id.clone()) {
+                eprintln!("[luno-video] stage request {track_id:?} already in flight; coalescing");
+                return Ok(self.video_snapshot_json());
+            }
+        }
         let generation = self.next_generation().0;
         // Cancel any in-flight staging for a previous track.
         self.video_cancel.lock().unwrap().store(true, Ordering::Release);
@@ -1213,13 +1515,52 @@ impl AppState {
             staged_path: None,
             status: crate::contracts::events::VideoStatus::Loading,
             position_ms: 0,
+            download_progress: None,
             fullscreen: false,
             generation: Generation(generation),
         });
         self.publish_video_state();
 
         let state = self.clone();
-        let _ = self.submit(self.generation(format!("video-{generation}"), Generation(generation)), move |_token| {
+        // The worker gets its own copy of the id so a failed spawn below can
+        // still resolve the Loading state we just published.
+        let worker_track_id = track_id.clone();
+        let progress = Arc::clone(&self.video_download_progress);
+        progress.percent.store(0, Ordering::Release);
+        progress.started.store(false, Ordering::Release);
+        // Progress pump: while the download runs, fold the latest percentage
+        // into the published Loading state every 500ms so the UI shows
+        // "Downloading video… N%" instead of a static spinner. Exits when
+        // this request is superseded or the worker finishes (flag reset).
+        let pump_state = state.clone();
+        let pump_cancel = Arc::clone(&cancel);
+        let pump_progress = Arc::clone(&progress);
+        let pump_track_id = worker_track_id.clone();
+        let _pump = std::thread::Builder::new().name("luno-video-progress".into()).spawn(move || {
+            let mut last_sent: Option<u8> = None;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if pump_cancel.load(Ordering::Acquire) { break; }
+                if !pump_progress.started.load(Ordering::Acquire) { continue; }
+                let percent = pump_progress.percent.load(Ordering::Acquire);
+                if last_sent == Some(percent) { continue; }
+                {
+                    let mut current = pump_state.video_current.lock().unwrap();
+                    if let Some(video) = current.as_mut() {
+                        if video.track_id.as_ref() == Some(&pump_track_id)
+                            && matches!(video.status, crate::contracts::events::VideoStatus::Loading)
+                        {
+                            video.download_progress = Some(percent);
+                            drop(current);
+                            // Publish OUTSIDE the guard (deadlock rule).
+                            pump_state.publish_video_state();
+                            last_sent = Some(percent);
+                        }
+                    }
+                }
+            }
+        }).ok();
+        let spawned = self.submit(self.generation(format!("video-{generation}"), Generation(generation)), move |_token| {
             let outcome = {
                 let mut stager_guard = state.video_stager.lock().unwrap();
                 match stager_guard.as_mut() {
@@ -1230,6 +1571,7 @@ impl AppState {
                         artist.as_deref(),
                         &title,
                         &cancel,
+                        Some(&progress),
                     ) {
                         Ok(outcome) => outcome,
                         Err(error) => crate::video::runtime::VideoOutcome::Unavailable(format!("video staging failed: {error:?}")),
@@ -1251,20 +1593,208 @@ impl AppState {
                 crate::video::runtime::VideoOutcome::Staged { staged_path, .. } => Some(staged_path.display().to_string()),
                 crate::video::runtime::VideoOutcome::Unavailable(_) => None,
             };
-            // A newer request superseded this one while we worked.
-            if cancel.load(Ordering::Acquire) { return; }
+            // A newer request superseded this one while we worked. If the
+            // slot now belongs to a DIFFERENT track, that request owns the
+            // UI — return silently. If OUR track is still published as
+            // Loading, we MUST resolve it (Unavailable): a silent return left
+            // the song page stuck on "Loading video preview..." forever even
+            // though the file had finished downloading.
+            let superseded_by_other = {
+                let current = state.video_current.lock().unwrap();
+                current.as_ref().map(|v| v.track_id.as_ref() != Some(&worker_track_id)).unwrap_or(false)
+            };
+            // This worker is finished either way — release the dedupe slot
+            // before any exit path below.
+            state.video_staging_inflight.lock().unwrap().remove(&worker_track_id);
+            if cancel.load(Ordering::Acquire) {
+                if !superseded_by_other {
+                    let mut current = state.video_current.lock().unwrap();
+                    if current.as_ref().map(|v| v.track_id.as_ref() == Some(&worker_track_id) && matches!(v.status, crate::contracts::events::VideoStatus::Loading)).unwrap_or(false) {
+                        *current = Some(crate::contracts::events::VideoState {
+                            track_id: Some(worker_track_id),
+                            source_url: None,
+                            staged_path: None,
+                            status: crate::contracts::events::VideoStatus::Unavailable,
+                            position_ms: 0,
+                            download_progress: None,
+                            fullscreen: false,
+                            generation: Generation(generation),
+                        });
+                        drop(current);
+                        state.publish_video_state();
+                    }
+                }
+                return;
+            }
+            let _ = superseded_by_other;
             *state.video_current.lock().unwrap() = Some(crate::contracts::events::VideoState {
-                track_id: Some(track_id),
+                track_id: Some(worker_track_id),
                 source_url,
                 staged_path,
                 status: next_status,
                 position_ms: 0,
+                download_progress: None,
                 fullscreen: false,
                 generation: Generation(generation),
             });
             state.publish_video_state();
         });
+        if let Err(_spawn_error) = spawned {
+            // A rejected spawn means NO worker will ever resolve the Loading
+            // state published above — the UI would sit on "Loading video
+            // preview..." forever. Settle it as Unavailable before surfacing
+            // the busy error. The dedupe slot is released here too, since its
+            // worker will never run.
+            self.video_staging_inflight.lock().unwrap().remove(&track_id);
+            *self.video_current.lock().unwrap() = Some(crate::contracts::events::VideoState {
+                track_id: Some(track_id),
+                source_url: None,
+                staged_path: None,
+                status: crate::contracts::events::VideoStatus::Unavailable,
+                position_ms: 0,
+                download_progress: None,
+                fullscreen: false,
+                generation: Generation(generation),
+            });
+            self.publish_video_state();
+        }
         Ok(self.video_snapshot_json())
+    }
+
+    /// Song-page video mode toggle: flips the persisted flag and, when
+    /// enabling, immediately stages the playing track plus prefetches the
+    /// next five queue videos. Disabling cancels any prefetch in flight.
+    fn set_video_mode(&self, enabled: bool) -> Result<Value, ContractError> {
+        *self.video_mode_enabled.lock().unwrap() = enabled;
+        if let Some(home) = self.settings_home.lock().unwrap().clone() {
+            let settings = crate::contracts::types::SettingsInput {
+                music_root: self.scan_roots().first().map(|path| path.display().to_string()),
+                auto_discovery: None,
+                volume: None,
+                sleep_timer: None,
+                global_keys: None,
+                favorite_songs: self.favorites.lock().unwrap().paths().map(str::to_owned).collect(),
+                video_mode: Some(enabled),
+            };
+            if let Err(error) = self.save_settings(home, settings) {
+                eprintln!("[luno-video] video_mode persistence failed: {:?}", error.message);
+            }
+        }
+        if !enabled {
+            // Stop an in-flight prefetch loop; the current download is left
+            // alone (it holds its own cancel flag).
+            self.video_prefetch_cancel.lock().unwrap().store(true, Ordering::Release);
+            return Ok(serde_json::json!({ "video_mode": false }));
+        }
+        self.kick_video_pipeline();
+        Ok(serde_json::json!({ "video_mode": true }))
+    }
+
+    pub fn video_mode_enabled(&self) -> bool {
+        *self.video_mode_enabled.lock().unwrap()
+    }
+
+    /// Video-mode core: stage the CURRENT track (if not already staged) and
+    /// then sequentially pre-download the next five queue tracks' videos.
+    /// Safe to call repeatedly — it no-ops while a run is already active.
+    pub fn kick_video_pipeline(&self) {
+        if !self.video_mode_enabled() { return; }
+        let helper = match self.video_helper.lock().unwrap().clone() {
+            Some(helper) => helper,
+            None => return,
+        };
+        // SUPERSEDE FIRST: a track switch must never be gated on a previous
+        // pass that can sit inside a yt-dlp download for minutes. Cancel +
+        // install a fresh flag BEFORE any running-gate logic; an old worker
+        // exits at its next checkpoint (every loop iteration checks these).
+        self.video_prefetch_cancel.lock().unwrap().store(true, Ordering::Release);
+        let cancel = Arc::new(AtomicBool::new(false));
+        *self.video_prefetch_cancel.lock().unwrap() = Arc::clone(&cancel);
+        *self.video_prefetch_running.lock().unwrap() = true;
+
+        let current = self.playback.lock().unwrap().current_index();
+        let queue = self.playback.lock().unwrap().queue().to_vec();
+        let library = self.library();
+        let resolve = |track_id: &TrackId| -> Option<(String, Option<String>)> {
+            library.tracks.iter().find(|track| track.id == *track_id).map(|track| (track.title.clone(), track.artist.clone()))
+        };
+        // Current first (its staging publishes UI state), then the next five.
+        let mut plan: Vec<TrackId> = Vec::new();
+        if let Some(index) = current {
+            if let Some(id) = queue.get(index) { plan.push(id.clone()); }
+        }
+        if let Some(index) = current {
+            for id in queue.iter().skip(index + 1).take(5) { plan.push(id.clone()); }
+        } else {
+            for id in queue.iter().take(5) { plan.push(id.clone()); }
+        }
+        let plans: Vec<(TrackId, String, Option<String>)> = plan
+            .into_iter()
+            .filter_map(|id| resolve(&id).map(|(title, artist)| (id, title, artist)))
+            .collect();
+
+        let state = self.clone();
+        let cancel_error_path = Arc::clone(&cancel);
+        let spawned = self.submit(self.generation("video-prefetch", self.next_generation()), move |_token| {
+            for (track_id, title, artist) in plans {
+                if cancel.load(Ordering::Acquire) || state.is_closing() { break; }
+                if state.video_mode_changed_since(&cancel) { break; }
+                if Some(&track_id) == state.video_current.lock().unwrap().as_ref().and_then(|v| v.track_id.as_ref())
+                    && matches!(state.video_current.lock().unwrap().as_ref().map(|v| v.status), Some(crate::contracts::events::VideoStatus::Ready | crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Paused | crate::contracts::events::VideoStatus::Loading))
+                {
+                    continue; // current track already has a live/published video
+                }
+                // CURRENT slot work must go through the same machinery as a
+                // manual request so the UI sees Loading → Ready events.
+                let is_current = state.playback.lock().unwrap().current() == Some(&track_id);
+                if is_current {
+                    let _ = state.video_stage_track(track_id.clone());
+                } else {
+                    // Next-slot prefetch must NOT block on video_stager: a
+                    // staging worker holds that lock for its whole download,
+                    // and blocking here parked the pass (deaf to cancellation)
+                    // for minutes. Poll the lock with cancellation checkpoints.
+                    let stager_snapshot = loop {
+                        if cancel.load(Ordering::Acquire)
+                            || state.is_closing()
+                            || state.video_mode_changed_since(&cancel)
+                        {
+                            break None;
+                        }
+                        match state.video_stager.try_lock() {
+                            Ok(guard) => break Some(guard.clone()),
+                            Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                        }
+                    };
+                    if let Some(Some(stager)) = stager_snapshot {
+                        crate::video::runtime::prefetch_track(
+                            &helper,
+                            state.video_ffmpeg_dir.lock().unwrap().as_deref(),
+                            &stager,
+                            artist.as_deref(),
+                            &title,
+                            &cancel,
+                        );
+                    }
+                }
+            }
+            // Reset the gate ONLY when this pass is still the installed one —
+            // a superseded worker must never clear a newer pass's flag.
+            if !state.video_mode_changed_since(&cancel) {
+                *state.video_prefetch_running.lock().unwrap() = false;
+            }
+        });
+        if spawned.is_err() {
+            if !self.video_mode_changed_since(&cancel_error_path) {
+                *self.video_prefetch_running.lock().unwrap() = false;
+            }
+        }
+    }
+
+    fn video_mode_changed_since(&self, cancel: &Arc<AtomicBool>) -> bool {
+        // The orchestrator swaps in a fresh flag whenever it re-runs; holding
+        // a stale flag means this pass was superseded.
+        !Arc::ptr_eq(&self.video_prefetch_cancel.lock().unwrap(), cancel)
     }
 
     fn video_mutate(&self, mutate: impl FnOnce(&mut crate::contracts::events::VideoState)) -> Result<Value, ContractError> {
@@ -2603,6 +3133,30 @@ impl AppState {
             })
             .collect();
         *self.root_statuses.lock().unwrap() = statuses.clone();
+        // A scan that could not read ANY root (transient unmount, network
+        // volume asleep, permission hiccup) must never blank a non-empty
+        // library. Keep the previous snapshot and surface the condition as an
+        // error instead of publishing empty state.
+        let all_roots_unreadable = !statuses.is_empty()
+            && statuses.iter().all(|status| !matches!(status, RootStatus::Scanned));
+        if all_roots_unreadable {
+            let had_tracks = !self.library.lock().unwrap().tracks.is_empty();
+            if had_tracks {
+                let mut error = self.event(
+                    generation,
+                    Event::Error {
+                        error: ContractError {
+                            code: ErrorCode::Internal,
+                            message: "library root(s) unavailable; keeping previous library".into(),
+                            retryable: true,
+                        },
+                    },
+                );
+                error.job_id = Some(JobId("library-scan".into()));
+                self.publish(error);
+                return;
+            }
+        }
         for (root_index, status) in statuses.iter().copied().enumerate() {
             let mut event = self.event(generation, Event::LibraryRootStatus { root_index, status });
             event.job_id = Some(JobId("library-scan".into()));
@@ -3012,7 +3566,7 @@ impl AppState {
                 }
             }
             #[cfg(not(target_os = "macos"))]
-            Command::Play { .. } | Command::PlayWithContext { .. } | Command::Next | Command::Previous | Command::Pause | Command::Seek { .. } | Command::SetVolume { .. } => Err(ContractError {
+            Command::Play { .. } | Command::PlayWithContext { .. } | Command::Resume | Command::Next | Command::Previous | Command::Pause | Command::Seek { .. } | Command::SetVolume { .. } => Err(ContractError {
                 code: ErrorCode::Unavailable,
                 message: "audio backend unavailable on this platform".into(),
                 retryable: false,
@@ -3028,11 +3582,14 @@ impl AppState {
             #[cfg(target_os = "macos")]
             Command::Pause => self.pause_track(),
             #[cfg(target_os = "macos")]
+            Command::Resume => self.resume_track(),
+            #[cfg(target_os = "macos")]
             Command::Seek { position_ms } => self.seek_track(position_ms),
             #[cfg(target_os = "macos")]
             Command::SetVolume { volume } => self.set_volume(volume),
             Command::VideoSource { track_id } => self.video_stage_track(track_id),
             Command::VideoStage { track_id } => self.video_stage_track(track_id),
+            Command::SetVideoMode { enabled } => self.set_video_mode(enabled),
             Command::VideoPlay => self.video_mutate(|video| video.status = crate::contracts::events::VideoStatus::Playing),
             Command::VideoPause => self.video_mutate(|video| video.status = crate::contracts::events::VideoStatus::Paused),
             Command::VideoSeek { position_ms } => self.video_mutate(|video| video.position_ms = position_ms as u64),
@@ -3062,6 +3619,9 @@ impl AppState {
 
     fn load_config(&self, home: PathBuf) -> Result<Value, ContractError> {
         validate_home(&home)?;
+        // Remember where settings live so backend-originated changes
+        // (video-mode toggle) can persist immediately.
+        *self.settings_home.lock().unwrap() = Some(home.clone());
         let path = home.join(".luno_config.json");
         let config = match crate::persistence::legacy::read_config(&path) {
             Ok(config) => config,
@@ -3116,12 +3676,17 @@ impl AppState {
                 favorites.set(path, true);
             }
         }
+        // Song-page video mode: seed the runtime flag so auto-staging and
+        // queue prefetch resume exactly where the last session left them.
+        let video_mode = config.video_mode.unwrap_or(false);
+        *self.video_mode_enabled.lock().unwrap() = video_mode;
         Ok(serde_json::json!({
             "music_root": root.map(|path| path.display().to_string()),
             "auto_discovery": config.auto_discovery,
             "volume": config.volume,
             "sleep_timer": config.sleep_timer,
             "global_keys": config.global_keys,
+            "video_mode": video_mode,
             "favorite_songs": self.favorites.lock().unwrap().paths().map(str::to_owned).collect::<Vec<_>>(),
         }))
     }
@@ -3140,15 +3705,35 @@ impl AppState {
                 return Err(ContractError::invalid("music root must be an existing absolute directory"));
             }
         }
-        let value = serde_json::json!({
+        // MERGE semantics: overlay only the fields this caller actually knows
+        // about onto the existing file. Whole-file replacement here let any
+        // partial writer (video-mode toggle, settings panel) silently wipe
+        // unrelated preferences — and let a second app instance clobber
+        // video_mode back to false while a download was in flight.
+        let mut merged: serde_json::Value = std::fs::read(&home.join(".luno_config.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !merged.is_object() {
+            merged = serde_json::json!({});
+        }
+        let incoming = serde_json::json!({
             "music_root": settings.music_root,
             "auto_discovery": settings.auto_discovery,
             "volume": settings.volume,
             "sleep_timer": settings.sleep_timer,
             "global_keys": settings.global_keys,
+            "video_mode": settings.video_mode,
             "favorite_songs": settings.favorite_songs,
         });
-        let bytes = serde_json::to_vec_pretty(&value).map_err(|_| ContractError { code: ErrorCode::Internal, message: "settings could not be encoded".into(), retryable: false })?;
+        if let (Some(target), Some(source)) = (merged.as_object_mut(), incoming.as_object()) {
+            for (key, value) in source {
+                if !value.is_null() {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        let bytes = serde_json::to_vec_pretty(&merged).map_err(|_| ContractError { code: ErrorCode::Internal, message: "settings could not be encoded".into(), retryable: false })?;
         let path = home.join(".luno_config.json");
         crate::persistence::atomic_write::write_atomic(&path, &bytes).map_err(|_| ContractError { code: ErrorCode::Internal, message: "settings could not be persisted".into(), retryable: true })?;
         Ok(serde_json::json!({ "saved": true }))
@@ -3497,7 +4082,9 @@ fn promotion_error(error: PromotionError) -> ContractError {
 
     #[cfg(target_os = "macos")]
     fn play_with_context(&self, track_id: TrackId, context: Vec<TrackId>) -> Result<Value, ContractError> {
+        eprintln!("[luno-play] request {track_id:?} context_len={}", context.len());
         if context.is_empty() || !context.iter().any(|id| id == &track_id) {
+            eprintln!("[luno-play] rejected: context must contain the selected track");
             return Err(ContractError::invalid("playback context must contain the selected track"));
         }
         let path = self
@@ -3506,13 +4093,22 @@ fn promotion_error(error: PromotionError) -> ContractError {
             .unwrap()
             .get(&track_id)
             .cloned()
-            .ok_or_else(|| ContractError {
-                code: ErrorCode::NotFound,
-                message: "track is not available locally".into(),
-                retryable: false,
+            .ok_or_else(|| {
+                eprintln!("[luno-play] rejected: track not found locally: {track_id:?}");
+                ContractError {
+                    code: ErrorCode::NotFound,
+                    message: "track is not available locally".into(),
+                    retryable: false,
+                }
             })?;
+        eprintln!("[luno-play] resolved -> {}", path.display());
         self.purge_discover_deferred();
         self.playback.lock().unwrap().play_with_context(track_id.clone(), context);
+        // Video mode: stage this video + prefetch the next five as soon as a
+        // selection starts playing.
+        if self.video_mode_enabled() {
+            self.kick_video_pipeline();
+        }
         // Acknowledge the selection immediately. Decoding runs on a runtime
         // task (`playback-load`) so the UI thread never blocks on audio
         // loading; a newer selection cancels the previous task by key.
@@ -3551,17 +4147,39 @@ fn promotion_error(error: PromotionError) -> ContractError {
         token: crate::runtime::task_registry::CancellationToken,
     ) {
         if token.is_cancelled() || self.is_closing() {
+            eprintln!("[luno-play] load cancelled for {track_id:?}");
             return;
         }
         // Snapshot the intended volume before locking audio so `set_volume`
         // (volume-then-audio lock order) can never deadlock against this task.
         let desired_volume = *self.volume.lock().unwrap();
+        // PROBE OUTSIDE THE AUDIO LOCK: opening + probing a file can block for
+        // seconds (cold disk, iCloud materialization, spinning-up drives).
+        // Holding self.audio across it froze pause/seek/volume AND every
+        // heartbeat tick for the whole load — the "track switch hangs ~20 s"
+        // report. The swap-in below only joins threads and spawns a producer
+        // under the lock; all slow file IO happens here, unlocked.
+        let known_duration =
+            match crate::playback::backend_adapter::CpalSymphoniaBackend::probe_duration(&path) {
+                Ok(duration) => duration,
+                Err(error) => {
+                    eprintln!("[luno-play] probe failed: {error:?}");
+                    self.recover_from_backend_error(error);
+                    return;
+                }
+            };
+        if token.is_cancelled() || self.is_closing() {
+            return;
+        }
         let info = {
             let mut backend = match self.audio.lock() {
                 Ok(backend) => backend,
-                Err(_) => return,
+                Err(_) => {
+                    eprintln!("[luno-play] audio lock poisoned");
+                    return;
+                }
             };
-            match backend.load_streaming(&path) {
+            match backend.load_streaming_with_duration(&path, known_duration) {
                 Ok(info) => {
                     // A fresh load replaces the output state; reapply the
                     // intended volume so the new track starts at the level the
@@ -3571,6 +4189,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
                 }
                 Err(error) => {
                     drop(backend);
+                    eprintln!("[luno-play] load_streaming failed: {error:?}");
                     self.recover_from_backend_error(error);
                     return;
                 }
@@ -3586,13 +4205,20 @@ fn promotion_error(error: PromotionError) -> ContractError {
             };
             if let Err(error) = backend.play() {
                 drop(backend);
+                eprintln!("[luno-play] backend.play failed: {error:?}");
                 self.recover_from_backend_error(error);
                 return;
             }
         }
+        eprintln!("[luno-play] playing {track_id:?} ({}ms)", info.duration.map(|d| d.as_millis()).unwrap_or(0));
         self.playback.lock().unwrap().record_started(track_id.clone(), false);
         self.discover_track_started(&track_id);
         self.record_recent(track_id.clone());
+        // Auto-advance reached a new track: keep video mode in lockstep
+        // (stage the new current, prefetch its successors).
+        if self.video_mode_enabled() {
+            self.kick_video_pipeline();
+        }
         *self.clock.lock().unwrap() = Some(PlaybackClock::new(info.duration));
         if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.start(0.0); }
         self.recovery.lock().unwrap().record_success();
@@ -3607,10 +4233,21 @@ fn promotion_error(error: PromotionError) -> ContractError {
         let heartbeat_state = self.clone();
         let generation = snapshot.generation;
         let _ = self.submit(self.generation("playback-heartbeat", generation), move |token| {
+            // One transient tick failure must NEVER kill the heartbeat: a dead
+            // heartbeat froze every snapshot (scrubber, status, queue) until
+            // restart, which read as "the app stopped responding".
+            let mut consecutive_errors = 0u32;
             while !token.is_cancelled() && !heartbeat_state.is_closing() {
                 std::thread::sleep(crate::playback::clock::HEARTBEAT);
                 if token.is_cancelled() || heartbeat_state.is_closing() { break; }
-                if heartbeat_state.heartbeat_tick().is_err() { break; }
+                match heartbeat_state.heartbeat_tick() {
+                    Ok(()) => consecutive_errors = 0,
+                    Err(error) => {
+                        eprintln!("[luno-play] heartbeat tick failed: {error:?}");
+                        consecutive_errors += 1;
+                        if consecutive_errors >= 10 { break; }
+                    }
+                }
             }
         });
     }
@@ -3653,6 +4290,12 @@ fn promotion_error(error: PromotionError) -> ContractError {
         let was_paused = *self.playback_status.lock().unwrap() == crate::contracts::types::PlaybackStatus::Paused;
         if was_paused { backend.play().map_err(Self::playback_error)?; }
         else { backend.pause().map_err(Self::playback_error)?; }
+        // Publish the new status IMMEDIATELY: the heartbeat thread samples
+        // playback_status + video_current independently, and if it ran between
+        // "audio paused" and "status written" it saw (Playing, Paused) — which
+        // its resume arm interprets as "audio restarted" — and flipped the
+        // freshly-paused video back to Playing (2026-08-24).
+        *self.playback_status.lock().unwrap() = if was_paused { crate::contracts::types::PlaybackStatus::Playing } else { crate::contracts::types::PlaybackStatus::Paused };
         let position = match backend.position() {
             Ok(position) => position,
             Err(error) => { drop(backend); self.recover_from_backend_error(error); return Ok(Value::Null); }
@@ -3661,14 +4304,89 @@ fn promotion_error(error: PromotionError) -> ContractError {
             Ok(duration) => duration,
             Err(error) => { drop(backend); self.recover_from_backend_error(error); return Ok(Value::Null); }
         };
+        // Freeze/unfreeze the video in the SAME breath as the audio so the
+        // user never sees a lag between pressing pause and the video stopping
+        // (waiting for the 400ms heartbeat made the video feel detached).
+        // The video_current lock MUST be scoped so it is RELEASED before
+        // publish_video_state() runs — it re-acquires the same mutex, and a
+        // publish under the held guard deadlocks the command thread (which
+        // froze pause/resume and every later command; 2026-08-23).
+        let mut video_followed = false;
+        {
+            let mut video_guard = self.video_current.lock().unwrap();
+            if let Some(video) = video_guard.as_mut() {
+                if matches!(video.status, crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Ready) && !was_paused {
+                    video.status = crate::contracts::events::VideoStatus::Paused;
+                    video.position_ms = position.as_millis() as u64;
+                    video_followed = true;
+                } else if matches!(video.status, crate::contracts::events::VideoStatus::Paused) && was_paused {
+                    // This click is a RESUME (the button toggles).
+                    video.status = crate::contracts::events::VideoStatus::Playing;
+                    video.position_ms = position.as_millis() as u64;
+                    video_followed = true;
+                }
+            }
+        }
+        if video_followed {
+            self.publish_video_state();
+        }
         if was_paused {
             if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.resume(0.0); }
         } else if let Some(clock) = self.clock.lock().unwrap().as_mut() {
             clock.pause(0.0, Some(position));
         }
-        *self.playback_status.lock().unwrap() = if was_paused { crate::contracts::types::PlaybackStatus::Playing } else { crate::contracts::types::PlaybackStatus::Paused };
         let snapshot = self.playback_snapshot(
             *self.playback_status.lock().unwrap(),
+            position,
+            duration,
+        );
+        self.publish_playback(snapshot.clone(), None);
+        serde_json::to_value(snapshot).map_err(|e| ContractError {
+            code: ErrorCode::Internal,
+            message: e.to_string(),
+            retryable: false,
+        })
+    }
+
+    /// Resumes a paused track WITHOUT reloading it — unlike `play_with_context`,
+    /// which restarts from zero. A no-op when nothing is paused.
+    #[cfg(target_os = "macos")]
+    fn resume_track(&self) -> Result<Value, ContractError> {
+        if *self.playback_status.lock().unwrap() != crate::contracts::types::PlaybackStatus::Paused {
+            return Ok(Value::Null);
+        }
+        let mut backend = self.audio.lock().map_err(|_| ContractError {
+            code: ErrorCode::Internal,
+            message: "audio backend lock failed".into(),
+            retryable: false,
+        })?;
+        backend.play().map_err(Self::playback_error)?;
+        let position = backend.position().unwrap_or_default();
+        let duration = backend.duration().ok().flatten();
+        drop(backend);
+        // Resume the video in the same breath as the audio — the footer's
+        // resume path goes through resume_track, which previously never
+        // touched the video and left it frozen while the song played.
+        let mut video_resumed = false;
+        {
+            let mut video_guard = self.video_current.lock().unwrap();
+            if let Some(video) = video_guard.as_mut() {
+                if matches!(video.status, crate::contracts::events::VideoStatus::Paused) {
+                    video.status = crate::contracts::events::VideoStatus::Playing;
+                    video.position_ms = position.as_millis() as u64;
+                    video_resumed = true;
+                }
+            }
+        }
+        // Publish OUTSIDE the guard: publish_video_state re-acquires the
+        // same mutex — publishing under the held guard deadlocks (2026-08-23).
+        if video_resumed {
+            self.publish_video_state();
+        }
+        if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.resume(0.0); }
+        *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Playing;
+        let snapshot = self.playback_snapshot(
+            crate::contracts::types::PlaybackStatus::Playing,
             position,
             duration,
         );
@@ -3695,6 +4413,20 @@ fn promotion_error(error: PromotionError) -> ContractError {
         if let Some(clock) = self.clock.lock().unwrap().as_mut() {
             clock.seek(position, 0.0);
         }
+        // The video must land on the same page instantly: push the new audio
+        // position into the video state and republish. The frontend clamps to
+        // the staged video's duration and self-corrects residual drift.
+        {
+            let mut video_guard = self.video_current.lock().unwrap();
+            if let Some(video) = video_guard.as_mut() {
+                if matches!(video.status, crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Paused) {
+                    video.position_ms = position.as_millis() as u64;
+                    drop(video_guard);
+                    // Publish AFTER releasing video_current (deadlock rule).
+                    self.publish_video_state();
+                }
+            }
+        }
         let status = *self.playback_status.lock().unwrap();
         let snapshot = self.playback_snapshot(status, position, duration);
         self.publish_playback(snapshot.clone(), None);
@@ -3720,7 +4452,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
 
     #[cfg(target_os = "macos")]
     fn heartbeat_tick(&self) -> Result<(), ContractError> {
-        let backend = self.audio.lock().map_err(|_| ContractError { code: ErrorCode::Internal, message: "audio backend lock failed".into(), retryable: false })?;
+        let mut backend = self.audio.lock().map_err(|_| ContractError { code: ErrorCode::Internal, message: "audio backend lock failed".into(), retryable: false })?;
         let position = match backend.position() {
             Ok(position) => position,
             Err(error) => {
@@ -3739,6 +4471,100 @@ fn promotion_error(error: PromotionError) -> ContractError {
         };
         let status = *self.playback_status.lock().unwrap();
         let elapsed = position;
+        // ---- Video follow: auto-play/pause + COARSE clock sync --------------
+        // Event-driven, not poll-driven: publish ONLY on play/pause transitions
+        // or a genuine >2s drift. Streaming an update every heartbeat tick made
+        // the <video> micro-seek constantly (stop-start stutter) — between real
+        // corrections the element plays freely in real time alongside the song.
+        let elapsed_ms = elapsed.as_millis() as u64;
+        let mut video_needs_publish = false;
+        {
+            let mut video = self.video_current.lock().unwrap();
+            if let Some(state) = video.as_mut() {
+                match (status, state.status) {
+                    (crate::contracts::types::PlaybackStatus::Playing, crate::contracts::events::VideoStatus::Ready) => {
+                        state.status = crate::contracts::events::VideoStatus::Playing;
+                        state.position_ms = elapsed_ms;
+                        video_needs_publish = true;
+                    }
+                    (crate::contracts::types::PlaybackStatus::Playing, crate::contracts::events::VideoStatus::Playing) => {
+                        // Publish EVERY tick during normal playback so the UI
+                        // always holds a fresh audio position for the video:
+                        // scrubs must propagate and mode re-enables must mount
+                        // at the true song position. The earlier stutter came
+                        // from the frontend re-seeking on every stale update;
+                        // VideoStage now ignores stale-by-arrival positions
+                        // while actively playing and only acts on real drift.
+                        state.position_ms = elapsed_ms;
+                        video_needs_publish = true;
+                    }
+                    (crate::contracts::types::PlaybackStatus::Playing, crate::contracts::events::VideoStatus::Paused) => {
+                        // Resume: audio restarted after a pause — follow it.
+                        state.status = crate::contracts::events::VideoStatus::Playing;
+                        state.position_ms = elapsed_ms;
+                        video_needs_publish = true;
+                    }
+                    (_, crate::contracts::events::VideoStatus::Playing) => {
+                        // Audio paused/stopped/died — the video must follow.
+                        state.status = crate::contracts::events::VideoStatus::Paused;
+                        video_needs_publish = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if video_needs_publish {
+            self.publish_video_state();
+        }
+        // ----------------------------------------------------------------------
+        // ---- Stall watchdog (mixer-idle completion parity) -------------------
+        // While Playing, a healthy stream advances `position` every tick. A
+        // silently-dead output stream freezes it. First: nudge the backend
+        // (rebuilds a flagged stream). If it is STILL frozen one window later,
+        // treat the track as finished and advance — exactly what the Tk
+        // engine's mixer-idle detection did.
+        enum StallAction { None, Rebuild, Advance }
+        let stall_action = if status == crate::contracts::types::PlaybackStatus::Playing {
+            const REBUILD_AFTER_TICKS: u32 = 10; // ~4 s frozen
+            const ADVANCE_AFTER_TICKS: u32 = 20; // ~8 s frozen
+            let mut stall = self.playback_stall.lock().unwrap();
+            match *stall {
+                Some((last, ticks)) if last == position => {
+                    let next = ticks + 1;
+                    let action = if next == REBUILD_AFTER_TICKS {
+                        eprintln!("[luno-play] position stalled at {:?}; rebuilding output stream", position);
+                        StallAction::Rebuild
+                    } else if next >= ADVANCE_AFTER_TICKS {
+                        eprintln!("[luno-play] still stalled after rebuild; advancing to next track");
+                        StallAction::Advance
+                    } else {
+                        StallAction::None
+                    };
+                    // Reset on Advance so the NEXT track's load window cannot
+                    // inherit this counter and trigger an immediate skip.
+                    if matches!(action, StallAction::Advance) { *stall = None; }
+                    else { *stall = Some((position, next)); }
+                    action
+                }
+                _ => {
+                    *stall = Some((position, 0));
+                    StallAction::None
+                }
+            }
+        } else {
+            *self.playback_stall.lock().unwrap() = None;
+            StallAction::None
+        };
+        match stall_action {
+            StallAction::Rebuild => { let _ = backend.play(); }
+            StallAction::Advance => {
+                drop(backend);
+                let _ = self.next_track()?;
+                return Ok(());
+            }
+            StallAction::None => {}
+        }
+        // ----------------------------------------------------------------------
         let due = self.clock.lock().unwrap().as_ref().is_some_and(|clock| clock.completion_due(elapsed, true, elapsed));
         if due && self.clock.lock().unwrap().as_mut().is_some_and(|clock| clock.dispatch_completion()) {
             drop(backend);

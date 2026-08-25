@@ -381,24 +381,26 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-transport button {
   width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 50%; padding: 0;
-  background: transparent; color: var(--luno-text-2); cursor: pointer;
+  background: transparent; color: var(--luno-green); cursor: pointer;
 }
-.luno-transport button:hover:not(:disabled) { color: var(--luno-text); }
+/* NOTE: no transform on hover here — scaling promotes the button to its own
+ * GPU compositing layer, which blanks sibling artwork in WKWebView. */
+.luno-transport button:hover:not(:disabled) { color: var(--luno-green-hover); }
 .luno-transport button[aria-pressed="true"] { color: var(--luno-green); }
 .luno-transport .luno-transport-play {
   width: 44px; height: 44px; margin: 0 6px;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 0; border-radius: 50%; background: var(--luno-text); color: var(--luno-bg); cursor: pointer;
+  border: 0; border-radius: 50%; background: var(--luno-green); color: #001a08; cursor: pointer;
 }
-.luno-transport .luno-transport-play:hover:not(:disabled) { transform: scale(1.05); }
+.luno-transport .luno-transport-play:hover:not(:disabled) { background: var(--luno-green-hover); color: #001a08; }
 .luno-transport button:disabled { opacity: 0.35; cursor: default; }
 .luno-player-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .luno-player-actions button {
   width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 50%; padding: 0;
-  background: transparent; color: var(--luno-text-2); cursor: pointer;
+  background: transparent; color: var(--luno-green); cursor: pointer;
 }
-.luno-player-actions button:hover:not(:disabled) { color: var(--luno-text); }
+.luno-player-actions button:hover:not(:disabled) { color: var(--luno-green-hover); }
 .luno-player-actions button[aria-pressed="true"] { color: var(--luno-green); }
 .luno-player-actions .luno-favorite.is-on { color: var(--luno-green); }
 .luno-volume { display: flex; align-items: center; gap: 8px; }

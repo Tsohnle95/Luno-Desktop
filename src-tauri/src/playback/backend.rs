@@ -57,6 +57,14 @@ pub trait AudioBackend {
     fn load_streaming(&mut self, path: &Path) -> Result<TrackInfo, BackendError> {
         self.load(path)
     }
+    /// Like `load_streaming`, but accepts a pre-computed duration so the
+    /// caller can run the file probe OUTSIDE any shared lock — probing can
+    /// block for seconds on cold storage, and holding the backend lock for it
+    /// froze pause/seek/volume/heartbeat for the whole load.
+    fn load_streaming_with_duration(&mut self, path: &Path, known_duration: Option<Duration>) -> Result<TrackInfo, BackendError> {
+        let _ = known_duration;
+        self.load_streaming(path)
+    }
     /// Master volume in `0.0..=1.0`, applied to the samples the backend emits.
     fn set_volume(&mut self, _volume: f32) {}
     fn play(&mut self) -> Result<(), BackendError>;

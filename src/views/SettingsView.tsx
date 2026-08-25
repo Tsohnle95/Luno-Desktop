@@ -8,7 +8,7 @@ export type SettingsNavLink = "home" | "recent" | "discover" | "downloader" | "e
 export interface SettingsViewProps {
   lastfmKey?: string;
   keychainStatus?: "available" | "missing" | "error" | "loading";
-  /** Persists the Last.fm API key into the macOS Keychain. */
+  /** Persists the Last.fm API key (stored privately in Luno's app data). */
   onSaveLastfmKey?: (key: string) => void;
   musicRoot?: string;
   libraryRootPath?: string;
@@ -88,7 +88,7 @@ export function SettingsView({
   const panels: Record<Category, ReactNode> = {
     Library: section("Storage & Library", onLibraryRootSubmit ? <div><label htmlFor="music-root">Music folder</label><div style={{ display: "flex", gap: 10, marginTop: 8 }}><input id="music-root" value={rootInput} onChange={(e) => updateRoot(e.target.value)} placeholder="/Users/you/Music" aria-describedby="music-root-error" style={{ ...inputStyle, flex: 1 }} /><button type="button" disabled={rootInput.trim().length === 0 || rootError !== null} onClick={() => onLibraryRootSubmit(rootInput)} style={buttonsDisabledStyle(rootInput.trim().length === 0 || rootError !== null)}>Set folder</button></div>{rootError && <p id="music-root-error" role="alert" style={{ color: "var(--luno-red)", margin: "6px 0" }}>{rootError}</p>}<p style={{ color: "var(--luno-text-2)" }}>Enter an absolute folder path; Luno scans it as your music library and downloads land inside it.</p></div> : <div><label htmlFor="music-root">Music folder</label><div style={{ display: "flex", gap: 10, marginTop: 8 }}><input id="music-root" readOnly value={musicRoot} style={{ ...inputStyle, flex: 1 }} /><button type="button" onClick={onChooseMusicRoot} style={buttonStyle}>Change</button></div><p style={{ color: "var(--luno-text-2)" }}>Library scanning and downloads use this folder.</p></div>),
     Discovery: section("Discovery & Personalization", <>
-      <div style={{ background: "var(--luno-bg)", padding: 18, borderRadius: 8, marginBottom: 18 }}><strong>Connect to Last.fm</strong><p style={{ color: "var(--luno-text-2)", lineHeight: 1.5, marginBottom: 0 }}>Create an API key at Last.fm, then enter it below. The key is stored in the macOS Keychain and is never written to settings files.</p></div>
+      <div style={{ background: "var(--luno-bg)", padding: 18, borderRadius: 8, marginBottom: 18 }}><strong>Connect to Last.fm</strong><p style={{ color: "var(--luno-text-2)", lineHeight: 1.5, marginBottom: 0 }}>Create an API key at Last.fm, then enter it below. The key is stored privately in Luno's app data.</p></div>
       <label htmlFor="lastfm-key">Last.fm API key</label><div style={{ display: "flex", gap: 10, marginTop: 8 }}><input id="lastfm-key" type="password" autoComplete="off" value={key} onChange={updateKey} aria-describedby="lastfm-status lastfm-error" style={{ ...inputStyle, flex: 1 }} /><button type="button" disabled={!onSaveLastfmKey || !key.trim() || keyError !== null} onClick={submitKey} style={buttonsDisabledStyle(!key.trim() || keyError !== null)}>Save key</button></div>
       {keyError && <p id="lastfm-error" role="alert" style={{ color: "var(--luno-red)", margin: "6px 0" }}>{keyError}</p>}
       {keySaved && keychainStatus === "available" && <p role="status" style={{ color: "var(--luno-green)", margin: "6px 0 0" }}>API key saved — discovery is live.</p>}

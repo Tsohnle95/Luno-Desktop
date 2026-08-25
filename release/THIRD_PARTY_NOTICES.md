@@ -536,17 +536,17 @@ That's all there is to it!
 
 ## yt-dlp
 
-- Version: 2025.08.11 (pinned in `release/desktop-binaries.json`)
+- Version: 2026.08.19 (pinned in `release/desktop-binaries.json`)
 - License: Unlicense
-- SHA-256: 8001c730007495a26de24d7fcf6c72e76bc24c47bdde2cfd86d51e21626bd7e4
+- SHA-256: 0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202
 - Architecture: universal2 (x86_64 and arm64)
-- Source: https://github.com/yt-dlp/yt-dlp/releases/download/2025.08.11/yt-dlp_macos
+- Source: https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_macos
   (official GitHub release; SHA-256 matches the release's published
   `SHA2-256SUMS`, whose PGP signature verifies with the official yt-dlp
   signing key `AC0CBBE6848D6A873464AF4E57CF65933B5A7581`
   (public.key hosted at
   https://github.com/yt-dlp/yt-dlp/blob/master/public.key)).
-- Upstream source: https://github.com/yt-dlp/yt-dlp (release 2025.08.11).
+- Upstream source: https://github.com/yt-dlp/yt-dlp (release 2026.08.19).
 
 The complete upstream license text follows (Unlicense):
 

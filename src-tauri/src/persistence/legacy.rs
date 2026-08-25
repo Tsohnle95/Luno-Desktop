@@ -15,6 +15,7 @@ pub struct LegacyConfig {
     pub sleep_timer: Option<Value>,
     pub global_keys: Option<bool>,
     pub favorite_songs: Option<Vec<String>>,
+    pub video_mode: Option<bool>,
 }
 
 /// Parse config while retaining only known fields. A malformed or non-object
@@ -28,6 +29,7 @@ pub fn read_config(path: &Path) -> Result<LegacyConfig, String> {
     string!("music_root", music_root); string!("lastfm_key", lastfm_key);
     if let Some(v) = object.get("auto_discovery").and_then(Value::as_bool) { config.auto_discovery = Some(v); }
     if let Some(v) = object.get("global_keys").and_then(Value::as_bool) { config.global_keys = Some(v); }
+    if let Some(v) = object.get("video_mode").and_then(Value::as_bool) { config.video_mode = Some(v); }
     if let Some(v) = object.get("volume").and_then(Value::as_f64).filter(|v| v.is_finite()) { config.volume = Some(v); }
     // `crossfade` was intentionally retired in the desktop migration. It is
     // not represented in target state and is therefore ignored as an unknown

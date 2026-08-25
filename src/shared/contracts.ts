@@ -15,18 +15,19 @@ export type PlaybackStatus = "stopped" | "playing" | "paused" | "failed";
 export type RepeatMode = "off" | "one" | "all";
 export interface PlaybackSnapshot { queue: TrackId[]; current_index: number | null; shuffle: boolean; repeat: RepeatMode; position_ms: number; duration_ms: number | null; status: PlaybackStatus; generation: Generation }
 export type VideoStatus = "not_checked" | "loading" | "ready" | "playing" | "paused" | "ended" | "unavailable" | "error";
-export interface VideoState { track_id: TrackId | null; source_url: string | null; staged_path: string | null; status: VideoStatus; position_ms: number; fullscreen: boolean; generation: Generation }
+export interface VideoState { track_id: TrackId | null; source_url: string | null; staged_path: string | null; status: VideoStatus; position_ms: number; /** 0-100 while status is "loading"; null otherwise. */ download_progress?: number | null; fullscreen: boolean; generation: Generation }
 export type DownloadKind = "single" | "csv" | "sync" | "url_queue";
 export type JobState = "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
 export interface DownloadJob { id: JobId; kind: DownloadKind; state: JobState; track_id: TrackId | null; progress: number | null; generation: Generation }
 export type ErrorCode = "invalid_request" | "unsupported_version" | "not_found" | "busy" | "cancelled" | "unavailable" | "internal" | "shutting_down";
 export interface ContractError { code: ErrorCode; message: string; retryable: boolean }
-export interface SettingsInput { music_root: string | null; auto_discovery: boolean | null; volume: number | null; sleep_timer: unknown | null; global_keys: boolean | null; favorite_songs: string[] }
+export interface SettingsInput { music_root: string | null; auto_discovery: boolean | null; volume: number | null; sleep_timer: unknown | null; global_keys: boolean | null; favorite_songs: string[]; video_mode?: boolean | null }
 export interface SearchResult { provider: string; query: string }
 
 export type Command =
   | { type: "get_library" } | { type: "scan_library" } | { type: "play"; payload: { track_id: TrackId } }
   | { type: "play_with_context"; payload: { track_id: TrackId; context: TrackId[] } }
+  | { type: "resume" }
   | { type: "next" } | { type: "previous" }
   | { type: "play_next"; payload: { track_ids: TrackId[] } } | { type: "add_to_queue"; payload: { track_ids: TrackId[] } }
   | { type: "remove_from_queue"; payload: { index: number } } | { type: "reorder_queue"; payload: { from: number; to: number } }
@@ -55,6 +56,7 @@ export type Command =
   | { type: "record_recent"; payload: { track_id: TrackId } } | { type: "get_recent" } | { type: "clear_recent" }
   | { type: "pause" } | { type: "seek"; payload: { position_ms: number } } | { type: "set_volume"; payload: { volume: number } }
   | { type: "video_source"; payload: { track_id: TrackId } } | { type: "video_stage"; payload: { track_id: TrackId } }
+  | { type: "set_video_mode"; payload: { enabled: boolean } }
   | { type: "video_play" } | { type: "video_pause" } | { type: "video_seek"; payload: { position_ms: number } }
   | { type: "video_resize"; payload: { width: number; height: number } } | { type: "video_fullscreen"; payload: { fullscreen: boolean } }
   | { type: "cancel_job"; payload: { job_id: JobId } }
@@ -124,7 +126,7 @@ export const previewKey = (artist: string, title: string): string =>
 export function isContractVersion(v: unknown): v is ContractVersion { return v === CONTRACT_VERSION; }
 function isCommand(v: unknown): v is Command {
   if (!object(v) || typeof v.type !== "string") return false;
-   if (["get_library", "scan_library", "pause", "get_recent", "clear_recent", "transfer_export", "resolve_runtime_home", "bundle_helper_path"].includes(v.type)) return Object.keys(v).length === 1;
+   if (["get_library", "scan_library", "pause", "resume", "get_recent", "clear_recent", "transfer_export", "resolve_runtime_home", "bundle_helper_path"].includes(v.type)) return Object.keys(v).length === 1;
    if (v.type === "load_config") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && Object.keys(v.payload).length === 1;
     if (v.type === "register_root") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.root === "string" && v.payload.root.trim().length > 0 && Object.keys(v.payload).length === 1;
     if (v.type === "promote_audio_output") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.temporary === "string" && v.payload.temporary.trim().length > 0 && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && Object.keys(v.payload).length === 2;
@@ -141,7 +143,8 @@ function isCommand(v: unknown): v is Command {
     if (v.type === "start_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && typeof v.payload.helper === "string" && v.payload.helper.trim().length > 0 && typeof v.payload.source === "string" && Object.keys(v.payload).length === 4;
     if (v.type === "retry_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && Object.keys(v.payload).length === 1;
     if (v.type === "load_settings") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && Object.keys(v.payload).length === 1;
-    if (v.type === "save_settings") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && object(v.payload.settings) && Object.keys(v.payload.settings).every((key) => ["music_root", "auto_discovery", "volume", "sleep_timer", "global_keys", "favorite_songs"].includes(key)) && Array.isArray(v.payload.settings.favorite_songs) && v.payload.settings.favorite_songs.every((item) => typeof item === "string") && Object.keys(v.payload.settings).length === 6 && Object.keys(v.payload).length === 2;
+    if (v.type === "save_settings") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && object(v.payload.settings) && Object.keys(v.payload.settings).every((key) => ["music_root", "auto_discovery", "volume", "sleep_timer", "global_keys", "favorite_songs", "video_mode"].includes(key)) && Array.isArray(v.payload.settings.favorite_songs) && v.payload.settings.favorite_songs.every((item) => typeof item === "string") && Object.keys(v.payload.settings).length >= 6 && Object.keys(v.payload).length === 2;
+   if (v.type === "set_video_mode") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.enabled === "boolean" && Object.keys(v.payload).length === 1;
     if (["transfer_preview", "transfer_apply"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.manifest === "string" && v.payload.manifest.length <= 10_485_760 && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && (v.type === "transfer_preview" || (object(v.payload.approvals) && Object.keys(v.payload).length === 3)) && Object.keys(v.payload).length === (v.type === "transfer_preview" ? 2 : 3);
    if (["toggle_favorite", "record_recent"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && Object.keys(v.payload).length === 1;
    if (v.type === "play") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && Object.keys(v.payload).length === 1;

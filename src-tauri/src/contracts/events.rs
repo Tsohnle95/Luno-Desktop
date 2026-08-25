@@ -147,6 +147,7 @@ pub enum Command {
         repeat: RepeatMode,
     },
     Pause,
+    Resume,
     Seek {
         #[serde(deserialize_with = "super::types::safe_u64")]
         position_ms: u64,
@@ -159,6 +160,10 @@ pub enum Command {
     },
     VideoStage {
         track_id: TrackId,
+    },
+    /// Toggle song-page video mode (auto-stage current + prefetch next 5).
+    SetVideoMode {
+        enabled: bool,
     },
     VideoPlay,
     VideoPause,
@@ -337,6 +342,9 @@ pub struct VideoState {
     pub status: VideoStatus,
     #[serde(deserialize_with = "super::types::safe_u64")]
     pub position_ms: u64,
+    /// Download progress 0–100 while status is Loading; cleared afterwards.
+    #[serde(default)]
+    pub download_progress: Option<u8>,
     pub fullscreen: bool,
     pub generation: Generation,
 }

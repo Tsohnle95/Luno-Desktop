@@ -7,12 +7,13 @@ import { Gate2Smoke } from "./app/gate2Smoke";
 import { Gate3Smoke } from "./app/gate3Smoke";
 import { Gate4Smoke } from "./app/gate4Smoke";
 import { Gate5Smoke } from "./app/gate5Smoke";
+import { VideoProbe } from "./app/videoProbe";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Luno root element is missing");
 
 const projection = createBackendProjection();
-const viteEnv = (import.meta as ImportMeta & { env: { DEV: boolean; VITE_LUNO_GATE2_SMOKE?: string; VITE_LUNO_GATE2_SMOKE_ROOT?: string; VITE_LUNO_GATE2_SMOKE_TEMPORARY?: string; VITE_LUNO_GATE2_SMOKE_DESTINATION?: string; VITE_LUNO_GATE3_SMOKE?: string; VITE_LUNO_GATE3_SMOKE_ROOT?: string; VITE_LUNO_GATE3_SMOKE_TEMPORARY?: string; VITE_LUNO_GATE3_SMOKE_DESTINATION?: string; VITE_LUNO_GATE4_SMOKE?: string; VITE_LUNO_GATE4_SMOKE_HOME?: string; VITE_LUNO_GATE4_SMOKE_ROOT?: string; VITE_LUNO_GATE4_SMOKE_HELPER?: string; VITE_LUNO_GATE4_SMOKE_DESTINATION?: string; VITE_LUNO_GATE5_SMOKE?: string; VITE_LUNO_GATE5_SMOKE_ROOT?: string; VITE_LUNO_GATE5_SMOKE_PREVIEW?: string; VITE_LUNO_GATE5_SMOKE_VIDEO?: string } }).env;
+const viteEnv = (import.meta as ImportMeta & { env: { DEV: boolean; VITE_LUNO_VIDEO_PROBE?: string; VITE_LUNO_GATE2_SMOKE?: string; VITE_LUNO_GATE2_SMOKE_ROOT?: string; VITE_LUNO_GATE2_SMOKE_TEMPORARY?: string; VITE_LUNO_GATE2_SMOKE_DESTINATION?: string; VITE_LUNO_GATE3_SMOKE?: string; VITE_LUNO_GATE3_SMOKE_ROOT?: string; VITE_LUNO_GATE3_SMOKE_TEMPORARY?: string; VITE_LUNO_GATE3_SMOKE_DESTINATION?: string; VITE_LUNO_GATE4_SMOKE?: string; VITE_LUNO_GATE4_SMOKE_HOME?: string; VITE_LUNO_GATE4_SMOKE_ROOT?: string; VITE_LUNO_GATE4_SMOKE_HELPER?: string; VITE_LUNO_GATE4_SMOKE_DESTINATION?: string; VITE_LUNO_GATE5_SMOKE?: string; VITE_LUNO_GATE5_SMOKE_ROOT?: string; VITE_LUNO_GATE5_SMOKE_PREVIEW?: string; VITE_LUNO_GATE5_SMOKE_VIDEO?: string } }).env;
 const gate2SmokeConfig = viteEnv.DEV && viteEnv.VITE_LUNO_GATE2_SMOKE === "1"
   && viteEnv.VITE_LUNO_GATE2_SMOKE_ROOT
   && viteEnv.VITE_LUNO_GATE2_SMOKE_TEMPORARY
@@ -66,7 +67,7 @@ function App() {
     };
   }, []);
 
-  return <><Shell backendProjection={projection} bridge={bridge} backendAvailable={backendAvailable} videoConnected={backendAvailable} />{gate2SmokeConfig && <Gate2Smoke bridge={bridge} config={gate2SmokeConfig} />}{gate3SmokeConfig && <Gate3Smoke bridge={bridge} config={gate3SmokeConfig} />}{gate4SmokeConfig && <Gate4Smoke bridge={bridge} config={gate4SmokeConfig} />}{gate5SmokeConfig && <Gate5Smoke bridge={bridge} config={gate5SmokeConfig} />}</>;
+  return <><Shell backendProjection={projection} bridge={bridge} backendAvailable={backendAvailable} videoConnected={backendAvailable} />{gate2SmokeConfig && <Gate2Smoke bridge={bridge} config={gate2SmokeConfig} />}{gate3SmokeConfig && <Gate3Smoke bridge={bridge} config={gate3SmokeConfig} />}{gate4SmokeConfig && <Gate4Smoke bridge={bridge} config={gate4SmokeConfig} />}{gate5SmokeConfig && <Gate5Smoke bridge={bridge} config={gate5SmokeConfig} />}{viteEnv.DEV && viteEnv.VITE_LUNO_VIDEO_PROBE === "1" && <VideoProbe bridge={bridge} />}</>;
 }
 
 createRoot(root).render(
