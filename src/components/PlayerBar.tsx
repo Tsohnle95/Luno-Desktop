@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { PlaybackSnapshot, Track } from "../shared/contracts";
 import { Artwork } from "./Artwork";
-import { DownloadRing } from "./VideoStage";
 import { IconPlay, IconPause, IconQueueList, IconRepeat, IconShuffle, IconSkipBack, IconSkipForward, IconVolume } from "./icons";
 
 export interface PlayerBarProps {
@@ -28,9 +27,6 @@ export interface PlayerBarProps {
   onCycleRepeat?: () => void;
   /** Queue panel visibility toggle in the right action cluster. */
   queueOpen?: boolean;
-  /** Active music-video staging for the current track → green progress ring
-   * in the player bar (visible from ANY view, not just the song page). */
-  videoStaging?: { progress: number | null } | null;
   onToggleQueue?: () => void;
 }
 
@@ -51,7 +47,7 @@ const clamp = (value: number, min: number, max: number) => Math.min(Math.max(min
  * the committed position until the backend catches up (no snap-back). The
  * volume slider mirrors the persisted volume value when idle.
  */
-export function PlayerBar({ track = null, playback = null, artwork = null, volume = 1, accent = "var(--luno-green)", onPlayPause, onNext, onPrevious, onSeek, onVolume, onVolumeCommit, onFavoriteToggle, onOpenTrack, backendAvailable = true, shuffle = false, repeat = "off", onToggleShuffle, onCycleRepeat, queueOpen = true, onToggleQueue, videoStaging }: PlayerBarProps) {
+export function PlayerBar({ track = null, playback = null, artwork = null, volume = 1, accent = "var(--luno-green)", onPlayPause, onNext, onPrevious, onSeek, onVolume, onVolumeCommit, onFavoriteToggle, onOpenTrack, backendAvailable = true, shuffle = false, repeat = "off", onToggleShuffle, onCycleRepeat, queueOpen = true, onToggleQueue }: PlayerBarProps) {
   const position = playback?.position_ms ?? 0;
   const duration = playback?.duration_ms ?? 0;
   const playing = playback?.status === "playing";
@@ -230,7 +226,6 @@ export function PlayerBar({ track = null, playback = null, artwork = null, volum
         <button type="button" aria-label={`Repeat ${repeat}`} aria-pressed={repeat !== "off"} disabled={!backendAvailable || !onCycleRepeat} onClick={onCycleRepeat}>{repeat === "one" ? "①" : <IconRepeat size={16} />}</button>
       </div>
       <div className="luno-player-actions">
-        {videoStaging && <span className="luno-player-ring" title={typeof videoStaging.progress === "number" ? `Downloading music video… ${Math.round(videoStaging.progress)}%` : "Fetching music video…"}><DownloadRing progress={videoStaging.progress} size={28} /></span>}
         {onToggleQueue && <button type="button" aria-label={queueOpen ? "Close queue panel" : "Open queue panel"} aria-pressed={queueOpen} onClick={onToggleQueue}><IconQueueList size={17} /></button>}
         <button type="button" className={`luno-favorite${track?.favorite ? " is-on" : ""}`} aria-label={track?.favorite ? "Remove from favorites" : "Add to favorites"} disabled={!backendAvailable || !track} onClick={() => track && onFavoriteToggle?.(track)}>{track?.favorite ? "★" : "☆"}</button>
         <button type="button" aria-label={muted || volume <= 0 ? "Unmute" : "Mute"} aria-pressed={muted || volume <= 0} disabled={!backendAvailable} onClick={toggleMute}><IconVolume size={16} /></button>

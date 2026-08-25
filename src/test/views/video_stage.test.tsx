@@ -20,7 +20,7 @@ describe("Video stage download-progress ring", () => {
     expect(html).toContain("luno-video-progress"); // ring badge present
     // Exact class match: the chrome stylesheet legitimately mentions
     // .is-determinate inside its :not() selector for the spin animation.
-    expect(html).toContain('<span class="luno-video-progress">');
+    expect(html).toContain('<span class="luno-video-progress" style=');
     expect(html).not.toContain('class="luno-video-progress is-determinate"');
     expect(html).toContain("Loading video preview...");
   });

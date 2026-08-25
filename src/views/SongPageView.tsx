@@ -55,8 +55,39 @@ export function SongPageView({ track = null, recommendations = [], recommendatio
     return () => { document.removeEventListener("pointerdown", onPointerDown); document.removeEventListener("keydown", onKeyDown); };
   }, [menuOpen]);
   const displayedTrack = track ?? lastTrack;
+  // SCROLL FIX (v2): the page has TWO nested scrollers (.luno-song-page-scroll
+  // inner, .luno-main-content outer) and rich children (playing <video>) can
+  // swallow vertical wheel deltas in WKWebView. The first version pinned all
+  // wheels to the INNER scroller — which often isn't the scrollable one — so
+  // scrolling stayed dead. Now: find the closest scroller that can actually
+  // absorb the delta in its direction; only preventDefault when we scroll it.
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const root = pageRef.current;
+    if (!root) return;
+    const onWheel = (event: WheelEvent) => {
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      const goingDown = event.deltaY > 0;
+      const candidates = [
+        root.querySelector(".luno-song-page-scroll"),
+        root.closest(".luno-main-content"),
+      ].filter((el): el is HTMLElement => !!el);
+      for (const el of candidates) {
+        const scrollable = el.scrollHeight - el.clientHeight > 2;
+        if (!scrollable) continue;
+        const atEnd = goingDown ? el.scrollTop + el.clientHeight >= el.scrollHeight - 1 : el.scrollTop <= 0;
+        if (atEnd) continue;
+        event.preventDefault();
+        el.scrollTop += event.deltaY;
+        return;
+      }
+      // Every scroller is at its edge: nothing to do; keep the event default.
+    };
+    root.addEventListener("wheel", onWheel, { passive: false });
+    return () => root.removeEventListener("wheel", onWheel);
+  }, []);
   const favoriteLabel = displayedTrack?.favorite ? "Remove from favorites" : "Add to favorites";
-  return <div className="luno-song-page" data-testid="song-page">
+  return <div ref={pageRef} className="luno-song-page" data-testid="song-page">
     <style>{songPageStyles}</style>
     <div className="luno-song-page-backdrop" aria-hidden="true" style={displayedTrack?.artwork_url ? { backgroundImage: `url(${displayedTrack.artwork_url})` } : undefined} />
     {onVideoModeChange && backendAvailable && null}

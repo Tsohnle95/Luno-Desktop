@@ -395,10 +395,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-transport .luno-transport-play:hover:not(:disabled) { background: var(--luno-green-hover); color: #001a08; }
 .luno-transport button:disabled { opacity: 0.35; cursor: default; }
 .luno-player-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
-/* Mini download ring in the player bar: visible from ANY view while the
- * current track's music video stages. Percentage text shrinks to fit. */
-.luno-player-ring { display: inline-flex; align-items: center; justify-content: center; }
-.luno-player-ring .luno-video-progress-pct { font-size: 8px; }
 .luno-player-actions button {
   width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 50%; padding: 0;

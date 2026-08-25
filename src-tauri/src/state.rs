@@ -68,6 +68,36 @@ pub enum MigrationStatus {
 mod tests {
     use super::*;
 
+    /// Ownership guard truth table for staging-worker completion (2026-08-24
+    /// night): a finishing worker may publish only into an empty slot, its
+    /// OWN placeholder, or a slot nothing newer claimed. Overwriting a newer
+    /// claim for ANOTHER track stranded the UI on stale results and made real
+    /// ones (e.g. Unavailable) vanish behind the staleness filter.
+    #[test]
+    fn completion_may_publish_ownership_rules() {
+        fn video(track: &str, generation: u64) -> crate::contracts::events::VideoState {
+            crate::contracts::events::VideoState {
+                track_id: Some(TrackId::new(track).expect("id")),
+                source_url: None,
+                staged_path: None,
+                status: crate::contracts::events::VideoStatus::Loading,
+                position_ms: 0,
+                download_progress: None,
+                fullscreen: false,
+                generation: Generation(generation),
+            }
+        }
+        let worker_track = TrackId::new("t-worker").expect("id");
+        // Empty slot: always publish.
+        assert!(completion_may_publish(None, &worker_track, 7));
+        // Own placeholder (any generation): publish.
+        assert!(completion_may_publish(Some(&video("t-worker", 3)), &worker_track, 7));
+        // Another track with an OLDER generation: publish (we are newer).
+        assert!(completion_may_publish(Some(&video("t-other", 5)), &worker_track, 7));
+        // Another track with a NEWER generation (a newer claim): DO NOT publish.
+        assert!(!completion_may_publish(Some(&video("t-other", 9)), &worker_track, 7));
+    }
+
     /// RED repro (2026-08-23): search shows a song row, clicking it errors
     /// "track is not available locally". Track IDs are filename-derived; when
     /// two files share a stem, whichever the scan visits FIRST keeps the plain
@@ -1297,6 +1327,26 @@ struct ScanState {
     pending: Option<ScanWork>,
 }
 
+/// Whether a FINISHING staging worker may publish its result into the shared
+/// video slot. Ownership rules (unit-tested):
+/// - empty slot → always yes;
+/// - slot already shows THIS worker's track → yes (its Loading placeholder);
+/// - a NEWER claim (higher generation) for another track → NO: overwriting it
+///   stranded the UI on stale results and made real ones vanish.
+pub fn completion_may_publish(
+    current: Option<&crate::contracts::events::VideoState>,
+    worker_track_id: &TrackId,
+    worker_generation: u64,
+) -> bool {
+    match current {
+        None => true,
+        Some(video) => {
+            video.track_id.as_ref() == Some(worker_track_id)
+                || video.generation.0 <= worker_generation
+        }
+    }
+}
+
 impl AppState {
     pub fn new(task_limit: usize) -> Self {
         Self::with_preview_store(
@@ -1480,18 +1530,48 @@ impl AppState {
             retryable: false,
         })?;
         // A staging worker holds this lock for the whole download; never pile
-        // blocked dispatches behind it — refuse quickly instead.
-        let stager_ready = match self.video_stager.try_lock() {
+        // blocked dispatches behind it. But the spinner must appear
+        // IMMEDIATELY, so claim the UI right away — WITHOUT minting a new
+        // generation. Minting fresh generations here made later real worker
+        // results (carrying older generations — e.g. Unavailable for a track
+        // with no video) get DROPPED by the frontend staleness filter:
+        // permanent spinners on tracks that have no videos. Reusing the
+        // slot's CURRENT generation keeps the event stream monotonic, and the
+        // ownership guard lets the busy worker's own completion win over this
+        // placeholder.
+        let _stager_ready = match self.video_stager.try_lock() {
             Ok(guard) => guard.is_some(),
-            Err(_) => return Err(ContractError { code: ErrorCode::Busy, message: "another video is still staging".into(), retryable: true }),
+            Err(_) => {
+                let mut current = self.video_current.lock().unwrap();
+                match current.as_ref() {
+                    // Already pending for THIS track: nothing to publish.
+                    Some(v) if v.track_id.as_ref() == Some(&track_id) && matches!(v.status, crate::contracts::events::VideoStatus::Loading) => {
+                        drop(current);
+                        return Ok(self.video_snapshot_json());
+                    }
+                    // Claim the slot by REUSING its live generation.
+                    Some(v) => {
+                        let generation = v.generation;
+                        *current = Some(crate::contracts::events::VideoState {
+                            track_id: Some(track_id.clone()),
+                            source_url: None,
+                            staged_path: None,
+                            status: crate::contracts::events::VideoStatus::Loading,
+                            position_ms: 0,
+                            download_progress: None,
+                            fullscreen: false,
+                            generation,
+                        });
+                        drop(current);
+                        self.publish_video_state();
+                        eprintln!("[luno-video] store busy; queued spinner for {track_id:?}");
+                        return Ok(self.video_snapshot_json());
+                    }
+                    // Empty slot: no generations at stake — take the normal path.
+                    None => false,
+                }
+            }
         };
-        if !stager_ready {
-            return Err(ContractError {
-                code: ErrorCode::Unavailable,
-                message: "video storage is unavailable".into(),
-                retryable: false,
-            });
-        }
         let (artist, title) = {
             let snapshot = self.library();
             let track = snapshot.tracks.iter().find(|track| track.id == track_id);
@@ -1634,17 +1714,21 @@ impl AppState {
                 return;
             }
             let _ = superseded_by_other;
-            *state.video_current.lock().unwrap() = Some(crate::contracts::events::VideoState {
-                track_id: Some(worker_track_id),
-                source_url,
-                staged_path,
-                status: next_status,
-                position_ms: 0,
-                download_progress: None,
-                fullscreen: false,
-                generation: Generation(generation),
-            });
-            state.publish_video_state();
+            // OWNERSHIP GUARD: only publish our result if the slot still
+            // belongs to this request — see completion_may_publish.
+            if completion_may_publish(state.video_current.lock().unwrap().as_ref(), &worker_track_id, generation) {
+                *state.video_current.lock().unwrap() = Some(crate::contracts::events::VideoState {
+                    track_id: Some(worker_track_id),
+                    source_url,
+                    staged_path,
+                    status: next_status,
+                    position_ms: 0,
+                    download_progress: None,
+                    fullscreen: false,
+                    generation: Generation(generation),
+                });
+                state.publish_video_state();
+            }
         });
         if let Err(_spawn_error) = spawned {
             // A rejected spawn means NO worker will ever resolve the Loading
@@ -1804,8 +1888,7 @@ impl AppState {
         !Arc::ptr_eq(&self.video_prefetch_cancel.lock().unwrap(), cancel)
     }
 
-    fn video_mutate(&self, mutate: impl FnOnce(&mut crate::contracts::events::VideoState)) -> Result<Value, ContractError> {
-        let mut guard = self.video_current.lock().unwrap();
+    fn video_mutate(&self, mutate: impl FnOnce(&mut crate::contracts::events::VideoState)) -> Result<Value, ContractError> {        let mut guard = self.video_current.lock().unwrap();
         match guard.as_mut() {
             Some(video) if video.staged_path.is_some() || matches!(video.status, crate::contracts::events::VideoStatus::Paused | crate::contracts::events::VideoStatus::Playing) => {
                 mutate(video);
