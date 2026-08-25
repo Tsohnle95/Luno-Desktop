@@ -330,7 +330,15 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       .catch((error) => { if (active) setDiscover({ items: [], loading: false, error: normalizeRuntimeCommandError(error) }); });
     return () => { active = false; };
   }, [route, settingsScreen, discoverSeed?.artist, discoverSeed?.title, discoverRefresh, bridge]);
-  const videoSrc = safeVideoSource(currentVideo?.source_url, currentVideo?.staged_path);
+  const stagedVideoSrc = safeVideoSource(currentVideo?.source_url, currentVideo?.staged_path);
+  // QUALITY UPGRADE HOT-SWAP: after the background pass replaces the quick-tier
+  // file in place it republishes VideoState with revision 2. Appending a
+  // #fragment CHANGES the src string so React reloads the <video> element onto
+  // the upgraded bytes (WebKit strips fragments before fetching); the sync
+  // planner then re-seeks the fresh element to the authoritative audio
+  // position, so the swap is a quality jump rather than a restart.
+  const videoRevision = typeof currentVideo?.revision === "number" ? currentVideo.revision : 0;
+  const videoSrc = stagedVideoSrc !== null && videoRevision >= 2 ? `${stagedVideoSrc}#luno-r${videoRevision}` : stagedVideoSrc;
   // A <video> whose source the webview cannot decode (e.g. Opus-in-MP4 from
   // older staging) must degrade to artwork instead of sitting as a black box.
   const [videoFailedFor, setVideoFailedFor] = useState<string | null>(null);

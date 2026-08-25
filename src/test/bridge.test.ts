@@ -335,4 +335,25 @@ describe("typed IPC bridge and projection", () => {
     const state = { ...store.getSnapshot(), video: { track_id: "track-1", source_url: null, staged_path: null, status: "loading" as const, position_ms: 0, fullscreen: false, generation: 2 } };
     expect(mergeVideoSnapshot(state, { track_id: "track-1", source_url: null, staged_path: null, status: "loading", position_ms: 0, fullscreen: false, generation: 2 })).toBe(state);
   });
+
+  it("accepts video_state events carrying download_progress and revision", () => {
+    // REGRESSION: the validator required EXACTLY the seven original keys, so
+    // every pushed video_state event (which serializes download_progress)
+    // was silently discarded — the UI only survived via command responses
+    // and polling.
+    const store = createBackendProjection();
+    store.apply({ ...event({ type: "video_state", payload: { state: { track_id: "track-1", source_url: null, staged_path: "/tmp/v.mp4", status: "loading", position_ms: 0, download_progress: 42, fullscreen: false, generation: 3 } } }, 3), event_id: "event-9" });
+    expect(store.getSnapshot().video?.status).toBe("loading");
+    expect(store.getSnapshot().video?.download_progress).toBe(42);
+  });
+
+  it("mergeVideoSnapshot applies a revision-only upgrade publication", () => {
+    const store = createBackendProjection();
+    store.apply(event({ type: "video_state", payload: { state: { track_id: "track-1", source_url: "https://example.test/v.mp4", staged_path: "/tmp/v.mp4", status: "playing", position_ms: 5000, revision: 1, fullscreen: false, generation: 5 } } }, 5));
+    // The background upgrade replaces the file IN PLACE — same path, same
+    // status; only the revision changes. That must not be folded into
+    // "unchanged" or the webview would never hot-swap to full quality.
+    const next = mergeVideoSnapshot(store.getSnapshot(), { track_id: "track-1", source_url: "https://example.test/v.mp4", staged_path: "/tmp/v.mp4", status: "playing", position_ms: 5000, revision: 2, fullscreen: false, generation: 6 });
+    expect(next.video?.revision).toBe(2);
+  });
 });

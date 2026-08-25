@@ -1,4 +1,0 @@
-[submodule "mobile-app/vendor/NewPipeExtractor"]
-	path = mobile-app/vendor/NewPipeExtractor
-	url = https://github.com/TeamNewPipe/NewPipeExtractor.git
-	shallow = true

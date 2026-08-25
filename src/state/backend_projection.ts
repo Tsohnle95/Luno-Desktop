@@ -117,7 +117,11 @@ export function mergeVideoSnapshot(state: BackendProjection, incoming: VideoStat
       && current.staged_path === incoming.staged_path
       && current.source_url === incoming.source_url
       && current.position_ms === incoming.position_ms
-      && current.download_progress === incoming.download_progress;
+      && current.download_progress === incoming.download_progress
+      // A revision bump is the ONLY change some publications carry (the
+      // background quality upgrade replaces the file in place) — it must
+      // never be folded into "unchanged".
+      && (current.revision ?? null) === (incoming.revision ?? null);
     if (unchanged) return state;
   }
   return { ...state, video: incoming };

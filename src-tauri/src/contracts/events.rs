@@ -345,6 +345,13 @@ pub struct VideoState {
     /// Download progress 0–100 while status is Loading; cleared afterwards.
     #[serde(default)]
     pub download_progress: Option<u8>,
+    /// Content-revision counter for the CURRENT track's staged file.
+    /// `Some(1)` = quick-tier file; `Some(2)` = replaced by the background
+    /// full-quality upgrade. The frontend uses it to hot-swap the <video>
+    /// element onto the upgraded bytes without a track change. Absent in
+    /// legacy payloads; omitted when None so old fixtures stay byte-stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u32>,
     pub fullscreen: bool,
     pub generation: Generation,
 }

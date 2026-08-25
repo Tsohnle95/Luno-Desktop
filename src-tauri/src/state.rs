@@ -83,6 +83,7 @@ mod tests {
                 status: crate::contracts::events::VideoStatus::Loading,
                 position_ms: 0,
                 download_progress: None,
+                revision: None,
                 fullscreen: false,
                 generation: Generation(generation),
             }
@@ -96,6 +97,30 @@ mod tests {
         assert!(completion_may_publish(Some(&video("t-other", 5)), &worker_track, 7));
         // Another track with a NEWER generation (a newer claim): DO NOT publish.
         assert!(!completion_may_publish(Some(&video("t-other", 9)), &worker_track, 7));
+    }
+
+    #[test]
+    fn heal_track_id_recovers_collision_flipped_ids() {
+        fn map(entries: &[&str]) -> std::collections::BTreeMap<TrackId, PathBuf> {
+            entries.iter().map(|id| (TrackId::new(*id).expect("id"), PathBuf::from(format!("/lib/{id}")))).collect()
+        }
+        let requested = TrackId::new("metadata:magnatron-starfighter:0").expect("id");
+        // Canonical copy won a rescan: the exact base now exists.
+        let library = map(&["metadata:magnatron-starfighter:0", "metadata:other-song:0"]);
+        assert_eq!(heal_track_id(&library, &requested), Some(requested.clone()));
+        // The clicked row GAINED a discriminator (one suffixed sibling).
+        let library = map(&["metadata:magnatron-starfighter:0#1a2b3c4d", "metadata:other-song:0"]);
+        assert_eq!(heal_track_id(&library, &requested), Some(TrackId::new("metadata:magnatron-starfighter:0#1a2b3c4d").expect("id")));
+        // A stale SUFFIX resolves back to the canonical copy.
+        let stale = TrackId::new("metadata:magnatron-starfighter:0#deadbeef").expect("id");
+        let library = map(&["metadata:magnatron-starfighter:0", "metadata:other-song:0"]);
+        assert_eq!(heal_track_id(&library, &stale), Some(TrackId::new("metadata:magnatron-starfighter:0").expect("id")));
+        // AMBIGUOUS siblings must still fail — never guess between copies.
+        let library = map(&["metadata:magnatron-starfighter:0#1a2b3c4d", "metadata:magnatron-starfighter:0#deadbeef"]);
+        assert_eq!(heal_track_id(&library, &requested), None);
+        // No relatives at all.
+        let library = map(&["metadata:other-song:0"]);
+        assert_eq!(heal_track_id(&library, &requested), None);
     }
 
     /// RED repro (2026-08-23): search shows a song row, clicking it errors
@@ -1347,6 +1372,30 @@ pub fn completion_may_publish(
     }
 }
 
+/// Recover a STALE or COLLISION-FLIPPED track id so a visible row can never
+/// hard-fail with "track is not available locally".
+///
+/// Track ids are `metadata:<key>:<duration>` (or `provider:…`), and files
+/// whose metadata cannot distinguish them append a `#<8-hex path hash>`.
+/// WHICH copy keeps the unsuffixed id depends on scan order, so adding,
+/// removing, or re-downloading a duplicate can flip ids between scans —
+/// ids captured by the queue panel, recent history, Home cards, or a click
+/// that raced a rescan then dangle. When the EXACT id misses but another id
+/// sharing its base exists, play that file instead of rejecting:
+/// - exact base present → use it (the canonical copy won a rescan);
+/// - exactly ONE suffixed sibling → use it (the clicked row gained a
+///   discriminator);
+/// - zero or several siblings → still fail (ambiguous).
+pub fn heal_track_id(candidates: &std::collections::BTreeMap<TrackId, PathBuf>, requested: &TrackId) -> Option<TrackId> {
+    let base = requested.0.split('#').next()?.to_string();
+    if base.is_empty() { return None; }
+    let base_id = TrackId(base.clone());
+    if candidates.contains_key(&base_id) { return Some(base_id); }
+    let matches: Vec<&TrackId> = candidates.keys().filter(|id| id.0.split('#').next() == Some(base.as_str())).collect();
+    if matches.len() == 1 { return Some(matches[0].clone()); }
+    None
+}
+
 impl AppState {
     pub fn new(task_limit: usize) -> Self {
         Self::with_preview_store(
@@ -1559,6 +1608,7 @@ impl AppState {
                             status: crate::contracts::events::VideoStatus::Loading,
                             position_ms: 0,
                             download_progress: None,
+                            revision: None,
                             fullscreen: false,
                             generation,
                         });
@@ -1603,6 +1653,7 @@ impl AppState {
             status: crate::contracts::events::VideoStatus::Loading,
             position_ms: 0,
             download_progress: None,
+            revision: None,
             fullscreen: false,
             generation: Generation(generation),
         });
@@ -1680,6 +1731,7 @@ impl AppState {
                 crate::video::runtime::VideoOutcome::Staged { staged_path, .. } => Some(staged_path.display().to_string()),
                 crate::video::runtime::VideoOutcome::Unavailable(_) => None,
             };
+            let needs_upgrade = matches!(&outcome, crate::video::runtime::VideoOutcome::Staged { needs_upgrade: true, .. });
             // A newer request superseded this one while we worked. If the
             // slot now belongs to a DIFFERENT track, that request owns the
             // UI — return silently. If OUR track is still published as
@@ -1704,6 +1756,7 @@ impl AppState {
                             status: crate::contracts::events::VideoStatus::Unavailable,
                             position_ms: 0,
                             download_progress: None,
+                            revision: None,
                             fullscreen: false,
                             generation: Generation(generation),
                         });
@@ -1717,17 +1770,96 @@ impl AppState {
             // OWNERSHIP GUARD: only publish our result if the slot still
             // belongs to this request — see completion_may_publish.
             if completion_may_publish(state.video_current.lock().unwrap().as_ref(), &worker_track_id, generation) {
+                // Clones for the background upgrade BEFORE the move below.
+                let upgrade_source = source_url.clone();
+                let upgrade_path = staged_path.clone();
                 *state.video_current.lock().unwrap() = Some(crate::contracts::events::VideoState {
-                    track_id: Some(worker_track_id),
+                    track_id: Some(worker_track_id.clone()),
                     source_url,
                     staged_path,
                     status: next_status,
                     position_ms: 0,
                     download_progress: None,
+                    revision: Some(1),
                     fullscreen: false,
                     generation: Generation(generation),
                 });
                 state.publish_video_state();
+                // BACKGROUND QUALITY UPGRADE (two-tier staging): the file was
+                // just pulled through the QUICK ≤480p ladder for a fast first
+                // frame. Replace it with the full ≤1080p version out of band,
+                // then republish with revision 2 so the webview hot-swaps onto
+                // the upgraded bytes. The shared cancel flag is swapped by the
+                // NEXT stage request, so skipping tracks aborts the upgrade at
+                // its checkpoints; the ownership check keeps a superseded
+                // upgrade from ever touching another request's slot.
+                if needs_upgrade {
+                    let upgrade_state = state.clone();
+                    let upgrade_helper = helper.clone();
+                    let upgrade_cancel = Arc::clone(&cancel);
+                    let upgrade_track = worker_track_id.clone();
+                    let upgrade_generation = generation;
+                    let _ = std::thread::Builder::new().name("luno-video-upgrade".into()).spawn(move || {
+                        // Give playback a beat before competing for bandwidth.
+                        for _ in 0..40 {
+                            if upgrade_cancel.load(Ordering::Acquire) || upgrade_state.is_closing() { return; }
+                            std::thread::sleep(std::time::Duration::from_millis(250));
+                        }
+                        let outcome = {
+                            // Resolve the destination under a SHORT lock, then
+                            // release the store for the whole download so the
+                            // prefetch worker can run concurrently.
+                            let id = upgrade_path.as_deref()
+                                .and_then(|path| std::path::Path::new(path).file_name())
+                                .and_then(|name| name.to_str())
+                                .and_then(|name| name.strip_prefix("current-"))
+                                .and_then(|rest| rest.strip_suffix(".mp4"));
+                            let destination = id.and_then(|video_id| {
+                                let stager_guard = upgrade_state.video_stager.lock().unwrap();
+                                stager_guard.as_ref().and_then(|stager| stager.external_destination(crate::video::staging::Slot::Current, video_id).ok())
+                            });
+                            match (id, destination) {
+                                (Some(_), Some(destination)) => crate::video::runtime::upgrade_staged_video(
+                                    &upgrade_helper,
+                                    upgrade_state.video_ffmpeg_dir.lock().unwrap().as_deref(),
+                                    &destination,
+                                    &upgrade_cancel,
+                                ),
+                                (Some(_), None) => Err("video storage is unavailable".into()),
+                                (None, _) => Err("staged path has no video id".into()),
+                            }
+                        };
+                        if outcome.is_err() { return; }
+                        // Republish ONLY if the slot still belongs to this
+                        // exact request (same track AND same generation).
+                        let follow_status = match *upgrade_state.playback_status.lock().unwrap() {
+                            crate::contracts::types::PlaybackStatus::Paused => crate::contracts::events::VideoStatus::Paused,
+                            _ => crate::contracts::events::VideoStatus::Playing,
+                        };
+                        let next_generation = upgrade_state.next_generation();
+                        let mut current = upgrade_state.video_current.lock().unwrap();
+                        let owns_slot = current.as_ref().map(|v| {
+                            v.track_id.as_ref() == Some(&upgrade_track)
+                                && v.generation.0 == upgrade_generation
+                                && matches!(v.status, crate::contracts::events::VideoStatus::Ready | crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Paused)
+                        }).unwrap_or(false);
+                        if owns_slot {
+                            *current = Some(crate::contracts::events::VideoState {
+                                track_id: Some(upgrade_track),
+                                source_url: upgrade_source,
+                                staged_path: upgrade_path,
+                                status: follow_status,
+                                position_ms: 0,
+                                download_progress: None,
+                                revision: Some(2),
+                                fullscreen: false,
+                                generation: next_generation,
+                            });
+                            drop(current);
+                            upgrade_state.publish_video_state();
+                        }
+                    }).ok();
+                }
             }
         });
         if let Err(_spawn_error) = spawned {
@@ -1744,6 +1876,7 @@ impl AppState {
                 status: crate::contracts::events::VideoStatus::Unavailable,
                 position_ms: 0,
                 download_progress: None,
+                revision: None,
                 fullscreen: false,
                 generation: Generation(generation),
             });
@@ -3301,7 +3434,12 @@ impl AppState {
         generation: Generation,
         playlists: BTreeMap<String, Vec<PathBuf>>,
     ) -> LibrarySnapshot {
-        self.track_paths.lock().unwrap().clear();
+        // Build the ENTIRE id→path map in a local, then swap it in with ONE
+        // lock write. Clearing the shared map first left a rebuild-sized
+        // window where play commands for rows still on screen resolved
+        // against an EMPTY map and failed with "track is not available
+        // locally" — the flaky search-click rejection.
+        let mut rebuilt = BTreeMap::<TrackId, PathBuf>::new();
         let mut paths = BTreeMap::<PathBuf, TrackId>::new();
         let mut seen_ids = std::collections::HashSet::<String>::new();
         let mut tracks = Vec::new();
@@ -3348,10 +3486,7 @@ impl AppState {
                 };
                 seen_ids.insert(id.0.clone());
                 paths.insert(path.clone(), id.clone());
-                self.track_paths
-                    .lock()
-                    .unwrap()
-                    .insert(id.clone(), path.clone());
+                rebuilt.insert(id.clone(), path.clone());
                 let favorite = self.favorites.lock().unwrap().contains(&path);
                 tracks.push(Track {
                     id: id.clone(),
@@ -3387,6 +3522,8 @@ impl AppState {
             playlists: playlist_data,
         };
         *self.library.lock().unwrap() = snapshot.clone();
+        // Single atomic swap — see the comment at the top of this function.
+        *self.track_paths.lock().unwrap() = rebuilt;
         let scanned = self
             .track_paths
             .lock()
@@ -4184,20 +4321,24 @@ fn promotion_error(error: PromotionError) -> ContractError {
             eprintln!("[luno-play] rejected: context must contain the selected track");
             return Err(ContractError::invalid("playback context must contain the selected track"));
         }
-        let path = self
-            .track_paths
-            .lock()
-            .unwrap()
-            .get(&track_id)
-            .cloned()
-            .ok_or_else(|| {
-                eprintln!("[luno-play] rejected: track not found locally: {track_id:?}");
-                ContractError {
-                    code: ErrorCode::NotFound,
-                    message: "track is not available locally".into(),
-                    retryable: false,
-                }
-            })?;
+        let path = {
+            let map = self.track_paths.lock().unwrap();
+            match map.get(&track_id) {
+                Some(path) => Some(path.clone()),
+                None => heal_track_id(&map, &track_id).and_then(|healed| {
+                    eprintln!("[luno-play] healed stale id {track_id:?} -> {healed:?}");
+                    map.get(&healed).cloned()
+                }),
+            }
+        }
+        .ok_or_else(|| {
+            eprintln!("[luno-play] rejected: track not found locally: {track_id:?}");
+            ContractError {
+                code: ErrorCode::NotFound,
+                message: "track is not available locally".into(),
+                retryable: false,
+            }
+        })?;
         eprintln!("[luno-play] resolved -> {}", path.display());
         self.purge_discover_deferred();
         self.playback.lock().unwrap().play_with_context(track_id.clone(), context);

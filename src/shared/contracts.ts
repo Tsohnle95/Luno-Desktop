@@ -15,7 +15,7 @@ export type PlaybackStatus = "stopped" | "playing" | "paused" | "failed";
 export type RepeatMode = "off" | "one" | "all";
 export interface PlaybackSnapshot { queue: TrackId[]; current_index: number | null; shuffle: boolean; repeat: RepeatMode; position_ms: number; duration_ms: number | null; status: PlaybackStatus; generation: Generation }
 export type VideoStatus = "not_checked" | "loading" | "ready" | "playing" | "paused" | "ended" | "unavailable" | "error";
-export interface VideoState { track_id: TrackId | null; source_url: string | null; staged_path: string | null; status: VideoStatus; position_ms: number; /** 0-100 while status is "loading"; null otherwise. */ download_progress?: number | null; fullscreen: boolean; generation: Generation }
+export interface VideoState { track_id: TrackId | null; source_url: string | null; staged_path: string | null; status: VideoStatus; position_ms: number; /** 0-100 while status is "loading"; null otherwise. */ download_progress?: number | null; /** Content revision of the staged file: 1 = quick-tier first pass, 2 = background full-quality upgrade completed. */ revision?: number | null; fullscreen: boolean; generation: Generation }
 export type DownloadKind = "single" | "csv" | "sync" | "url_queue";
 export type JobState = "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
 export interface DownloadJob { id: JobId; kind: DownloadKind; state: JobState; track_id: TrackId | null; progress: number | null; generation: Generation }
@@ -175,7 +175,17 @@ function isEvent(v: unknown): v is Event {
   const playlist = (value: unknown): value is Playlist => exact(value, ["id", "name", "path", "url", "ordered_track_ids"]) && id(value.id) && typeof value.name === "string" && optionalString(value.path) && optionalString(value.url) && Array.isArray(value.ordered_track_ids) && value.ordered_track_ids.every(id);
   const library = (value: unknown): value is LibrarySnapshot => exact(value, ["version", "generation", "tracks", "playlists"]) && value.version === CONTRACT_VERSION && generation(value.generation) && Array.isArray(value.tracks) && value.tracks.every(track) && Array.isArray(value.playlists) && value.playlists.every(playlist);
     const playback = (value: unknown): value is PlaybackSnapshot => exact(value, ["queue", "current_index", "shuffle", "repeat", "position_ms", "duration_ms", "status", "generation"]) && Array.isArray(value.queue) && value.queue.every(id) && (value.current_index === null || nonNegativeInt(value.current_index)) && typeof value.shuffle === "boolean" && ["off", "one", "all"].includes(String(value.repeat)) && nonNegativeInt(value.position_ms) && (value.duration_ms === null || nonNegativeInt(value.duration_ms)) && ["stopped", "playing", "paused", "failed"].includes(String(value.status)) && generation(value.generation);
-   const video = (value: unknown): value is VideoState => exact(value, ["track_id", "source_url", "staged_path", "status", "position_ms", "fullscreen", "generation"]) && (value.track_id === null || id(value.track_id)) && optionalString(value.source_url) && optionalString(value.staged_path) && ["not_checked", "loading", "ready", "playing", "paused", "ended", "unavailable", "error"].includes(String(value.status)) && nonNegativeInt(value.position_ms) && typeof value.fullscreen === "boolean" && generation(value.generation);
+   // VideoState allows OPTIONAL trailing fields: the backend serializes
+   // `download_progress` (and may add `revision`) on every video_state EVENT.
+   // Requiring exactly the seven core keys made the validator REJECT every
+   // pushed video event, silently discarding the stream and leaving the UI
+   // dependent on command responses + polling.
+   const video = (value: unknown): value is VideoState => object(value)
+     && (["track_id", "source_url", "staged_path", "status", "position_ms", "fullscreen", "generation"] as const).every((k) => k in value)
+     && Object.keys(value).every((k) => ["track_id", "source_url", "staged_path", "status", "position_ms", "download_progress", "revision", "fullscreen", "generation"].includes(k))
+     && (value.track_id === null || id(value.track_id)) && optionalString(value.source_url) && optionalString(value.staged_path) && ["not_checked", "loading", "ready", "playing", "paused", "ended", "unavailable", "error"].includes(String(value.status)) && nonNegativeInt(value.position_ms) && typeof value.fullscreen === "boolean" && generation(value.generation)
+     && (value.download_progress === undefined || value.download_progress === null || (nonNegativeInt(value.download_progress) && (value.download_progress as number) <= 100))
+     && (value.revision === undefined || value.revision === null || nonNegativeInt(value.revision));
   const progress = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
   const job = (value: unknown): value is DownloadJob => exact(value, ["id", "kind", "state", "track_id", "progress", "generation"]) && id(value.id) && ["single", "csv", "sync", "url_queue"].includes(String(value.kind)) && ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"].includes(String(value.state)) && (value.track_id === null || id(value.track_id)) && (value.progress === null || progress(value.progress)) && generation(value.generation);
   if (v.type === "track_started") return exact(v.payload, ["track_id"]) && id(v.payload.track_id);

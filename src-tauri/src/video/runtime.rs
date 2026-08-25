@@ -103,8 +103,29 @@ pub fn yt_search(helper: &Path, query: &str) -> Vec<VideoCandidate> {
 }
 
 /// Relevance-filtered candidates for an artist/title pair.
+///
+/// The query forms are searched CONCURRENTLY: `lookup` consumes them
+/// sequentially in a fixed order, so all results are gathered up front and
+/// served from buffers. Sequential forms paid 1–3 back-to-back yt-dlp
+/// searches (~5–15 s each) before the download could even start — the wall
+/// time now collapses to roughly ONE search regardless of how many forms the
+/// relevance tiers end up needing.
 pub fn find_sources(helper: &Path, artist: Option<&str>, title: &str) -> Vec<VideoSource> {
-    lookup(artist, title, |query| yt_search(helper, query))
+    let forms = crate::video::source::query_forms(artist, title);
+    let buffered: Vec<Vec<VideoCandidate>> = thread::scope(|scope| {
+        let handles: Vec<_> = forms
+            .iter()
+            .map(|query| scope.spawn(|| yt_search(helper, query)))
+            .collect();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_default()).collect()
+    });
+    let mut form_index = usize::MAX;
+    // Form order here MUST match `lookup`'s internal iteration order
+    // (`query_forms`) so each buffered result list feeds its own form.
+    lookup(artist, title, move |_query| {
+        form_index = form_index.wrapping_add(1);
+        buffered.get(form_index).cloned().unwrap_or_default()
+    })
 }
 
 /// Download the best ≤720p H.264 video for `url`. WKWebView plays H.264/AAC
@@ -143,29 +164,51 @@ fn extract_percent(line: &str) -> Option<u8> {
     Some(number.round() as u8)
 }
 
-/// Download with live progress reporting into `progress`. Same behaviour as
-/// `download_video` otherwise (candidate loop lives in the caller).
-fn download_video_with_progress(
+/// Full-quality format ladder: prefer H.264 up to 1080p (WKWebView
+/// hardware-decodes it), then any codec <=1080p so VP9/AV1-only uploads still
+/// land instead of dead-ending at 360p. ensure_playable_audio transcodes
+/// non-AAC sound afterwards, so audio stays compatible. Used by prefetch and
+/// by the background UPGRADE pass — everywhere latency does not bite.
+pub const FORMAT_LADDER_FULL: &str = "bv*[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=1080]+ba/bv*[height<=1080][vcodec^=vp09]+ba/bv*[height<=1080]+ba/bv*[height<=1080]/b";
+
+/// Quick-tier ladder for INTERACTIVE current-track staging: same codec
+/// preferences capped at 480p, so the file is a fraction of the size and the
+/// picture appears seconds after the search instead of after a full 1080p
+/// pull. The full-quality pass then replaces it in the background
+/// (`upgrade_staged_video`). WKWebView plays 480p H.264/AAC natively.
+pub const FORMAT_LADDER_QUICK: &str = "bv*[vcodec^=avc1][height<=480]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=480]+ba/bv*[height<=480][vcodec^=vp09]+ba/bv*[height<=480]+ba/b";
+
+/// Single download implementation behind both tiers. `ladder` selects the
+/// yt-dlp `-f` chain; `progress` (when given) receives live percentages.
+///
+/// NOTE: yt-dlp writes its progress lines to STDOUT (--newline), not stderr —
+/// the first progress implementation read stderr and could never see a
+/// percentage.
+fn download_ladder(
     helper: &Path,
     ffmpeg_dir: Option<&Path>,
     url: &str,
     destination: &Path,
     cancel: &Arc<AtomicBool>,
-    progress: &Arc<VideoProgress>,
+    ladder: &str,
+    progress: Option<&Arc<VideoProgress>>,
 ) -> Result<(), String> {
     if cancel.load(Ordering::Acquire) { return Err("cancelled".into()); }
     let mut command = Command::new(helper);
-    command.stdout(std::process::Stdio::piped());
-    command.stderr(std::process::Stdio::piped());
-    // NOTE: yt-dlp writes its progress lines to STDOUT (--newline), not
-    // stderr — the first progress implementation read stderr and could never
-    // see a percentage.
+    let report_progress = progress.is_some();
+    if report_progress {
+        command.stdout(std::process::Stdio::piped());
+        command.stderr(std::process::Stdio::piped());
+    } else {
+        command.stdout(std::process::Stdio::null());
+        command.stderr(std::process::Stdio::piped());
+    }
     command.args(["--newline",
-        // Quality ladder (2026-08-24): prefer H.264 up to 1080p (WKWebView
-        // hardware-decodes it), then any codec <=1080p so VP9/AV1-only uploads
-        // still land instead of dead-ending at 360p. ensure_playable_audio
-        // transcodes non-AAC sound afterwards, so audio stays compatible.
-        "-f", "bv*[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=1080]+ba/bv*[height<=1080][vcodec^=vp09]+ba/bv*[height<=1080]+ba/bv*[height<=1080]/b",
+        // NO --extractor-args client overrides here: forcing specific clients
+        // (tv/web) changes which format ladder YouTube serves and can match
+        // NOTHING. The stock rotation works; per-video refusals are handled
+        // by falling through to the next search candidate.
+        "-f", ladder,
         // Parallel DASH fragment pulls — cuts long-video download times hard
         // (single-stream YouTube throttling was the 50s+ wait on a 15-min film).
         "--concurrent-fragments", "5",
@@ -178,91 +221,40 @@ fn download_video_with_progress(
     let mut child = command.spawn().map_err(|error| format!("video downloader could not start: {error}"))?;
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
-    let progress_reader = Arc::clone(progress);
-    let progress_errcopy = Arc::clone(progress);
-    // Progress lines flow on STDOUT; ERROR lines on stderr. Drain both.
-    let stdout_reader = std::thread::spawn(move || {
-        if let Some(stdout) = stdout.as_mut() {
-            use std::io::BufRead;
-            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Some(percent) = extract_percent(&line) {
-                    progress_reader.percent.store(percent, Ordering::Release);
-                    progress_reader.started.store(true, Ordering::Release);
-                }
-            }
-        }
-    });
+    let reporter = Arc::clone(progress.unwrap_or(&Arc::new(VideoProgress::new())));
+    // STDERR is ALWAYS drained by a reader thread — an unread pipe fills its
+    // fixed OS buffer, the child blocks on write and never exits.
     let stderr_reader = std::thread::spawn(move || {
         let mut collected = String::new();
-        if let Some(stderr) = stderr.as_mut() {
+        if let Some(pipe) = stderr.as_mut() {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+            for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
                 collected.push_str(&line);
                 collected.push('\n');
                 if let Some(percent) = extract_percent(&line) {
-                    progress_errcopy.percent.store(percent, Ordering::Release);
-                    progress_errcopy.started.store(true, Ordering::Release);
+                    reporter.percent.store(percent, Ordering::Release);
+                    reporter.started.store(true, Ordering::Release);
                 }
             }
         }
         collected
     });
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let reason = stderr_reader.join().unwrap_or_default();
-                if !status.success() {
-                    let _ = fs::remove_file(destination);
-                    let detail = reason.lines().rev().find(|line| line.contains("ERROR")).unwrap_or("video download failed");
-                    return Err(detail.chars().take(200).collect());
+    // Progress lines flow on STDOUT; ERROR lines on stderr. The join handle
+    // is dropped here — the loop below only needs the stderr reader's result.
+    if report_progress {
+        let progress_reader = Arc::clone(progress.unwrap_or(&Arc::new(VideoProgress::new())));
+        std::thread::spawn(move || {
+            if let Some(stdout) = stdout.as_mut() {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if let Some(percent) = extract_percent(&line) {
+                        progress_reader.percent.store(percent, Ordering::Release);
+                        progress_reader.started.store(true, Ordering::Release);
+                    }
                 }
-                if !destination.is_file() { return Err("video download produced no output".into()); }
-                return Ok(());
             }
-            Ok(None) => thread::sleep(Duration::from_millis(25)),
-            Err(error) => return Err(format!("video downloader wait failed: {error}")),
-        }
+        });
     }
-}
-
-/// Opus, which yt-dlp happily muxes into MP4 but WKWebView cannot decode
-/// (black stage). The Opus chain remains as availability fallback;
-/// `ensure_playable_audio` transcodes those cases during staging.
-pub fn download_video(helper: &Path, ffmpeg_dir: Option<&Path>, url: &str, destination: &Path, cancel: &Arc<AtomicBool>) -> Result<(), String> {
-    if cancel.load(Ordering::Acquire) { return Err("cancelled".into()); }
-    let mut command = Command::new(helper);
-    command.stdout(std::process::Stdio::null());
-    command.stderr(std::process::Stdio::piped());
-    command.args([
-        "--no-warnings", "--no-playlist",
-        // NO --extractor-args client overrides here: forcing specific clients
-        // (tv/web) changes which format ladder YouTube serves and can match
-        // NOTHING. The stock rotation works; per-video refusals are handled
-        // by falling through to the next search candidate.
-        // Quality ladder (2026-08-24): prefer H.264 up to 1080p (WKWebView
-        // hardware-decodes it), then any codec <=1080p so VP9/AV1-only uploads
-        // still land instead of dead-ending at 360p. ensure_playable_audio
-        // transcodes non-AAC sound afterwards, so audio stays compatible.
-        "-f", "bv*[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=1080]+ba/bv*[height<=1080][vcodec^=vp09]+ba/bv*[height<=1080]+ba/bv*[height<=1080]/b",
-        // Parallel DASH fragment pulls — cuts long-video download times hard
-        // (single-stream YouTube throttling was the 50s+ wait on a 15-min film).
-        "--concurrent-fragments", "5",
-        "--merge-output-format", "mp4",
-        "-o",
-    ]);
-    command.arg(destination);
-    if let Some(dir) = ffmpeg_dir { command.arg("--ffmpeg-location").arg(dir); }
-    command.arg(url);
-    let mut child = command.spawn().map_err(|error| format!("video downloader could not start: {error}"))?;
-    let mut stderr = child.stderr.take();
-    let stderr_reader = std::thread::spawn(move || {
-        let mut collected = String::new();
-        if let Some(stderr) = stderr.as_mut() {
-            use std::io::Read;
-            let _ = stderr.read_to_string(&mut collected);
-        }
-        collected
-    });
     // Overall wall-clock budget: a wedged download must fail the candidate
     // (and fall through to the next one) instead of staging forever.
     let started = std::time::Instant::now();
@@ -292,9 +284,17 @@ pub fn download_video(helper: &Path, ffmpeg_dir: Option<&Path>, url: &str, desti
                 return Ok(());
             }
             Ok(None) => thread::sleep(Duration::from_millis(25)),
-            Err(error) => return Err(format!("video download failed: {error}")),
+            Err(error) => return Err(format!("video downloader wait failed: {error}")),
         }
     }
+}
+
+
+/// Opus, which yt-dlp happily muxes into MP4 but WKWebView cannot decode
+/// (black stage). The Opus chain remains as availability fallback;
+/// `ensure_playable_audio` transcodes those cases during staging.
+pub fn download_video(helper: &Path, ffmpeg_dir: Option<&Path>, url: &str, destination: &Path, cancel: &Arc<AtomicBool>) -> Result<(), String> {
+    download_ladder(helper, ffmpeg_dir, url, destination, cancel, FORMAT_LADDER_FULL, None)
 }
 
 /// WKWebView decodes H.264/AAC in MP4 but NOT Opus-in-MP4. yt-dlp's fallback
@@ -384,6 +384,9 @@ pub fn prefetch_track(
     let track_key = track_index_key(artist, title);
     if let Some(key) = &track_key {
         if stager.index_lookup(key, Slot::Next).is_some() { return true; }
+        // A Current-slot hit means the video is already staged for viewing;
+        // recording nothing would make a later restage re-search anyway.
+        if stager.index_lookup(key, Slot::Current).is_some() { return true; }
     }
     let sources = find_sources(helper, artist, title);
     eprintln!("[luno-video] prefetch \"{artist:?} - {title}\" -> {} candidates", sources.len());
@@ -414,6 +417,14 @@ pub fn prefetch_track(
                 continue;
             }
         }
+        // RECORD THE INDEX on the fresh-download path too. Missing this line
+        // was the cued-handoff bug: the Next-slot MP4 existed, but stage_track
+        // consults the index BEFORE searching — with no entry it paid the
+        // whole multi-search YouTube lookup again before finding the very
+        // file prefetch had just parked (the "skipped song still spun ~30s"
+        // report). With the entry, index_lookup(Current) auto-promotes
+        // next-<id>.mp4 and the handoff is instant and network-free.
+        if let Some(key) = &track_key { stager.record_index(key, &source.id); }
         eprintln!("[luno-video] prefetched {}", source.id);
         return true;
     }
@@ -448,8 +459,16 @@ fn track_index_key(artist: Option<&str>, title: &str) -> Option<String> {
     if key.is_empty() { None } else { Some(key) }
 }
 
+#[derive(Debug)]
 pub enum VideoOutcome {
-    Staged { source_url: String, staged_path: PathBuf },
+    Staged {
+        source_url: String,
+        staged_path: PathBuf,
+        /// True when the file was just downloaded through the QUICK (≤480p)
+        /// ladder: a background pass should replace it with the full ≤1080p
+        /// version. Cached/promoted files are already full quality.
+        needs_upgrade: bool,
+    },
     Unavailable(String),
 }
 
@@ -478,7 +497,13 @@ pub fn stage_track(
             return match stager.adopt(Slot::Current, slot_generation, &cached_path) {
                 Ok(staged) => {
                     eprintln!("[luno-video] staged -> {}", staged.path.clone().unwrap_or_else(|| cached_path.clone()).display());
-                    Ok(VideoOutcome::Staged { source_url: crate::video::source::canonical_url(&id), staged_path: staged.path.unwrap_or(cached_path) })
+                    Ok(VideoOutcome::Staged {
+                        source_url: crate::video::source::canonical_url(&id),
+                        staged_path: staged.path.unwrap_or(cached_path),
+                        // Index-adopted files were written by a FULL-ladder run
+                        // (prefetch or an earlier upgrade) — nothing to redo.
+                        needs_upgrade: false,
+                    })
                 }
                 Err(error) => {
                     eprintln!("[luno-video] adopt failed: {error:?}");
@@ -509,13 +534,18 @@ pub fn stage_track(
             cached = true;
         }
         eprintln!("[luno-video] candidate {} (cached: {cached})", source.id);
+        // TWO-TIER STAGING (2026-08-24): interactive current-track downloads
+        // use the QUICK ≤480p ladder so the picture appears in seconds; the
+        // worker then upgrades the file to ≤1080p in the background.
+        // Cached/promoted candidates are already full quality.
+        let needs_upgrade = !cached;
         if !cached {
             let result = match progress {
                 Some(reporter) => {
                     reporter.percent.store(0, Ordering::Release);
-                    download_video_with_progress(helper, ffmpeg_dir, &source.url, &destination, cancel, reporter)
+                    download_ladder(helper, ffmpeg_dir, &source.url, &destination, cancel, FORMAT_LADDER_QUICK, Some(reporter))
                 }
-                None => download_video(helper, ffmpeg_dir, &source.url, &destination, cancel),
+                None => download_ladder(helper, ffmpeg_dir, &source.url, &destination, cancel, FORMAT_LADDER_QUICK, None),
             };
             if let Err(message) = result {
                 let _ = fs::remove_file(&destination);
@@ -537,7 +567,11 @@ pub fn stage_track(
             Ok(staged) => {
                 if let Some(key) = &track_key { stager.record_index(key, &source.id); }
                 eprintln!("[luno-video] staged -> {}", staged.path.clone().unwrap_or_else(|| destination.clone()).display());
-                Ok(VideoOutcome::Staged { source_url: source.url.clone(), staged_path: staged.path.unwrap_or(destination) })
+                Ok(VideoOutcome::Staged {
+                    source_url: source.url.clone(),
+                    staged_path: staged.path.unwrap_or(destination),
+                    needs_upgrade,
+                })
             }
             Err(error) => {
                 eprintln!("[luno-video] adopt failed: {error:?}");
@@ -548,6 +582,59 @@ pub fn stage_track(
     Ok(VideoOutcome::Unavailable(last_error))
 }
 
+/// Replace a quick-tier staged file with its full-quality version IN PLACE.
+/// Downloads to a hidden temp file NEXT TO the staged MP4 (so startup sweeps
+/// keep working), verifies playable audio, then atomically renames over it —
+/// a webview already streaming the old file keeps its open handle and simply
+/// finishes on it.
+///
+/// `destination` must come from `VideoStage::external_destination(Current, …)`
+/// resolved by the caller UNDER A SHORT LOCK — this function deliberately
+/// takes no locks so the prefetch worker can use the store concurrently.
+/// The video id (and therefore the staged filename) does not change, so the
+/// cache index stays valid. Callers republish VideoState afterwards so the
+/// UI can reload the element at the higher quality.
+pub fn upgrade_staged_video(
+    helper: &Path,
+    ffmpeg_dir: Option<&Path>,
+    destination: &Path,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    if cancel.load(Ordering::Acquire) { return Err("cancelled".into()); }
+    if !(destination.is_file() && fs::metadata(destination).map(|m| m.len() > 0).unwrap_or(false)) {
+        return Err("staged video vanished before upgrade".into());
+    }
+    let file_name = destination.file_name().and_then(|n| n.to_str()).ok_or("staged video has unusable name")?;
+    let temporary = destination.with_file_name(format!(".upgrading-{file_name}"));
+    let _ = fs::remove_file(&temporary);
+    let result = download_ladder(helper, ffmpeg_dir, &crate::video::source::canonical_url(video_id_from_destination(file_name)), &temporary, cancel, FORMAT_LADDER_FULL, None)
+        .and_then(|_| {
+            if let Some(dir) = ffmpeg_dir {
+                ensure_playable_audio(dir, &temporary)?;
+            }
+            Ok(())
+        });
+    match result {
+        Ok(()) => {
+            // Atomic swap: readers of the old inode finish undisturbed; the
+            // next open sees the upgraded file.
+            fs::rename(&temporary, destination).map_err(|error| format!("upgrade replace failed: {error}"))?;
+            eprintln!("[luno-video] upgraded {} to full quality", video_id_from_destination(file_name));
+            Ok(())
+        }
+        Err(message) => {
+            let _ = fs::remove_file(&temporary);
+            eprintln!("[luno-video] upgrade skipped for {}: {message}", video_id_from_destination(file_name));
+            Err(message)
+        }
+    }
+}
+
+/// Recover the YouTube id from a staged file name (`current-<id>.mp4`).
+fn video_id_from_destination(file_name: &str) -> &str {
+    file_name.strip_prefix("current-").and_then(|rest| rest.strip_suffix(".mp4")).unwrap_or(file_name)
+}
+
 /// Snapshot JSON shape shared by dispatch arms.
 pub fn video_state_json(state: &crate::contracts::events::VideoState) -> serde_json::Value {
     json!({
@@ -556,6 +643,8 @@ pub fn video_state_json(state: &crate::contracts::events::VideoState) -> serde_j
         "staged_path": state.staged_path,
         "status": state.status,
         "position_ms": state.position_ms,
+        "download_progress": state.download_progress,
+        "revision": state.revision,
         "fullscreen": state.fullscreen,
         "generation": state.generation.0,
     })
@@ -582,5 +671,50 @@ mod runtime_tests {
         assert_eq!(folded, "1995softclockchillwavememoryretroloops");
         let plain = track_index_key(Some("Metallica"), "I Disappear").unwrap();
         assert_eq!(plain, "metallicaidisappear");
+    }
+
+    #[test]
+    fn stage_track_index_hit_needs_no_network_and_reports_full_quality() {
+        // REGRESSION (cued-handoff): prefetch downloaded the video but the
+        // fast path must adopt it with ZERO searches. A nonexistent helper
+        // proves no yt-dlp process is spawned; any search attempt would fail
+        // the outcome instead of staging.
+        let root = std::env::temp_dir().join(format!("luno-stage-fast-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let stager = VideoStage::at(&root, None).expect("stager");
+        let key = "artisttitle";
+        let id = "abc123";
+        stager.record_index(key, id);
+        let destination = stager.external_destination(Slot::Current, id).unwrap();
+        fs::write(&destination, b"fake mp4 bytes").expect("cached file");
+        let mut stager = stager;
+        let outcome = stage_track(
+            Path::new("/nonexistent/yt-dlp"),
+            None,
+            &mut stager,
+            Some("Artist"),
+            "Title",
+            &Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .expect("index hit must stage");
+        match outcome {
+            VideoOutcome::Staged { staged_path, needs_upgrade, .. } => {
+                assert_eq!(staged_path, destination);
+                // Index-adopted files come from full-ladder runs.
+                assert!(!needs_upgrade);
+            }
+            other => panic!("expected Staged, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn quick_ladder_caps_height_below_full_ladder() {
+        // The quick tier must never accidentally equal the full tier: its cap
+        // is what makes first-frame latency small.
+        assert!(FORMAT_LADDER_QUICK.contains("height<=480"));
+        assert!(!FORMAT_LADDER_QUICK.contains("height<=1080"));
+        assert!(FORMAT_LADDER_FULL.contains("height<=1080"));
     }
 }
