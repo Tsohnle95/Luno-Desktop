@@ -121,6 +121,20 @@ export function planVideoSync(input: {
   return { action: "none" };
 }
 
+/** The green download ring, reusable outside the media stage (player bar). */
+export function DownloadRing({ progress, size = 64 }: { progress: number | null; size?: number }) {
+  const determinate = typeof progress === "number";
+  return (
+    <span className={`luno-video-progress${determinate ? " is-determinate" : ""}`} style={{ width: size, height: size }}>
+      <svg viewBox="0 0 36 36" aria-hidden="true">
+        <circle className="luno-video-progress-track" cx="18" cy="18" r="15.5" />
+        <circle className="luno-video-progress-fill" cx="18" cy="18" r="15.5" strokeDasharray={VIDEO_RING_LENGTH} strokeDashoffset={determinate ? ringDashOffset(progress) : VIDEO_RING_LENGTH * 0.72} />
+      </svg>
+      {determinate && <b className="luno-video-progress-pct" style={size <= 32 ? { fontSize: 9 } : undefined}>{Math.round(progress)}%</b>}
+    </span>
+  );
+}
+
 /** Self-contained chrome for the loading/download overlay (any host view). */
 const stageChromeStyles = `
 .luno-video-loading { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; background:rgba(0,0,0,.35); }
@@ -265,13 +279,7 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
     <style>{stageChromeStyles}</style>
     {showVideo ? <video ref={videoRef} src={src!} preload="auto" playsInline muted aria-label="Song video" onError={onVideoError} onSeeked={handleSeeked} onPause={handlePause} onPlay={handlePlay} onEnded={handleEnded} /> : <Artwork src={artworkUrl} alt={artworkAlt} size="100%" />}
     {status === "loading" && <div className="luno-video-loading" role="status">
-      <span className={`luno-video-progress${typeof videoProgress === "number" ? " is-determinate" : ""}`}>
-        <svg viewBox="0 0 36 36" aria-hidden="true">
-          <circle className="luno-video-progress-track" cx="18" cy="18" r="15.5" />
-          <circle className="luno-video-progress-fill" cx="18" cy="18" r="15.5" strokeDasharray={VIDEO_RING_LENGTH} strokeDashoffset={typeof videoProgress === "number" ? ringDashOffset(videoProgress) : VIDEO_RING_LENGTH * 0.72} />
-        </svg>
-        {typeof videoProgress === "number" && <b className="luno-video-progress-pct">{Math.round(videoProgress)}%</b>}
-      </span>
+      <DownloadRing progress={typeof videoProgress === "number" ? videoProgress : null} />
       <span className="luno-video-loading-caption">{typeof videoProgress === "number" ? `Downloading video… ${Math.round(videoProgress)}%` : "Loading video preview..."}</span>
     </div>}
     {status === "unavailable" && <p className="luno-video-status" role="status">Video unavailable. Showing artwork.</p>}

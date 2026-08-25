@@ -36,6 +36,8 @@ pub mod download {
     pub mod workflows;
 }
 pub mod state;
+#[cfg(target_os = "macos")]
+pub mod media_keys;
 pub mod library {
     pub mod artwork;
     pub mod favorites;

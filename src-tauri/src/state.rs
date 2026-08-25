@@ -9,6 +9,8 @@ use crate::contracts::{
     },
 };
 use crate::domain::identity::TrackMetadata;
+#[cfg(target_os = "macos")]
+use crate::media_keys::MediaKey;
 use crate::discovery::service::{
     DiscoveryError, DiscoveryResult, DiscoveryService, Recommendation,
 };
@@ -1282,6 +1284,10 @@ pub struct AppState {
     /// Runtime home captured at load time so backend-side setting changes can
     /// persist immediately without an extra IPC round-trip.
     settings_home: Arc<Mutex<Option<PathBuf>>>,
+    /// Settings ▸ Playback "media keys" toggle, mirrored here so hardware
+    /// key handlers can check it cheaply on every press. Defaults to TRUE —
+    /// Luno must own the media keys unless the user opts out.
+    pub media_keys_enabled: Arc<AtomicBool>,
 }
 
 type ScanWork = Arc<dyn Fn(&[PathBuf], CancellationToken) -> ScanOutcome + Send + Sync>;
@@ -1399,6 +1405,7 @@ impl AppState {
             video_download_progress: Arc::new(crate::video::runtime::VideoProgress::new()),
             video_prefetch_cancel: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))),
             settings_home: Arc::new(Mutex::new(None)),
+            media_keys_enabled: Arc::new(AtomicBool::new(true)),
         }
     }
     pub fn library(&self) -> LibrarySnapshot {
@@ -3680,6 +3687,9 @@ impl AppState {
         // queue prefetch resume exactly where the last session left them.
         let video_mode = config.video_mode.unwrap_or(false);
         *self.video_mode_enabled.lock().unwrap() = video_mode;
+        // Media keys: default ON — Luno must own the hardware keys unless the
+        // user explicitly opted out (Settings ▸ Playback).
+        self.media_keys_enabled.store(config.global_keys.unwrap_or(true), Ordering::Release);
         Ok(serde_json::json!({
             "music_root": root.map(|path| path.display().to_string()),
             "auto_discovery": config.auto_discovery,
@@ -3736,6 +3746,10 @@ impl AppState {
         let bytes = serde_json::to_vec_pretty(&merged).map_err(|_| ContractError { code: ErrorCode::Internal, message: "settings could not be encoded".into(), retryable: false })?;
         let path = home.join(".luno_config.json");
         crate::persistence::atomic_write::write_atomic(&path, &bytes).map_err(|_| ContractError { code: ErrorCode::Internal, message: "settings could not be persisted".into(), retryable: true })?;
+        // Live-apply the media-keys toggle so hardware keys follow immediately.
+        if let Some(enabled) = settings.global_keys {
+            self.media_keys_enabled.store(enabled, Ordering::Release);
+        }
         Ok(serde_json::json!({ "saved": true }))
     }
 
@@ -4435,6 +4449,53 @@ fn promotion_error(error: PromotionError) -> ContractError {
             message: e.to_string(),
             retryable: false,
         })
+    }
+
+    /// Hardware media-key entry point (MPRemoteCommandCenter handlers land
+    /// here through main.rs). Status-aware: toggle pauses a playing song,
+    /// resumes a paused one, and starts the current track when stopped.
+    /// The Settings ▸ Playback "media keys" switch is honored live.
+    #[cfg(target_os = "macos")]
+    pub fn handle_media_key(&self, key: crate::media_keys::MediaKey) {
+        use crate::contracts::{events::Command, types::PlaybackStatus};
+        if !self.media_keys_enabled.load(Ordering::Acquire) {
+            return;
+        }
+        static MEDIA_KEY_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let status = *self.playback_status.lock().unwrap();
+        let current = self.playback.lock().unwrap().current().cloned();
+        let command = match key {
+            MediaKey::Toggle => match status {
+                PlaybackStatus::Playing => Command::Pause,
+                PlaybackStatus::Paused => Command::Resume,
+                _ => match current {
+                    Some(track_id) => Command::Play { track_id },
+                    None => return,
+                },
+            },
+            MediaKey::Play => match status {
+                PlaybackStatus::Playing => return,
+                PlaybackStatus::Paused => Command::Resume,
+                _ => match current {
+                    Some(track_id) => Command::Play { track_id },
+                    None => return,
+                },
+            },
+            MediaKey::Pause => {
+                if status == PlaybackStatus::Playing { Command::Pause } else { return; }
+            }
+            MediaKey::Next => Command::Next,
+            MediaKey::Previous => Command::Previous,
+        };
+        let seq = MEDIA_KEY_SEQ.fetch_add(1, Ordering::Relaxed);
+        let envelope = crate::contracts::events::CommandEnvelope {
+            version: 1,
+            request_id: format!("media-key-{}-{seq}", std::process::id()),
+            command,
+        };
+        if let Err(error) = self.dispatch(envelope) {
+            eprintln!("[luno-media] key dispatch failed: {error:?}");
+        }
     }
 
     #[cfg(target_os = "macos")]

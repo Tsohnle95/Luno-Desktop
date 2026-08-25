@@ -363,6 +363,19 @@ fn main() {
                     })
                 }));
             app.state::<AppState>().replay_latest();
+            // Hardware media keys (play/pause/next/previous): claim them via
+            // MPRemoteCommandCenter so they control Luno instead of falling
+            // through to Apple Music. Honors Settings ▸ Playback live.
+            #[cfg(target_os = "macos")]
+            {
+                let key_state = app.state::<AppState>().inner().clone();
+                let keys = luno_desktop_lib::media_keys::MediaKeys::install(
+                    std::sync::Arc::new(move |key| key_state.handle_media_key(key)),
+                );
+                // Remote-command targets must outlive this closure; the app
+                // process is their lifetime anyway.
+                std::mem::forget(keys);
+            }
             let retry_handle = app.handle().clone();
             let retry_state = app.state::<AppState>().inner().clone();
             std::thread::Builder::new()

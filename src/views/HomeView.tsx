@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { Playlist, Track } from "../shared/contracts";
 import { Artwork } from "../components/Artwork";
 import { IconMusicNote } from "../components/icons";
@@ -45,6 +46,28 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
   ), onArtwork);
   const playFrom = (list: Track[]) => (track: Track) => { if (backendAvailable && onPlayTrack) onPlayTrack(track, list); };
 
+  // SCROLL FIX: every card row is an `overflow-x: auto` strip, and WKWebView
+  // feeds vertical mouse-wheel deltas to whichever strip is under the cursor —
+  // with `overscroll-behavior-x: none` the scroll DIES there instead of
+  // chaining to the page. Result: scrolling only "worked" over empty gaps.
+  // Redirect vertical wheels from inside any strip onto the page scroller;
+  // horizontal/shift wheels still scroll the strip natively.
+  const homeRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const root = homeRef.current;
+    if (!root) return;
+    const onWheel = (event: WheelEvent) => {
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest(".luno-card-row")) return;
+      event.preventDefault();
+      (root.closest(".luno-main-content") ?? document.querySelector(".luno-main-content"))?.scrollBy({ top: event.deltaY });
+    };
+    root.addEventListener("wheel", onWheel, { passive: false });
+    return () => root.removeEventListener("wheel", onWheel);
+  }, []);
+
+
   const trackCard = (list: Track[]) => (track: Track) => (
     <button className="luno-card" type="button" key={track.id} onClick={() => playFrom(list)(track)} disabled={!backendAvailable}>
       <Artwork className="luno-card-artwork" src={artwork[track.id] ?? track.artwork_url} alt="" size="100%" fallback={<span className="luno-artwork-fallback"><IconMusicNote size={26} /></span>} />
@@ -59,7 +82,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
     </div>
   );
 
-  return <div className="luno-home">
+  return <div ref={homeRef} className="luno-home">
     <h1>{greeting()}</h1>
     <p className="luno-home-subtitle">{allTracksCount > 0 ? `${allTracksCount} songs in your library — your next favorite is waiting.` : "Download music to fill your library."}</p>
 
