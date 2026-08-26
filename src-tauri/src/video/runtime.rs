@@ -164,19 +164,21 @@ fn extract_percent(line: &str) -> Option<u8> {
     Some(number.round() as u8)
 }
 
-/// Full-quality format ladder: prefer H.264 up to 1080p (WKWebView
-/// hardware-decodes it), then any codec <=1080p so VP9/AV1-only uploads still
-/// land instead of dead-ending at 360p. ensure_playable_audio transcodes
-/// non-AAC sound afterwards, so audio stays compatible. Used by prefetch and
-/// by the background UPGRADE pass — everywhere latency does not bite.
-pub const FORMAT_LADDER_FULL: &str = "bv*[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=1080]+ba/bv*[height<=1080][vcodec^=vp09]+ba/bv*[height<=1080]+ba/bv*[height<=1080]/b";
+/// High-quality ladder for BACKGROUND work (next-track prefetch and the
+/// current-track quality UPGRADE pass): same H.264-first codec preferences
+/// capped at 720p. The former ≤1080p ceiling produced single staged files of
+/// 118–197 MB; at 720p they land roughly 3–5× smaller while WKWebView still
+/// hardware-decodes them, so one song switch can no longer saturate disk,
+/// network, and CPU for minutes. ensure_playable_audio transcodes non-AAC
+/// sound afterwards, so audio stays compatible.
+pub const FORMAT_LADDER_HIGH: &str = "bv*[vcodec^=avc1][height<=720]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=720]/bv*[height<=720][vcodec^=vp09]+ba/bv*[height<=720]+ba/bv*[height<=720]/b";
 
 /// Quick-tier ladder for INTERACTIVE current-track staging: same codec
 /// preferences capped at 480p, so the file is a fraction of the size and the
-/// picture appears seconds after the search instead of after a full 1080p
-/// pull. The full-quality pass then replaces it in the background
+/// picture appears seconds after the search instead of after a full-quality
+/// pull. A background pass then replaces it with the ≤720p version
 /// (`upgrade_staged_video`). WKWebView plays 480p H.264/AAC natively.
-pub const FORMAT_LADDER_QUICK: &str = "bv*[vcodec^=avc1][height<=480]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=480]+ba/bv*[height<=480][vcodec^=vp09]+ba/bv*[height<=480]+ba/b";
+pub const FORMAT_LADDER_QUICK: &str = "bv*[vcodec^=avc1][height<=480]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=480]/bv*[height<=480][vcodec^=vp09]+ba/bv*[height<=480]+ba/b";
 
 /// Single download implementation behind both tiers. `ladder` selects the
 /// yt-dlp `-f` chain; `progress` (when given) receives live percentages.
@@ -293,8 +295,12 @@ fn download_ladder(
 /// Opus, which yt-dlp happily muxes into MP4 but WKWebView cannot decode
 /// (black stage). The Opus chain remains as availability fallback;
 /// `ensure_playable_audio` transcodes those cases during staging.
+///
+/// Prefetch runs the ≤720p HIGH ladder (not the old ≤1080p one): a prefetched
+/// track is downloaded BEFORE the user reaches it, and a single 1080p pull of
+/// a long video starved disk/network long enough to freeze the whole window.
 pub fn download_video(helper: &Path, ffmpeg_dir: Option<&Path>, url: &str, destination: &Path, cancel: &Arc<AtomicBool>) -> Result<(), String> {
-    download_ladder(helper, ffmpeg_dir, url, destination, cancel, FORMAT_LADDER_FULL, None)
+    download_ladder(helper, ffmpeg_dir, url, destination, cancel, FORMAT_LADDER_HIGH, None)
 }
 
 /// WKWebView decodes H.264/AAC in MP4 but NOT Opus-in-MP4. yt-dlp's fallback
@@ -465,7 +471,7 @@ pub enum VideoOutcome {
         source_url: String,
         staged_path: PathBuf,
         /// True when the file was just downloaded through the QUICK (≤480p)
-        /// ladder: a background pass should replace it with the full ≤1080p
+        /// ladder: a background pass should replace it with the high ≤720p
         /// version. Cached/promoted files are already full quality.
         needs_upgrade: bool,
     },
@@ -491,8 +497,8 @@ pub fn stage_track(
     // Fast path: an earlier attempt already mapped this track to a YouTube id
     // and downloaded it. Skip the (multi-second) search entirely.
     if let Some(track_key) = track_index_key(artist, title) {
-        if let Some((id, cached_path)) = stager.index_lookup(&track_key, Slot::Current) {
-            eprintln!("[luno-video] index cache hit {id} for {track_key:?}");
+        if let Some((id, cached_path, tier)) = stager.index_lookup_with_tier(&track_key, Slot::Current) {
+            eprintln!("[luno-video] index cache hit {id} for {track_key:?} (tier {tier})");
             let slot_generation = stager.begin_generation();
             return match stager.adopt(Slot::Current, slot_generation, &cached_path) {
                 Ok(staged) => {
@@ -500,9 +506,10 @@ pub fn stage_track(
                     Ok(VideoOutcome::Staged {
                         source_url: crate::video::source::canonical_url(&id),
                         staged_path: staged.path.unwrap_or(cached_path),
-                        // Index-adopted files were written by a FULL-ladder run
-                        // (prefetch or an earlier upgrade) — nothing to redo.
-                        needs_upgrade: false,
+                        // "quick"-tier entries owe their HD upgrade — it was
+                        // interrupted (app restart / superseded by a skip).
+                        // Re-run it instead of serving 480p as final forever.
+                        needs_upgrade: tier == crate::video::staging::INDEX_TIER_QUICK,
                     })
                 }
                 Err(error) => {
@@ -536,7 +543,7 @@ pub fn stage_track(
         eprintln!("[luno-video] candidate {} (cached: {cached})", source.id);
         // TWO-TIER STAGING (2026-08-24): interactive current-track downloads
         // use the QUICK ≤480p ladder so the picture appears in seconds; the
-        // worker then upgrades the file to ≤1080p in the background.
+        // worker then upgrades the file to ≤720p in the background.
         // Cached/promoted candidates are already full quality.
         let needs_upgrade = !cached;
         if !cached {
@@ -565,7 +572,17 @@ pub fn stage_track(
         }
         return match stager.adopt(Slot::Current, slot_generation, &destination) {
             Ok(staged) => {
-                if let Some(key) = &track_key { stager.record_index(key, &source.id); }
+                // Record the tier with the id: "quick" when the HD upgrade is
+                // still pending (so an interrupted upgrade re-runs on the
+                // next play instead of 480p becoming permanent), "high" for
+                // cached/promoted final-quality files.
+                if let Some(key) = &track_key {
+                    stager.record_index_tier(
+                        key,
+                        &source.id,
+                        if needs_upgrade { crate::video::staging::INDEX_TIER_QUICK } else { crate::video::staging::INDEX_TIER_HIGH },
+                    );
+                }
                 eprintln!("[luno-video] staged -> {}", staged.path.clone().unwrap_or_else(|| destination.clone()).display());
                 Ok(VideoOutcome::Staged {
                     source_url: source.url.clone(),
@@ -582,7 +599,7 @@ pub fn stage_track(
     Ok(VideoOutcome::Unavailable(last_error))
 }
 
-/// Replace a quick-tier staged file with its full-quality version IN PLACE.
+/// Replace a quick-tier staged file with its high-quality (≤720p) version IN PLACE.
 /// Downloads to a hidden temp file NEXT TO the staged MP4 (so startup sweeps
 /// keep working), verifies playable audio, then atomically renames over it —
 /// a webview already streaming the old file keeps its open handle and simply
@@ -607,7 +624,7 @@ pub fn upgrade_staged_video(
     let file_name = destination.file_name().and_then(|n| n.to_str()).ok_or("staged video has unusable name")?;
     let temporary = destination.with_file_name(format!(".upgrading-{file_name}"));
     let _ = fs::remove_file(&temporary);
-    let result = download_ladder(helper, ffmpeg_dir, &crate::video::source::canonical_url(video_id_from_destination(file_name)), &temporary, cancel, FORMAT_LADDER_FULL, None)
+    let result = download_ladder(helper, ffmpeg_dir, &crate::video::source::canonical_url(video_id_from_destination(file_name)), &temporary, cancel, FORMAT_LADDER_HIGH, None)
         .and_then(|_| {
             if let Some(dir) = ffmpeg_dir {
                 ensure_playable_audio(dir, &temporary)?;
@@ -709,12 +726,52 @@ mod runtime_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// AUDIT (2026-08-25): a quick-tier file whose HD upgrade was interrupted
+    /// (restart / superseded by a skip) is indexed with tier "quick"; the next
+    /// stage MUST report needs_upgrade so the HD pass re-runs instead of
+    /// serving 480p as final forever.
     #[test]
-    fn quick_ladder_caps_height_below_full_ladder() {
-        // The quick tier must never accidentally equal the full tier: its cap
-        // is what makes first-frame latency small.
+    fn index_hit_with_quick_tier_reports_needs_upgrade() {
+        let root = std::env::temp_dir().join(format!("luno-stage-quick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let stager = VideoStage::at(&root, None).expect("stager");
+        stager.record_index_tier("artisttitle", "abc123", crate::video::staging::INDEX_TIER_QUICK);
+        let destination = stager.external_destination(Slot::Current, "abc123").unwrap();
+        fs::write(&destination, b"fake 480p bytes").expect("cached quick file");
+        let mut stager = stager;
+        let outcome = stage_track(
+            Path::new("/nonexistent/yt-dlp"),
+            None,
+            &mut stager,
+            Some("Artist"),
+            "Title",
+            &Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .expect("index hit must stage");
+        match outcome {
+            VideoOutcome::Staged { needs_upgrade, .. } => assert!(needs_upgrade, "quick-tier adoption must schedule the HD upgrade"),
+            other => panic!("expected Staged, got {other:?}"),
+        }
+        // And the HIGH-tier sibling stays final: no pointless re-upgrade.
+        stager.record_index_tier("artisttitle", "abc123", crate::video::staging::INDEX_TIER_HIGH);
+        let outcome = stage_track(Path::new("/nonexistent/yt-dlp"), None, &mut stager, Some("Artist"), "Title", &Arc::new(AtomicBool::new(false)), None).expect("second stage");
+        match outcome {
+            VideoOutcome::Staged { needs_upgrade, .. } => assert!(!needs_upgrade),
+            other => panic!("expected Staged, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn quick_ladder_caps_height_below_high_ladder() {
+        // The quick tier must never accidentally equal the high tier: its cap
+        // is what makes first-frame latency small, and the high tier's 720p
+        // cap is what keeps background prefetch/upgrades from pulling
+        // 100 MB+ single files (the 2026-08-25 switch-song freeze).
         assert!(FORMAT_LADDER_QUICK.contains("height<=480"));
-        assert!(!FORMAT_LADDER_QUICK.contains("height<=1080"));
-        assert!(FORMAT_LADDER_FULL.contains("height<=1080"));
+        assert!(!FORMAT_LADDER_QUICK.contains("height<=720"));
+        assert!(FORMAT_LADDER_HIGH.contains("height<=720"));
+        assert!(!FORMAT_LADDER_HIGH.contains("height<=1080"));
     }
 }

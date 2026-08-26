@@ -592,7 +592,10 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
 }
 
 export function safeVideoSource(sourceUrl: string | null | undefined, stagedPath: string | null | undefined): string | null {
-  if (stagedPath && stagedPath.startsWith("/") && !stagedPath.includes("\0") && !stagedPath.split(/[\\/]+/).includes("..")) { try { return convertFileSrc(stagedPath); } catch { return null; } }
+  // "luno-video" is the app's range-aware streaming scheme (src-tauri video::stream):
+  // every response is a ≤2 MB byte window, unlike the stock asset protocol which
+  // buffers a whole staged MP4 (100 MB+) into one blob per load/seek-rebuffer.
+  if (stagedPath && stagedPath.startsWith("/") && !stagedPath.includes("\0") && !stagedPath.split(/[\\/]+/).includes("..")) { try { return convertFileSrc(stagedPath, "luno-video"); } catch { return null; } }
   if (sourceUrl) { try { const url = new URL(sourceUrl); if (url.protocol === "http:" || url.protocol === "https:") return url.href; } catch { return null; } }
   return null;
 }

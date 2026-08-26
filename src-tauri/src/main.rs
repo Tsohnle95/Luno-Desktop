@@ -114,6 +114,15 @@ fn error_json(error: ContractError) -> String {
     })
 }
 
+/// Range-aware streaming of staged videos over the `luno-video://localhost`
+/// scheme (`video::stream`). The stock asset protocol buffers whole files
+/// when the first media request carries no `Range` header, and wry delivers
+/// the entire body as ONE NSData blob — for 100 MB+ staged MP4s that froze
+/// the window during song switches. Here EVERY response is a small ≤2 MB
+/// window, so the webview stays in cheap ranged mode. All decision logic and
+/// file IO live in `video::stream::response_for` (unit-tested there); this
+/// wiring only resolves the store root and runs it off the UI thread.
+
 #[tauri::command]
 fn migration_status(state: tauri::State<'_, AppState>) -> Result<MigrationStatus, String> {
     state
@@ -347,7 +356,29 @@ fn main() {
             return;
         }
     }
-    let builder = tauri::Builder::default().manage(AppState::new(32));
+    let builder = tauri::Builder::default()
+        .manage(AppState::new(32))
+        .register_asynchronous_uri_scheme_protocol(
+            luno_desktop_lib::video::stream::STREAM_SCHEME,
+            |ctx, request, responder| {
+                // Scheme callbacks arrive on the UI thread; the (bounded)
+                // file read runs on the async runtime so the window never
+                // waits on disk for a media request.
+                let app = ctx.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let response = match app.state::<AppState>().video_root_dir() {
+                        Some(root) => luno_desktop_lib::video::stream::response_for(
+                            &root,
+                            request.method().as_str(),
+                            request.uri().path(),
+                            request.headers().get("range").and_then(|value| value.to_str().ok()),
+                        ),
+                        None => tauri::http::Response::builder().status(404).body(Vec::new()).unwrap(),
+                    };
+                    responder.respond(response);
+                });
+            },
+        );
     #[cfg(debug_assertions)]
     let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, discovery_key_status, save_discovery_key, gate5_smoke]);
     #[cfg(not(debug_assertions))]

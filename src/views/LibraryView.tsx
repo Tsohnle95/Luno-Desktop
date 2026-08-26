@@ -272,7 +272,7 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
       {loading ? <p role="status" className="luno-track-empty">Loading library...</p>
         : error ? <div role="alert" className="luno-track-empty">{error}<button type="button" disabled={!backendAvailable} onClick={onScan}>Retry</button></div>
           : !snapshot ? <p className="luno-track-empty">Library is not available.</p>
-            : tracks.length === 0 && scopeSize > 0 ? <p className="luno-track-empty">No matches for “{query}” in {scopeName} — showing all {scopeSize} songs once you clear the search.</p>
+            : tracks.length === 0 && scopeSize > 0 ? <p className="luno-track-empty">No matches for “{query}” in {scopeName} — showing all {scopeSize} songs once you clear the search. <button type="button" aria-label="Clear search" onClick={() => setQuery("")}>Clear search</button></p>
               : tracks.length === 0 ? <p className="luno-track-empty">No songs in {scopeName}.</p>
               : <div style={{ height: tracks.length * 56, position: "relative" }}>
                 <div style={{ transform: `translateY(${startIndex * 56}px)` }}>{visible.map((track, index) => <div role="listitem" key={`${track.id}:${startIndex + index}`} onClick={(event) => toggleSelection(track, event)}><TrackRow track={track} artwork={artwork[track.id] ?? track.artwork_url} index={startIndex + index} playlistName={isAlbumScope ? track.album ?? scopeName : scopeName} selected={selected.has(track.id)} playing={playing === track.id} onClick={play} onFavoriteToggle={onFavoriteToggle} onContextMenu={onContextMenu} backendAvailable={backendAvailable} /></div>)}</div>

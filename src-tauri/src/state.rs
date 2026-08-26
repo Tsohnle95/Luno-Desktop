@@ -568,6 +568,265 @@ mod tests {
         assert_ne!(first, second);
     }
 
+    /// AUDIT (2026-08-25): the pipeline must plan CURRENT + exactly
+    /// VIDEO_PREFETCH_DEPTH upcoming queue tracks, in order.
+    #[test]
+    fn prefetch_plan_covers_current_plus_depth_successors() {
+        let id = |n: &str| TrackId::new(format!("metadata:t{n}:0")).unwrap();
+        let queue: Vec<TrackId> = (0..6).map(|n| id(&n.to_string())).collect();
+        // Current mid-queue: current first, then exactly depth successors.
+        let plan = prefetch_plan(&queue, Some(2), VIDEO_PREFETCH_DEPTH);
+        assert_eq!(plan.len(), 1 + VIDEO_PREFETCH_DEPTH);
+        assert_eq!(plan[0], queue[2]);
+        assert_eq!(plan[1], queue[3]);
+        assert_eq!(plan[3], queue[5]);
+        // No current index: first `depth` entries.
+        let plan = prefetch_plan(&queue, None, VIDEO_PREFETCH_DEPTH);
+        assert_eq!(plan.len(), VIDEO_PREFETCH_DEPTH);
+        assert_eq!(plan[0], queue[0]);
+        // Queue shorter than depth: everything that exists.
+        let short = vec![id("x")];
+        let plan = prefetch_plan(&short, Some(0), VIDEO_PREFETCH_DEPTH);
+        assert_eq!(plan, short);
+    }
+
+    /// RED repro (2026-08-25): the recurring "searched a song, clicked it,
+    /// and it disappeared / no more matches" report. A click that races a
+    /// rescan carries ids minted from the PREVIOUS snapshot. Duplicate stems
+    /// let scan order decide which copy keeps the plain id vs `#<path-hash>`,
+    /// and re-downloads ADD copies — so entries of the clicked context can
+    /// flip meaning or dangle outright. Healing only the clicked track left
+    /// the stored queue full of stale ids: Now Playing resolved nothing,
+    /// auto-advance skipped, repeat clicks kept failing. Every context entry
+    /// must heal onto the CURRENT map under one lock.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn play_with_context_heals_a_stale_context_across_a_suffix_flip() {
+        let state = AppState::new(4);
+        let song_a = PathBuf::from("/music/Unsorted/Artist - Song A.m4a");
+        let song_a_dup = PathBuf::from("/music/Favorites/Artist - Song A.m4a");
+        let song_b = PathBuf::from("/music/Unsorted/Artist - Song B.m4a");
+        // Snapshot A: the list the user sees. Song A already has two copies
+        // (Favorites sorts first and owns the plain id; Unsorted is hashed),
+        // Song B has one.
+        state.replace_library(
+            Generation(1),
+            BTreeMap::from([
+                (String::from("Favorites"), vec![song_a_dup.clone()]),
+                (String::from("Unsorted"), vec![song_b.clone(), song_a.clone()]),
+            ]),
+        );
+        let map_a = state.track_paths.lock().unwrap();
+        let clicked = map_a.iter().find(|(_, path)| *path == &song_a_dup).map(|(id, _)| id.clone()).expect("plain id for song A");
+        let stale_b = map_a.keys().find(|id| id.0.contains("song-b") || id.0.contains("songb")).cloned()
+            .unwrap_or_else(|| TrackId(format!("{}#feedface", "metadata:artistsongb:0")));
+        drop(map_a);
+        // A fully-dangling variant of song B's id (its copy vanished since render).
+        let dangling_b = TrackId(format!("{}#deadbeef", stale_b.0.split('#').next().unwrap()));
+
+        // Snapshot B (the race): the duplicate layout CHANGED — song A's
+        // Unsorted copy is gone (re-download cleaned up), so every id the
+        // click carried now resolves differently or not at all.
+        state.replace_library(
+            Generation(2),
+            BTreeMap::from([
+                (String::from("Unsorted"), vec![song_b.clone(), song_a_dup.clone()]),
+            ]),
+        );
+
+        // The click arrives carrying ONLY ids from snapshot A.
+        let envelope = CommandEnvelope {
+            version: CONTRACT_VERSION,
+            request_id: "stale-click".into(),
+            command: Command::PlayWithContext {
+                track_id: clicked.clone(),
+                context: vec![clicked.clone(), dangling_b.clone()],
+            },
+        };
+        let result = state.dispatch(envelope);
+        assert!(result.is_ok(), "a fully stale click must still play: {result:?}");
+
+        // EVERY stored queue id must resolve against the CURRENT map, both
+        // songs survive the healing (nothing silently dropped), order is
+        // preserved, and no raw stale id remains.
+        let queue = state.playback.lock().unwrap().queue().to_vec();
+        let map = state.track_paths.lock().unwrap();
+        assert_eq!(queue.len(), 2, "both songs must survive healing: {queue:?}");
+        for id in &queue {
+            assert!(map.contains_key(id), "queue kept dangling id {id:?}");
+        }
+        // First entry = what the user clicked (its canonical owner NOW);
+        // second = song B's canonical id.
+        assert_eq!(map.get(&queue[0]).as_deref(), Some(&song_a_dup));
+        assert_ne!(queue[1], dangling_b, "raw stale id must not be stored");
+        assert_eq!(map.get(&queue[1]).as_deref(), Some(&song_b));
+    }
+
+    /// DIAGNOSIS (2026-08-25): "when I pause a song its video never loads;
+    /// resuming much later finally loads it." Proves the REAL pipeline stages
+    /// AND publishes Ready while playback_status is PAUSED. The video is an
+    /// index-cached fixture (zero network — a nonexistent yt-dlp path proves
+    /// no search/download runs), so the only question under test is whether
+    /// pause state gates staging/publication. It must not.
+    #[test]
+    fn video_stages_to_ready_while_playback_is_paused() {
+        let state = AppState::new(8);
+        let video_root = std::env::temp_dir().join(format!("luno-video-pause-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&video_root);
+        state.set_video_runtime(video_root.clone(), Some(PathBuf::from("/nonexistent/yt-dlp")), None);
+
+        // Seed the persistent cache index + staged file for Artist/Song.
+        let stager = crate::video::staging::VideoStage::at(&video_root, None).expect("stager");
+        stager.record_index("artistsong", "abc123");
+        let cached = stager.external_destination(crate::video::staging::Slot::Current, "abc123").unwrap();
+        std::fs::write(&cached, b"fake mp4 bytes").unwrap();
+
+        // One-track library; title/artist fold to the seeded key.
+        let music_dir = std::env::temp_dir().join(format!("luno-video-pause-lib-{}", std::process::id()));
+        let playlist_dir = music_dir.join("Unsorted");
+        std::fs::create_dir_all(&playlist_dir).unwrap();
+        let track_path = playlist_dir.join("Artist - Song.m4a");
+        std::fs::write(&track_path, b"placeholder audio").unwrap();
+        let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), vec![track_path])]));
+        let id = snapshot.tracks[0].id.clone();
+
+        state.set_playing(id.clone(), vec![id.clone()]);
+        // THE CONDITION UNDER TEST: the user paused before/while staging.
+        *state.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Paused;
+        *state.video_mode_enabled.lock().unwrap() = true;
+
+        state.kick_video_pipeline();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut terminal = String::from("timeout");
+        while std::time::Instant::now() < deadline {
+            for envelope in state.pending_events() {
+                if let crate::contracts::events::Event::VideoState { state: video } = &envelope.event {
+                    if video.track_id.as_ref() == Some(&id) {
+                        terminal = format!("{:?}", video.status);
+                    }
+                }
+            }
+            if terminal.contains("Ready") || terminal.contains("Unavailable") { break; }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(terminal.contains("Ready"), "staging must complete while paused, got {terminal}");
+        assert_eq!(*state.playback_status.lock().unwrap(), crate::contracts::types::PlaybackStatus::Paused);
+        let current = state.video_current.lock().unwrap().clone();
+        assert!(current.map(|v| v.staged_path.is_some()).unwrap_or(false));
+        let _ = std::fs::remove_dir_all(&video_root);
+        let _ = std::fs::remove_dir_all(&music_dir);
+    }
+
+    /// REGRESSION (2026-08-25): a Loading slot whose worker died (superseded
+    /// mid-search by the old double-kick race) used to be skipped by every
+    /// later pipeline pass — "Loading video preview..." forever while the
+    /// song sat paused. A corpse must restage.
+    #[test]
+    fn kick_restages_a_loading_slot_with_no_live_worker() {
+        let state = AppState::new(8);
+        let video_root = std::env::temp_dir().join(format!("luno-video-corpse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&video_root);
+        state.set_video_runtime(video_root.clone(), Some(PathBuf::from("/nonexistent/yt-dlp")), None);
+        let stager = crate::video::staging::VideoStage::at(&video_root, None).expect("stager");
+        stager.record_index("artistsong", "abc123");
+        let cached = stager.external_destination(crate::video::staging::Slot::Current, "abc123").unwrap();
+        std::fs::write(&cached, b"fake mp4 bytes").unwrap();
+
+        let music_dir = std::env::temp_dir().join(format!("luno-video-corpse-lib-{}", std::process::id()));
+        let playlist_dir = music_dir.join("Unsorted");
+        std::fs::create_dir_all(&playlist_dir).unwrap();
+        let track_path = playlist_dir.join("Artist - Song.m4a");
+        std::fs::write(&track_path, b"placeholder audio").unwrap();
+        let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), vec![track_path])]));
+        let id = snapshot.tracks[0].id.clone();
+
+        state.set_playing(id.clone(), vec![id.clone()]);
+        *state.video_mode_enabled.lock().unwrap() = true;
+        // Install the CORPSE: Loading, owned by this track, NO inflight marker.
+        *state.video_current.lock().unwrap() = Some(crate::contracts::events::VideoState {
+            track_id: Some(id.clone()),
+            source_url: None,
+            staged_path: None,
+            status: crate::contracts::events::VideoStatus::Loading,
+            position_ms: 0,
+            download_progress: None,
+            revision: None,
+            fullscreen: false,
+            generation: Generation(7),
+        });
+
+        state.kick_video_pipeline();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut terminal = String::from("timeout");
+        while std::time::Instant::now() < deadline {
+            for envelope in state.pending_events() {
+                if let crate::contracts::events::Event::VideoState { state: video } = &envelope.event {
+                    if video.track_id.as_ref() == Some(&id) { terminal = format!("{:?}", video.status); }
+                }
+            }
+            if terminal.contains("Ready") || terminal.contains("Unavailable") { break; }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(terminal.contains("Ready"), "a dead Loading slot must restage, got {terminal}");
+        let _ = std::fs::remove_dir_all(&video_root);
+        let _ = std::fs::remove_dir_all(&music_dir);
+    }
+
+    /// REGRESSION (2026-08-25): resuming after a long pause must find the
+    /// video ALREADY staged ("ready to go"), not start loading on resume.
+    /// Resume now runs a catch-up pipeline pass when the current track's
+    /// video is unresolved. The audio backend intentionally has nothing
+    /// loaded here — its error proves the kick happens BEFORE audio work.
+    #[test]
+    fn resume_kicks_the_video_pipeline_when_the_current_video_is_unresolved() {
+        let state = AppState::new(8);
+        let video_root = std::env::temp_dir().join(format!("luno-video-resume-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&video_root);
+        state.set_video_runtime(video_root.clone(), Some(PathBuf::from("/nonexistent/yt-dlp")), None);
+        let stager = crate::video::staging::VideoStage::at(&video_root, None).expect("stager");
+        stager.record_index("artistsong", "abc123");
+        let cached = stager.external_destination(crate::video::staging::Slot::Current, "abc123").unwrap();
+        std::fs::write(&cached, b"fake mp4 bytes").unwrap();
+
+        let music_dir = std::env::temp_dir().join(format!("luno-video-resume-lib-{}", std::process::id()));
+        let playlist_dir = music_dir.join("Unsorted");
+        std::fs::create_dir_all(&playlist_dir).unwrap();
+        let track_path = playlist_dir.join("Artist - Song.m4a");
+        std::fs::write(&track_path, b"placeholder audio").unwrap();
+        let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), vec![track_path])]));
+        let id = snapshot.tracks[0].id.clone();
+
+        state.set_playing(id.clone(), vec![id.clone()]);
+        *state.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Paused;
+        *state.video_mode_enabled.lock().unwrap() = true;
+
+        let result = state.dispatch(CommandEnvelope {
+            version: CONTRACT_VERSION,
+            request_id: "resume".into(),
+            command: Command::Resume,
+        });
+        // Backend has no loaded track in this harness; the audio failure is
+        // expected and irrelevant — the catch-up kick must have run already.
+        let _ = result;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut terminal = String::from("timeout");
+        while std::time::Instant::now() < deadline {
+            for envelope in state.pending_events() {
+                if let crate::contracts::events::Event::VideoState { state: video } = &envelope.event {
+                    if video.track_id.as_ref() == Some(&id) { terminal = format!("{:?}", video.status); }
+                }
+            }
+            if terminal.contains("Ready") || terminal.contains("Unavailable") { break; }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(terminal.contains("Ready"), "resume must catch up the video pipeline, got {terminal}");
+        let _ = std::fs::remove_dir_all(&video_root);
+        let _ = std::fs::remove_dir_all(&music_dir);
+    }
+
     /// RED repro (2026-08-23 evening): with video mode ON the song page sat on
     /// "Loading video preview..." forever even though the staging store held
     /// the fully downloaded MP4. Drives the REAL pipeline: play a queued
@@ -1322,7 +1581,7 @@ pub struct AppState {
     playback_stall: Arc<Mutex<Option<(std::time::Duration, u32)>>>,
     /// Song-page video mode (persisted in `.luno_config.json`). When true the
     /// backend auto-stages the playing track's music video and sequentially
-    /// pre-downloads the next five queue videos so each handoff is instant.
+    /// pre-downloads the next three queue videos so each handoff is instant.
     video_mode_enabled: Arc<Mutex<bool>>,
     /// Serializes video-mode prefetch passes: one loop at a time.
     video_prefetch_running: Arc<Mutex<bool>>,
@@ -1336,6 +1595,12 @@ pub struct AppState {
     /// Cancellation for the CURRENT prefetch pass. Replaced on every kick;
     /// a stale flag means the pass was superseded and must stop.
     video_prefetch_cancel: Arc<Mutex<Arc<AtomicBool>>>,
+    /// Serializes BACKGROUND heavy video work — next-track prefetch downloads
+    /// and the quality-upgrade transcode — so only one of them ever competes
+    /// with playback for disk/CPU/network. Interactive current-track staging
+    /// (the small quick-tier pull) is deliberately NOT gated by it. Acquire
+    /// via polling `try_lock` with cancellation checkpoints, never `.lock()`.
+    video_heavy_work: Arc<Mutex<()>>,
     /// Runtime home captured at load time so backend-side setting changes can
     /// persist immediately without an extra IPC round-trip.
     settings_home: Arc<Mutex<Option<PathBuf>>>,
@@ -1386,14 +1651,34 @@ pub fn completion_may_publish(
 /// - exactly ONE suffixed sibling → use it (the clicked row gained a
 ///   discriminator);
 /// - zero or several siblings → still fail (ambiguous).
-pub fn heal_track_id(candidates: &std::collections::BTreeMap<TrackId, PathBuf>, requested: &TrackId) -> Option<TrackId> {
-    let base = requested.0.split('#').next()?.to_string();
+pub fn heal_track_id(candidates: &std::collections::BTreeMap<TrackId, PathBuf>, requested: &TrackId) -> Option<TrackId> {    let base = requested.0.split('#').next()?.to_string();
     if base.is_empty() { return None; }
     let base_id = TrackId(base.clone());
     if candidates.contains_key(&base_id) { return Some(base_id); }
     let matches: Vec<&TrackId> = candidates.keys().filter(|id| id.0.split('#').next() == Some(base.as_str())).collect();
     if matches.len() == 1 { return Some(matches[0].clone()); }
     None
+}
+
+/// How many UPCOMING queue tracks get their videos pre-downloaded (the
+/// current track is always included on top of this). Three covers typical
+/// near-term skips without re-creating the unbounded-download freeze.
+pub const VIDEO_PREFETCH_DEPTH: usize = 3;
+
+/// Pure plan builder for one pipeline pass: the CURRENT track first (its
+/// staging publishes UI events), then up to `depth` upcoming queue ids in
+/// order. With no current index, the first `depth` queue entries are the
+/// plan. Unit-tested.
+pub fn prefetch_plan(queue: &[TrackId], current_index: Option<usize>, depth: usize) -> Vec<TrackId> {
+    let mut plan: Vec<TrackId> = Vec::new();
+    match current_index {
+        Some(index) => {
+            if let Some(id) = queue.get(index) { plan.push(id.clone()); }
+            plan.extend(queue.iter().skip(index + 1).take(depth).cloned());
+        }
+        None => plan.extend(queue.iter().take(depth).cloned()),
+    }
+    plan
 }
 
 impl AppState {
@@ -1503,6 +1788,7 @@ impl AppState {
             video_staging_inflight: Arc::new(Mutex::new(std::collections::HashSet::new())),
             video_download_progress: Arc::new(crate::video::runtime::VideoProgress::new()),
             video_prefetch_cancel: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))),
+            video_heavy_work: Arc::new(Mutex::new(())),
             settings_home: Arc::new(Mutex::new(None)),
             media_keys_enabled: Arc::new(AtomicBool::new(true)),
         }
@@ -1540,6 +1826,12 @@ impl AppState {
         *self.video_helper.lock().unwrap() = ytdlp.clone();
         *self.video_ffmpeg_dir.lock().unwrap() = ffmpeg_dir.clone();
         eprintln!("[luno-video] runtime ready: store={} yt-dlp={:?} ffmpeg-dir={:?}", root.display(), ytdlp, ffmpeg_dir);
+    }
+
+    /// The configured video store root, used by the `luno-video` stream
+    /// protocol handler to contain every served path. `None` before setup.
+    pub fn video_root_dir(&self) -> Option<PathBuf> {
+        self.video_root.lock().unwrap().clone()
     }
 
     fn publish_video_state(&self) {
@@ -1807,8 +2099,10 @@ impl AppState {
                         }
                         let outcome = {
                             // Resolve the destination under a SHORT lock, then
-                            // release the store for the whole download so the
-                            // prefetch worker can run concurrently.
+                            // release the store before the heavy work below.
+                            // (The upgrade itself is serialized against
+                            // prefetch downloads via video_heavy_work — see the
+                            // match arm.)
                             let id = upgrade_path.as_deref()
                                 .and_then(|path| std::path::Path::new(path).file_name())
                                 .and_then(|name| name.to_str())
@@ -1819,12 +2113,41 @@ impl AppState {
                                 stager_guard.as_ref().and_then(|stager| stager.external_destination(crate::video::staging::Slot::Current, video_id).ok())
                             });
                             match (id, destination) {
-                                (Some(_), Some(destination)) => crate::video::runtime::upgrade_staged_video(
-                                    &upgrade_helper,
-                                    upgrade_state.video_ffmpeg_dir.lock().unwrap().as_deref(),
-                                    &destination,
-                                    &upgrade_cancel,
-                                ),
+                                (Some(video_id), Some(destination)) => {
+                                    // ONE heavy background job at a time: wait
+                                    // for any prefetch download to finish
+                                    // before pulling + transcoding the upgrade.
+                                    // Polling try_lock (never a blocking lock)
+                                    // keeps this thread responsive to the
+                                    // cancel flag while it waits.
+                                    let heavy = loop {
+                                        if upgrade_cancel.load(Ordering::Acquire) || upgrade_state.is_closing() {
+                                            return;
+                                        }
+                                        match upgrade_state.video_heavy_work.try_lock() {
+                                            Ok(guard) => break guard,
+                                            Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                                        }
+                                    };
+                                    let outcome = crate::video::runtime::upgrade_staged_video(
+                                        &upgrade_helper,
+                                        upgrade_state.video_ffmpeg_dir.lock().unwrap().as_deref(),
+                                        &destination,
+                                        &upgrade_cancel,
+                                    );
+                                    drop(heavy);
+                                    // The file is now final quality: flip the
+                                    // cache-index tier so later plays adopt it
+                                    // as done instead of re-running the HD
+                                    // pass on every play of a quick-tier entry.
+                                    if outcome.is_ok() {
+                                        let stager_guard = upgrade_state.video_stager.lock().unwrap();
+                                        if let Some(stager) = stager_guard.as_ref() {
+                                            stager.set_tier_for_video_id(&video_id.to_string(), crate::video::staging::INDEX_TIER_HIGH);
+                                        }
+                                    }
+                                    outcome
+                                }
                                 (Some(_), None) => Err("video storage is unavailable".into()),
                                 (None, _) => Err("staged path has no video id".into()),
                             }
@@ -1918,9 +2241,37 @@ impl AppState {
         *self.video_mode_enabled.lock().unwrap()
     }
 
+    /// Whether `track`'s video slot is alive: resolved, or Loading WITH a
+    /// live worker behind it. A Loading slot WITHOUT an inflight marker is a
+    /// corpse — its worker was cancelled by a supersede (e.g. the old
+    /// double-kick-per-switch race) and nothing would ever resolve it, which
+    /// read as "the paused song's video never loads". Such slots must be
+    /// restaged, not skipped.
+    fn current_video_live(&self, track: &TrackId) -> bool {
+        let current = self.video_current.lock().unwrap();
+        let Some(video) = current.as_ref() else { return false; };
+        if video.track_id.as_ref() != Some(track) { return false; }
+        match video.status {
+            crate::contracts::events::VideoStatus::Ready
+            | crate::contracts::events::VideoStatus::Playing
+            | crate::contracts::events::VideoStatus::Paused => true,
+            crate::contracts::events::VideoStatus::Loading => {
+                self.video_staging_inflight.lock().unwrap().contains(track)
+            }
+            _ => false,
+        }
+    }
+
     /// Video-mode core: stage the CURRENT track (if not already staged) and
-    /// then sequentially pre-download the next five queue tracks' videos.
-    /// Safe to call repeatedly — it no-ops while a run is already active.
+    /// then sequentially pre-download the next [`VIDEO_PREFETCH_DEPTH`] queue
+    /// tracks' videos. Safe to call repeatedly — it no-ops while a run is
+    /// already active.
+    ///
+    /// Depth was five tracks at ≤1080p; a single switch then queued hundreds
+    /// of megabytes of downloads behind playback (the 2026-08-25 "switch
+    /// song, window freezes ~20 s" report pulled 350 MB in three minutes).
+    /// Three at the ≤720p HIGH ladder keeps every near-term queue handoff
+    /// instant while bounding the background footprint.
     pub fn kick_video_pipeline(&self) {
         if !self.video_mode_enabled() { return; }
         let helper = match self.video_helper.lock().unwrap().clone() {
@@ -1942,16 +2293,8 @@ impl AppState {
         let resolve = |track_id: &TrackId| -> Option<(String, Option<String>)> {
             library.tracks.iter().find(|track| track.id == *track_id).map(|track| (track.title.clone(), track.artist.clone()))
         };
-        // Current first (its staging publishes UI state), then the next five.
-        let mut plan: Vec<TrackId> = Vec::new();
-        if let Some(index) = current {
-            if let Some(id) = queue.get(index) { plan.push(id.clone()); }
-        }
-        if let Some(index) = current {
-            for id in queue.iter().skip(index + 1).take(5) { plan.push(id.clone()); }
-        } else {
-            for id in queue.iter().take(5) { plan.push(id.clone()); }
-        }
+        // Current first (its staging publishes UI state), then the next three.
+        let plan = prefetch_plan(&queue, current, VIDEO_PREFETCH_DEPTH);
         let plans: Vec<(TrackId, String, Option<String>)> = plan
             .into_iter()
             .filter_map(|id| resolve(&id).map(|(title, artist)| (id, title, artist)))
@@ -1963,10 +2306,13 @@ impl AppState {
             for (track_id, title, artist) in plans {
                 if cancel.load(Ordering::Acquire) || state.is_closing() { break; }
                 if state.video_mode_changed_since(&cancel) { break; }
-                if Some(&track_id) == state.video_current.lock().unwrap().as_ref().and_then(|v| v.track_id.as_ref())
-                    && matches!(state.video_current.lock().unwrap().as_ref().map(|v| v.status), Some(crate::contracts::events::VideoStatus::Ready | crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Paused | crate::contracts::events::VideoStatus::Loading))
-                {
-                    continue; // current track already has a live/published video
+                // Skip only when the slot is ALIVE (resolved, or Loading with
+                // a live worker). A Loading corpse — superseded worker, no
+                // inflight marker — must fall through and restage, or the
+                // track sits on "Loading video preview..." until some other
+                // trigger happens to run (the paused-song video complaint).
+                if state.current_video_live(&track_id) {
+                    continue;
                 }
                 // CURRENT slot work must go through the same machinery as a
                 // manual request so the UI sees Loading → Ready events.
@@ -1991,14 +2337,33 @@ impl AppState {
                         }
                     };
                     if let Some(Some(stager)) = stager_snapshot {
-                        crate::video::runtime::prefetch_track(
-                            &helper,
-                            state.video_ffmpeg_dir.lock().unwrap().as_deref(),
-                            &stager,
-                            artist.as_deref(),
-                            &title,
-                            &cancel,
-                        );
+                        // ONE heavy background job at a time: wait here while a
+                        // quality-upgrade transcode runs (and vice versa).
+                        // Polling try_lock keeps this worker responsive to
+                        // cancellation — a blocking `.lock()` would park it
+                        // deaf to track switches for the whole wait.
+                        let heavy = loop {
+                            if cancel.load(Ordering::Acquire)
+                                || state.is_closing()
+                                || state.video_mode_changed_since(&cancel)
+                            {
+                                break None;
+                            }
+                            match state.video_heavy_work.try_lock() {
+                                Ok(guard) => break Some(guard),
+                                Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                            }
+                        };
+                        if let Some(_heavy_guard) = heavy {
+                            crate::video::runtime::prefetch_track(
+                                &helper,
+                                state.video_ffmpeg_dir.lock().unwrap().as_deref(),
+                                &stager,
+                                artist.as_deref(),
+                                &title,
+                                &cancel,
+                            );
+                        }
                     }
                 }
             }
@@ -4321,32 +4686,63 @@ fn promotion_error(error: PromotionError) -> ContractError {
             eprintln!("[luno-play] rejected: context must contain the selected track");
             return Err(ContractError::invalid("playback context must contain the selected track"));
         }
-        let path = {
+        // RESOLVE + HEAL THE WHOLE REQUEST UNDER ONE LOCK: a click that races
+        // a rescan carries ids minted from the PREVIOUS snapshot, and when
+        // duplicate-stem files let scan order decide which copy keeps the
+        // plain id (vs `#<path-hash>`), EVERY entry can flip — not just the
+        // clicked one. Healing ONLY the clicked track left the stored queue
+        // full of dangling ids: auto-advance skipped, the queue panel and
+        // Now Playing resolved nothing (the song the user just started
+        // "disappeared"), and repeat clicks kept failing. Heal all of it:
+        // effective track id, every context entry, then validate.
+        let (track_id, context, path) = {
             let map = self.track_paths.lock().unwrap();
-            match map.get(&track_id) {
-                Some(path) => Some(path.clone()),
-                None => heal_track_id(&map, &track_id).and_then(|healed| {
-                    eprintln!("[luno-play] healed stale id {track_id:?} -> {healed:?}");
-                    map.get(&healed).cloned()
-                }),
+            let resolve = |id: &TrackId| -> Option<TrackId> {
+                if map.contains_key(id) {
+                    return Some(id.clone());
+                }
+                heal_track_id(&map, id).inspect(|healed| {
+                    eprintln!("[luno-play] healed stale id {id:?} -> {healed:?}");
+                })
+            };
+            let Some(effective) = resolve(&track_id) else {
+                eprintln!("[luno-play] rejected: track not found locally: {track_id:?}");
+                return Err(ContractError {
+                    code: ErrorCode::NotFound,
+                    message: "track is not available locally".into(),
+                    retryable: false,
+                });
+            };
+            let mut healed_context: Vec<TrackId> = Vec::with_capacity(context.len());
+            let mut seen = std::collections::HashSet::new();
+            for id in context {
+                if let Some(healed) = resolve(&id) {
+                    if seen.insert(healed.0.clone()) {
+                        healed_context.push(healed);
+                    }
+                }
             }
-        }
-        .ok_or_else(|| {
-            eprintln!("[luno-play] rejected: track not found locally: {track_id:?}");
-            ContractError {
-                code: ErrorCode::NotFound,
-                message: "track is not available locally".into(),
-                retryable: false,
+            if !healed_context.iter().any(|id| id == &effective) {
+                healed_context.insert(0, effective.clone());
             }
-        })?;
-        eprintln!("[luno-play] resolved -> {}", path.display());
+            let Some(path) = map.get(&effective).cloned() else {
+                eprintln!("[luno-play] rejected: healed track has no file: {effective:?}");
+                return Err(ContractError {
+                    code: ErrorCode::NotFound,
+                    message: "track is not available locally".into(),
+                    retryable: false,
+                });
+            };
+            (effective, healed_context, path)
+        };
+        eprintln!("[luno-play] resolved -> {} queue_len={}", path.display(), context.len());
         self.purge_discover_deferred();
         self.playback.lock().unwrap().play_with_context(track_id.clone(), context);
-        // Video mode: stage this video + prefetch the next five as soon as a
-        // selection starts playing.
-        if self.video_mode_enabled() {
-            self.kick_video_pipeline();
-        }
+        // NOTE: video mode is NOT kicked here on purpose — `start_selected_track`
+        // kicks it once the track actually starts playing (and auto-advance funnels
+        // through the same path). Kicking in BOTH places spawned two prefetch passes
+        // per switch (the second superseding the first mid-search), doubling yt-dlp
+        // churn for zero benefit.
         // Acknowledge the selection immediately. Decoding runs on a runtime
         // task (`playback-load`) so the UI thread never blocks on audio
         // loading; a newer selection cancels the previous task by key.
@@ -4592,6 +4988,19 @@ fn promotion_error(error: PromotionError) -> ContractError {
     fn resume_track(&self) -> Result<Value, ContractError> {
         if *self.playback_status.lock().unwrap() != crate::contracts::types::PlaybackStatus::Paused {
             return Ok(Value::Null);
+        }
+        // CATCH-UP KICK (2026-08-25): resuming after a long pause must find
+        // the video ALREADY staged — "ready to go", not loading on resume. If
+        // the current track's slot never resolved (dead Loading corpse,
+        // missed kick, Unavailable retry), one idempotent pipeline pass runs
+        // here, off the UI thread, before/while the audio resumes.
+        if self.video_mode_enabled() {
+            let current = self.playback.lock().unwrap().current().cloned();
+            if let Some(track) = current {
+                if !self.current_video_live(&track) {
+                    self.kick_video_pipeline();
+                }
+            }
         }
         let mut backend = self.audio.lock().map_err(|_| ContractError {
             code: ErrorCode::Internal,

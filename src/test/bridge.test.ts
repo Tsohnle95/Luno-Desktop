@@ -8,7 +8,13 @@ import type { SaveState } from "../shared/contracts";
 import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot } from "../shared/contracts";
 
 const nativeInvoke = vi.hoisted(() => vi.fn());
-vi.mock("@tauri-apps/api/core", () => ({ invoke: nativeInvoke }));
+// convertFileSrc mirrors Tauri's injected macOS runtime implementation
+// (`<protocol>://localhost/<encoded path>`) so Shell source-building is
+// testable without a live webview.
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: nativeInvoke,
+  convertFileSrc: (filePath: string, protocol = "asset") => `${protocol}://localhost/${encodeURIComponent(filePath)}`,
+}));
 
 const event = (event: Event, generation = 1): EventEnvelope => ({ version: 1, event_id: `event-${generation}`, generation, job_id: null, session_id: null, event });
 
@@ -253,6 +259,19 @@ describe("typed IPC bridge and projection", () => {
     expect(store.getSnapshot().playback?.queue[0]).toBe("new");
     expect(safeVideoSource("javascript:alert(1)", null)).toBeNull();
     expect(safeVideoSource("https://example.test/video.mp4", "/tmp/../outside.mp4")).toBe("https://example.test/video.mp4");
+  });
+
+  it("streams staged videos through the range-aware luno-video scheme", () => {
+    // The stock asset protocol buffers whole staged MP4s into one response
+    // blob; the custom scheme answers ranged requests with ≤2 MB windows
+    // (src-tauri video::stream). The src must carry the custom scheme and the
+    // percent-encoded absolute path.
+    const source = safeVideoSource(null, "/Users/ty/App Support/videos/current-abc.mp4");
+    expect(source).toContain("luno-video://localhost/");
+    expect(source).toContain("%2F"); // absolute path is encoded into the URL path
+    expect(source).toContain("current-abc.mp4");
+    // Traversal attempts never reach the scheme; they fall back to source_url.
+    expect(safeVideoSource("https://example.test/video.mp4", "/videos/../secrets/current-x.mp4")).toBe("https://example.test/video.mp4");
   });
 
   it("keeps the latest video state for the current track regardless of playback generation", () => {

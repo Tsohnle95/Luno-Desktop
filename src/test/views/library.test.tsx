@@ -33,6 +33,22 @@ describe("normalizeFilterText", () => {
   });
 });
 
+describe("zero-match state", () => {
+  it("offers a Clear search action instead of a dead end", () => {
+    // The recurring "clicked a song and now there are no matches" reports
+    // all end on this screen; it must be one click away from recovery.
+    const html = renderToStaticMarkup(<LibraryView snapshot={snapshot} query="nonexistent" />);
+    expect(html).toContain("No matches for");
+    expect(html).toContain('aria-label="Clear search"');
+  });
+
+  it("keeps matching rows rendered while a search is active", () => {
+    const html = renderToStaticMarkup(<LibraryView snapshot={snapshot} query="alpha" />);
+    expect(html).toContain("Alpha");
+    expect(html).not.toContain("No matches for");
+  });
+});
+
 describe("virtualWindow", () => {
   it("still renders a row when scrollTop overshoots the whole list", () => {
     // Regression: stale scroll offsets past a shrunken (filtered) list used to

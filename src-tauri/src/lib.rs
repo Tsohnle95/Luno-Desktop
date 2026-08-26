@@ -79,6 +79,7 @@ pub mod video {
     pub mod runtime;
     pub mod source;
     pub mod staging;
+    pub mod stream;
 }
 
 #[cfg(test)]

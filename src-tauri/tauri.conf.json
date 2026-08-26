@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: blob: https: http: asset: http://asset.localhost; connect-src ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; style-src 'self' 'unsafe-inline'; media-src 'self' asset: http://asset.localhost blob:",
+      "csp": "default-src 'self'; img-src 'self' data: blob: https: http: asset: http://asset.localhost; connect-src ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; style-src 'self' 'unsafe-inline'; media-src 'self' asset: http://asset.localhost luno-video: blob:",
       "assetProtocol": {
         "enable": true,
         "scope": ["$APPDATA/videos"]
