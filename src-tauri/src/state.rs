@@ -66,6 +66,38 @@ pub enum MigrationStatus {
 
 #[cfg(test)]
 mod tests {
+
+
+    /// Minimal valid 44.1 kHz stereo PCM WAV (mirrors the gate3 fixture).
+    fn write_wav_fixture(path: &std::path::Path) -> std::path::PathBuf {
+        let sample_rate = 44_100u32;
+        let channels = 2u16;
+        let bits = 16u16;
+        // 30 s of audio: a fixture that ends too quickly lets a delayed
+        // heartbeat auto-advance the queue mid-test.
+        let frames = 44_100u32 * 30;
+        let data_size = frames * channels as u32 * (bits as u32 / 8);
+        let mut wav = Vec::with_capacity(44 + data_size as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * channels as u32 * 2).to_le_bytes());
+        wav.extend_from_slice(&(channels * 2).to_le_bytes());
+        wav.extend_from_slice(&bits.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_size.to_le_bytes());
+        for frame in 0..frames {
+            let sample = (((frame * 440) % sample_rate) as i16).to_le_bytes();
+            wav.extend_from_slice(&sample);
+            wav.extend_from_slice(&sample);
+        }
+        std::fs::write(path, wav).unwrap();
+        path.to_path_buf()
+    }
     use super::*;
 
     /// Ownership guard truth table for staging-worker completion (2026-08-24
@@ -566,6 +598,147 @@ mod tests {
         let first = state.track_paths.lock().unwrap().get(&snapshot.tracks[0].id).cloned().unwrap();
         let second = state.track_paths.lock().unwrap().get(&snapshot.tracks[1].id).cloned().unwrap();
         assert_ne!(first, second);
+    }
+
+    /// RED repro (2026-08-25): "skipped ahead with Shuffle on, then couldn't
+    /// go back a couple songs." next/previous used to re-enter
+    /// play_with_context, which under shuffle RE-SHUFFLED the whole queue
+    /// current-first — so the first Previous landed at index 0 and every
+    /// further press was stuck, while the shuffle order mutated on each skip.
+    /// Skips must walk the EXISTING shuffled order without rebuilding it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn previous_walks_back_through_shuffled_queue_without_rebuilding_it() {
+        let state = AppState::new(8);
+        // MUTE THE TEST HARNESS: this test loads REAL decodable audio through
+        // the REAL backend, which would otherwise blast tones through the
+        // machine's speakers at the seeded volume while `cargo test` runs.
+        // Zero volume keeps the full production path intact and silent.
+        *state.volume.lock().unwrap() = 0.0;
+        let dir = std::env::temp_dir().join(format!("luno-shuffle-back-{}", std::process::id()));
+        let playlist_dir = dir.join("Unsorted");
+        std::fs::create_dir_all(&playlist_dir).unwrap();
+        // REAL decodable PCM WAVs: undecodable fixtures would trip the
+        // failure-recovery auto-skip and race the index assertions.
+        let mut paths = Vec::new();
+        for name in ["Artist - Song A.wav", "Artist - Song B.wav", "Artist - Song C.wav", "Artist - Song D.wav", "Artist - Song E.wav"] {
+            paths.push(write_wav_fixture(&playlist_dir.join(name)));
+        }
+        let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), paths)]));
+        let queue: Vec<TrackId> = snapshot.tracks.iter().map(|t| t.id.clone()).collect();
+        // Play the third track with shuffle OFF so the physical order is known.
+        state.dispatch(CommandEnvelope {
+            version: CONTRACT_VERSION, request_id: "play".into(),
+            command: Command::PlayWithContext { track_id: queue[2].clone(), context: queue.clone() },
+        }).expect("initial play");
+        assert_eq!(state.playback.lock().unwrap().current_index(), Some(2));
+        // Shuffle ON: current-first, rest randomized. Capture the order.
+        state.playback.lock().unwrap().toggle_shuffle();
+        let shuffled = state.playback.lock().unwrap().queue().to_vec();
+        assert_eq!(shuffled[0], queue[2], "current stays first");
+        // Skip ahead twice (as the user did).
+        for _ in 0..2 {
+            state.dispatch(CommandEnvelope {
+                version: CONTRACT_VERSION, request_id: "next".into(),
+                command: Command::Next,
+            }).expect("next");
+        }
+        let after_skips = state.playback.lock().unwrap().queue().to_vec();
+        assert_eq!(after_skips, shuffled, "skips must NOT rebuild/re-shuffle the queue");
+        let current_after_skips = state.playback.lock().unwrap().current_index().unwrap();
+        assert_eq!(current_after_skips, 2, "started at 0, two Next presses");
+        // Go BACK a couple songs — must walk the same list, one entry per press.
+        state.dispatch(CommandEnvelope {
+            version: CONTRACT_VERSION, request_id: "prev1".into(),
+            command: Command::Previous,
+        }).expect("previous #1");
+        assert_eq!(state.playback.lock().unwrap().current_index(), Some(1), "first Previous moves back one");
+        state.dispatch(CommandEnvelope {
+            version: CONTRACT_VERSION, request_id: "prev2".into(),
+            command: Command::Previous,
+        }).expect("previous #2");
+        assert_eq!(state.playback.lock().unwrap().current_index(), Some(0), "second Previous moves back again");
+        assert_eq!(*state.playback.lock().unwrap().queue(), shuffled, "queue still untouched after going back");
+        // And toggling shuffle OFF restores the TRUE original playlist order.
+        state.playback.lock().unwrap().toggle_shuffle();
+        assert_eq!(state.playback.lock().unwrap().queue(), &queue);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RED repro (2026-08-25): "shuffle + a few skips and the whole app
+    /// lags / eats gigabytes." Every stage request spawned a worker that
+    /// BLOCKED on the staging-store mutex; with video mode on, the song-page
+    /// poll (every 2 s while Loading) plus every skip piled blocked threads
+    /// into the 32-slot task registry until playback-load/heartbeat starved.
+    /// Requests behind a busy store must DEFER, never queue.
+    #[test]
+    fn stage_requests_never_pile_up_behind_a_busy_store() {
+        let state = AppState::new(32);
+        let video_root = std::env::temp_dir().join(format!("luno-video-pileup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&video_root);
+        state.set_video_runtime(video_root.clone(), Some(PathBuf::from("/nonexistent/yt-dlp")), None);
+        *state.video_mode_enabled.lock().unwrap() = true;
+
+        let music_dir = std::env::temp_dir().join(format!("luno-video-pileup-lib-{}", std::process::id()));
+        let playlist_dir = music_dir.join("Unsorted");
+        std::fs::create_dir_all(&playlist_dir).unwrap();
+        let track_path = playlist_dir.join("Artist - Song.wav");
+        write_wav_fixture(&track_path);
+        let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), vec![track_path])]));
+        let id = snapshot.tracks[0].id.clone();
+        state.set_playing(id.clone(), vec![id.clone()]);
+
+        // Hold the store exactly like a slow download would…
+        let guard = state.video_stager.lock().unwrap();
+        // …then hammer it the way skip-storms + the 2 s poll do.
+        for _ in 0..25 {
+            state.video_stage_track(id.clone()).expect("busy store must defer, not error");
+        }
+        assert!(
+            state.tasks.active_count() <= 2,
+            "stage requests piled up: {} active tasks",
+            state.tasks.active_count()
+        );
+        assert!(!state.video_staging_inflight.lock().unwrap().contains(&id), "deferred request leaked its inflight marker");
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&video_root);
+        let _ = std::fs::remove_dir_all(&music_dir);
+    }
+
+    /// The pressure gate: near the registry cap, staging defers instead of
+    /// spawning so playback-load/heartbeat always have slots.
+    #[test]
+    fn stage_defers_when_task_registry_is_under_pressure() {
+        let state = AppState::new(32);
+        let video_root = std::env::temp_dir().join(format!("luno-video-pressure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&video_root);
+        state.set_video_runtime(video_root.clone(), Some(PathBuf::from("/nonexistent/yt-dlp")), None);
+        *state.video_mode_enabled.lock().unwrap() = true;
+
+        let music_dir = std::env::temp_dir().join(format!("luno-video-pressure-lib-{}", std::process::id()));
+        let playlist_dir = music_dir.join("Unsorted");
+        std::fs::create_dir_all(&playlist_dir).unwrap();
+        let track_path = playlist_dir.join("Artist - Song.wav");
+        write_wav_fixture(&track_path);
+        let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), vec![track_path])]));
+        let id = snapshot.tracks[0].id.clone();
+        state.set_playing(id.clone(), vec![id.clone()]);
+
+        // Saturate the registry with sleeping dummies.
+        for i in 0..VIDEO_STAGE_PRESSURE_LIMIT {
+            state.submit(crate::runtime::task_registry::TaskSpec::new(format!("dummy-{i}"), crate::contracts::types::Generation(i as u64 + 500), None), |_token| {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+            }).expect("dummy submit");
+        }
+        assert!(state.tasks.active_count() >= VIDEO_STAGE_PRESSURE_LIMIT);
+        let before = state.tasks.active_count();
+
+        state.video_stage_track(id.clone()).expect("pressure must defer, not error");
+        assert_eq!(state.tasks.active_count(), before, "staging must not spawn under pressure");
+        // Drains cleanly once dummies finish.
+        std::thread::sleep(std::time::Duration::from_millis(1700));
+        let _ = std::fs::remove_dir_all(&video_root);
+        let _ = std::fs::remove_dir_all(&music_dir);
     }
 
     /// AUDIT (2026-08-25): the pipeline must plan CURRENT + exactly
@@ -1665,6 +1838,11 @@ pub fn heal_track_id(candidates: &std::collections::BTreeMap<TrackId, PathBuf>, 
 /// near-term skips without re-creating the unbounded-download freeze.
 pub const VIDEO_PREFETCH_DEPTH: usize = 3;
 
+/// Task-registry pressure at which video staging DEFERS instead of spawning
+/// (registry cap is 32; keeping slots free guarantees playback-load,
+/// heartbeat, scan and discovery tasks never starve behind media work).
+pub const VIDEO_STAGE_PRESSURE_LIMIT: usize = 24;
+
 /// Pure plan builder for one pipeline pass: the CURRENT track first (its
 /// staging publishes UI events), then up to `depth` upcoming queue ids in
 /// order. With no current index, the first `depth` queue entries are the
@@ -1780,7 +1958,11 @@ impl AppState {
             #[cfg(target_os = "macos")]
             audio: Arc::new(Mutex::new(Box::new(CpalSymphoniaBackend::new()))),
             #[cfg(target_os = "macos")]
-            volume: Arc::new(Mutex::new(1.0)),
+            // TESTS ARE ALWAYS SILENT: the harness initializes volume to 0 so
+            // no unit test can ever emit audio through real speakers (a
+            // shuffle regression test once blasted 30 s tones at full
+            // volume). Production still seeds from persisted settings.
+            volume: Arc::new(Mutex::new(if cfg!(test) { 0.0 } else { 1.0 })),
             #[cfg(target_os = "macos")]
             playback_stall: Arc::new(Mutex::new(None)),
             video_mode_enabled: Arc::new(Mutex::new(false)),
@@ -1880,6 +2062,38 @@ impl AppState {
         // slot's CURRENT generation keeps the event stream monotonic, and the
         // ownership guard lets the busy worker's own completion win over this
         // placeholder.
+        // PRESSURE + STORE-BUSY GATE: spawning a stage worker while the
+        // runtime is saturated or another download holds the store used to
+        // pile blocked threads into the task registry (the song-page poll
+        // fires every 2 s while Loading) until the registry cap starved
+        // playback-load/heartbeat — the "shuffle-skip makes the whole app
+        // lag / Busy" report. Busy here means: keep/reuse the Loading
+        // placeholder and let the next kick or 2 s poll retry; never queue.
+        if self.tasks.active_count() >= VIDEO_STAGE_PRESSURE_LIMIT {
+            let mut current = self.video_current.lock().unwrap();
+            match current.as_ref() {
+                Some(v) if v.track_id.as_ref() == Some(&track_id)
+                    && matches!(v.status, crate::contracts::events::VideoStatus::Loading | crate::contracts::events::VideoStatus::Ready | crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Paused) => {}
+                _ => {
+                    let generation = current.as_ref().map(|v| v.generation).unwrap_or(Generation(0));
+                    *current = Some(crate::contracts::events::VideoState {
+                        track_id: Some(track_id.clone()),
+                        source_url: None,
+                        staged_path: None,
+                        status: crate::contracts::events::VideoStatus::Loading,
+                        position_ms: 0,
+                        download_progress: None,
+                        revision: None,
+                        fullscreen: false,
+                        generation,
+                    });
+                    drop(current);
+                    self.publish_video_state();
+                }
+            }
+            eprintln!("[luno-video] runtime pressure high ({} tasks); deferring stage for {track_id:?}", self.tasks.active_count());
+            return Ok(self.video_snapshot_json());
+        }
         let _stager_ready = match self.video_stager.try_lock() {
             Ok(guard) => guard.is_some(),
             Err(_) => {
@@ -1991,9 +2205,14 @@ impl AppState {
             }
         }).ok();
         let spawned = self.submit(self.generation(format!("video-{generation}"), Generation(generation)), move |_token| {
-            let outcome = {
-                let mut stager_guard = state.video_stager.lock().unwrap();
-                match stager_guard.as_mut() {
+            // NON-BLOCKING BY CONTRACT: a worker that waits on the store mutex
+            // piles one blocked thread per request (every skip / every 2 s
+            // song-page poll) until the registry starves playback. Exactly
+            // ONE try_lock: if we lost the race, release our inflight marker
+            // and leave the Loading placeholder for the next retry — never
+            // queue here.
+            let outcome = match state.video_stager.try_lock() {
+                Ok(mut stager_guard) => match stager_guard.as_mut() {
                     Some(stager) => match crate::video::runtime::stage_track(
                         &helper,
                         state.video_ffmpeg_dir.lock().unwrap().as_deref(),
@@ -2009,6 +2228,11 @@ impl AppState {
                     // Never exit silently — an unpublished worker leaves the
                     // UI stuck on "loading" forever.
                     None => crate::video::runtime::VideoOutcome::Unavailable("video storage is unavailable".into()),
+                },
+                Err(_) => {
+                    state.video_staging_inflight.lock().unwrap().remove(&worker_track_id);
+                    eprintln!("[luno-video] store busy at worker start; deferring {worker_track_id:?} to the next kick/poll");
+                    return;
                 }
             };
             let next_status = match &outcome {
@@ -4887,9 +5111,68 @@ fn promotion_error(error: PromotionError) -> ContractError {
     }
 
     #[cfg(target_os = "macos")]
+    /// Starts audio for the track ALREADY current in the queue WITHOUT
+    /// touching queue structure. next/previous/auto-advance walk the existing
+    /// (possibly shuffled) order; routing those through `play_with_context`
+    /// made every skip RE-SHUFFLE the whole queue current-first under shuffle,
+    /// which pinned previous() at index 0 ("can't go back a couple songs"),
+    /// mutated the shuffle order on every press, and clobbered the original
+    /// order so toggling shuffle off restored the shuffled sequence.
+    #[cfg(target_os = "macos")]
+    fn start_current_track(&self) -> Result<Value, ContractError> {
+        let Some(track_id) = self.playback.lock().unwrap().current().cloned() else {
+            return Ok(Value::Null);
+        };
+        // Same resolve+heal contract as play_with_context: a skip that races a
+        // rescan must not resurrect the dangling-id family.
+        let path = {
+            let map = self.track_paths.lock().unwrap();
+            match map.get(&track_id) {
+                Some(path) => Some(path.clone()),
+                None => heal_track_id(&map, &track_id).and_then(|healed| {
+                    eprintln!("[luno-play] healed stale id {track_id:?} -> {healed:?}");
+                    map.get(&healed).cloned()
+                }),
+            }
+        }
+        .ok_or_else(|| {
+            eprintln!("[luno-play] rejected: track not found locally: {track_id:?}");
+            ContractError {
+                code: ErrorCode::NotFound,
+                message: "track is not available locally".into(),
+                retryable: false,
+            }
+        })?;
+        self.purge_discover_deferred();
+        let ack = self.playback_snapshot(
+            *self.playback_status.lock().unwrap(),
+            Duration::ZERO,
+            None,
+        );
+        self.publish_playback(ack.clone(), Some(track_id.clone()));
+        let load_state = self.clone();
+        let generation = ack.generation;
+        self.submit(self.generation("playback-load", generation), move |token| {
+            load_state.start_selected_track(track_id, path, token);
+        })
+        .map_err(|_| ContractError {
+            code: ErrorCode::Busy,
+            message: "playback worker is unavailable".into(),
+            retryable: true,
+        })?;
+        serde_json::to_value(ack).map_err(|e| ContractError {
+            code: ErrorCode::Internal,
+            message: e.to_string(),
+            retryable: false,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
     fn next_track(&self) -> Result<Value, ContractError> {
-        let next = self.playback.lock().unwrap().next().cloned();
-        next.map_or_else(|| {
+        let advanced = self.playback.lock().unwrap().next().cloned();
+        if advanced.is_some() {
+            self.start_current_track()
+        } else {
             // The queue is exhausted. An active Discover session hands the
             // block back: restore the captured queue at the seed position so
             // the library is intact when playback resumes.
@@ -4899,19 +5182,17 @@ fn promotion_error(error: PromotionError) -> ContractError {
             *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Stopped;
             self.publish_queue_snapshot();
             Ok(Value::Null)
-        }, |track| {
-            let context = self.playback.lock().unwrap().queue().to_vec();
-            self.play_with_context(track, context)
-        })
+        }
     }
 
     #[cfg(target_os = "macos")]
     fn previous_track(&self) -> Result<Value, ContractError> {
-        let previous = self.playback.lock().unwrap().previous().cloned();
-        previous.map_or_else(|| Ok(Value::Null), |track| {
-            let context = self.playback.lock().unwrap().queue().to_vec();
-            self.play_with_context(track, context)
-        })
+        let went_back = self.playback.lock().unwrap().previous().cloned();
+        if went_back.is_some() {
+            self.start_current_track()
+        } else {
+            Ok(Value::Null)
+        }
     }
 
     #[cfg(target_os = "macos")]

@@ -2,6 +2,44 @@ use crate::contracts::TrackId;
 
 pub const HISTORY_LIMIT: usize = 100;
 
+/// Entropy source for shuffle: wall-clock nanos ^ pid ^ call counter. The
+/// call counter guarantees consecutive shuffles NEVER share a stream even
+/// within the same nanosecond (two shuffles in one test used to be able to
+/// pick identical seeds).
+static SHUFFLE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn seed_from_entropy() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+    let calls = SHUFFLE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id() as u64;
+    nanos ^ (calls.wrapping_mul(0x9E3779B97F4A7C15)) ^ (pid << 32)
+}
+
+/// One xorshift64* step (nonzero state required). Pure so shuffle
+/// permutations are deterministically unit-testable via injected seeds.
+fn next_random(state: &mut u64) -> u64 {
+    let mut x = *state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    *state = x;
+    x.wrapping_mul(0x2545F4914F6CDD1D)
+}
+
+/// Fisher-Yates over `len` positions, deterministic for a given seed. Returns
+/// a permutation of `0..len`. Pure; unit-tested for validity, reproducibility,
+/// and seed sensitivity.
+pub fn shuffled_order(len: usize, seed: u64) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    let mut rng = seed | 1;
+    for i in (1..order.len()).rev() {
+        let j = (next_random(&mut rng) % (i as u64 + 1)) as usize;
+        order.swap(i, j);
+    }
+    order
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepeatMode { Off, One, All }
 
@@ -63,12 +101,17 @@ impl QueueState {
     }
 
     fn shuffle_current_first(&mut self) {
-        if let Some(current) = self.current().cloned() {
-            let mut rest: Vec<_> = self.physical.iter().filter(|x| **x != current).cloned().collect();
-            let rotation = rest.len().saturating_sub(1);
-            rest.rotate_left(rotation);
-            self.physical = std::iter::once(current).chain(rest).collect(); self.current_index = Some(0);
-        }
+        let Some(current) = self.current().cloned() else { return; };
+        let rest: Vec<_> = self.physical.iter().filter(|x| **x != current).cloned().collect();
+        // TRUE random order (2026-08-25): the old code rotated the rest by a
+        // FIXED offset (len-1), so "shuffle" replayed the identical sequence
+        // every app launch — and since next/previous rebuilt the queue
+        // through play_with_context, skips kept re-applying that same fixed
+        // permutation. Fisher-Yates over OS entropy; current stays first.
+        let order = shuffled_order(rest.len(), seed_from_entropy());
+        let shuffled: Vec<TrackId> = order.into_iter().map(|i| rest[i].clone()).collect();
+        self.physical = std::iter::once(current).chain(shuffled).collect();
+        self.current_index = Some(0);
     }
 
     pub fn set_repeat(&mut self, mode: RepeatMode) { self.repeat = mode; }
@@ -117,4 +160,55 @@ impl QueueState {
     pub fn clear(&mut self) { self.physical.clear(); self.original.clear(); self.current_index = None; self.user_queue_count = 0; self.previews.clear(); }
     pub fn start_preview<I: IntoIterator<Item = TrackId>>(&mut self, tracks: I) { self.previews = tracks.into_iter().collect(); }
     pub fn end_preview(&mut self) { self.previews.clear(); }
+}
+
+#[cfg(test)]
+mod shuffle_tests {
+    use super::*;
+
+    fn id(name: &str) -> TrackId { TrackId::new(format!("metadata:{name}:0")).unwrap() }
+
+    #[test]
+    fn shuffled_order_is_a_permutation_and_seed_stable() {
+        let order = shuffled_order(64, 42);
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, Vec::<usize>::from_iter(0..64), "must be a permutation");
+        assert_eq!(shuffled_order(64, 42), order, "same seed must reproduce");
+        assert_eq!(shuffled_order(0, 7), Vec::<usize>::new());
+        assert_eq!(shuffled_order(1, 9), vec![0]);
+    }
+
+    #[test]
+    fn shuffle_produces_different_orders_across_instances() {
+        // The 2026-08-25 complaint: every app launch shuffled identically.
+        // Distinct instances (distinct entropy) must diverge; current stays
+        // first in every one.
+        let queue_input: Vec<TrackId> = (0..24).map(|n| id(&format!("t{n}"))).collect();
+        let mut seen_rest_orders = std::collections::HashSet::new();
+        for _ in 0..8 {
+            let mut q = QueueState::new();
+            q.play_with_context(id("t0"), queue_input.clone());
+            q.toggle_shuffle();
+            assert_eq!(q.current(), Some(&id("t0")), "current must stay first");
+            let rest: Vec<_> = q.queue()[1..].to_vec();
+            seen_rest_orders.insert(rest);
+        }
+        assert!(seen_rest_orders.len() >= 2, "shuffle must not be deterministic across instances (got {seen_rest_orders:?})");
+    }
+
+    #[test]
+    fn toggle_off_restores_true_original_even_after_many_shuffles() {
+        let original: Vec<TrackId> = ["a", "b", "c", "d", "e"].iter().map(|n| id(n)).collect();
+        let mut q = QueueState::new();
+        q.play_with_context(id("c"), original.clone());
+        for _ in 0..5 {
+            q.toggle_shuffle();
+            q.toggle_shuffle();
+        }
+        q.toggle_shuffle(); // ON
+        assert_ne!(q.queue(), &original);
+        q.toggle_shuffle(); // OFF
+        assert_eq!(q.queue(), &original, "original order must survive repeated shuffles");
+    }
 }
