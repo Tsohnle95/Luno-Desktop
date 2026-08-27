@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 import math
 import os
 import threading
+from collections import OrderedDict
 from theme import BG, BG2, BG3, BG4, BORDER, GREEN, GREEN_HOVER, TEXT, TEXT2, TEXT3, WARNING, SIDEBAR
 from utils import split_track_name, hex_to_rgb, rgb_to_hex, bind_scroll_events, scroll_amount
 from widgets import PlaylistArt
@@ -27,11 +28,12 @@ class LibraryView(tk.Frame):
         self._pulse_running = False
         self._favorites_first = False
         self._sort_modes = {"Unsorted": "Recently added"}
-        self._duration_cache = {}
+        self._duration_cache = OrderedDict()
         self._duration_pending = set()
         self._duration_deferred = set()
         self._duration_load_active = False
         self._track_redraw_after = None
+        self._max_duration_cache = 400
         
         # Context menu
         self.ctx_menu = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT,
@@ -335,13 +337,19 @@ class LibraryView(tk.Frame):
         threading.Thread(target=load_durations, daemon=True).start()
 
     def _finish_track_durations(self, durations):
-        self._duration_cache.update(durations)
+        for path, duration in durations.items():
+            self._duration_cache.pop(path, None)
+            self._duration_cache[path] = duration
+            while len(self._duration_cache) > self._max_duration_cache:
+                self._duration_cache.popitem(last=False)
         self._duration_pending.difference_update(durations)
         self._duration_load_active = False
         deferred = self._duration_deferred
         self._duration_deferred = set()
         if deferred:
-            self._request_track_durations(deferred)
+            # Only re-queue up to a bounded batch to avoid unbounded growth
+            bounded = list(deferred)[:200]
+            self._request_track_durations(bounded)
         if self._current_sort_mode() == "Duration":
             self.populate_track_list(self._pl_search_entry.get().strip())
             self.reset_track_scroll()
@@ -352,11 +360,11 @@ class LibraryView(tk.Frame):
             os.path.abspath(os.path.normpath(path))
             for path in paths
         }
-        self._duration_cache = {
-            path: duration
+        self._duration_cache = OrderedDict(
+            (path, duration)
             for path, duration in self._duration_cache.items()
             if os.path.abspath(os.path.normpath(path)) in allowed
-        }
+        )
         self._duration_pending = {
             path for path in self._duration_pending
             if os.path.abspath(os.path.normpath(path)) in allowed

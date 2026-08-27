@@ -14,10 +14,10 @@ from downloader import Downloader
 class DownloadView(tk.Frame):
     # Search results are disposable; retaining every PhotoImage from every
     # search can otherwise grow the process for the entire session.
-    MAX_SEARCH_ART_CACHE = 128
-    MAX_SEARCH_ART_INFLIGHT = 8
-    MAX_LOG_LINES = 5000
-    MAX_PENDING_LOGS = 256
+    MAX_SEARCH_ART_CACHE = 64
+    MAX_SEARCH_ART_INFLIGHT = 4
+    MAX_LOG_LINES = 2000
+    MAX_PENDING_LOGS = 128
 
     def __init__(self, parent, controller):
         super().__init__(parent, bg=BG)
@@ -1634,7 +1634,7 @@ class DownloadView(tk.Frame):
                         chunks.append(chunk)
                     response.close()
                     with Image.open(io.BytesIO(b"".join(chunks))) as source:
-                        if source.width * source.height > 12 * 1024 * 1024:
+                        if source.width * source.height > 4 * 1024 * 1024:
                             raise ValueError("thumbnail dimensions exceed the limit")
                         decoded = source.convert("RGB")
                     image = ImageOps.fit(decoded, (60, 60), method=Image.Resampling.LANCZOS)

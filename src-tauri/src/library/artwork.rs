@@ -14,7 +14,10 @@ use std::sync::Mutex;
 /// Bounded in-memory cache of extracted artwork `data:` URLs, keyed by track
 /// id. Entries are evicted oldest-first once the total payload exceeds
 /// [`ARTWORK_CACHE_BYTES`], so a large library cannot exhaust memory.
-pub const ARTWORK_CACHE_BYTES: usize = 64 * 1024 * 1024;
+pub const ARTWORK_CACHE_BYTES: usize = 32 * 1024 * 1024;
+/// Single artwork larger than this is rejected to avoid a single 10 MB JPEG
+/// becoming a 14 MB base64 string and spiking the WebView heap.
+pub const MAX_SINGLE_ARTWORK_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct ArtworkCache {
@@ -84,7 +87,7 @@ fn id3_artwork_data_url(path: &Path) -> Option<String> {
     use base64::Engine;
     let tag = id3::Tag::read_from_path(path).ok()?;
     let picture = tag.pictures().next()?;
-    if picture.data.is_empty() {
+    if picture.data.is_empty() || picture.data.len() > MAX_SINGLE_ARTWORK_BYTES {
         return None;
     }
     let mime = if picture.mime_type.starts_with("image/") {
@@ -93,6 +96,10 @@ fn id3_artwork_data_url(path: &Path) -> Option<String> {
         guess_mime(&picture.data).to_string()
     };
     let encoded = base64::engine::general_purpose::STANDARD.encode(&picture.data);
+    // Base64 inflates ~33%; reject if the final data URL would be huge.
+    if encoded.len() > MAX_SINGLE_ARTWORK_BYTES * 4 / 3 + 64 {
+        return None;
+    }
     Some(format!("data:{mime};base64,{encoded}"))
 }
 
@@ -121,7 +128,7 @@ fn symphonia_artwork_data_url(path: &Path) -> Option<String> {
     let metadata = probed.format.metadata();
     let visual = metadata.current()?.visuals().first()?;
     let data: &[u8] = visual.data.as_ref();
-    if data.is_empty() {
+    if data.is_empty() || data.len() > MAX_SINGLE_ARTWORK_BYTES {
         return None;
     }
     let mime = if visual.media_type.starts_with("image/") {
@@ -130,6 +137,9 @@ fn symphonia_artwork_data_url(path: &Path) -> Option<String> {
         guess_mime(data)
     };
     let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+    if encoded.len() > MAX_SINGLE_ARTWORK_BYTES * 4 / 3 + 64 {
+        return None;
+    }
     Some(format!("data:{mime};base64,{encoded}"))
 }
 

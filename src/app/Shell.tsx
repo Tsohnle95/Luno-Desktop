@@ -237,13 +237,34 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const footerArtwork = useTrackArtwork(track ? [track.id] : [], bridge ? (id) => bridge.trackArtwork(id) : undefined);
   const currentArtwork = track ? (footerArtwork[track.id] ?? track.artwork_url) : null;
   const tracks = projection.library?.tracks ?? [];
-  // String keys keep these lists referentially stable across playback
-  // heartbeats — otherwise every position snapshot would re-render the whole
-  // queue panel and make scrolling feel broken.
-  const queueKey = projection.playback?.queue.join("\u0000") ?? "";
-  const recentKey = projection.recentHistory.join("\u0000");
   const tracksKey = `${projection.library?.generation ?? 0}`;
-  const queueTracks = useMemo(() => projection.playback?.queue.map((id) => tracks.find((item) => item.id === id)).filter((item): item is Track => !!item) ?? [], [queueKey, tracksKey]);
+  // Fast O(1) track lookup — the previous `tracks.find` per queue entry was
+  // O(Q·N) and caused jank with 4k-track queues on every queue change.
+  const tracksByIdForQueue = useMemo(() => {
+    const map = new Map<string, Track>();
+    for (const t of tracks) map.set(t.id, t);
+    return map;
+  }, [tracksKey]);
+  // Keep queue referentially stable across heartbeats: only recompute when the
+  // actual queue content changes, not on every position tick. Avoid
+  // `queue.join` for large queues (4k ids → ~150 KB string alloc per render).
+  const playbackQueue = projection.playback?.queue ?? [];
+  const queueVersion = useRef<{ queue: string[]; tracks: Track[] }>({ queue: [], tracks: [] });
+  const queueTracks = useMemo(() => {
+    const prev = queueVersion.current;
+    if (prev.queue.length === playbackQueue.length && prev.queue.every((v, i) => v === playbackQueue[i]) && prev.tracks.length === playbackQueue.length) {
+      // Quick check: if lengths equal and every id equal, reuse previous array
+      // (also check that tracks generation hasn't changed via tracksById)
+      return prev.tracks;
+    }
+    const out: Track[] = [];
+    for (const id of playbackQueue) {
+      const t = tracksByIdForQueue.get(id);
+      if (t) out.push(t);
+    }
+    queueVersion.current = { queue: [...playbackQueue], tracks: out };
+    return out;
+  }, [playbackQueue, tracksByIdForQueue]);
   const currentVideo = track ? currentVideoForTrack(projection, track.id) : null;
   const connectedVideo = videoConnected === true;
   const discoverSeed = track?.artist && track.title ? { artist: track.artist, title: track.title } : null;
@@ -371,7 +392,16 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // mode (mode only decides whether the staged src auto-plays).
   const downloadProgress = currentVideo?.status === "loading" ? currentVideo.download_progress ?? null : null;
   const video = track ? { src: videoModeActive ? videoSrc : null, status: videoModeActive || videoStatus === "loading" ? videoStatus : "not-checked", positionMs: audioPositionMs, downloadProgress, playing: videoModeActive && audioPlaying, artworkUrl: currentArtwork, onResize: (size: { width: number; height: number }) => { if (videoModeActive) runCommand(bridge?.videoResize(size.width, size.height)); }, onSeek: (positionMs: number) => { if (videoModeActive) runCommand(bridge?.videoSeek(positionMs)); }, onPause: (positionMs: number) => { if (videoModeActive) { runCommand(bridge?.videoPause()); runCommand(bridge?.videoSeek(positionMs)); } }, onResume: (positionMs: number) => { if (videoModeActive) { runCommand(bridge?.videoSeek(positionMs)); runCommand(bridge?.videoPlay()); } }, onEnded: () => { if (videoModeActive) runCommand(bridge?.videoPause()); }, onError: () => { if (videoModeActive || videoSrc) setVideoFailedFor(videoSrc); }, onFullscreenChange: (fullscreen: boolean) => { if (!available) return; /* CSS-driven only: window.setFullscreen() blacks out the whole window over the CSS hide-transition and can stay black on exit in WKWebView. */ if (videoModeActive) runCommand(bridge?.videoFullscreen(fullscreen)); } } : undefined;
-  const recentTracks = useMemo(() => projection.recentHistory.map((id) => tracks.find((item) => item.id === id)).filter((item): item is Track => !!item), [recentKey, tracksKey]);
+  const recentHistory = projection.recentHistory ?? [];
+  const recentKey = recentHistory.join("\u0000");
+  const recentTracks = useMemo(() => {
+    const out: Track[] = [];
+    for (const id of recentHistory) {
+      const t = tracksByIdForQueue.get(id);
+      if (t) out.push(t);
+    }
+    return out;
+  }, [recentHistory, tracksByIdForQueue]);
 
   // ---- Local listening stats (Home "Most popular" / "Recently downloaded") ----
   // The backend keeps no play counters, so plays are counted client-side and

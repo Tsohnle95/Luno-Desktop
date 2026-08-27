@@ -37,13 +37,21 @@ function greeting() {
  * Most popular playlists → Recently downloaded.
  */
 export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, popularTracks, popularPlaylists, recentlyDownloaded, onPlayTrack, onOpenLibrary, onOpenRecent, onOpenDownloader, onOpenPlaylist, onArtwork, backendAvailable = true }: HomeViewProps) {
-  // One lazy artwork pass for every card on the page (ids are deduplicated
-  // and cached by the hook). Playlist cards use their first track's art.
-  const artwork = useTrackArtwork([
-    ...madeForYou, ...favorites, ...recentTracks, ...popularTracks, ...recentlyDownloaded,
-  ].map((track) => track.id).concat(
-    popularPlaylists.map((entry) => entry.playlist.ordered_track_ids[0]).filter((id): id is string => !!id),
-  ), onArtwork);
+  // One lazy artwork pass for every card on the page. Deduplicate and cap to
+  // 80 to avoid fetching 250+ artworks at once (each 1–2 MB data URL would be
+  // 250–500 MB). The hook's concurrency limiter (6) further smooths the burst.
+  const artworkIds = (() => {
+    const ids = [
+      ...madeForYou, ...favorites, ...recentTracks, ...popularTracks, ...recentlyDownloaded,
+    ].map((track) => track.id).concat(
+      popularPlaylists.map((entry) => entry.playlist.ordered_track_ids[0]).filter((id): id is string => !!id),
+    );
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const id of ids) if (!seen.has(id)) { seen.add(id); out.push(id); if (out.length >= 40) break; }
+    return out;
+  })();
+  const artwork = useTrackArtwork(artworkIds, onArtwork);
   const playFrom = (list: Track[]) => (track: Track) => { if (backendAvailable && onPlayTrack) onPlayTrack(track, list); };
 
   // SCROLL FIX: every card row is an `overflow-x: auto` strip, and WKWebView

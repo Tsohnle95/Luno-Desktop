@@ -19,8 +19,9 @@ REC_PAGE_SIZE = 25
 REC_LIMIT_CAP = 1000
 PAGE_SB_WIDTH = 8
 DARK_BG = "#0f0f0f"
-REC_ART_CACHE_LIMIT = 128
+REC_ART_CACHE_LIMIT = 64
 REC_ART_SIZE = 48  # mobile 48dp row artwork thumb
+_MAX_BLUR_DIM = 480
 
 
 class _FFmpegVideoPlayer:
@@ -44,12 +45,15 @@ class _FFmpegVideoPlayer:
         self._decoder = None
         self._lock = threading.Lock()
         self._latest_frame = None
-        self._video_frames = deque(maxlen=12)
+        self._video_frames = deque(maxlen=6)
         self._present_after = None
         self._photo = None
         self._source_fps = None
         self._decoder_start_position = None
         self._decoded_frames = 0
+        # Cap decoded dimensions to bound memory (e.g., 640x360 max)
+        self.width = min(self.width, 640)
+        self.height = min(self.height, 360)
 
     def play(self):
         self.running = True
@@ -1299,17 +1303,29 @@ class SongPageView(tk.Frame):
             if not img_data:
                 return None
 
-            img = Image.open(io.BytesIO(img_data)).convert("RGB")
-            # Resize to fill the window
-            img = img.resize((width, height), Image.Resampling.LANCZOS)
+            with Image.open(io.BytesIO(img_data)) as src:
+                if src.width * src.height > 4 * 1024 * 1024:
+                    return None
+                img = src.convert("RGB")
+            # Resize to fill the window — cap dimensions to bound memory
+            w = min(width, _MAX_BLUR_DIM * 2)
+            h = min(height, _MAX_BLUR_DIM)
+            if w < 10 or h < 10:
+                img.close()
+                return None
+            resized = img.resize((w, h), Image.Resampling.LANCZOS)
+            img.close()
             # Apply strong blur for glassmorphism effect
-            blurred = img.filter(ImageFilter.GaussianBlur(radius=40))
+            blurred = resized.filter(ImageFilter.GaussianBlur(radius=12))
+            resized.close()
             dimmed = blurred.point(lambda p: int(p * 0.45))
-
+            blurred.close()
             # Darken edges with a gradient
-            overlay = Image.new("RGB", (width, height), (0, 0, 0))
-            dimmed = Image.blend(dimmed, overlay, 0.35)
-            return dimmed
+            overlay = Image.new("RGB", (w, h), (0, 0, 0))
+            result = Image.blend(dimmed, overlay, 0.35)
+            dimmed.close()
+            overlay.close()
+            return result
         except Exception:
             return None
 

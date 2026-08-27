@@ -11,6 +11,7 @@ recommendation identity always renders the same cover art.
 import io
 import threading
 import zlib
+from collections import OrderedDict
 
 import requests
 
@@ -18,9 +19,11 @@ DESIGN_COUNT = 75
 _DEEZER_TIMEOUT_S = 8
 _IMAGE_TIMEOUT_S = 8
 _UA = "Luno/1.0 (desktop)"
-
-_DEZ_CACHE = {}
+_MAX_DEZ_CACHE = 200
+_DEZ_CACHE = OrderedDict()
 _DEZ_LOCK = threading.Lock()
+_MAX_IMAGE_PIXELS = 4 * 1024 * 1024
+_MAX_IMAGE_BYTES = 4 * 1024 * 1024
 
 # Deterministic index-derived palettes (dark base, accent pair).
 _DESIGN_PALETTES = [
@@ -126,6 +129,7 @@ def find_artwork(artist, title):
     key = f"{artist.strip().lower()}|{title.strip().lower()}"
     with _DEZ_LOCK:
         if key in _DEZ_CACHE:
+            _DEZ_CACHE.move_to_end(key)
             return _DEZ_CACHE[key]
     cover = None
     try:
@@ -150,6 +154,9 @@ def find_artwork(artist, title):
         cover = None
     with _DEZ_LOCK:
         _DEZ_CACHE[key] = cover
+        _DEZ_CACHE.move_to_end(key)
+        while len(_DEZ_CACHE) > _MAX_DEZ_CACHE:
+            _DEZ_CACHE.popitem(last=False)
     return cover
 
 
@@ -162,17 +169,22 @@ def load_image(url, size=96):
         resp = requests.get(url, headers={"User-Agent": _UA},
                             timeout=_IMAGE_TIMEOUT_S)
         resp.raise_for_status()
+        if len(resp.content) > _MAX_IMAGE_BYTES:
+            return None
         from PIL import Image
-        image = Image.open(io.BytesIO(resp.content))
-        image.load()
-        image = image.convert("RGB")
+        with Image.open(io.BytesIO(resp.content)) as src:
+            src.load()
+            if src.width * src.height > _MAX_IMAGE_PIXELS:
+                return None
+            image = src.convert("RGB")
         w, h = image.size
         side = min(w, h)
         left = (w - side) // 2
         top = (h - side) // 2
-        image = image.crop((left, top, left + side, top + side))
-        if max(image.size) > size:
-            image.thumbnail((size, size), Image.Resampling.LANCZOS)
-        return image
+        cropped = image.crop((left, top, left + side, top + side))
+        image.close()
+        if max(cropped.size) > size:
+            cropped.thumbnail((size, size), Image.Resampling.LANCZOS)
+        return cropped
     except Exception:
         return None

@@ -32,11 +32,26 @@ export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onF
     element.scrollTop = scrollTop.current;
   }, [tracks, recent]);
   const rememberScroll = () => { if (scrollRef.current) scrollTop.current = scrollRef.current.scrollTop; };
+  // Cap queue artwork to avoid 4k-track spike (each 1 MB data URL → 4 GB).
+  // Recent is already capped 100; queue shows window around current track.
+  const MAX_QUEUE_ARTWORK = 40;
   const visible = recent ? tracks.slice(0, 100) : tracks;
   const current = currentIndex != null ? visible[currentIndex] : undefined;
+  const artworkIds = (() => {
+    if (recent) return visible.map((t) => t.id);
+    // For large queues, only fetch artwork for a window around the current
+    // track plus the first few, not the entire queue.
+    if (visible.length <= MAX_QUEUE_ARTWORK) return visible.map((t) => t.id);
+    const start = Math.max(0, (currentIndex ?? 0) - 20);
+    const end = Math.min(visible.length, start + MAX_QUEUE_ARTWORK);
+    const ids = visible.slice(start, end).map((t) => t.id);
+    // Always include current track
+    if (current && !ids.includes(current.id)) ids.unshift(current.id);
+    return ids;
+  })();
   // Queue rows fetch embedded artwork lazily; the module-level cache in the
   // hook means re-renders never re-request the same track ids.
-  const artwork = useTrackArtwork(visible.map((track) => track.id), onArtwork);
+  const artwork = useTrackArtwork(artworkIds, onArtwork);
   return <div className="luno-queue-panel">
     {onTabChange && <header className="luno-queue-head">
       <button className="luno-queue-tab" type="button" aria-label="Queue tab" aria-pressed={!recent} disabled={!onTabChange} onClick={() => onTabChange?.(false)}>Queue</button>

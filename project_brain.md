@@ -417,9 +417,9 @@ startup failure banner.
 7. Playlist sync compares candidates against the whole local music library root, not only the destination playlist folder, so Sync All avoids duplicating tracks that already exist in another playlist. It tracks successful/matched YouTube IDs in `.downloaded_vids` and permanent failures in `.sync_failed_vids` inside the playlist folder.
 
 ### Artwork Fetching
-1. `PlaylistArt` or `SongPageView` requests art → `ArtCache.get(path, size, callback)`; downloader search cards use a separate bounded 128-entry thumbnail cache and bounded in-flight executor
-2. `ArtCache` checks a bounded in-memory LRU cache (maximum 96 entries and 16 megapixels) → if miss, queues the key and drains it through `ThreadPoolExecutor` under the in-flight limit
-3. Worker reads `mutagen.mp3.MP3` → rejects oversized APIC payloads/images → extracts, crops, and resizes via `PIL.Image`
+1. `PlaylistArt` or `SongPageView` requests art → `ArtCache.get(path, size, callback)`; downloader search cards use a separate bounded 64-entry thumbnail cache and bounded in-flight executor (4 concurrent)
+2. `ArtCache` checks a bounded in-memory LRU cache (maximum 48 entries and 4 megapixels, color cache 200 entries) → if miss, queues the key and drains it through `ThreadPoolExecutor` (2 workers) under the in-flight limit (8); source images larger than 4 MB / 4 Mpx are rejected
+3. Worker reads `mutagen.mp3.MP3` → rejects oversized APIC payloads/images → extracts, crops, and resizes via `PIL.Image` with prompt intermediate close
 4. Returns `ImageTk.PhotoImage` via a bounded `controller.after(0, ...)` callback; stale path cache entries are pruned after each library update
 
 ### Song Video Preview (React/Tauri — live)
