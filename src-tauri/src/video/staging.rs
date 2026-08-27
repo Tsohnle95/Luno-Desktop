@@ -123,6 +123,16 @@ impl VideoStage {
     /// Flip EVERY entry pointing at `video_id` to the given tier (the HD
     /// upgrade replaced that video's file in place — all keys mapping to it
     /// are now final quality). No-op when nothing maps to the id.
+    /// Existing tier recorded for `video_id`, if any key maps to it
+    /// (defaults to "high" for unknown ids — matches legacy entries).
+    pub fn tier_for_video_id(&self, video_id: &str) -> &'static str {
+        let _guard = index_lock();
+        self.load_index()
+            .values()
+            .find_map(|value| index_entry(value).filter(|(id, _)| id == video_id))
+            .map(|(_, tier)| tier)
+            .unwrap_or(INDEX_TIER_HIGH)
+    }
     pub fn set_tier_for_video_id(&self, video_id: &str, tier: &str) {
         let _guard = index_lock();
         let mut entries = self.load_index();

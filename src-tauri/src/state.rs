@@ -68,6 +68,18 @@ pub enum MigrationStatus {
 mod tests {
 
 
+
+    /// Blocks until every submitted runtime task finished (bounded). Skips,
+    /// plays and scans complete asynchronously; asserting right after the
+    /// dispatch races the very code under test.
+    fn wait_until_tasks_settle(state: &AppState, cap_ms: u64) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(cap_ms);
+        while std::time::Instant::now() < deadline {
+            if state.tasks.active_count() == 0 { return; }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
     /// Minimal valid 44.1 kHz stereo PCM WAV (mirrors the gate3 fixture).
     fn write_wav_fixture(path: &std::path::Path) -> std::path::PathBuf {
         let sample_rate = 44_100u32;
@@ -631,17 +643,19 @@ mod tests {
             version: CONTRACT_VERSION, request_id: "play".into(),
             command: Command::PlayWithContext { track_id: queue[2].clone(), context: queue.clone() },
         }).expect("initial play");
+        wait_until_tasks_settle(&state, 5000);
         assert_eq!(state.playback.lock().unwrap().current_index(), Some(2));
         // Shuffle ON: current-first, rest randomized. Capture the order.
         state.playback.lock().unwrap().toggle_shuffle();
         let shuffled = state.playback.lock().unwrap().queue().to_vec();
         assert_eq!(shuffled[0], queue[2], "current stays first");
         // Skip ahead twice (as the user did).
-        for _ in 0..2 {
+        for i in 0..2 {
             state.dispatch(CommandEnvelope {
-                version: CONTRACT_VERSION, request_id: "next".into(),
+                version: CONTRACT_VERSION, request_id: format!("next-{i}").into(),
                 command: Command::Next,
             }).expect("next");
+            wait_until_tasks_settle(&state, 5000);
         }
         let after_skips = state.playback.lock().unwrap().queue().to_vec();
         assert_eq!(after_skips, shuffled, "skips must NOT rebuild/re-shuffle the queue");
@@ -652,11 +666,13 @@ mod tests {
             version: CONTRACT_VERSION, request_id: "prev1".into(),
             command: Command::Previous,
         }).expect("previous #1");
+        wait_until_tasks_settle(&state, 5000);
         assert_eq!(state.playback.lock().unwrap().current_index(), Some(1), "first Previous moves back one");
         state.dispatch(CommandEnvelope {
             version: CONTRACT_VERSION, request_id: "prev2".into(),
             command: Command::Previous,
         }).expect("previous #2");
+        wait_until_tasks_settle(&state, 5000);
         assert_eq!(state.playback.lock().unwrap().current_index(), Some(0), "second Previous moves back again");
         assert_eq!(*state.playback.lock().unwrap().queue(), shuffled, "queue still untouched after going back");
         // And toggling shuffle OFF restores the TRUE original playlist order.
@@ -665,20 +681,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// RED repro (2026-08-25): "shuffle + a few skips and the whole app
-    /// lags / eats gigabytes." Every stage request spawned a worker that
-    /// BLOCKED on the staging-store mutex; with video mode on, the song-page
-    /// poll (every 2 s while Loading) plus every skip piled blocked threads
-    /// into the 32-slot task registry until playback-load/heartbeat starved.
-    /// Requests behind a busy store must DEFER, never queue.
+    /// RED repro (2026-08-25 evening, revised same day): the ORIGINAL bug was
+    /// an UNCANCELLABLE `.lock()` per stage request — skip-storms + the 2 s
+    /// song-page poll piled blocked threads into the 32-slot registry until
+    /// playback starved. The first fix (defer-on-busy) over-corrected: a
+    /// deferred current track had no guaranteed retrier and videos took
+    /// minutes. FINAL CONTRACT: repeated requests for one track collapse to
+    /// a SINGLE cancellable waiter (inflight dedupe); the waiter polls the
+    /// store with cancel checkpoints and COMPLETES once it frees.
     #[test]
     fn stage_requests_never_pile_up_behind_a_busy_store() {
         let state = AppState::new(32);
         let video_root = std::env::temp_dir().join(format!("luno-video-pileup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&video_root);
         state.set_video_runtime(video_root.clone(), Some(PathBuf::from("/nonexistent/yt-dlp")), None);
-        *state.video_mode_enabled.lock().unwrap() = true;
+        // Index-cached fixture so completion after the store frees needs NO
+        // network (nonexistent yt-dlp proves it).
+        let stager = crate::video::staging::VideoStage::at(&video_root, None).expect("stager");
+        stager.record_index("artistsong", "abc123");
+        let cached = stager.external_destination(crate::video::staging::Slot::Current, "abc123").unwrap();
+        std::fs::write(&cached, b"fake mp4 bytes").unwrap();
 
+        *state.video_mode_enabled.lock().unwrap() = true;
         let music_dir = std::env::temp_dir().join(format!("luno-video-pileup-lib-{}", std::process::id()));
         let playlist_dir = music_dir.join("Unsorted");
         std::fs::create_dir_all(&playlist_dir).unwrap();
@@ -690,17 +714,29 @@ mod tests {
 
         // Hold the store exactly like a slow download would…
         let guard = state.video_stager.lock().unwrap();
-        // …then hammer it the way skip-storms + the 2 s poll do.
+        // …then hammer it the way skip-storms + the 2 s poll do. EVERY
+        // request must coalesce into the single waiting worker.
         for _ in 0..25 {
-            state.video_stage_track(id.clone()).expect("busy store must defer, not error");
+            state.video_stage_track(id.clone()).expect("busy store must not error");
         }
-        assert!(
-            state.tasks.active_count() <= 2,
-            "stage requests piled up: {} active tasks",
-            state.tasks.active_count()
-        );
-        assert!(!state.video_staging_inflight.lock().unwrap().contains(&id), "deferred request leaked its inflight marker");
+        let active_while_held = state.tasks.active_count();
+        assert!(active_while_held <= 2, "requests piled up: {active_while_held} active tasks");
+        assert!(state.video_staging_inflight.lock().unwrap().contains(&id), "the single waiter keeps its inflight marker");
+        // Release the store: the waiter must proceed to Ready on its own —
+        // no second kick, no poll required.
         drop(guard);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut terminal = String::from("timeout");
+        while std::time::Instant::now() < deadline {
+            for envelope in state.pending_events() {
+                if let crate::contracts::events::Event::VideoState { state: video } = &envelope.event {
+                    if video.track_id.as_ref() == Some(&id) { terminal = format!("{:?}", video.status); }
+                }
+            }
+            if terminal.contains("Ready") || terminal.contains("Unavailable") { break; }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(terminal.contains("Ready"), "waiter must complete once the store frees, got {terminal}");
         let _ = std::fs::remove_dir_all(&video_root);
         let _ = std::fs::remove_dir_all(&music_dir);
     }
@@ -1843,6 +1879,11 @@ pub const VIDEO_PREFETCH_DEPTH: usize = 3;
 /// heartbeat, scan and discovery tasks never starve behind media work).
 pub const VIDEO_STAGE_PRESSURE_LIMIT: usize = 24;
 
+/// How long a stage worker may wait for the staging store before giving up
+/// (the Loading placeholder stays and the next kick/poll retries). Generous:
+/// prefetch downloads of long videos legitimately hold the store for minutes.
+pub const VIDEO_STAGE_WAIT_CAP_SECS: u64 = 300;
+
 /// Pure plan builder for one pipeline pass: the CURRENT track first (its
 /// staging publishes UI events), then up to `depth` upcoming queue ids in
 /// order. With no current index, the first `depth` queue entries are the
@@ -2205,35 +2246,48 @@ impl AppState {
             }
         }).ok();
         let spawned = self.submit(self.generation(format!("video-{generation}"), Generation(generation)), move |_token| {
-            // NON-BLOCKING BY CONTRACT: a worker that waits on the store mutex
-            // piles one blocked thread per request (every skip / every 2 s
-            // song-page poll) until the registry starves playback. Exactly
-            // ONE try_lock: if we lost the race, release our inflight marker
-            // and leave the Loading placeholder for the next retry — never
-            // queue here.
-            let outcome = match state.video_stager.try_lock() {
-                Ok(mut stager_guard) => match stager_guard.as_mut() {
-                    Some(stager) => match crate::video::runtime::stage_track(
-                        &helper,
-                        state.video_ffmpeg_dir.lock().unwrap().as_deref(),
-                        stager,
-                        artist.as_deref(),
-                        &title,
-                        &cancel,
-                        Some(&progress),
-                    ) {
-                        Ok(outcome) => outcome,
-                        Err(error) => crate::video::runtime::VideoOutcome::Unavailable(format!("video staging failed: {error:?}")),
-                    },
-                    // Never exit silently — an unpublished worker leaves the
-                    // UI stuck on "loading" forever.
-                    None => crate::video::runtime::VideoOutcome::Unavailable("video storage is unavailable".into()),
-                },
-                Err(_) => {
+            // CANCELLABLE BOUNDED WAIT (2026-08-25 revision): the original
+            // blocking `.lock()` piled an UNCANCELLABLE thread per request and
+            // starved the registry; the one-shot try_lock that replaced it
+            // over-corrected — a deferred current track had no guaranteed
+            // retrier, so videos took minutes. The balance: poll try_lock
+            // every 100 ms until the store frees, the request is superseded
+            // (cancel flag), shutdown, or the cap. Inflight dedupe keeps this
+            // to ONE waiter per track regardless of poll/skip spam.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(VIDEO_STAGE_WAIT_CAP_SECS);
+            let mut stager_guard = loop {
+                if cancel.load(Ordering::Acquire) || state.is_closing() {
                     state.video_staging_inflight.lock().unwrap().remove(&worker_track_id);
-                    eprintln!("[luno-video] store busy at worker start; deferring {worker_track_id:?} to the next kick/poll");
                     return;
                 }
+                match state.video_stager.try_lock() {
+                    Ok(guard) => break guard,
+                    Err(_) => {
+                        if std::time::Instant::now() >= deadline {
+                            state.video_staging_inflight.lock().unwrap().remove(&worker_track_id);
+                            eprintln!("[luno-video] store busy past {VIDEO_STAGE_WAIT_CAP_SECS}s cap; deferring {worker_track_id:?}");
+                            return;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            };
+            let outcome = match stager_guard.as_mut() {
+                Some(stager) => match crate::video::runtime::stage_track(
+                    &helper,
+                    state.video_ffmpeg_dir.lock().unwrap().as_deref(),
+                    stager,
+                    artist.as_deref(),
+                    &title,
+                    &cancel,
+                    Some(&progress),
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(error) => crate::video::runtime::VideoOutcome::Unavailable(format!("video staging failed: {error:?}")),
+                },
+                // Never exit silently — an unpublished worker leaves the
+                // UI stuck on "loading" forever.
+                None => crate::video::runtime::VideoOutcome::Unavailable("video storage is unavailable".into()),
             };
             let next_status = match &outcome {
                 crate::video::runtime::VideoOutcome::Staged { .. } => crate::contracts::events::VideoStatus::Ready,

@@ -178,7 +178,13 @@ pub const FORMAT_LADDER_HIGH: &str = "bv*[vcodec^=avc1][height<=720]+ba[acodec^=
 /// picture appears seconds after the search instead of after a full-quality
 /// pull. A background pass then replaces it with the ≤720p version
 /// (`upgrade_staged_video`). WKWebView plays 480p H.264/AAC natively.
-pub const FORMAT_LADDER_QUICK: &str = "bv*[vcodec^=avc1][height<=480]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=480]/bv*[height<=480][vcodec^=vp09]+ba/bv*[height<=480]+ba/b";
+/// Quick-tier ladder for INTERACTIVE current-track staging: same codec
+/// preferences capped at **360p** (2026-08-26 audit — a 480p pull of long
+/// music films still meant hundreds of MB and multi-minute first frames;
+/// 360p typically lands in seconds-to-tens-of-seconds). A background pass
+/// then replaces it with the ≤720p version (`upgrade_staged_video`).
+/// WKWebView plays 360p H.264/AAC natively.
+pub const FORMAT_LADDER_QUICK: &str = "bv*[vcodec^=avc1][height<=360]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=360]/bv*[height<=360][vcodec^=vp09]+ba/bv*[height<=360]+ba/bv*[height<=360]/b";
 
 /// Single download implementation behind both tiers. `ladder` selects the
 /// yt-dlp `-f` chain; `progress` (when given) receives live percentages.
@@ -213,7 +219,7 @@ fn download_ladder(
         "-f", ladder,
         // Parallel DASH fragment pulls — cuts long-video download times hard
         // (single-stream YouTube throttling was the 50s+ wait on a 15-min film).
-        "--concurrent-fragments", "5",
+        "--concurrent-fragments", "8",
         "--merge-output-format", "mp4",
         "-o",
     ]);
@@ -404,8 +410,26 @@ pub fn prefetch_track(
             Err(_) => return false,
         };
         let cached = destination.is_file() && fs::metadata(&destination).map(|m| m.len() > 0).unwrap_or(false);
+        if !cached {
+            // DEDUPE (2026-08-26 audit): the SAME video may already sit in the
+            // CURRENT slot from an earlier play. Re-downloading it into Next
+            // duplicated full files (an 88 MB video existed as BOTH
+            // current-<id> and next-<id>) and stole bandwidth from the track
+            // actually playing. Index the existing copy instead.
+            let current_copy = stager.external_destination(Slot::Current, &source.id).ok()
+                .filter(|path| path.is_file() && fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false));
+            if current_copy.is_some() {
+                if let Some(key) = &track_key {
+                    stager.record_index_tier(key, &source.id, stager.tier_for_video_id(&source.id));
+                }
+                eprintln!("[luno-video] prefetch {} already staged as current; skipping download", source.id);
+                return true;
+            }
+        }
         if cached {
-            if let Some(key) = &track_key { stager.record_index(key, &source.id); }
+            if let Some(key) = &track_key {
+                stager.record_index_tier(key, &source.id, stager.tier_for_video_id(&source.id));
+            }
             return true;
         }
         if let Err(message) = download_video(helper, ffmpeg_dir, &source.url, &destination, cancel) {
@@ -769,8 +793,8 @@ mod runtime_tests {
         // is what makes first-frame latency small, and the high tier's 720p
         // cap is what keeps background prefetch/upgrades from pulling
         // 100 MB+ single files (the 2026-08-25 switch-song freeze).
-        assert!(FORMAT_LADDER_QUICK.contains("height<=480"));
-        assert!(!FORMAT_LADDER_QUICK.contains("height<=720"));
+        assert!(FORMAT_LADDER_QUICK.contains("height<=360"));
+        assert!(!FORMAT_LADDER_QUICK.contains("height<=480"));
         assert!(FORMAT_LADDER_HIGH.contains("height<=720"));
         assert!(!FORMAT_LADDER_HIGH.contains("height<=1080"));
     }

@@ -468,8 +468,12 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   };
 
   // ---- Resizable panels: pixel columns + draggable divider handles ----
-  const [sidebarWidth, setSidebarWidth] = useState(300);
-  const [queueWidth, setQueueWidth] = useState(320);
+  // Panels OPEN at their minimum widths (user-set: they opened too large);
+  // edge-drag resizes from there and snaps closed/open near the edges.
+  const SIDEBAR_MIN_WIDTH = 240;
+  const QUEUE_MIN_WIDTH = 240;
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_MIN_WIDTH);
+  const [queueWidth, setQueueWidth] = useState(QUEUE_MIN_WIDTH);
   /** Dragging a divider into this distance from its window edge snaps the
    * panel closed; pulling back out past it snaps open at minimum width. */
   const PANEL_SNAP_CLOSE_PX = 150;
