@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PlayerBar } from "../../components/PlayerBar";
+import { Queue, queueVirtualWindow } from "../../components/Queue";
 import { Shell } from "../../app/Shell";
 import type { BackendProjection } from "../../state/backend_projection";
 
@@ -11,6 +12,14 @@ const projection = {
 };
 
 describe("Gate 6 player bar", () => {
+  it("keeps a multi-thousand-song queue bounded to a visible DOM window", () => {
+    const tracks = Array.from({ length: 5000 }, (_, index) => ({ ...projectionTrack, id: `track-${index}`, title: `Track ${index}` }));
+    const html = renderToStaticMarkup(<Queue tracks={tracks} currentIndex={0} />);
+    expect((html.match(/class="luno-queue-row"/g) ?? []).length).toBeLessThanOrEqual(40);
+    expect(html).not.toContain("Track 4999");
+    expect(queueVirtualWindow(5600, 0, 560, 5000)).toEqual({ start: 88, end: 122 });
+  });
+
   it("exposes labeled transport, scrubber, and volume controls", () => {
     const html = renderToStaticMarkup(<PlayerBar />);
     expect(html).toContain("Nothing playing");

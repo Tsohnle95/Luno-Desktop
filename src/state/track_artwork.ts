@@ -23,15 +23,39 @@ const inFlight = new Map<string, Promise<string | null>>();
 let activeCount = 0;
 const pendingQueue: Array<{ id: string; fetcher: ArtworkFetcher }> = [];
 
+/**
+ * Components subscribe to cache resolutions. Without this, only the fetches
+ * already in flight when an effect ran were wired back into component state —
+ * every later-resolving fetch (queued behind MAX_CONCURRENT) landed in the
+ * module cache and stayed invisible, because a STATIC id list (sidebar
+ * playlist cards, the queue window, Home cards) never re-runs its effect to
+ * read the cache back. Playlist art beyond the first ~6 entries disappeared.
+ */
+type Listener = (urls: Record<string, string>) => void;
+const listeners = new Set<Listener>();
+
 function remember(id: string, url: string | null): void {
   // Delete-then-set keeps insertion order reflecting recency for LRU eviction.
   resolvedCache.delete(id);
   resolvedCache.set(id, url);
+  if (url) {
+    const urls = { [id]: url };
+    for (const listener of listeners) listener(urls);
+  }
   while (resolvedCache.size > CAP) {
     const oldest = resolvedCache.keys().next().value;
     if (oldest === undefined) break;
     resolvedCache.delete(oldest);
   }
+}
+
+/** Cap-trim a component-state map to the most-recent CAP entries. */
+function capTrimmed(next: Record<string, string>): Record<string, string> {
+  const keys = Object.keys(next);
+  if (keys.length <= CAP * 2) return next;
+  const trimmed: Record<string, string> = {};
+  for (const k of keys.slice(-CAP)) trimmed[k] = next[k];
+  return trimmed;
 }
 
 function scheduleNext(): void {
@@ -81,15 +105,6 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
           delete next[k];
         }
       }
-      if (next) {
-        const keys = Object.keys(next);
-        if (keys.length > CAP * 2) {
-          const trimmed: Record<string, string> = {};
-          for (const k of keys.slice(-CAP)) trimmed[k] = next[k];
-          return trimmed;
-        }
-        return next;
-      }
       // Also pull in any newly cached visible ids
       for (const id of ids) {
         const cached = resolvedCache.get(id);
@@ -98,14 +113,7 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
           next[id] = cached;
         }
       }
-      if (!next) return prev;
-      const keys = Object.keys(next);
-      if (keys.length > CAP * 2) {
-        const trimmed: Record<string, string> = {};
-        for (const k of keys.slice(-CAP)) trimmed[k] = next[k];
-        return trimmed;
-      }
-      return next;
+      return next ? capTrimmed(next) : prev;
     });
 
     for (const id of ids) {
@@ -114,14 +122,7 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
         if (cached) {
           setArt((prev) => {
             if (prev[id] === cached) return prev;
-            const next = { ...prev, [id]: cached };
-            const keys = Object.keys(next);
-            if (keys.length > CAP * 2) {
-              const trimmed: Record<string, string> = {};
-              for (const k of keys.slice(-CAP)) trimmed[k] = next[k];
-              return trimmed;
-            }
-            return next;
+            return capTrimmed({ ...prev, [id]: cached });
           });
         }
         continue;
@@ -141,7 +142,27 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
     }
     scheduleNext();
 
-    // Wire up in-flight promises that were already queued to update this component.
+    // Subscribe to module-cache resolutions: fetches queued behind
+    // MAX_CONCURRENT resolve into the cache long after this effect ran, and a
+    // STATIC id list (sidebar playlists, queue window, Home cards) never
+    // re-runs its effect to read them back — without this subscription the
+    // URLs stayed invisible and playlist art "disappeared".
+    const onResolved = (urls: Record<string, string>) => {
+      const currentIds = idsRef.current;
+      for (const id of Object.keys(urls)) {
+        if (!currentIds.includes(id)) continue;
+        const url = urls[id];
+        setArt((prev) => {
+          if (prev[id] === url) return prev;
+          return capTrimmed({ ...prev, [id]: url });
+        });
+      }
+    };
+    listeners.add(onResolved);
+
+    // Wire up in-flight promises that were already queued to update this
+    // component (covers the subscribe-race where a promise resolved between
+    // mount and this effect running).
     for (const id of ids) {
       const promise = inFlight.get(id);
       if (!promise) continue;
@@ -151,17 +172,11 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
         if (!idsRef.current.includes(id)) return;
         setArt((prev) => {
           if (prev[id] === url) return prev;
-          const next = { ...prev, [id]: url };
-          const keys = Object.keys(next);
-          if (keys.length > CAP * 2) {
-            const trimmed: Record<string, string> = {};
-            for (const k of keys.slice(-CAP)) trimmed[k] = next[k];
-            return trimmed;
-          }
-          return next;
+          return capTrimmed({ ...prev, [id]: url });
         });
       }).catch(() => {});
     }
+    return () => { listeners.delete(onResolved); };
   }, [idsKey]);
   return art;
 }

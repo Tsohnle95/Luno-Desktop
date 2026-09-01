@@ -165,7 +165,7 @@ fn target_scan_publishes_fixture_root_statuses_and_snapshot_on_event_boundary() 
     let state = AppState::new(2);
     state.set_scan_roots(vec![empty.clone(), missing.clone(), denied.clone()]);
     state.set_event_sink(Arc::new(move |event| {
-        received.lock().unwrap().push(event);
+        received.lock().unwrap_or_else(|e| e.into_inner()).push(event);
         Ok(())
     }));
     let generation = state.scan_async().unwrap();
@@ -182,7 +182,7 @@ fn target_scan_publishes_fixture_root_statuses_and_snapshot_on_event_boundary() 
         );
         std::thread::yield_now();
     }
-    let events = events.lock().unwrap();
+    let events = events.lock().unwrap_or_else(|e| e.into_inner());
     let statuses: Vec<_> = events
         .iter()
         .filter_map(|event| match event.event {
@@ -378,7 +378,7 @@ fn local_sync_journey_covers_whole_root_dedupe_markers_validation_retry_and_canc
     let token = crate::runtime::task_registry::CancellationToken::new();
     let result = sync_sequential(&destination, &items, &token, move |item, token| {
         let id = item.entry.id.as_deref().unwrap();
-        let mut attempts = attempts_for_download.lock().unwrap();
+        let mut attempts = attempts_for_download.lock().unwrap_or_else(|e| e.into_inner());
         *attempts.entry(id.into()).or_default() += 1;
         match id {
             "valid-id" | "transient-id" => {
@@ -455,7 +455,7 @@ fn local_sync_journey_covers_whole_root_dedupe_markers_validation_retry_and_canc
         retry.outcomes,
         vec![("transient-id".into(), ItemOutcome::Downloaded)]
     );
-    assert_eq!(*attempts.lock().unwrap().get("transient-id").unwrap(), 1);
+    assert_eq!(*attempts.lock().unwrap_or_else(|e| e.into_inner()).get("transient-id").unwrap(), 1);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -503,14 +503,14 @@ fn target_shutdown_event_terminal_order_is_deterministic_after_cancellation() {
     let sink_observed = observed.clone();
     state.set_event_sink(Arc::new(move |envelope| {
         if let Event::Shutdown { envelope } = envelope.event {
-            sink_observed.lock().unwrap().push(envelope.state);
+            sink_observed.lock().unwrap_or_else(|e| e.into_inner()).push(envelope.state);
         }
         Ok(())
     }));
     let report = state.shutdown_events(ShutdownReason::UserRequested, Duration::from_secs(1));
     assert!(!report.timed_out);
     assert_eq!(
-        *observed.lock().unwrap(),
+        *observed.lock().unwrap_or_else(|e| e.into_inner()),
         vec![
             ShutdownState::Requested,
             ShutdownState::Draining,
@@ -1496,7 +1496,7 @@ fn target_command_boundary_cancels_actual_os_filesystem_scan_before_publication(
     let state = AppState::new(1);
     state.set_scan_roots(vec![root]);
     state.set_event_sink(Arc::new(move |event| {
-        received.lock().unwrap().push(event);
+        received.lock().unwrap_or_else(|e| e.into_inner()).push(event);
         Ok(())
     }));
     state.dispatch(command("scan", Command::ScanLibrary)).unwrap();
@@ -1513,7 +1513,7 @@ fn target_command_boundary_cancels_actual_os_filesystem_scan_before_publication(
     let report = state.shutdown(Duration::from_secs(1));
     assert!(!report.timed_out);
     assert_eq!(state.tasks.active_count(), 0);
-    assert!(events.lock().unwrap().iter().all(|event| !matches!(
+    assert!(events.lock().unwrap_or_else(|e| e.into_inner()).iter().all(|event| !matches!(
         event.event,
         Event::LibrarySnapshot { .. } | Event::LibraryRootStatus { .. }
     )));

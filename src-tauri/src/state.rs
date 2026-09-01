@@ -28,8 +28,11 @@ use crate::runtime::preview_worker::{prepare_preview, PreviewCompletion};
 #[cfg(target_os = "macos")]
 use crate::playback::{
     backend::{AudioBackend, BackendError},
-    backend_adapter::CpalSymphoniaBackend,
 };
+#[cfg(all(target_os = "macos", test))]
+use crate::playback::backend::FakeBackend;
+#[cfg(all(target_os = "macos", not(test)))]
+use crate::playback::backend_adapter::CpalSymphoniaBackend;
 use crate::process::supervisor::{ProcessRegistry, Supervisor};
 use crate::playback::{clock::PlaybackClock, queue::QueueState, recovery::FailureRecovery};
 use crate::runtime::task_registry::{
@@ -66,20 +69,6 @@ pub enum MigrationStatus {
 
 #[cfg(test)]
 mod tests {
-
-
-
-    /// Blocks until every submitted runtime task finished (bounded). Skips,
-    /// plays and scans complete asynchronously; asserting right after the
-    /// dispatch races the very code under test.
-    fn wait_until_tasks_settle(state: &AppState, cap_ms: u64) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(cap_ms);
-        while std::time::Instant::now() < deadline {
-            if state.tasks.active_count() == 0 { return; }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-    }
-
     /// Minimal valid 44.1 kHz stereo PCM WAV (mirrors the gate3 fixture).
     fn write_wav_fixture(path: &std::path::Path) -> std::path::PathBuf {
         let sample_rate = 44_100u32;
@@ -239,7 +228,7 @@ mod tests {
         let raw = std::fs::read_to_string(home.join(".luno_config.json"));
         // No settings home captured yet -> nothing written; capture it first.
         assert!(raw.is_err(), "nothing should persist before load_config");
-        *state.settings_home.lock().unwrap() = Some(home.clone());
+        *state.settings_home.lock().unwrap_or_else(|e| e.into_inner()) = Some(home.clone());
         state.set_video_mode(false).expect("toggle accepted");
         let raw = std::fs::read_to_string(home.join(".luno_config.json")).unwrap();
         assert!(raw.contains("\"video_mode\": false"), "disabled mode persisted: {raw}");
@@ -275,7 +264,7 @@ mod tests {
         let sink_delivered = delivered.clone();
         state.set_event_sink(StdArc::new(move |event| {
             if matches!(event.event, Event::Error { .. }) {
-                sink_delivered.lock().unwrap().push(format!("{event:?}"));
+                sink_delivered.lock().unwrap_or_else(|e| e.into_inner()).push(format!("{event:?}"));
             }
             Ok(())
         }));
@@ -291,7 +280,7 @@ mod tests {
             .expect("scan accepted");
         let _ = generation;
         for _ in 0..100 {
-            if !delivered.lock().unwrap().is_empty() {
+            if !delivered.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(25));
@@ -375,7 +364,7 @@ mod tests {
         envelope.command = Command::LoadSettings { home: home.to_string_lossy().into_owned() };
         let value = state.dispatch(envelope.into()).expect("persisted volume should load");
         assert_eq!(value.get("volume").and_then(serde_json::Value::as_f64), Some(0.35));
-        let stored = *state.volume.lock().unwrap();
+        let stored = *state.volume.lock().unwrap_or_else(|e| e.into_inner());
         assert!(
             (stored - 0.35).abs() < 1e-6,
             "persisted volume must seed the engine so the first track plays at the saved level, got {stored}"
@@ -603,12 +592,12 @@ mod tests {
         assert!(ids.iter().all(|id| id.starts_with("metadata:")));
         for track in &snapshot.tracks {
             assert_eq!(track.artist, None);
-            let resolved = state.track_paths.lock().unwrap().get(&track.id).cloned();
+            let resolved = state.track_paths.lock().unwrap_or_else(|e| e.into_inner()).get(&track.id).cloned();
             assert_eq!(resolved.is_some(), true);
         }
         // Each id resolves to its OWN file.
-        let first = state.track_paths.lock().unwrap().get(&snapshot.tracks[0].id).cloned().unwrap();
-        let second = state.track_paths.lock().unwrap().get(&snapshot.tracks[1].id).cloned().unwrap();
+        let first = state.track_paths.lock().unwrap_or_else(|e| e.into_inner()).get(&snapshot.tracks[0].id).cloned().unwrap();
+        let second = state.track_paths.lock().unwrap_or_else(|e| e.into_inner()).get(&snapshot.tracks[1].id).cloned().unwrap();
         assert_ne!(first, second);
     }
 
@@ -626,7 +615,7 @@ mod tests {
         // the REAL backend, which would otherwise blast tones through the
         // machine's speakers at the seeded volume while `cargo test` runs.
         // Zero volume keeps the full production path intact and silent.
-        *state.volume.lock().unwrap() = 0.0;
+        *state.volume.lock().unwrap_or_else(|e| e.into_inner()) = 0.0;
         let dir = std::env::temp_dir().join(format!("luno-shuffle-back-{}", std::process::id()));
         let playlist_dir = dir.join("Unsorted");
         std::fs::create_dir_all(&playlist_dir).unwrap();
@@ -638,16 +627,25 @@ mod tests {
         }
         let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), paths)]));
         let queue: Vec<TrackId> = snapshot.tracks.iter().map(|t| t.id.clone()).collect();
+        let wait_for_selected_track = || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                let selected = state.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned();
+                let started = state.current_track.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                if selected.is_some() && selected == started { return; }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
         // Play the third track with shuffle OFF so the physical order is known.
         state.dispatch(CommandEnvelope {
             version: CONTRACT_VERSION, request_id: "play".into(),
             command: Command::PlayWithContext { track_id: queue[2].clone(), context: queue.clone() },
         }).expect("initial play");
-        wait_until_tasks_settle(&state, 5000);
-        assert_eq!(state.playback.lock().unwrap().current_index(), Some(2));
+        wait_for_selected_track();
+        assert_eq!(state.playback.lock().unwrap_or_else(|e| e.into_inner()).current_index(), Some(2));
         // Shuffle ON: current-first, rest randomized. Capture the order.
-        state.playback.lock().unwrap().toggle_shuffle();
-        let shuffled = state.playback.lock().unwrap().queue().to_vec();
+        state.playback.lock().unwrap_or_else(|e| e.into_inner()).toggle_shuffle();
+        let shuffled = state.playback.lock().unwrap_or_else(|e| e.into_inner()).queue().to_vec();
         assert_eq!(shuffled[0], queue[2], "current stays first");
         // Skip ahead twice (as the user did).
         for i in 0..2 {
@@ -655,29 +653,29 @@ mod tests {
                 version: CONTRACT_VERSION, request_id: format!("next-{i}").into(),
                 command: Command::Next,
             }).expect("next");
-            wait_until_tasks_settle(&state, 5000);
+            wait_for_selected_track();
         }
-        let after_skips = state.playback.lock().unwrap().queue().to_vec();
+        let after_skips = state.playback.lock().unwrap_or_else(|e| e.into_inner()).queue().to_vec();
         assert_eq!(after_skips, shuffled, "skips must NOT rebuild/re-shuffle the queue");
-        let current_after_skips = state.playback.lock().unwrap().current_index().unwrap();
+        let current_after_skips = state.playback.lock().unwrap_or_else(|e| e.into_inner()).current_index().unwrap();
         assert_eq!(current_after_skips, 2, "started at 0, two Next presses");
         // Go BACK a couple songs — must walk the same list, one entry per press.
         state.dispatch(CommandEnvelope {
             version: CONTRACT_VERSION, request_id: "prev1".into(),
             command: Command::Previous,
         }).expect("previous #1");
-        wait_until_tasks_settle(&state, 5000);
-        assert_eq!(state.playback.lock().unwrap().current_index(), Some(1), "first Previous moves back one");
+        wait_for_selected_track();
+        assert_eq!(state.playback.lock().unwrap_or_else(|e| e.into_inner()).current_index(), Some(1), "first Previous moves back one");
         state.dispatch(CommandEnvelope {
             version: CONTRACT_VERSION, request_id: "prev2".into(),
             command: Command::Previous,
         }).expect("previous #2");
-        wait_until_tasks_settle(&state, 5000);
-        assert_eq!(state.playback.lock().unwrap().current_index(), Some(0), "second Previous moves back again");
-        assert_eq!(*state.playback.lock().unwrap().queue(), shuffled, "queue still untouched after going back");
+        wait_for_selected_track();
+        assert_eq!(state.playback.lock().unwrap_or_else(|e| e.into_inner()).current_index(), Some(0), "second Previous moves back again");
+        assert_eq!(*state.playback.lock().unwrap_or_else(|e| e.into_inner()).queue(), shuffled, "queue still untouched after going back");
         // And toggling shuffle OFF restores the TRUE original playlist order.
-        state.playback.lock().unwrap().toggle_shuffle();
-        assert_eq!(state.playback.lock().unwrap().queue(), &queue);
+        state.playback.lock().unwrap_or_else(|e| e.into_inner()).toggle_shuffle();
+        assert_eq!(state.playback.lock().unwrap_or_else(|e| e.into_inner()).queue(), &queue);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -702,7 +700,7 @@ mod tests {
         let cached = stager.external_destination(crate::video::staging::Slot::Current, "abc123").unwrap();
         std::fs::write(&cached, b"fake mp4 bytes").unwrap();
 
-        *state.video_mode_enabled.lock().unwrap() = true;
+        *state.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = true;
         let music_dir = std::env::temp_dir().join(format!("luno-video-pileup-lib-{}", std::process::id()));
         let playlist_dir = music_dir.join("Unsorted");
         std::fs::create_dir_all(&playlist_dir).unwrap();
@@ -713,7 +711,7 @@ mod tests {
         state.set_playing(id.clone(), vec![id.clone()]);
 
         // Hold the store exactly like a slow download would…
-        let guard = state.video_stager.lock().unwrap();
+        let guard = state.video_stager.lock().unwrap_or_else(|e| e.into_inner());
         // …then hammer it the way skip-storms + the 2 s poll do. EVERY
         // request must coalesce into the single waiting worker.
         for _ in 0..25 {
@@ -721,7 +719,7 @@ mod tests {
         }
         let active_while_held = state.tasks.active_count();
         assert!(active_while_held <= 2, "requests piled up: {active_while_held} active tasks");
-        assert!(state.video_staging_inflight.lock().unwrap().contains(&id), "the single waiter keeps its inflight marker");
+        assert!(state.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).contains(&id), "the single waiter keeps its inflight marker");
         // Release the store: the waiter must proceed to Ready on its own —
         // no second kick, no poll required.
         drop(guard);
@@ -749,7 +747,7 @@ mod tests {
         let video_root = std::env::temp_dir().join(format!("luno-video-pressure-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&video_root);
         state.set_video_runtime(video_root.clone(), Some(PathBuf::from("/nonexistent/yt-dlp")), None);
-        *state.video_mode_enabled.lock().unwrap() = true;
+        *state.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
         let music_dir = std::env::temp_dir().join(format!("luno-video-pressure-lib-{}", std::process::id()));
         let playlist_dir = music_dir.join("Unsorted");
@@ -825,7 +823,7 @@ mod tests {
                 (String::from("Unsorted"), vec![song_b.clone(), song_a.clone()]),
             ]),
         );
-        let map_a = state.track_paths.lock().unwrap();
+        let map_a = state.track_paths.lock().unwrap_or_else(|e| e.into_inner());
         let clicked = map_a.iter().find(|(_, path)| *path == &song_a_dup).map(|(id, _)| id.clone()).expect("plain id for song A");
         let stale_b = map_a.keys().find(|id| id.0.contains("song-b") || id.0.contains("songb")).cloned()
             .unwrap_or_else(|| TrackId(format!("{}#feedface", "metadata:artistsongb:0")));
@@ -858,8 +856,8 @@ mod tests {
         // EVERY stored queue id must resolve against the CURRENT map, both
         // songs survive the healing (nothing silently dropped), order is
         // preserved, and no raw stale id remains.
-        let queue = state.playback.lock().unwrap().queue().to_vec();
-        let map = state.track_paths.lock().unwrap();
+        let queue = state.playback.lock().unwrap_or_else(|e| e.into_inner()).queue().to_vec();
+        let map = state.track_paths.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(queue.len(), 2, "both songs must survive healing: {queue:?}");
         for id in &queue {
             assert!(map.contains_key(id), "queue kept dangling id {id:?}");
@@ -901,8 +899,8 @@ mod tests {
 
         state.set_playing(id.clone(), vec![id.clone()]);
         // THE CONDITION UNDER TEST: the user paused before/while staging.
-        *state.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Paused;
-        *state.video_mode_enabled.lock().unwrap() = true;
+        *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Paused;
+        *state.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
         state.kick_video_pipeline();
 
@@ -920,8 +918,8 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         assert!(terminal.contains("Ready"), "staging must complete while paused, got {terminal}");
-        assert_eq!(*state.playback_status.lock().unwrap(), crate::contracts::types::PlaybackStatus::Paused);
-        let current = state.video_current.lock().unwrap().clone();
+        assert_eq!(*state.playback_status.lock().unwrap_or_else(|e| e.into_inner()), crate::contracts::types::PlaybackStatus::Paused);
+        let current = state.video_current.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(current.map(|v| v.staged_path.is_some()).unwrap_or(false));
         let _ = std::fs::remove_dir_all(&video_root);
         let _ = std::fs::remove_dir_all(&music_dir);
@@ -951,9 +949,9 @@ mod tests {
         let id = snapshot.tracks[0].id.clone();
 
         state.set_playing(id.clone(), vec![id.clone()]);
-        *state.video_mode_enabled.lock().unwrap() = true;
+        *state.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = true;
         // Install the CORPSE: Loading, owned by this track, NO inflight marker.
-        *state.video_current.lock().unwrap() = Some(crate::contracts::events::VideoState {
+        *state.video_current.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::contracts::events::VideoState {
             track_id: Some(id.clone()),
             source_url: None,
             staged_path: None,
@@ -1008,8 +1006,8 @@ mod tests {
         let id = snapshot.tracks[0].id.clone();
 
         state.set_playing(id.clone(), vec![id.clone()]);
-        *state.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Paused;
-        *state.video_mode_enabled.lock().unwrap() = true;
+        *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Paused;
+        *state.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
         let result = state.dispatch(CommandEnvelope {
             version: CONTRACT_VERSION,
@@ -1071,7 +1069,7 @@ mod tests {
         // Persisted home so the backend-side toggle can save; then enable mode.
         let home = std::env::temp_dir().join(format!("luno-video-mode-home-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
-        *state.settings_home.lock().unwrap() = Some(home.clone());
+        *state.settings_home.lock().unwrap_or_else(|e| e.into_inner()) = Some(home.clone());
         let result = state.dispatch(command("vm-on", Command::SetVideoMode { enabled: true }));
         eprintln!("[e2e] set_video_mode -> {result:?}");
 
@@ -1124,7 +1122,7 @@ mod tests {
             BTreeMap::from([(String::from("Unsorted"), vec![track_path])]),
         );
         let track_id = {
-            let paths = state.track_paths.lock().unwrap();
+            let paths = state.track_paths.lock().unwrap_or_else(|e| e.into_inner());
             paths.keys().next().cloned().expect("library must expose the fixture track")
         };
 
@@ -1290,7 +1288,7 @@ mod tests {
         let delivered = std::sync::Arc::new(Mutex::new(Vec::new()));
         let sink_delivered = delivered.clone();
         state.set_event_sink(StdArc::new(move |event| {
-            sink_delivered.lock().unwrap().push(event.event_id.clone());
+            sink_delivered.lock().unwrap_or_else(|e| e.into_inner()).push(event.event_id.clone());
             Ok(())
         }));
         let snapshot = state.event(
@@ -1311,10 +1309,10 @@ mod tests {
         );
         state.publish(snapshot.clone());
         state.publish(shutdown.clone());
-        *delivered.lock().unwrap() = Vec::new();
+        *delivered.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
         state.replay_latest();
         assert_eq!(
-            *delivered.lock().unwrap(),
+            *delivered.lock().unwrap_or_else(|e| e.into_inner()),
             vec![snapshot.event_id, shutdown.event_id]
         );
     }
@@ -1329,7 +1327,7 @@ mod tests {
         let sink_release = release.clone();
         let sink_entered = entered.clone();
         state.set_event_sink(StdArc::new(move |event| {
-            sink_delivered.lock().unwrap().push(event.event_id.clone());
+            sink_delivered.lock().unwrap_or_else(|e| e.into_inner()).push(event.event_id.clone());
             if event.event_id == "event-1" {
                 sink_entered.wait();
                 sink_release.wait();
@@ -1356,11 +1354,11 @@ mod tests {
         let worker_state = state.clone();
         let second_thread = std::thread::spawn(move || worker_state.publish(second));
         std::thread::sleep(Duration::from_millis(5));
-        assert_eq!(delivered.lock().unwrap().len(), 1);
+        assert_eq!(delivered.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
         release.wait();
         first_thread.join().unwrap();
         second_thread.join().unwrap();
-        assert_eq!(delivered.lock().unwrap().len(), 2);
+        assert_eq!(delivered.lock().unwrap_or_else(|e| e.into_inner()).len(), 2);
     }
 
     #[test]
@@ -1369,7 +1367,7 @@ mod tests {
         let delivered = std::sync::Arc::new(Mutex::new(Vec::new()));
         let sink_delivered = delivered.clone();
         state.set_event_sink(StdArc::new(move |event| {
-            sink_delivered.lock().unwrap().push(event.event_id);
+            sink_delivered.lock().unwrap_or_else(|e| e.into_inner()).push(event.event_id);
             Ok(())
         }));
         let first = state.event(
@@ -1387,9 +1385,9 @@ mod tests {
             },
         );
         state.publish(second);
-        assert!(delivered.lock().unwrap().is_empty());
+        assert!(delivered.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
         state.publish(first);
-        assert_eq!(*delivered.lock().unwrap(), vec!["event-1", "event-2"]);
+        assert_eq!(*delivered.lock().unwrap_or_else(|e| e.into_inner()), vec!["event-1", "event-2"]);
     }
 
     #[test]
@@ -1458,20 +1456,20 @@ mod tests {
         let delivered = std::sync::Arc::new(Mutex::new(Vec::new()));
         let sink_delivered = delivered.clone();
         state.set_event_sink(StdArc::new(move |event| {
-            sink_delivered.lock().unwrap().push(event.event_id);
+            sink_delivered.lock().unwrap_or_else(|e| e.into_inner()).push(event.event_id);
             Ok(())
         }));
 
         state.replay_latest();
 
         assert_eq!(
-            *delivered.lock().unwrap(),
+            *delivered.lock().unwrap_or_else(|e| e.into_inner()),
             vec![snapshot.event_id.clone(), shutdown.event_id.clone()]
         );
         assert!(state.pending_events().is_empty());
         state.replay_latest();
         assert_eq!(
-            *delivered.lock().unwrap(),
+            *delivered.lock().unwrap_or_else(|e| e.into_inner()),
             vec![snapshot.event_id, shutdown.event_id]
         );
     }
@@ -1484,7 +1482,7 @@ mod tests {
         let sink_attempts = attempts.clone();
         let sink_fail_first = fail_first.clone();
         state.set_event_sink(StdArc::new(move |event| {
-            sink_attempts.lock().unwrap().push(event.event_id.clone());
+            sink_attempts.lock().unwrap_or_else(|e| e.into_inner()).push(event.event_id.clone());
             if event.event_id == "event-1"
                 && sink_fail_first.swap(false, std::sync::atomic::Ordering::AcqRel)
             {
@@ -1511,10 +1509,10 @@ mod tests {
         state.publish(first);
         state.publish(second);
 
-        assert_eq!(*attempts.lock().unwrap(), vec!["event-1"]);
+        assert_eq!(*attempts.lock().unwrap_or_else(|e| e.into_inner()), vec!["event-1"]);
         assert_eq!(state.retry_event_delivery(Duration::ZERO), 0);
         assert_eq!(
-            *attempts.lock().unwrap(),
+            *attempts.lock().unwrap_or_else(|e| e.into_inner()),
             vec!["event-1", "event-1", "event-2", "delivery-error-1"]
         );
     }
@@ -1549,14 +1547,14 @@ mod tests {
         let seen = delivered.clone();
         assert!(state
             .drain_events(|event| {
-                seen.lock().unwrap().push(event.event_id.clone());
+                seen.lock().unwrap_or_else(|e| e.into_inner()).push(event.event_id.clone());
                 if event.event_id == "event-2" {
                     panic!("sink panic");
                 }
                 Ok(())
             })
             .is_err());
-        assert_eq!(*delivered.lock().unwrap(), vec!["event-1", "event-2"]);
+        assert_eq!(*delivered.lock().unwrap_or_else(|e| e.into_inner()), vec!["event-1", "event-2"]);
         assert_eq!(
             state
                 .pending_events()
@@ -1997,7 +1995,12 @@ impl AppState {
             #[cfg(target_os = "macos")]
             playback_status: Arc::new(Mutex::new(crate::contracts::types::PlaybackStatus::Stopped)),
             #[cfg(target_os = "macos")]
-            audio: Arc::new(Mutex::new(Box::new(CpalSymphoniaBackend::new()))),
+            audio: Arc::new(Mutex::new({
+                #[cfg(test)]
+                { Box::new(FakeBackend::new()) as Box<dyn AudioBackend + Send> }
+                #[cfg(not(test))]
+                { Box::new(CpalSymphoniaBackend::new()) as Box<dyn AudioBackend + Send> }
+            })),
             #[cfg(target_os = "macos")]
             // TESTS ARE ALWAYS SILENT: the harness initializes volume to 0 so
             // no unit test can ever emit audio through real speakers (a
@@ -2017,7 +2020,7 @@ impl AppState {
         }
     }
     pub fn library(&self) -> LibrarySnapshot {
-        self.library.lock().unwrap().clone()
+        self.library.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Lazily extracted embedded artwork for a library track, as a `data:`
@@ -2029,7 +2032,7 @@ impl AppState {
 
     pub fn set_discovery_key(&self, key: Option<String>) {
         self.discovery_configured.store(key.is_some(), Ordering::Release);
-        self.discovery.lock().unwrap().set_api_key(key);
+        self.discovery.lock().unwrap_or_else(|e| e.into_inner()).set_api_key(key);
     }
 
     /// Whether a Last.fm API key is configured (drives honest settings UI).
@@ -2040,32 +2043,32 @@ impl AppState {
     /// Installs the app-lifetime video store + helper binaries. Called once
     /// from Tauri setup; the store lives OUTSIDE the music library root.
     pub fn set_video_runtime(&self, root: PathBuf, ytdlp: Option<PathBuf>, ffmpeg_dir: Option<PathBuf>) {
-        let library_root = self.roots.lock().unwrap().first().cloned();
+        let library_root = self.roots.lock().unwrap_or_else(|e| e.into_inner()).first().cloned();
         match crate::video::staging::VideoStage::at(&root, library_root.as_deref()) {
-            Ok(stager) => { *self.video_stager.lock().unwrap() = Some(stager); }
+            Ok(stager) => { *self.video_stager.lock().unwrap_or_else(|e| e.into_inner()) = Some(stager); }
             Err(error) => { eprintln!("video storage unavailable at {}: {error:?}", root.display()); }
         }
-        *self.video_root.lock().unwrap() = Some(root.clone());
-        *self.video_helper.lock().unwrap() = ytdlp.clone();
-        *self.video_ffmpeg_dir.lock().unwrap() = ffmpeg_dir.clone();
+        *self.video_root.lock().unwrap_or_else(|e| e.into_inner()) = Some(root.clone());
+        *self.video_helper.lock().unwrap_or_else(|e| e.into_inner()) = ytdlp.clone();
+        *self.video_ffmpeg_dir.lock().unwrap_or_else(|e| e.into_inner()) = ffmpeg_dir.clone();
         eprintln!("[luno-video] runtime ready: store={} yt-dlp={:?} ffmpeg-dir={:?}", root.display(), ytdlp, ffmpeg_dir);
     }
 
     /// The configured video store root, used by the `luno-video` stream
     /// protocol handler to contain every served path. `None` before setup.
     pub fn video_root_dir(&self) -> Option<PathBuf> {
-        self.video_root.lock().unwrap().clone()
+        self.video_root.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn publish_video_state(&self) {
-        if let Some(video) = self.video_current.lock().unwrap().clone() {
+        if let Some(video) = self.video_current.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             let generation = video.generation;
             self.publish(self.event(generation, Event::VideoState { state: video }));
         }
     }
 
     fn video_snapshot_json(&self) -> Value {
-        match self.video_current.lock().unwrap().clone() {
+        match self.video_current.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             Some(video) => crate::video::runtime::video_state_json(&video),
             None => serde_json::json!({
                 "track_id": null, "source_url": null, "staged_path": null,
@@ -2079,7 +2082,7 @@ impl AppState {
     /// otherwise publish `loading` and spawn the resolve+download worker.
     fn video_stage_track(&self, track_id: TrackId) -> Result<Value, ContractError> {
         {
-            let current = self.video_current.lock().unwrap().clone();
+            let current = self.video_current.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(video) = current {
                 if video.track_id.as_ref() == Some(&track_id)
                     && matches!(video.status, crate::contracts::events::VideoStatus::Ready | crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Paused)
@@ -2088,7 +2091,7 @@ impl AppState {
                 }
             }
         }
-        let helper = self.video_helper.lock().unwrap().clone().ok_or_else(|| ContractError {
+        let helper = self.video_helper.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or_else(|| ContractError {
             code: ErrorCode::Unavailable,
             message: "video search is unavailable until the download helper is configured".into(),
             retryable: false,
@@ -2111,7 +2114,7 @@ impl AppState {
         // lag / Busy" report. Busy here means: keep/reuse the Loading
         // placeholder and let the next kick or 2 s poll retry; never queue.
         if self.tasks.active_count() >= VIDEO_STAGE_PRESSURE_LIMIT {
-            let mut current = self.video_current.lock().unwrap();
+            let mut current = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
             match current.as_ref() {
                 Some(v) if v.track_id.as_ref() == Some(&track_id)
                     && matches!(v.status, crate::contracts::events::VideoStatus::Loading | crate::contracts::events::VideoStatus::Ready | crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Paused) => {}
@@ -2138,7 +2141,7 @@ impl AppState {
         let _stager_ready = match self.video_stager.try_lock() {
             Ok(guard) => guard.is_some(),
             Err(_) => {
-                let mut current = self.video_current.lock().unwrap();
+                let mut current = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
                 match current.as_ref() {
                     // Already pending for THIS track: nothing to publish.
                     Some(v) if v.track_id.as_ref() == Some(&track_id) && matches!(v.status, crate::contracts::events::VideoStatus::Loading) => {
@@ -2182,7 +2185,7 @@ impl AppState {
         // staging it will publish Loading → Ready/Unavailable; piling a second
         // worker on just re-runs the search and races the publication.
         {
-            let mut inflight = self.video_staging_inflight.lock().unwrap();
+            let mut inflight = self.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner());
             if !inflight.insert(track_id.clone()) {
                 eprintln!("[luno-video] stage request {track_id:?} already in flight; coalescing");
                 return Ok(self.video_snapshot_json());
@@ -2190,10 +2193,10 @@ impl AppState {
         }
         let generation = self.next_generation().0;
         // Cancel any in-flight staging for a previous track.
-        self.video_cancel.lock().unwrap().store(true, Ordering::Release);
+        self.video_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         let cancel = Arc::new(AtomicBool::new(false));
-        *self.video_cancel.lock().unwrap() = Arc::clone(&cancel);
-        *self.video_current.lock().unwrap() = Some(crate::contracts::events::VideoState {
+        *self.video_cancel.lock().unwrap_or_else(|e| e.into_inner()) = Arc::clone(&cancel);
+        *self.video_current.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::contracts::events::VideoState {
             track_id: Some(track_id.clone()),
             source_url: None,
             staged_path: None,
@@ -2226,22 +2229,32 @@ impl AppState {
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 if pump_cancel.load(Ordering::Acquire) { break; }
+                // Stop when the owning stage settles or another track takes
+                // the slot. The old pump only stopped on cancellation, so one
+                // sleeping thread leaked after EVERY successful video.
+                let still_loading = pump_state.video_current.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                    .is_some_and(|video| video.track_id.as_ref() == Some(&pump_track_id)
+                        && matches!(video.status, crate::contracts::events::VideoStatus::Loading));
+                if !still_loading { break; }
                 if !pump_progress.started.load(Ordering::Acquire) { continue; }
                 let percent = pump_progress.percent.load(Ordering::Acquire);
                 if last_sent == Some(percent) { continue; }
+                let mut changed = false;
                 {
-                    let mut current = pump_state.video_current.lock().unwrap();
+                    let mut current = pump_state.video_current.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(video) = current.as_mut() {
                         if video.track_id.as_ref() == Some(&pump_track_id)
                             && matches!(video.status, crate::contracts::events::VideoStatus::Loading)
                         {
                             video.download_progress = Some(percent);
-                            drop(current);
-                            // Publish OUTSIDE the guard (deadlock rule).
-                            pump_state.publish_video_state();
-                            last_sent = Some(percent);
+                            changed = true;
                         }
                     }
+                }
+                if changed {
+                    // Publish OUTSIDE the guard (deadlock rule).
+                    pump_state.publish_video_state();
+                    last_sent = Some(percent);
                 }
             }
         }).ok();
@@ -2257,14 +2270,14 @@ impl AppState {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(VIDEO_STAGE_WAIT_CAP_SECS);
             let mut stager_guard = loop {
                 if cancel.load(Ordering::Acquire) || state.is_closing() {
-                    state.video_staging_inflight.lock().unwrap().remove(&worker_track_id);
+                    state.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).remove(&worker_track_id);
                     return;
                 }
                 match state.video_stager.try_lock() {
                     Ok(guard) => break guard,
                     Err(_) => {
                         if std::time::Instant::now() >= deadline {
-                            state.video_staging_inflight.lock().unwrap().remove(&worker_track_id);
+                            state.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).remove(&worker_track_id);
                             eprintln!("[luno-video] store busy past {VIDEO_STAGE_WAIT_CAP_SECS}s cap; deferring {worker_track_id:?}");
                             return;
                         }
@@ -2275,7 +2288,7 @@ impl AppState {
             let outcome = match stager_guard.as_mut() {
                 Some(stager) => match crate::video::runtime::stage_track(
                     &helper,
-                    state.video_ffmpeg_dir.lock().unwrap().as_deref(),
+                    state.video_ffmpeg_dir.lock().unwrap_or_else(|e| e.into_inner()).as_deref(),
                     stager,
                     artist.as_deref(),
                     &title,
@@ -2309,15 +2322,15 @@ impl AppState {
             // the song page stuck on "Loading video preview..." forever even
             // though the file had finished downloading.
             let superseded_by_other = {
-                let current = state.video_current.lock().unwrap();
+                let current = state.video_current.lock().unwrap_or_else(|e| e.into_inner());
                 current.as_ref().map(|v| v.track_id.as_ref() != Some(&worker_track_id)).unwrap_or(false)
             };
             // This worker is finished either way — release the dedupe slot
             // before any exit path below.
-            state.video_staging_inflight.lock().unwrap().remove(&worker_track_id);
+            state.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).remove(&worker_track_id);
             if cancel.load(Ordering::Acquire) {
                 if !superseded_by_other {
-                    let mut current = state.video_current.lock().unwrap();
+                    let mut current = state.video_current.lock().unwrap_or_else(|e| e.into_inner());
                     if current.as_ref().map(|v| v.track_id.as_ref() == Some(&worker_track_id) && matches!(v.status, crate::contracts::events::VideoStatus::Loading)).unwrap_or(false) {
                         *current = Some(crate::contracts::events::VideoState {
                             track_id: Some(worker_track_id),
@@ -2339,11 +2352,11 @@ impl AppState {
             let _ = superseded_by_other;
             // OWNERSHIP GUARD: only publish our result if the slot still
             // belongs to this request — see completion_may_publish.
-            if completion_may_publish(state.video_current.lock().unwrap().as_ref(), &worker_track_id, generation) {
+            if completion_may_publish(state.video_current.lock().unwrap_or_else(|e| e.into_inner()).as_ref(), &worker_track_id, generation) {
                 // Clones for the background upgrade BEFORE the move below.
                 let upgrade_source = source_url.clone();
                 let upgrade_path = staged_path.clone();
-                *state.video_current.lock().unwrap() = Some(crate::contracts::events::VideoState {
+                *state.video_current.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::contracts::events::VideoState {
                     track_id: Some(worker_track_id.clone()),
                     source_url,
                     staged_path,
@@ -2387,7 +2400,7 @@ impl AppState {
                                 .and_then(|name| name.strip_prefix("current-"))
                                 .and_then(|rest| rest.strip_suffix(".mp4"));
                             let destination = id.and_then(|video_id| {
-                                let stager_guard = upgrade_state.video_stager.lock().unwrap();
+                                let stager_guard = upgrade_state.video_stager.lock().unwrap_or_else(|e| e.into_inner());
                                 stager_guard.as_ref().and_then(|stager| stager.external_destination(crate::video::staging::Slot::Current, video_id).ok())
                             });
                             match (id, destination) {
@@ -2409,7 +2422,7 @@ impl AppState {
                                     };
                                     let outcome = crate::video::runtime::upgrade_staged_video(
                                         &upgrade_helper,
-                                        upgrade_state.video_ffmpeg_dir.lock().unwrap().as_deref(),
+                                        upgrade_state.video_ffmpeg_dir.lock().unwrap_or_else(|e| e.into_inner()).as_deref(),
                                         &destination,
                                         &upgrade_cancel,
                                     );
@@ -2419,7 +2432,7 @@ impl AppState {
                                     // as done instead of re-running the HD
                                     // pass on every play of a quick-tier entry.
                                     if outcome.is_ok() {
-                                        let stager_guard = upgrade_state.video_stager.lock().unwrap();
+                                        let stager_guard = upgrade_state.video_stager.lock().unwrap_or_else(|e| e.into_inner());
                                         if let Some(stager) = stager_guard.as_ref() {
                                             stager.set_tier_for_video_id(&video_id.to_string(), crate::video::staging::INDEX_TIER_HIGH);
                                         }
@@ -2433,12 +2446,12 @@ impl AppState {
                         if outcome.is_err() { return; }
                         // Republish ONLY if the slot still belongs to this
                         // exact request (same track AND same generation).
-                        let follow_status = match *upgrade_state.playback_status.lock().unwrap() {
+                        let follow_status = match *upgrade_state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) {
                             crate::contracts::types::PlaybackStatus::Paused => crate::contracts::events::VideoStatus::Paused,
                             _ => crate::contracts::events::VideoStatus::Playing,
                         };
                         let next_generation = upgrade_state.next_generation();
-                        let mut current = upgrade_state.video_current.lock().unwrap();
+                        let mut current = upgrade_state.video_current.lock().unwrap_or_else(|e| e.into_inner());
                         let owns_slot = current.as_ref().map(|v| {
                             v.track_id.as_ref() == Some(&upgrade_track)
                                 && v.generation.0 == upgrade_generation
@@ -2469,8 +2482,8 @@ impl AppState {
             // preview..." forever. Settle it as Unavailable before surfacing
             // the busy error. The dedupe slot is released here too, since its
             // worker will never run.
-            self.video_staging_inflight.lock().unwrap().remove(&track_id);
-            *self.video_current.lock().unwrap() = Some(crate::contracts::events::VideoState {
+            self.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).remove(&track_id);
+            *self.video_current.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::contracts::events::VideoState {
                 track_id: Some(track_id),
                 source_url: None,
                 staged_path: None,
@@ -2490,15 +2503,15 @@ impl AppState {
     /// enabling, immediately stages the playing track plus prefetches the
     /// next five queue videos. Disabling cancels any prefetch in flight.
     fn set_video_mode(&self, enabled: bool) -> Result<Value, ContractError> {
-        *self.video_mode_enabled.lock().unwrap() = enabled;
-        if let Some(home) = self.settings_home.lock().unwrap().clone() {
+        *self.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = enabled;
+        if let Some(home) = self.settings_home.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             let settings = crate::contracts::types::SettingsInput {
                 music_root: self.scan_roots().first().map(|path| path.display().to_string()),
                 auto_discovery: None,
                 volume: None,
                 sleep_timer: None,
                 global_keys: None,
-                favorite_songs: self.favorites.lock().unwrap().paths().map(str::to_owned).collect(),
+                favorite_songs: self.favorites.lock().unwrap_or_else(|e| e.into_inner()).paths().map(str::to_owned).collect(),
                 video_mode: Some(enabled),
             };
             if let Err(error) = self.save_settings(home, settings) {
@@ -2508,7 +2521,7 @@ impl AppState {
         if !enabled {
             // Stop an in-flight prefetch loop; the current download is left
             // alone (it holds its own cancel flag).
-            self.video_prefetch_cancel.lock().unwrap().store(true, Ordering::Release);
+            self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
             return Ok(serde_json::json!({ "video_mode": false }));
         }
         self.kick_video_pipeline();
@@ -2516,7 +2529,7 @@ impl AppState {
     }
 
     pub fn video_mode_enabled(&self) -> bool {
-        *self.video_mode_enabled.lock().unwrap()
+        *self.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Whether `track`'s video slot is alive: resolved, or Loading WITH a
@@ -2526,7 +2539,7 @@ impl AppState {
     /// read as "the paused song's video never loads". Such slots must be
     /// restaged, not skipped.
     fn current_video_live(&self, track: &TrackId) -> bool {
-        let current = self.video_current.lock().unwrap();
+        let current = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
         let Some(video) = current.as_ref() else { return false; };
         if video.track_id.as_ref() != Some(track) { return false; }
         match video.status {
@@ -2534,7 +2547,7 @@ impl AppState {
             | crate::contracts::events::VideoStatus::Playing
             | crate::contracts::events::VideoStatus::Paused => true,
             crate::contracts::events::VideoStatus::Loading => {
-                self.video_staging_inflight.lock().unwrap().contains(track)
+                self.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).contains(track)
             }
             _ => false,
         }
@@ -2552,7 +2565,7 @@ impl AppState {
     /// instant while bounding the background footprint.
     pub fn kick_video_pipeline(&self) {
         if !self.video_mode_enabled() { return; }
-        let helper = match self.video_helper.lock().unwrap().clone() {
+        let helper = match self.video_helper.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             Some(helper) => helper,
             None => return,
         };
@@ -2560,13 +2573,13 @@ impl AppState {
         // pass that can sit inside a yt-dlp download for minutes. Cancel +
         // install a fresh flag BEFORE any running-gate logic; an old worker
         // exits at its next checkpoint (every loop iteration checks these).
-        self.video_prefetch_cancel.lock().unwrap().store(true, Ordering::Release);
+        self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         let cancel = Arc::new(AtomicBool::new(false));
-        *self.video_prefetch_cancel.lock().unwrap() = Arc::clone(&cancel);
-        *self.video_prefetch_running.lock().unwrap() = true;
+        *self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()) = Arc::clone(&cancel);
+        *self.video_prefetch_running.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
-        let current = self.playback.lock().unwrap().current_index();
-        let queue = self.playback.lock().unwrap().queue().to_vec();
+        let current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current_index();
+        let queue = self.playback.lock().unwrap_or_else(|e| e.into_inner()).queue().to_vec();
         let library = self.library();
         let resolve = |track_id: &TrackId| -> Option<(String, Option<String>)> {
             library.tracks.iter().find(|track| track.id == *track_id).map(|track| (track.title.clone(), track.artist.clone()))
@@ -2594,7 +2607,7 @@ impl AppState {
                 }
                 // CURRENT slot work must go through the same machinery as a
                 // manual request so the UI sees Loading → Ready events.
-                let is_current = state.playback.lock().unwrap().current() == Some(&track_id);
+                let is_current = state.playback.lock().unwrap_or_else(|e| e.into_inner()).current() == Some(&track_id);
                 if is_current {
                     let _ = state.video_stage_track(track_id.clone());
                 } else {
@@ -2635,7 +2648,7 @@ impl AppState {
                         if let Some(_heavy_guard) = heavy {
                             crate::video::runtime::prefetch_track(
                                 &helper,
-                                state.video_ffmpeg_dir.lock().unwrap().as_deref(),
+                                state.video_ffmpeg_dir.lock().unwrap_or_else(|e| e.into_inner()).as_deref(),
                                 &stager,
                                 artist.as_deref(),
                                 &title,
@@ -2648,12 +2661,12 @@ impl AppState {
             // Reset the gate ONLY when this pass is still the installed one —
             // a superseded worker must never clear a newer pass's flag.
             if !state.video_mode_changed_since(&cancel) {
-                *state.video_prefetch_running.lock().unwrap() = false;
+                *state.video_prefetch_running.lock().unwrap_or_else(|e| e.into_inner()) = false;
             }
         });
         if spawned.is_err() {
             if !self.video_mode_changed_since(&cancel_error_path) {
-                *self.video_prefetch_running.lock().unwrap() = false;
+                *self.video_prefetch_running.lock().unwrap_or_else(|e| e.into_inner()) = false;
             }
         }
     }
@@ -2661,10 +2674,10 @@ impl AppState {
     fn video_mode_changed_since(&self, cancel: &Arc<AtomicBool>) -> bool {
         // The orchestrator swaps in a fresh flag whenever it re-runs; holding
         // a stale flag means this pass was superseded.
-        !Arc::ptr_eq(&self.video_prefetch_cancel.lock().unwrap(), cancel)
+        !Arc::ptr_eq(&self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()), cancel)
     }
 
-    fn video_mutate(&self, mutate: impl FnOnce(&mut crate::contracts::events::VideoState)) -> Result<Value, ContractError> {        let mut guard = self.video_current.lock().unwrap();
+    fn video_mutate(&self, mutate: impl FnOnce(&mut crate::contracts::events::VideoState)) -> Result<Value, ContractError> {        let mut guard = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_mut() {
             Some(video) if video.staged_path.is_some() || matches!(video.status, crate::contracts::events::VideoStatus::Paused | crate::contracts::events::VideoStatus::Playing) => {
                 mutate(video);
@@ -2678,14 +2691,14 @@ impl AppState {
     /// follows the downloader's process contract; ffmpeg is the bundled
     /// LGPL build or a PATH fallback.
     pub fn set_preview_toolchain(&self, helper: Option<PathBuf>, ffmpeg: Option<PathBuf>) {
-        *self.preview_helper.lock().unwrap() = helper;
-        *self.preview_ffmpeg.lock().unwrap() = ffmpeg;
+        *self.preview_helper.lock().unwrap_or_else(|e| e.into_inner()) = helper;
+        *self.preview_ffmpeg.lock().unwrap_or_else(|e| e.into_inner()) = ffmpeg;
     }
 
     /// Removes every published preview asset.  The preview directory is
     /// disposable by design: nothing outside it references these files.
     pub fn cleanup_previews(&self) {
-        let _ = self.preview_store.lock().unwrap().cleanup_session(None);
+        let _ = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).cleanup_session(None);
     }
 
     /// Library tracks expressed as discovery recommendations for
@@ -2735,7 +2748,7 @@ impl AppState {
             return Err(ContractError::invalid("tapped preview key is not among the seeds"));
         }
         let (queue, index) = {
-            let playback = self.playback.lock().unwrap();
+            let playback = self.playback.lock().unwrap_or_else(|e| e.into_inner());
             let queue = playback.queue().to_vec();
             if queue.is_empty() {
                 return Err(ContractError {
@@ -2750,8 +2763,8 @@ impl AppState {
         let generation: u64 = self.next_generation().0;
         let session = PreviewSession::start(generation, queue, index, ids, &tapped)
             .ok_or_else(|| ContractError::invalid("preview session could not start"))?;
-        *self.preview_session.lock().unwrap() = Some(session);
-        *self.preview_seeds.lock().unwrap() = seeds.to_vec();
+        *self.preview_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
+        *self.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.to_vec();
         self.purge_discover_deferred();
         self.preview_cancelled.store(false, Ordering::Release);
         // Publish the session-begin snapshot before any worker can complete,
@@ -2766,7 +2779,7 @@ impl AppState {
 
     fn preview_step(&self, forward: bool) -> Result<Value, ContractError> {
         let generation = {
-            let session = self.preview_session.lock().unwrap();
+            let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
             let Some(session) = session.as_ref() else {
                 return Err(ContractError {
                     code: ErrorCode::NotFound,
@@ -2784,7 +2797,7 @@ impl AppState {
             session.generation()
         };
         let action = {
-            let mut session = self.preview_session.lock().unwrap();
+            let mut session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
             let session = session.as_mut().expect("guarded above");
             if forward { session.next() } else { session.previous() }
         };
@@ -2804,7 +2817,7 @@ impl AppState {
 
     fn preview_cancel(&self) -> Result<Value, ContractError> {
         let generation = {
-            let mut session = self.preview_session.lock().unwrap();
+            let mut session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
             let Some(session) = session.as_mut() else {
                 return Err(ContractError {
                     code: ErrorCode::NotFound,
@@ -2825,25 +2838,25 @@ impl AppState {
     /// still current and publishes a snapshot after every transition.
     fn spawn_preview_driver(&self, generation: u64) {
         let (tx, rx) = std::sync::mpsc::channel::<PreviewCompletion>();
-        *self.preview_completions.lock().unwrap() = Some(tx);
+        *self.preview_completions.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
         let state = self.clone();
         let session = self.preview_session.clone();
         let key = format!("preview-driver-{generation}");
-        self.preview_tasks.lock().unwrap().push(key.clone());
+        self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).push(key.clone());
         let spec = self.generation(key, Generation(generation));
         let _ = self.submit(spec, move |task_token| {
             while !state.is_closing() && !task_token.is_cancelled() {
-                let current = session.lock().unwrap().as_ref().is_some_and(|s| s.is_active() && s.generation() == generation);
+                let current = session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_active() && s.generation() == generation);
                 if !current { break; }
                 match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(PreviewCompletion::Prepared { key, path }) => {
-                        let action = session.lock().unwrap().as_mut().map(|s| s.prepared_asset(generation, TrackId(key.clone()), path)).unwrap_or(SessionAction::Ended);
+                        let action = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.prepared_asset(generation, TrackId(key.clone()), path)).unwrap_or(SessionAction::Ended);
                         state.publish_preview_snapshot(generation);
                         state.handle_session_action(action, generation);
                     }
                     Ok(PreviewCompletion::Failed { key }) => {
                         let id = TrackId::new(key.clone()).unwrap_or_else(|_| TrackId(key.clone()));
-                        let action = session.lock().unwrap().as_mut().map(|s| s.failed_asset(generation, &id)).unwrap_or(SessionAction::Ended);
+                        let action = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &id)).unwrap_or(SessionAction::Ended);
                         state.publish_preview_snapshot(generation);
                         state.handle_session_action(action, generation);
                     }
@@ -2872,19 +2885,19 @@ impl AppState {
 
     fn ensure_window_prepared(&self, generation: u64) {
         let keys = {
-            let session = self.preview_session.lock().unwrap();
+            let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
             session.as_ref().map(|s| s.window().to_vec()).unwrap_or_default()
         };
         for key in keys {
-            let prepared = self.preview_session.lock().unwrap().as_ref().is_some_and(|s| s.is_prepared(&key));
+            let prepared = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_prepared(&key));
             if !prepared { self.ensure_prepared(generation, &key); }
         }
     }
 
     fn ensure_current_prepared(&self, generation: u64) {
-        let current = { self.preview_session.lock().unwrap().as_ref().and_then(|s| s.current().cloned()) };
+        let current = { self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|s| s.current().cloned()) };
         if let Some(key) = current {
-            let prepared = self.preview_session.lock().unwrap().as_ref().is_some_and(|s| s.is_prepared(&key));
+            let prepared = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_prepared(&key));
             if !prepared { self.ensure_prepared(generation, &key); }
         }
     }
@@ -2894,7 +2907,7 @@ impl AppState {
         let query = format!("{} {}", query.artist.trim(), query.title.trim());
         let task_key = format!("preview-{generation}-{}", key.0);
         {
-            let mut raised = self.preview_tasks.lock().unwrap();
+            let mut raised = self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner());
             if raised.iter().any(|task| task == &task_key) { return; }
             raised.push(task_key.clone());
         }
@@ -2903,12 +2916,12 @@ impl AppState {
         // The store and session generations are independent counters; the
         // store's own download() gates publishes against its generation, so
         // tasks capture the store generation at raise time.
-        let store_generation = self.preview_store.lock().unwrap().current_generation();
-        let helper = self.preview_helper.lock().unwrap().clone();
-        let ffmpeg = self.preview_ffmpeg.lock().unwrap().clone();
+        let store_generation = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).current_generation();
+        let helper = self.preview_helper.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let ffmpeg = self.preview_ffmpeg.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let key_for_task = key.clone();
         let generation_capture = generation;
-        let sender = self.preview_completions.lock().unwrap().clone();
+        let sender = self.preview_completions.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let spec = self.generation(task_key.clone(), Generation(generation));
         let _ = self.submit(spec, move |task_token| {
             let completion = prepare_one(&store, store_generation, &key_for_task, &query, &helper, &ffmpeg, &task_token);
@@ -2933,7 +2946,7 @@ fn prepare_one(
 ) -> PreviewCompletion {
     let failed = || PreviewCompletion::Failed { key: key.0.clone() };
     let (Some(helper), Some(ffmpeg)) = (helper, ffmpeg) else { return failed(); };
-    let store = store.lock().unwrap();
+    let store = store.lock().unwrap_or_else(|e| e.into_inner());
     match prepare_preview(&store, &key.0, store_generation, query, helper, ffmpeg, task_token) {
         Ok(path) => PreviewCompletion::Prepared { key: key.0.clone(), path },
         Err(_) => failed(),
@@ -2942,15 +2955,15 @@ fn prepare_one(
 
 impl AppState {
     fn cancel_preview_tasks(&self) {
-        let keys: Vec<String> = self.preview_tasks.lock().unwrap().drain(..).collect();
+        let keys: Vec<String> = self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
         for key in keys { self.tasks.cancel_key(&key); }
         // Bump the store generation so in-flight publishes cannot land
         // after a handoff or a fresh session.
-        self.preview_store.lock().unwrap().begin_generation();
+        self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).begin_generation();
     }
 
     fn preview_snapshot(&self) -> Option<PreviewSnapshot> {
-        let session = self.preview_session.lock().unwrap();
+        let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
         session.as_ref().map(|session| PreviewSnapshot {
             generation: session.generation(),
             active: session.is_active(),
@@ -3043,7 +3056,7 @@ impl AppState {
         }
         let ids = Self::preview_ids(seeds)?;
         let (queue, index) = {
-            let playback = self.playback.lock().unwrap();
+            let playback = self.playback.lock().unwrap_or_else(|e| e.into_inner());
             if playback.current().is_none() {
                 return Err(ContractError {
                     code: ErrorCode::Unavailable,
@@ -3062,13 +3075,13 @@ impl AppState {
         if active {
             return self.discover_snapshot_value();
         }
-        *self.discover_seeds.lock().unwrap() = seeds.to_vec();
+        *self.discover_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.to_vec();
         self.cancel_discover_tasks();
         let generation = self.next_generation().0;
         let mut mode = DiscoverMode::new(generation, queue.clone(), index, ids.clone())
             .ok_or_else(|| ContractError::invalid("discover session could not start"))?;
         let ready: Vec<ReadyAsset> = {
-            let store = self.preview_store.lock().unwrap();
+            let store = self.preview_store.lock().unwrap_or_else(|e| e.into_inner());
             ids.iter()
                 .filter_map(|id| {
                     let path = store.ready_path(&id.0).ok()?;
@@ -3081,9 +3094,9 @@ impl AppState {
             let _ = mode.ready_asset(generation, asset);
         }
         let projected = mode.projected();
-        *self.discover.lock().unwrap() = Some(mode);
+        *self.discover.lock().unwrap_or_else(|e| e.into_inner()) = Some(mode);
         self.spawn_discover_driver(generation);
-        self.playback.lock().unwrap().replace(projected.0, projected.1);
+        self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(projected.0, projected.1);
         self.publish_queue_snapshot();
         self.discover_refill(generation);
         self.publish_discover_snapshot(generation);
@@ -3121,7 +3134,7 @@ impl AppState {
         // Bind before branching: the guard from the if-let scrutinee would
         // stay held for the whole statement, deadlocking the re-lock inside
         // discover_track_started.
-        let current = self.playback.lock().unwrap().current().cloned();
+        let current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned();
         if let Some(current) = current {
             self.discover_track_started(&current);
         }
@@ -3131,11 +3144,11 @@ impl AppState {
     /// Rolling window + handoff on natural playback movement. Called whenever
     /// a track starts through the player.
     fn discover_track_started(&self, track_id: &TrackId) {
-        let generation = match self.discover.lock().unwrap().as_ref() {
+        let generation = match self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             Some(mode) if mode.is_active() => mode.generation(),
             _ => return,
         };
-        let queue = self.playback.lock().unwrap().queue().to_vec();
+        let queue = self.playback.lock().unwrap_or_else(|e| e.into_inner()).queue().to_vec();
         // Bind the action before matching: the lock guard from the scrutinee
         // would otherwise stay held for the whole match, deadlocking the arms.
         let handoff = self
@@ -3189,7 +3202,7 @@ impl AppState {
             .as_ref()
             .is_some_and(|mode| mode.is_active());
         let action = if active {
-            self.discover.lock().unwrap().as_mut().map(|mode| mode.disable(generation))
+            self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|mode| mode.disable(generation))
         } else {
             None
         };
@@ -3205,7 +3218,7 @@ impl AppState {
         if let Some(DiscoverAction::QueueChanged { queue, index }
         | DiscoverAction::Restore { queue, index }) = action
         {
-            self.playback.lock().unwrap().replace(queue, index);
+            self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
             self.publish_queue_snapshot();
         }
     }
@@ -3215,11 +3228,11 @@ impl AppState {
     /// rolling window, and publishes the snapshot after every transition.
     fn spawn_discover_driver(&self, generation: u64) {
         let (tx, rx) = std::sync::mpsc::channel::<PreviewCompletion>();
-        *self.discover_completions.lock().unwrap() = Some(tx);
+        *self.discover_completions.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
         let state = self.clone();
         let discover = self.discover.clone();
         let key = format!("discover-driver-{generation}");
-        self.discover_tasks.lock().unwrap().push(key.clone());
+        self.discover_tasks.lock().unwrap_or_else(|e| e.into_inner()).push(key.clone());
         let spec = self.generation(key, Generation(generation));
         let _ = self.submit(spec, move |task_token| {
             while !state.is_closing() && !task_token.is_cancelled() {
@@ -3233,7 +3246,7 @@ impl AppState {
                 }
                 match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(PreviewCompletion::Prepared { key, path }) => {
-                        let action = discover.lock().unwrap().as_mut().map(|mode| {
+                        let action = discover.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|mode| {
                             mode.ready_asset(
                                 generation,
                                 ReadyAsset {
@@ -3263,13 +3276,13 @@ impl AppState {
     /// stays exact.
     fn discover_sync_queue(&self) {
         let changed = {
-            let mut discover = self.discover.lock().unwrap();
+            let mut discover = self.discover.lock().unwrap_or_else(|e| e.into_inner());
             let Some(mode) = discover.as_mut() else { return };
             let projected = mode.projected();
-            let live = self.playback.lock().unwrap().queue().to_vec();
+            let live = self.playback.lock().unwrap_or_else(|e| e.into_inner()).queue().to_vec();
             if projected.0 != live {
                 let index = projected.1;
-                self.playback.lock().unwrap().replace(projected.0, index);
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(projected.0, index);
                 true
             } else {
                 false
@@ -3295,7 +3308,7 @@ impl AppState {
             return;
         }
         let staged: Vec<(TrackId, PathBuf)> = {
-            let store = self.preview_store.lock().unwrap();
+            let store = self.preview_store.lock().unwrap_or_else(|e| e.into_inner());
             ids.iter()
                 .filter_map(|id| {
                     let path = store.ready_path(&id.0).ok()?;
@@ -3305,7 +3318,7 @@ impl AppState {
         };
         let mut raise: Option<TrackId> = None;
         {
-            let mut discover = self.discover.lock().unwrap();
+            let mut discover = self.discover.lock().unwrap_or_else(|e| e.into_inner());
             let Some(mode) = discover.as_mut() else { return };
             for id in &ids {
                 if mode.path_for(id).is_some() {
@@ -3330,7 +3343,7 @@ impl AppState {
         let query = format!("{} {}", query.artist.trim(), query.title.trim());
         let task_key = format!("discover-{generation}-{}", key.0);
         {
-            let mut raised = self.discover_tasks.lock().unwrap();
+            let mut raised = self.discover_tasks.lock().unwrap_or_else(|e| e.into_inner());
             if raised.iter().any(|task| task == &task_key) {
                 return;
             }
@@ -3338,12 +3351,12 @@ impl AppState {
         }
         let state = self.clone();
         let store = self.preview_store.clone();
-        let store_generation = self.preview_store.lock().unwrap().current_generation();
-        let helper = self.preview_helper.lock().unwrap().clone();
-        let ffmpeg = self.preview_ffmpeg.lock().unwrap().clone();
+        let store_generation = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).current_generation();
+        let helper = self.preview_helper.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let ffmpeg = self.preview_ffmpeg.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let key_for_task = key.clone();
         let generation_capture = generation;
-        let sender = self.discover_completions.lock().unwrap().clone();
+        let sender = self.discover_completions.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let spec = self.generation(task_key.clone(), Generation(generation));
         let _ = self.submit(spec, move |task_token| {
             let completion = prepare_one(
@@ -3365,14 +3378,14 @@ impl AppState {
     }
 
     fn cancel_discover_tasks(&self) {
-        let keys: Vec<String> = self.discover_tasks.lock().unwrap().drain(..).collect();
+        let keys: Vec<String> = self.discover_tasks.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
         for key in keys {
             self.tasks.cancel_key(&key);
         }
         // Bump the store generation so in-flight preview publishes cannot
         // land after the session ended.
-        self.preview_store.lock().unwrap().begin_generation();
-        *self.discover_completions.lock().unwrap() = None;
+        self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).begin_generation();
+        *self.discover_completions.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Deletes the session's staged preview files except the currently
@@ -3385,10 +3398,10 @@ impl AppState {
             .as_ref()
             .map(|mode| mode.recommendations().to_vec())
             .unwrap_or_default();
-        let playing = self.playback.lock().unwrap().current().cloned();
+        let playing = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned();
         let mut deferred = Vec::new();
         {
-            let store = self.preview_store.lock().unwrap();
+            let store = self.preview_store.lock().unwrap_or_else(|e| e.into_inner());
             for id in ids {
                 let Ok(path) = store.ready_path(&id.0) else { continue };
                 if !path.is_file() {
@@ -3402,21 +3415,21 @@ impl AppState {
             }
         }
         if !deferred.is_empty() {
-            *self.discover_deferred.lock().unwrap() = deferred;
+            *self.discover_deferred.lock().unwrap_or_else(|e| e.into_inner()) = deferred;
         }
     }
 
     /// Deletes preview files whose playback ended before cleanup; called at
     /// the start of every playback action and preview session.
     fn purge_discover_deferred(&self) {
-        let deferred: Vec<PathBuf> = std::mem::take(&mut *self.discover_deferred.lock().unwrap());
+        let deferred: Vec<PathBuf> = std::mem::take(&mut *self.discover_deferred.lock().unwrap_or_else(|e| e.into_inner()));
         for path in deferred {
             let _ = std::fs::remove_file(&path);
         }
     }
 
     fn discover_snapshot(&self) -> Option<DiscoverSnapshot> {
-        self.discover.lock().unwrap().as_ref().map(|mode| DiscoverSnapshot {
+        self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|mode| DiscoverSnapshot {
             generation: mode.generation(),
             enabled: mode.is_active(),
             window: mode.recommendations().iter().map(|id| id.0.clone()).collect(),
@@ -3468,7 +3481,7 @@ impl AppState {
             .ok_or_else(|| ContractError::invalid("playlist has no directory"))?;
         let directory = PathBuf::from(directory);
         {
-            let mut in_flight = self.save_in_flight.lock().unwrap();
+            let mut in_flight = self.save_in_flight.lock().unwrap_or_else(|e| e.into_inner());
             if in_flight.contains(key) {
                 return Err(ContractError::invalid(
                     "a save for this recommendation is already in progress",
@@ -3495,8 +3508,8 @@ impl AppState {
         let Some(staged) = staged else {
             // No staged asset: queue a durable download through the
             // configured downloader; completion arrives as a job event.
-            let helper = self.bundle_helper.lock().unwrap().clone().ok_or_else(|| {
-                self.save_in_flight.lock().unwrap().remove(key);
+            let helper = self.bundle_helper.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or_else(|| {
+                self.save_in_flight.lock().unwrap_or_else(|e| e.into_inner()).remove(key);
                 ContractError {
                     code: ErrorCode::Unavailable,
                     message: "no staged audio and no downloader configured".into(),
@@ -3506,7 +3519,7 @@ impl AppState {
             let job_id = JobId(format!("save-{}", key.0));
             let target = directory.join(&filename);
             if let Err(error) = self.start_download(job_id.clone(), target.clone(), helper, query) {
-                self.save_in_flight.lock().unwrap().remove(key);
+                self.save_in_flight.lock().unwrap_or_else(|e| e.into_inner()).remove(key);
                 return Err(error);
             }
             self.publish(self.event(Generation(self.next_generation().0), Event::SaveState {
@@ -3538,7 +3551,7 @@ impl AppState {
             },
         }));
         let state = self.clone();
-        let ffmpeg = self.preview_ffmpeg.lock().unwrap().clone();
+        let ffmpeg = self.preview_ffmpeg.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let id_for_task = key.clone();
         let playlist_for_task = playlist_id.clone();
         let filename_for_task = filename;
@@ -3551,7 +3564,7 @@ impl AppState {
             // publishing so a SaveState event still implies a fresh save can
             // start. Releasing at worker START would let two racing saves pass
             // the dedupe check and promote the same recommendation twice.
-            state.save_in_flight.lock().unwrap().remove(&id_for_task);
+            state.save_in_flight.lock().unwrap_or_else(|e| e.into_inner()).remove(&id_for_task);
             match outcome {
                 Ok(receipt) => {
                     state.publish(state.event(Generation(generation), Event::SaveState {
@@ -3588,26 +3601,26 @@ impl AppState {
         }))
     }
     pub fn root_statuses(&self) -> Vec<RootStatus> {
-        self.root_statuses.lock().unwrap().clone()
+        self.root_statuses.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     pub fn set_scan_roots(&self, roots: Vec<PathBuf>) {
-        *self.roots.lock().unwrap() = roots;
+        *self.roots.lock().unwrap_or_else(|e| e.into_inner()) = roots;
     }
     pub fn set_bundle_helper(&self, helper: Option<PathBuf>) {
-        *self.bundle_helper.lock().unwrap() = helper;
+        *self.bundle_helper.lock().unwrap_or_else(|e| e.into_inner()) = helper;
     }
     /// Test/embedding seam: marks a track as the current playback position
     /// without opening the audio device. Mirrors the real play path so the
     /// Discover advance/handoff wiring is exercised identically.
     pub fn set_playing(&self, track_id: TrackId, context: Vec<TrackId>) {
         self.purge_discover_deferred();
-        self.playback.lock().unwrap().play_with_context(track_id.clone(), context);
-        self.playback.lock().unwrap().record_started(track_id.clone(), false);
+        self.playback.lock().unwrap_or_else(|e| e.into_inner()).play_with_context(track_id.clone(), context);
+        self.playback.lock().unwrap_or_else(|e| e.into_inner()).record_started(track_id.clone(), false);
         self.discover_track_started(&track_id);
         self.publish_queue_snapshot();
     }
     pub fn scan_roots(&self) -> Vec<PathBuf> {
-        self.roots.lock().unwrap().clone()
+        self.roots.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     pub fn favorite_paths(&self) -> Vec<String> {
         self.favorites
@@ -3618,7 +3631,7 @@ impl AppState {
             .collect()
     }
     pub fn set_favorite_path(&self, path: impl AsRef<std::path::Path>) {
-        self.favorites.lock().unwrap().set(path, true);
+        self.favorites.lock().unwrap_or_else(|e| e.into_inner()).set(path, true);
     }
     pub fn prune_favorites(&self) {
         let paths = self
@@ -3628,10 +3641,10 @@ impl AppState {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        self.favorites.lock().unwrap().project(paths);
+        self.favorites.lock().unwrap_or_else(|e| e.into_inner()).project(paths);
     }
     pub fn pending_events(&self) -> Vec<EventEnvelope> {
-        self.events.lock().unwrap().clone()
+        self.events.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     /// Test and integration accessor for the buffered event queue.
     pub fn events(&self) -> Vec<EventEnvelope> {
@@ -3644,7 +3657,7 @@ impl AppState {
             .retain(|event| event.event_id != event_id);
     }
     pub fn delivery_failure(&self) -> Option<ContractError> {
-        self.delivery_failure.lock().unwrap().clone()
+        self.delivery_failure.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     /// Drain is single-consumer: events are claimed while holding the queue lock and
     /// failed deliveries are returned atomically instead of being duplicated.
@@ -3653,7 +3666,7 @@ impl AppState {
         F: Fn(&EventEnvelope) -> Result<(), String>,
     {
         {
-            let mut draining = self.event_draining.lock().unwrap();
+            let mut draining = self.event_draining.lock().unwrap_or_else(|e| e.into_inner());
             if *draining {
                 return Ok(false);
             }
@@ -3665,17 +3678,17 @@ impl AppState {
         }
         impl Drop for DrainGuard<'_> {
             fn drop(&mut self) {
-                *self.in_flight.lock().unwrap() = 0;
-                *self.draining.lock().unwrap() = false;
+                *self.in_flight.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+                *self.draining.lock().unwrap_or_else(|e| e.into_inner()) = false;
             }
         }
         let _guard = DrainGuard {
             draining: &self.event_draining,
             in_flight: &self.event_in_flight,
         };
-        let _publication = self.publication.lock().unwrap();
-        let claimed = { std::mem::take(&mut *self.events.lock().unwrap()) };
-        *self.event_in_flight.lock().unwrap() = claimed.len();
+        let _publication = self.publication.lock().unwrap_or_else(|e| e.into_inner());
+        let claimed = { std::mem::take(&mut *self.events.lock().unwrap_or_else(|e| e.into_inner())) };
+        *self.event_in_flight.lock().unwrap_or_else(|e| e.into_inner()) = claimed.len();
         let mut failed_at = None;
         let mut error = None;
         for (index, event) in claimed.iter().enumerate() {
@@ -3696,12 +3709,12 @@ impl AppState {
         }
         let failed = failed_at.map_or_else(Vec::new, |index| claimed[index..].to_vec());
         if !failed.is_empty() {
-            self.events.lock().unwrap().splice(0..0, failed);
+            self.events.lock().unwrap_or_else(|e| e.into_inner()).splice(0..0, failed);
         }
         error.map_or(Ok(true), Err)
     }
     pub fn event(&self, generation: Generation, event: Event) -> EventEnvelope {
-        let _publication = self.publication.lock().unwrap();
+        let _publication = self.publication.lock().unwrap_or_else(|e| e.into_inner());
         self.event_locked(generation, event)
     }
 
@@ -3713,10 +3726,10 @@ impl AppState {
         else {
             return;
         };
-        let _publication = self.publication.lock().unwrap();
-        if self.allocated_events.lock().unwrap().remove(&id) {
-            self.unpublished.lock().unwrap().remove(&id);
-            self.skipped_publications.lock().unwrap().insert(id);
+        let _publication = self.publication.lock().unwrap_or_else(|e| e.into_inner());
+        if self.allocated_events.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
+            self.unpublished.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+            self.skipped_publications.lock().unwrap_or_else(|e| e.into_inner()).insert(id);
             self.publish_ready_locked();
         }
     }
@@ -3731,7 +3744,7 @@ impl AppState {
             })
             .expect("event ID space exhausted")
             + 1;
-        self.allocated_events.lock().unwrap().insert(id);
+        self.allocated_events.lock().unwrap_or_else(|e| e.into_inner()).insert(id);
         EventEnvelope {
             version: CONTRACT_VERSION,
             event_id: format!("event-{id}"),
@@ -3745,25 +3758,25 @@ impl AppState {
         &self,
         sink: StdArc<dyn Fn(EventEnvelope) -> Result<(), String> + Send + Sync>,
     ) {
-        *self.event_sink.lock().unwrap() = Some(sink);
-        self.replayed_events.lock().unwrap().clear();
+        *self.event_sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+        self.replayed_events.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
     /// Replay the latest state/control envelopes after a listener has started.
     pub fn replay_latest(&self) {
-        let Some(sink) = self.event_sink.lock().unwrap().clone() else {
+        let Some(sink) = self.event_sink.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
             return;
         };
         {
-            let _publication = self.publication.lock().unwrap();
+            let _publication = self.publication.lock().unwrap_or_else(|e| e.into_inner());
             for envelope in [
-                self.latest_snapshot.lock().unwrap().clone(),
-                self.latest_control.lock().unwrap().clone(),
+                self.latest_snapshot.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+                self.latest_control.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             ]
             .into_iter()
             .flatten()
             {
-                let mut events = self.events.lock().unwrap();
-                let mut replayed = self.replayed_events.lock().unwrap();
+                let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
+                let mut replayed = self.replayed_events.lock().unwrap_or_else(|e| e.into_inner());
                 if !events
                     .iter()
                     .any(|pending| pending.event_id == envelope.event_id)
@@ -3802,27 +3815,27 @@ impl AppState {
             .insert(path, metadata);
     }
     pub fn publish(&self, envelope: EventEnvelope) {
-        let _publication = self.publication.lock().unwrap();
+        let _publication = self.publication.lock().unwrap_or_else(|e| e.into_inner());
         let id = envelope
             .event_id
             .strip_prefix("event-")
             .and_then(|value| value.parse::<u64>().ok())
             .expect("internal event IDs are numeric");
-        self.unpublished.lock().unwrap().insert(id, envelope);
+        self.unpublished.lock().unwrap_or_else(|e| e.into_inner()).insert(id, envelope);
         self.publish_ready_locked();
     }
 
     fn publish_ready_locked(&self) {
         loop {
             let next = self.next_publish.load(Ordering::Acquire);
-            if self.skipped_publications.lock().unwrap().remove(&next) {
+            if self.skipped_publications.lock().unwrap_or_else(|e| e.into_inner()).remove(&next) {
                 self.next_publish.fetch_add(1, Ordering::Release);
                 continue;
             }
-            let Some(envelope) = self.unpublished.lock().unwrap().remove(&next) else {
+            let Some(envelope) = self.unpublished.lock().unwrap_or_else(|e| e.into_inner()).remove(&next) else {
                 break;
             };
-            self.allocated_events.lock().unwrap().remove(&next);
+            self.allocated_events.lock().unwrap_or_else(|e| e.into_inner()).remove(&next);
             self.next_publish.fetch_add(1, Ordering::Release);
             self.publish_one_locked(envelope);
         }
@@ -3830,16 +3843,16 @@ impl AppState {
 
     fn publish_one_locked(&self, envelope: EventEnvelope) {
         if matches!(&envelope.event, Event::LibrarySnapshot { .. }) {
-            *self.latest_snapshot.lock().unwrap() = Some(envelope.clone());
+            *self.latest_snapshot.lock().unwrap_or_else(|e| e.into_inner()) = Some(envelope.clone());
         }
         if matches!(&envelope.event, Event::Shutdown { .. }) {
-            *self.latest_control.lock().unwrap() = Some(envelope.clone());
+            *self.latest_control.lock().unwrap_or_else(|e| e.into_inner()) = Some(envelope.clone());
         }
-        let has_delivery_work = !self.events.lock().unwrap().is_empty()
-            || *self.event_in_flight.lock().unwrap() > 0
-            || *self.event_draining.lock().unwrap();
+        let has_delivery_work = !self.events.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+            || *self.event_in_flight.lock().unwrap_or_else(|e| e.into_inner()) > 0
+            || *self.event_draining.lock().unwrap_or_else(|e| e.into_inner());
         if !has_delivery_work {
-            if let Some(sink) = self.event_sink.lock().unwrap().clone() {
+            if let Some(sink) = self.event_sink.lock().unwrap_or_else(|e| e.into_inner()).clone() {
                 let delivery = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     sink(envelope.clone())
                 }));
@@ -3868,7 +3881,7 @@ impl AppState {
                             event: Event::Error { error: failure },
                         });
                     } else {
-                        *self.delivery_failure.lock().unwrap() = Some(failure);
+                        *self.delivery_failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(failure);
                     }
                 }
             } else {
@@ -3880,7 +3893,7 @@ impl AppState {
     }
 
     fn queue_event_locked(&self, envelope: EventEnvelope) {
-        let mut events = self.events.lock().unwrap();
+        let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
         events.push(envelope);
         events.sort_by_key(|event| {
             event
@@ -3914,7 +3927,7 @@ impl AppState {
     {
         let work = Arc::new(work);
         {
-            let mut scan = self.scan.lock().unwrap();
+            let mut scan = self.scan.lock().unwrap_or_else(|e| e.into_inner());
             if scan.active {
                 scan.pending = Some(work);
                 return Ok(Generation(self.next_generation.load(Ordering::Acquire)));
@@ -3928,7 +3941,7 @@ impl AppState {
         let generation = self.next_generation();
         let spec = self.generation("library-scan", generation);
         let state = self.clone();
-        let roots = self.roots.lock().unwrap().clone();
+        let roots = self.roots.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let result = self.submit(spec.clone(), move |token| {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let outcome = work(&roots, token.clone());
@@ -3945,7 +3958,7 @@ impl AppState {
             }
         });
         if result.is_err() {
-            let mut scan = self.scan.lock().unwrap();
+            let mut scan = self.scan.lock().unwrap_or_else(|e| e.into_inner());
             scan.active = false;
             scan.pending = None;
         }
@@ -3954,7 +3967,7 @@ impl AppState {
 
     fn finish_scan(&self, discard_pending: bool) {
         let pending = {
-            let mut scan = self.scan.lock().unwrap();
+            let mut scan = self.scan.lock().unwrap_or_else(|e| e.into_inner());
             if discard_pending || self.is_closing() {
                 scan.active = false;
                 scan.pending = None;
@@ -3968,7 +3981,7 @@ impl AppState {
         };
         if let Some(work) = pending {
             if self.start_scan(work).is_err() {
-                let mut scan = self.scan.lock().unwrap();
+                let mut scan = self.scan.lock().unwrap_or_else(|e| e.into_inner());
                 scan.active = false;
                 scan.pending = None;
             }
@@ -3998,7 +4011,7 @@ impl AppState {
                 crate::library::scanner::RootStatus::Inaccessible => RootStatus::Inaccessible,
             })
             .collect();
-        *self.root_statuses.lock().unwrap() = statuses.clone();
+        *self.root_statuses.lock().unwrap_or_else(|e| e.into_inner()) = statuses.clone();
         // A scan that could not read ANY root (transient unmount, network
         // volume asleep, permission hiccup) must never blank a non-empty
         // library. Keep the previous snapshot and surface the condition as an
@@ -4006,7 +4019,7 @@ impl AppState {
         let all_roots_unreadable = !statuses.is_empty()
             && statuses.iter().all(|status| !matches!(status, RootStatus::Scanned));
         if all_roots_unreadable {
-            let had_tracks = !self.library.lock().unwrap().tracks.is_empty();
+            let had_tracks = !self.library.lock().unwrap_or_else(|e| e.into_inner()).tracks.is_empty();
             if had_tracks {
                 let mut error = self.event(
                     generation,
@@ -4130,7 +4143,7 @@ impl AppState {
                 seen_ids.insert(id.0.clone());
                 paths.insert(path.clone(), id.clone());
                 rebuilt.insert(id.clone(), path.clone());
-                let favorite = self.favorites.lock().unwrap().contains(&path);
+                let favorite = self.favorites.lock().unwrap_or_else(|e| e.into_inner()).contains(&path);
                 tracks.push(Track {
                     id: id.clone(),
                     path: None,
@@ -4164,9 +4177,9 @@ impl AppState {
             tracks,
             playlists: playlist_data,
         };
-        *self.library.lock().unwrap() = snapshot.clone();
+        *self.library.lock().unwrap_or_else(|e| e.into_inner()) = snapshot.clone();
         // Single atomic swap — see the comment at the top of this function.
-        *self.track_paths.lock().unwrap() = rebuilt;
+        *self.track_paths.lock().unwrap_or_else(|e| e.into_inner()) = rebuilt;
         let scanned = self
             .track_paths
             .lock()
@@ -4174,7 +4187,7 @@ impl AppState {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        self.favorites.lock().unwrap().project(scanned);
+        self.favorites.lock().unwrap_or_else(|e| e.into_inner()).project(scanned);
         snapshot
     }
     pub fn submit<T, F>(&self, spec: TaskSpec, work: F) -> Result<TaskHandle<T>, SpawnError>
@@ -4209,7 +4222,7 @@ impl AppState {
         if envelope.request_id.trim().is_empty() {
             return Err(ContractError::invalid("request_id must not be empty"));
         }
-        let admission = self.admission.lock().unwrap();
+        let admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         if !matches!(&envelope.command, Command::Shutdown { .. }) && self.is_closing() {
             return Err(ContractError {
                 code: ErrorCode::ShuttingDown,
@@ -4287,7 +4300,7 @@ impl AppState {
             }
             Command::Discover { artist, title, limit } => {
                 let limit = limit.clamp(1, crate::contracts::types::MAX_DISCOVER_LIMIT);
-                let mut discovery = self.discovery.lock().unwrap();
+                let mut discovery = self.discovery.lock().unwrap_or_else(|e| e.into_inner());
                 match discovery.get_similar(&artist, &title, limit, &self.library_recommendations()) {
                     DiscoveryResult::Success(items) => serde_json::to_value(items).map_err(|error| {
                         ContractError::invalid(format!("discovery serialization: {error}"))
@@ -4351,10 +4364,10 @@ impl AppState {
             }
             Command::StartDownload { job_id, destination, helper, source } => self.start_download(job_id, PathBuf::from(destination), PathBuf::from(helper), source),
             Command::RetryDownload { job_id } => {
-                let (destination, helper, source) = self.download_requests.lock().unwrap().get(&job_id.0).cloned().ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "download request not found".into(), retryable: false })?;
+                let (destination, helper, source) = self.download_requests.lock().unwrap_or_else(|e| e.into_inner()).get(&job_id.0).cloned().ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "download request not found".into(), retryable: false })?;
                 self.start_download(job_id, destination, helper, source)
             }
-            Command::BundleHelperPath => match self.bundle_helper.lock().unwrap().as_ref() {
+            Command::BundleHelperPath => match self.bundle_helper.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                 Some(helper) => Ok(serde_json::json!({ "helper": helper.display().to_string() })),
                 None => Err(ContractError { code: ErrorCode::Unavailable, message: "bundled download helper is unavailable".into(), retryable: false }),
             },
@@ -4372,7 +4385,7 @@ impl AppState {
             Command::TransferApply { manifest, destination, approvals } => self.transfer_apply(&manifest, PathBuf::from(destination), approvals),
             Command::ToggleFavorite { track_id } => self.toggle_favorite(track_id),
             Command::RecordRecent { track_id } => {
-                if !self.track_paths.lock().unwrap().contains_key(&track_id) {
+                if !self.track_paths.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&track_id) {
                     return Err(ContractError {
                         code: ErrorCode::NotFound,
                         message: "track is not available locally".into(),
@@ -4382,14 +4395,14 @@ impl AppState {
                 self.record_recent(track_id);
                 Ok(Value::Null)
             }
-            Command::GetRecent => serde_json::to_value(self.recent.lock().unwrap().clone())
+            Command::GetRecent => serde_json::to_value(self.recent.lock().unwrap_or_else(|e| e.into_inner()).clone())
                 .map_err(|_| ContractError {
                     code: ErrorCode::Internal,
                     message: "recent history unavailable".into(),
                     retryable: false,
                 }),
             Command::ClearRecent => {
-                self.recent.lock().unwrap().clear();
+                self.recent.lock().unwrap_or_else(|e| e.into_inner()).clear();
                 Ok(Value::Null)
             }
             Command::PlayNext { track_ids } => self.queue_insert(track_ids, true),
@@ -4397,24 +4410,24 @@ impl AppState {
             Command::RemoveFromQueue { index } => self.queue_remove(index),
             Command::ReorderQueue { from, to } => self.queue_reorder(from, to),
             Command::ClearQueue => {
-                self.playback.lock().unwrap().clear();
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).clear();
                 #[cfg(target_os = "macos")]
                 {
                     if let Ok(mut backend) = self.audio.lock() { backend.stop(); }
-                    if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.stop(); }
-                    *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Stopped;
-                    *self.current_track.lock().unwrap() = None;
+                    if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.stop(); }
+                    *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Stopped;
+                    *self.current_track.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 }
                 self.publish_queue_snapshot();
                 Ok(Value::Null)
             }
             Command::ToggleShuffle => {
-                self.playback.lock().unwrap().toggle_shuffle();
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).toggle_shuffle();
                 self.publish_queue_snapshot();
                 Ok(Value::Null)
             }
             Command::SetRepeat { repeat } => {
-                self.playback.lock().unwrap().set_repeat(match repeat {
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).set_repeat(match repeat {
                     ContractRepeatMode::Off => crate::playback::queue::RepeatMode::Off,
                     ContractRepeatMode::One => crate::playback::queue::RepeatMode::One,
                     ContractRepeatMode::All => crate::playback::queue::RepeatMode::All,
@@ -4491,7 +4504,7 @@ impl AppState {
         validate_home(&home)?;
         // Remember where settings live so backend-originated changes
         // (video-mode toggle) can persist immediately.
-        *self.settings_home.lock().unwrap() = Some(home.clone());
+        *self.settings_home.lock().unwrap_or_else(|e| e.into_inner()) = Some(home.clone());
         let path = home.join(".luno_config.json");
         let config = match crate::persistence::legacy::read_config(&path) {
             Ok(config) => config,
@@ -4535,13 +4548,13 @@ impl AppState {
         #[cfg(target_os = "macos")]
         if let Some(volume) = config.volume {
             let volume = volume.clamp(0.0, 1.0) as f32;
-            *self.volume.lock().unwrap() = volume;
+            *self.volume.lock().unwrap_or_else(|e| e.into_inner()) = volume;
             if let Ok(mut backend) = self.audio.lock() {
                 backend.set_volume(volume);
             }
         }
         if let Some(paths) = config.favorite_songs {
-            let mut favorites = self.favorites.lock().unwrap();
+            let mut favorites = self.favorites.lock().unwrap_or_else(|e| e.into_inner());
             for path in paths {
                 favorites.set(path, true);
             }
@@ -4549,7 +4562,7 @@ impl AppState {
         // Song-page video mode: seed the runtime flag so auto-staging and
         // queue prefetch resume exactly where the last session left them.
         let video_mode = config.video_mode.unwrap_or(false);
-        *self.video_mode_enabled.lock().unwrap() = video_mode;
+        *self.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = video_mode;
         // Media keys: default ON — Luno must own the hardware keys unless the
         // user explicitly opted out (Settings ▸ Playback).
         self.media_keys_enabled.store(config.global_keys.unwrap_or(true), Ordering::Release);
@@ -4560,7 +4573,7 @@ impl AppState {
             "sleep_timer": config.sleep_timer,
             "global_keys": config.global_keys,
             "video_mode": video_mode,
-            "favorite_songs": self.favorites.lock().unwrap().paths().map(str::to_owned).collect::<Vec<_>>(),
+            "favorite_songs": self.favorites.lock().unwrap_or_else(|e| e.into_inner()).paths().map(str::to_owned).collect::<Vec<_>>(),
         }))
     }
 
@@ -4638,7 +4651,7 @@ impl AppState {
             return Err(ContractError::invalid("download helper or destination is unsafe"));
         }
         let source = source.replace('\r', " ").replace('\n', " ").trim().to_owned();
-        self.download_requests.lock().unwrap().insert(job_id.0.clone(), (destination.clone(), helper.clone(), source.clone()));
+        self.download_requests.lock().unwrap_or_else(|e| e.into_inner()).insert(job_id.0.clone(), (destination.clone(), helper.clone(), source.clone()));
         let generation = self.next_generation();
         let job = job_id.clone();
         let coordinator = self.downloads.clone();
@@ -4718,8 +4731,8 @@ impl AppState {
     }
 
     fn transfer_index(&self) -> crate::transfer::provider_index::ProviderIndex {
-        let metadata = self.provider_metadata.lock().unwrap();
-        crate::transfer::provider_index::ProviderIndex::new(self.track_paths.lock().unwrap().iter().map(|(id, path)| crate::transfer::provider_index::IndexedTrack { path: path.clone(), metadata: metadata.get(path).cloned().unwrap_or_else(|| crate::domain::identity::filename_metadata(&id.0)) }))
+        let metadata = self.provider_metadata.lock().unwrap_or_else(|e| e.into_inner());
+        crate::transfer::provider_index::ProviderIndex::new(self.track_paths.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(id, path)| crate::transfer::provider_index::IndexedTrack { path: path.clone(), metadata: metadata.get(path).cloned().unwrap_or_else(|| crate::domain::identity::filename_metadata(&id.0)) }))
     }
 
     fn transfer_preview(&self, manifest: &str, destination: PathBuf) -> Result<Value, ContractError> {
@@ -4830,12 +4843,12 @@ fn promotion_error(error: PromotionError) -> ContractError {
                 retryable: false,
             })?;
         let favorite = {
-            let mut favorites = self.favorites.lock().unwrap();
+            let mut favorites = self.favorites.lock().unwrap_or_else(|e| e.into_inner());
             let next = !favorites.contains(&path);
             favorites.set(&path, next);
             next
         };
-        let mut library = self.library.lock().unwrap();
+        let mut library = self.library.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(track) = library.tracks.iter_mut().find(|track| track.id == track_id) {
             track.favorite = favorite;
         }
@@ -4843,7 +4856,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
     }
 
     pub fn record_recent(&self, track_id: TrackId) {
-        let mut recent = self.recent.lock().unwrap();
+        let mut recent = self.recent.lock().unwrap_or_else(|e| e.into_inner());
         recent.retain(|id| id != &track_id);
         recent.insert(0, track_id);
         recent.truncate(100);
@@ -4871,9 +4884,9 @@ fn promotion_error(error: PromotionError) -> ContractError {
     fn recover_from_backend_error(&self, error: BackendError) {
         let contract = Self::playback_error(error);
         self.publish(self.event(self.library().generation, Event::Error { error: contract }));
-        let action = self.recovery.lock().unwrap().record_failure();
+        let action = self.recovery.lock().unwrap_or_else(|e| e.into_inner()).record_failure();
         if matches!(action, crate::playback::recovery::RecoveryAction::Stop) {
-            *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Failed;
+            *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Failed;
             self.publish_queue_snapshot();
         } else {
             let _ = self.next_track();
@@ -4886,7 +4899,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         position: Duration,
         duration: Option<Duration>,
     ) -> crate::contracts::types::PlaybackSnapshot {
-        let queue = self.playback.lock().unwrap();
+        let queue = self.playback.lock().unwrap_or_else(|e| e.into_inner());
         crate::contracts::types::PlaybackSnapshot {
             queue: queue.queue().to_vec(),
             current_index: queue.current_index().map(|index| index as u32),
@@ -4921,7 +4934,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
     fn publish_queue_snapshot(&self) {
         let status = {
             #[cfg(target_os = "macos")]
-            { *self.playback_status.lock().unwrap() }
+            { *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) }
             #[cfg(not(target_os = "macos"))]
             { crate::contracts::types::PlaybackStatus::Stopped }
         };
@@ -4930,14 +4943,14 @@ fn promotion_error(error: PromotionError) -> ContractError {
     }
 
     fn queue_insert(&self, track_ids: Vec<TrackId>, next: bool) -> Result<Value, ContractError> {
-        if next { self.playback.lock().unwrap().play_next(track_ids); }
-        else { self.playback.lock().unwrap().add_to_queue(track_ids); }
+        if next { self.playback.lock().unwrap_or_else(|e| e.into_inner()).play_next(track_ids); }
+        else { self.playback.lock().unwrap_or_else(|e| e.into_inner()).add_to_queue(track_ids); }
         self.publish_queue_snapshot();
         Ok(Value::Null)
     }
 
     fn queue_remove(&self, index: usize) -> Result<Value, ContractError> {
-        if !self.playback.lock().unwrap().remove(index) {
+        if !self.playback.lock().unwrap_or_else(|e| e.into_inner()).remove(index) {
             return Err(ContractError::invalid("queue index is out of range"));
         }
         self.publish_queue_snapshot();
@@ -4945,7 +4958,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
     }
 
     fn queue_reorder(&self, from: usize, to: usize) -> Result<Value, ContractError> {
-        if !self.playback.lock().unwrap().reorder(from, to) {
+        if !self.playback.lock().unwrap_or_else(|e| e.into_inner()).reorder(from, to) {
             return Err(ContractError::invalid("queue index is out of range"));
         }
         self.publish_queue_snapshot();
@@ -4974,7 +4987,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         // "disappeared"), and repeat clicks kept failing. Heal all of it:
         // effective track id, every context entry, then validate.
         let (track_id, context, path) = {
-            let map = self.track_paths.lock().unwrap();
+            let map = self.track_paths.lock().unwrap_or_else(|e| e.into_inner());
             let resolve = |id: &TrackId| -> Option<TrackId> {
                 if map.contains_key(id) {
                     return Some(id.clone());
@@ -5015,7 +5028,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         };
         eprintln!("[luno-play] resolved -> {} queue_len={}", path.display(), context.len());
         self.purge_discover_deferred();
-        self.playback.lock().unwrap().play_with_context(track_id.clone(), context);
+        self.playback.lock().unwrap_or_else(|e| e.into_inner()).play_with_context(track_id.clone(), context);
         // NOTE: video mode is NOT kicked here on purpose — `start_selected_track`
         // kicks it once the track actually starts playing (and auto-advance funnels
         // through the same path). Kicking in BOTH places spawned two prefetch passes
@@ -5025,7 +5038,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         // task (`playback-load`) so the UI thread never blocks on audio
         // loading; a newer selection cancels the previous task by key.
         let ack = self.playback_snapshot(
-            *self.playback_status.lock().unwrap(),
+            *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()),
             Duration::ZERO,
             None,
         );
@@ -5064,22 +5077,17 @@ fn promotion_error(error: PromotionError) -> ContractError {
         }
         // Snapshot the intended volume before locking audio so `set_volume`
         // (volume-then-audio lock order) can never deadlock against this task.
-        let desired_volume = *self.volume.lock().unwrap();
-        // PROBE OUTSIDE THE AUDIO LOCK: opening + probing a file can block for
-        // seconds (cold disk, iCloud materialization, spinning-up drives).
-        // Holding self.audio across it froze pause/seek/volume AND every
-        // heartbeat tick for the whole load — the "track switch hangs ~20 s"
-        // report. The swap-in below only joins threads and spawns a producer
-        // under the lock; all slow file IO happens here, unlocked.
-        let known_duration =
-            match crate::playback::backend_adapter::CpalSymphoniaBackend::probe_duration(&path) {
-                Ok(duration) => duration,
-                Err(error) => {
-                    eprintln!("[luno-play] probe failed: {error:?}");
-                    self.recover_from_backend_error(error);
-                    return;
-                }
-            };
+        let desired_volume = *self.volume.lock().unwrap_or_else(|e| e.into_inner());
+        // Do not synchronously probe the file here. The streaming producer
+        // already has to open the container, and the old duplicate pre-probe
+        // was the entire multi-second first-click delay on cold/cloud files.
+        // Use scan/provider duration when known; otherwise the producer fills
+        // it after opening while the output stream is already live.
+        let known_duration = self.library.lock().unwrap_or_else(|e| e.into_inner())
+            .tracks.iter()
+            .find(|track| track.id == track_id)
+            .and_then(|track| track.duration_ms)
+            .map(std::time::Duration::from_millis);
         if token.is_cancelled() || self.is_closing() {
             return;
         }
@@ -5123,7 +5131,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
             }
         }
         eprintln!("[luno-play] playing {track_id:?} ({}ms)", info.duration.map(|d| d.as_millis()).unwrap_or(0));
-        self.playback.lock().unwrap().record_started(track_id.clone(), false);
+        self.playback.lock().unwrap_or_else(|e| e.into_inner()).record_started(track_id.clone(), false);
         self.discover_track_started(&track_id);
         self.record_recent(track_id.clone());
         // Auto-advance reached a new track: keep video mode in lockstep
@@ -5131,11 +5139,11 @@ fn promotion_error(error: PromotionError) -> ContractError {
         if self.video_mode_enabled() {
             self.kick_video_pipeline();
         }
-        *self.clock.lock().unwrap() = Some(PlaybackClock::new(info.duration));
-        if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.start(0.0); }
-        self.recovery.lock().unwrap().record_success();
-        *self.current_track.lock().unwrap() = Some(track_id.clone());
-        *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Playing;
+        *self.clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlaybackClock::new(info.duration));
+        if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.start(0.0); }
+        self.recovery.lock().unwrap_or_else(|e| e.into_inner()).record_success();
+        *self.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(track_id.clone());
+        *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Playing;
         let snapshot = self.playback_snapshot(
             crate::contracts::types::PlaybackStatus::Playing,
             Duration::ZERO,
@@ -5174,13 +5182,13 @@ fn promotion_error(error: PromotionError) -> ContractError {
     /// order so toggling shuffle off restored the shuffled sequence.
     #[cfg(target_os = "macos")]
     fn start_current_track(&self) -> Result<Value, ContractError> {
-        let Some(track_id) = self.playback.lock().unwrap().current().cloned() else {
+        let Some(track_id) = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned() else {
             return Ok(Value::Null);
         };
         // Same resolve+heal contract as play_with_context: a skip that races a
         // rescan must not resurrect the dangling-id family.
         let path = {
-            let map = self.track_paths.lock().unwrap();
+            let map = self.track_paths.lock().unwrap_or_else(|e| e.into_inner());
             match map.get(&track_id) {
                 Some(path) => Some(path.clone()),
                 None => heal_track_id(&map, &track_id).and_then(|healed| {
@@ -5199,7 +5207,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         })?;
         self.purge_discover_deferred();
         let ack = self.playback_snapshot(
-            *self.playback_status.lock().unwrap(),
+            *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()),
             Duration::ZERO,
             None,
         );
@@ -5223,7 +5231,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
 
     #[cfg(target_os = "macos")]
     fn next_track(&self) -> Result<Value, ContractError> {
-        let advanced = self.playback.lock().unwrap().next().cloned();
+        let advanced = self.playback.lock().unwrap_or_else(|e| e.into_inner()).next().cloned();
         if advanced.is_some() {
             self.start_current_track()
         } else {
@@ -5232,8 +5240,8 @@ fn promotion_error(error: PromotionError) -> ContractError {
             // the library is intact when playback resumes.
             self.end_discover(true);
             if let Ok(mut backend) = self.audio.lock() { backend.stop(); }
-            if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.stop(); }
-            *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Stopped;
+            if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.stop(); }
+            *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Stopped;
             self.publish_queue_snapshot();
             Ok(Value::Null)
         }
@@ -5241,7 +5249,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
 
     #[cfg(target_os = "macos")]
     fn previous_track(&self) -> Result<Value, ContractError> {
-        let went_back = self.playback.lock().unwrap().previous().cloned();
+        let went_back = self.playback.lock().unwrap_or_else(|e| e.into_inner()).previous().cloned();
         if went_back.is_some() {
             self.start_current_track()
         } else {
@@ -5256,7 +5264,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
             message: "audio backend lock failed".into(),
             retryable: false,
         })?;
-        let was_paused = *self.playback_status.lock().unwrap() == crate::contracts::types::PlaybackStatus::Paused;
+        let was_paused = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) == crate::contracts::types::PlaybackStatus::Paused;
         if was_paused { backend.play().map_err(Self::playback_error)?; }
         else { backend.pause().map_err(Self::playback_error)?; }
         // Publish the new status IMMEDIATELY: the heartbeat thread samples
@@ -5264,7 +5272,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         // "audio paused" and "status written" it saw (Playing, Paused) — which
         // its resume arm interprets as "audio restarted" — and flipped the
         // freshly-paused video back to Playing (2026-08-24).
-        *self.playback_status.lock().unwrap() = if was_paused { crate::contracts::types::PlaybackStatus::Playing } else { crate::contracts::types::PlaybackStatus::Paused };
+        *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = if was_paused { crate::contracts::types::PlaybackStatus::Playing } else { crate::contracts::types::PlaybackStatus::Paused };
         let position = match backend.position() {
             Ok(position) => position,
             Err(error) => { drop(backend); self.recover_from_backend_error(error); return Ok(Value::Null); }
@@ -5282,7 +5290,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         // froze pause/resume and every later command; 2026-08-23).
         let mut video_followed = false;
         {
-            let mut video_guard = self.video_current.lock().unwrap();
+            let mut video_guard = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(video) = video_guard.as_mut() {
                 if matches!(video.status, crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Ready) && !was_paused {
                     video.status = crate::contracts::events::VideoStatus::Paused;
@@ -5300,12 +5308,12 @@ fn promotion_error(error: PromotionError) -> ContractError {
             self.publish_video_state();
         }
         if was_paused {
-            if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.resume(0.0); }
-        } else if let Some(clock) = self.clock.lock().unwrap().as_mut() {
+            if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.resume(0.0); }
+        } else if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             clock.pause(0.0, Some(position));
         }
         let snapshot = self.playback_snapshot(
-            *self.playback_status.lock().unwrap(),
+            *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()),
             position,
             duration,
         );
@@ -5321,7 +5329,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
     /// which restarts from zero. A no-op when nothing is paused.
     #[cfg(target_os = "macos")]
     fn resume_track(&self) -> Result<Value, ContractError> {
-        if *self.playback_status.lock().unwrap() != crate::contracts::types::PlaybackStatus::Paused {
+        if *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) != crate::contracts::types::PlaybackStatus::Paused {
             return Ok(Value::Null);
         }
         // CATCH-UP KICK (2026-08-25): resuming after a long pause must find
@@ -5330,7 +5338,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         // missed kick, Unavailable retry), one idempotent pipeline pass runs
         // here, off the UI thread, before/while the audio resumes.
         if self.video_mode_enabled() {
-            let current = self.playback.lock().unwrap().current().cloned();
+            let current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned();
             if let Some(track) = current {
                 if !self.current_video_live(&track) {
                     self.kick_video_pipeline();
@@ -5351,7 +5359,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         // touched the video and left it frozen while the song played.
         let mut video_resumed = false;
         {
-            let mut video_guard = self.video_current.lock().unwrap();
+            let mut video_guard = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(video) = video_guard.as_mut() {
                 if matches!(video.status, crate::contracts::events::VideoStatus::Paused) {
                     video.status = crate::contracts::events::VideoStatus::Playing;
@@ -5365,8 +5373,8 @@ fn promotion_error(error: PromotionError) -> ContractError {
         if video_resumed {
             self.publish_video_state();
         }
-        if let Some(clock) = self.clock.lock().unwrap().as_mut() { clock.resume(0.0); }
-        *self.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Playing;
+        if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.resume(0.0); }
+        *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Playing;
         let snapshot = self.playback_snapshot(
             crate::contracts::types::PlaybackStatus::Playing,
             position,
@@ -5392,14 +5400,14 @@ fn promotion_error(error: PromotionError) -> ContractError {
             .map_err(Self::playback_error)?;
         let position = backend.position().map_err(Self::playback_error)?;
         let duration = backend.duration().map_err(Self::playback_error)?;
-        if let Some(clock) = self.clock.lock().unwrap().as_mut() {
+        if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             clock.seek(position, 0.0);
         }
         // The video must land on the same page instantly: push the new audio
         // position into the video state and republish. The frontend clamps to
         // the staged video's duration and self-corrects residual drift.
         {
-            let mut video_guard = self.video_current.lock().unwrap();
+            let mut video_guard = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(video) = video_guard.as_mut() {
                 if matches!(video.status, crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Paused) {
                     video.position_ms = position.as_millis() as u64;
@@ -5409,7 +5417,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
                 }
             }
         }
-        let status = *self.playback_status.lock().unwrap();
+        let status = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner());
         let snapshot = self.playback_snapshot(status, position, duration);
         self.publish_playback(snapshot.clone(), None);
         serde_json::to_value(snapshot).map_err(|e| ContractError {
@@ -5430,8 +5438,8 @@ fn promotion_error(error: PromotionError) -> ContractError {
             return;
         }
         static MEDIA_KEY_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let status = *self.playback_status.lock().unwrap();
-        let current = self.playback.lock().unwrap().current().cloned();
+        let status = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner());
+        let current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned();
         let command = match key {
             MediaKey::Toggle => match status {
                 PlaybackStatus::Playing => Command::Pause,
@@ -5472,7 +5480,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         // Record the intended volume first (guards are dropped before the
         // audio lock is taken below, keeping a single lock order), then apply
         // it to the live backend so current playback responds immediately.
-        *self.volume.lock().unwrap() = volume;
+        *self.volume.lock().unwrap_or_else(|e| e.into_inner()) = volume;
         if let Ok(mut backend) = self.audio.lock() {
             backend.set_volume(volume);
         }
@@ -5498,7 +5506,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
                 return Err(ContractError { code: ErrorCode::Unavailable, message: "audio duration is unavailable".into(), retryable: true });
             }
         };
-        let status = *self.playback_status.lock().unwrap();
+        let status = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner());
         let elapsed = position;
         // ---- Video follow: auto-play/pause + COARSE clock sync --------------
         // Event-driven, not poll-driven: publish ONLY on play/pause transitions
@@ -5508,7 +5516,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         let elapsed_ms = elapsed.as_millis() as u64;
         let mut video_needs_publish = false;
         {
-            let mut video = self.video_current.lock().unwrap();
+            let mut video = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(state) = video.as_mut() {
                 match (status, state.status) {
                     (crate::contracts::types::PlaybackStatus::Playing, crate::contracts::events::VideoStatus::Ready) => {
@@ -5556,7 +5564,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         let stall_action = if status == crate::contracts::types::PlaybackStatus::Playing {
             const REBUILD_AFTER_TICKS: u32 = 10; // ~4 s frozen
             const ADVANCE_AFTER_TICKS: u32 = 20; // ~8 s frozen
-            let mut stall = self.playback_stall.lock().unwrap();
+            let mut stall = self.playback_stall.lock().unwrap_or_else(|e| e.into_inner());
             match *stall {
                 Some((last, ticks)) if last == position => {
                     let next = ticks + 1;
@@ -5581,7 +5589,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
                 }
             }
         } else {
-            *self.playback_stall.lock().unwrap() = None;
+            *self.playback_stall.lock().unwrap_or_else(|e| e.into_inner()) = None;
             StallAction::None
         };
         match stall_action {
@@ -5594,8 +5602,8 @@ fn promotion_error(error: PromotionError) -> ContractError {
             StallAction::None => {}
         }
         // ----------------------------------------------------------------------
-        let due = self.clock.lock().unwrap().as_ref().is_some_and(|clock| clock.completion_due(elapsed, true, elapsed));
-        if due && self.clock.lock().unwrap().as_mut().is_some_and(|clock| clock.dispatch_completion()) {
+        let due = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|clock| clock.completion_due(elapsed, true, elapsed));
+        if due && self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut().is_some_and(|clock| clock.dispatch_completion()) {
             drop(backend);
             let _ = self.next_track()?;
         } else {
@@ -5610,7 +5618,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         reason: crate::contracts::events::ShutdownReason,
         deadline: Duration,
     ) -> ShutdownReport {
-        let admission = self.admission.lock().unwrap();
+        let admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         self.shutdown_events_locked(reason, deadline, &admission)
     }
 
@@ -5620,7 +5628,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         deadline: Duration,
         _admission: &std::sync::MutexGuard<'_, ()>,
     ) -> ShutdownReport {
-        let mut stored_result = self.shutdown_result.lock().unwrap();
+        let mut stored_result = self.shutdown_result.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(report) = *stored_result {
             return report;
         }
@@ -5719,16 +5727,16 @@ fn promotion_error(error: PromotionError) -> ContractError {
         let started = std::time::Instant::now();
         loop {
             let pending = self.pending_events().len();
-            let in_flight = *self.event_in_flight.lock().unwrap();
-            let active = *self.event_draining.lock().unwrap();
+            let in_flight = *self.event_in_flight.lock().unwrap_or_else(|e| e.into_inner());
+            let active = *self.event_draining.lock().unwrap_or_else(|e| e.into_inner());
             let remaining_events = pending + in_flight.max(usize::from(active));
-            let Some(sink) = self.event_sink.lock().unwrap().clone() else {
+            let Some(sink) = self.event_sink.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
                 return remaining_events;
             };
             let drained = self.drain_events(|event| sink(event.clone()));
             let pending = self.pending_events().len();
-            let in_flight = *self.event_in_flight.lock().unwrap();
-            let active = *self.event_draining.lock().unwrap();
+            let in_flight = *self.event_in_flight.lock().unwrap_or_else(|e| e.into_inner());
+            let active = *self.event_draining.lock().unwrap_or_else(|e| e.into_inner());
             let remaining = pending + in_flight.max(usize::from(active));
             if remaining == 0 && !matches!(drained, Ok(false)) {
                 return 0;
@@ -5745,7 +5753,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         spec: crate::process::supervisor::ProcessSpec,
     ) -> Result<crate::process::supervisor::ProcessOutput, crate::process::supervisor::SuperviseError>
     {
-        let _admission = self.admission.lock().unwrap();
+        let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         self.supervisor.run_admitted(spec, &self.tasks)
     }
     pub fn process_count(&self) -> usize {

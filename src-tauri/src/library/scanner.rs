@@ -42,21 +42,21 @@ pub fn scoped_os_scan_hook(hook: OsScanHook) -> OsScanHookGuard {
         .get_or_init(|| Mutex::new(()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *OS_SCAN_HOOK.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(hook);
+    *OS_SCAN_HOOK.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
     OsScanHookGuard { _scope: scope }
 }
 
 #[cfg(test)]
 impl Drop for OsScanHookGuard {
     fn drop(&mut self) {
-        *OS_SCAN_HOOK.get_or_init(|| Mutex::new(None)).lock().unwrap() = None;
+        *OS_SCAN_HOOK.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
 impl FileSystem for OsFileSystem {
     fn read_dir(&self, path: &Path) -> Result<Vec<Entry>, String> {
         #[cfg(test)]
-        if let Some(hook) = OS_SCAN_HOOK.get().and_then(|hook| hook.lock().unwrap().clone()) {
+        if let Some(hook) = OS_SCAN_HOOK.get().and_then(|hook| hook.lock().unwrap_or_else(|e| e.into_inner()).clone()) {
             hook(path);
         }
         fs::read_dir(path)

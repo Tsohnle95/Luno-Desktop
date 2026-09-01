@@ -48,30 +48,30 @@ impl DownloadCoordinator {
     /// Subscribe before starting a job. Each job delivery consumer owns its receiver.
     pub fn events_for(&self, job_id: &str) -> mpsc::Receiver<DownloadEvent> {
         let (sender, receiver) = mpsc::channel();
-        self.subscribers.lock().unwrap().entry(job_id.to_owned()).or_default().push(sender);
+        self.subscribers.lock().unwrap_or_else(|e| e.into_inner()).entry(job_id.to_owned()).or_default().push(sender);
         receiver
     }
 
     pub fn remove_events_for(&self, job_id: &str) {
-        self.subscribers.lock().unwrap().remove(job_id);
+        self.subscribers.lock().unwrap_or_else(|e| e.into_inner()).remove(job_id);
     }
 
     /// Compatibility subscription for policy tests; it receives every job event.
     pub fn events(&self) -> Option<mpsc::Receiver<DownloadEvent>> {
         let (sender, receiver) = mpsc::channel();
-        self.subscribers.lock().unwrap().entry("*".into()).or_default().push(sender);
+        self.subscribers.lock().unwrap_or_else(|e| e.into_inner()).entry("*".into()).or_default().push(sender);
         Some(receiver)
     }
 
     pub fn is_busy(&self) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         reap(&mut inner);
         inner.active.is_some()
     }
 
     pub fn start(&self, request: DownloadRequest, worker: DownloadWorker) -> Result<(), StartError> {
         if request.job_id.trim().is_empty() || request.destination.as_os_str().is_empty() { return Err(StartError::InvalidRequest); }
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         reap(&mut inner);
         if inner.closing { return Err(StartError::ShuttingDown); }
         if inner.active.is_some() { return Err(StartError::Busy); }
@@ -86,7 +86,7 @@ impl DownloadCoordinator {
         let destination = request.destination;
         let join = thread::Builder::new().name("luno-download".into()).spawn(move || {
             let emit = |event: DownloadEvent| {
-                let mut subscriptions = subscribers.lock().unwrap();
+                let mut subscriptions = subscribers.lock().unwrap_or_else(|e| e.into_inner());
                 let mut send = |key: &str| {
                     if let Some(list) = subscriptions.get_mut(key) { list.retain(|sender| sender.send(event.clone()).is_ok()); }
                 };
@@ -120,12 +120,12 @@ impl DownloadCoordinator {
     }
 
     pub fn cancel(&self) -> bool {
-        let job_id = self.inner.lock().unwrap().active.as_ref().map(|job| job.job_id.clone());
+        let job_id = self.inner.lock().unwrap_or_else(|e| e.into_inner()).active.as_ref().map(|job| job.job_id.clone());
         job_id.is_some_and(|job_id| self.cancel_job(&job_id))
     }
 
     pub fn cancel_job(&self, requested_job_id: &str) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(job) = inner.active.as_ref().filter(|job| job.job_id == requested_job_id) {
             if job.token.is_cancelled() { false } else {
                 job.token.cancel();
@@ -136,7 +136,7 @@ impl DownloadCoordinator {
     }
 
     fn emit(&self, event: DownloadEvent) {
-        let mut subscriptions = self.subscribers.lock().unwrap();
+        let mut subscriptions = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
         for key in [event.job_id(), "*"] {
             if let Some(list) = subscriptions.get_mut(key) { list.retain(|sender| sender.send(event.clone()).is_ok()); }
         }
@@ -145,13 +145,13 @@ impl DownloadCoordinator {
 
     pub fn shutdown(&self, deadline: Duration) -> ShutdownReport {
         let started = Instant::now();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.closing = true;
         if let Some(job) = &inner.active { job.token.cancel(); }
         while inner.active.as_ref().is_some_and(|job| !job.join.is_finished()) && started.elapsed() < deadline {
             drop(inner);
             thread::sleep(Duration::from_millis(2));
-            inner = self.inner.lock().unwrap();
+            inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         }
         let timed_out = inner.active.as_ref().is_some_and(|job| !job.join.is_finished());
         if !timed_out { reap(&mut inner); }
@@ -180,7 +180,7 @@ impl Default for DownloadCoordinator { fn default() -> Self { Self::new() } }
 
 impl Drop for DownloadCoordinator {
     fn drop(&mut self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(job) = inner.active.take() {
             job.token.cancel();
             let _ = job.join.join();

@@ -28,16 +28,16 @@ impl ProcessRegistry {
         self.register_checked(false)
     }
     fn register_checked(&self, closing: bool) -> Result<(u64, CancellationToken), SuperviseError> {
-        let _admission = self.admission.lock().unwrap();
+        let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         if closing || self.closing.load(Ordering::Acquire) { return Err(SuperviseError::Cancelled); }
-        let mut n = self.next.lock().unwrap(); *n += 1; let id = *n;
-        let token = CancellationToken::new(); self.inner.lock().unwrap().insert(id, token.clone()); Ok((id, token))
+        let mut n = self.next.lock().unwrap_or_else(|e| e.into_inner()); *n += 1; let id = *n;
+        let token = CancellationToken::new(); self.inner.lock().unwrap_or_else(|e| e.into_inner()).insert(id, token.clone()); Ok((id, token))
     }
-    fn unregister(&self, id: u64) { self.inner.lock().unwrap().remove(&id); }
-    pub fn cancel_all(&self) { for token in self.inner.lock().unwrap().values() { token.cancel(); } }
-    pub fn active_count(&self) -> usize { self.inner.lock().unwrap().len() }
+    fn unregister(&self, id: u64) { self.inner.lock().unwrap_or_else(|e| e.into_inner()).remove(&id); }
+    pub fn cancel_all(&self) { for token in self.inner.lock().unwrap_or_else(|e| e.into_inner()).values() { token.cancel(); } }
+    pub fn active_count(&self) -> usize { self.inner.lock().unwrap_or_else(|e| e.into_inner()).len() }
     pub fn shutdown(&self, deadline: Duration) -> bool {
-        let _admission = self.admission.lock().unwrap();
+        let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         self.closing.store(true, Ordering::Release);
         self.cancel_all();
         drop(_admission);

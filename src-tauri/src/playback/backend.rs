@@ -57,10 +57,9 @@ pub trait AudioBackend {
     fn load_streaming(&mut self, path: &Path) -> Result<TrackInfo, BackendError> {
         self.load(path)
     }
-    /// Like `load_streaming`, but accepts a pre-computed duration so the
-    /// caller can run the file probe OUTSIDE any shared lock — probing can
-    /// block for seconds on cold storage, and holding the backend lock for it
-    /// froze pause/seek/volume/heartbeat for the whole load.
+    /// Like `load_streaming`, but accepts a duration already known from scan
+    /// metadata. Streaming backends should let their producer discover an
+    /// unknown duration rather than synchronously opening the file twice.
     fn load_streaming_with_duration(&mut self, path: &Path, known_duration: Option<Duration>) -> Result<TrackInfo, BackendError> {
         let _ = known_duration;
         self.load_streaming(path)

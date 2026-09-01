@@ -19,8 +19,8 @@ impl From<io::Error> for StageError { fn from(e: io::Error) -> Self { Self::Io(e
 #[derive(Debug, Clone)]
 pub struct VideoStage { root: PathBuf, library_root: Option<PathBuf>, generation: u64 }
 
-/// Sidecar mapping track identity -> downloaded YouTube id, persisted next to
-/// the MP4s. Without it every staging attempt had to re-run the multi-second
+/// Session sidecar mapping track identity -> downloaded YouTube id, stored next
+/// to the MP4s. Without it every staging attempt had to re-run the multi-second
 /// YouTube search BEFORE the cache could be checked (the filename needs the
 /// id), so a cached video still sat behind minutes of network work.
 ///
@@ -213,17 +213,13 @@ impl VideoStage {
 }
 
 fn cleanup(root: &Path) -> io::Result<()> {
-    // Startup sweep: KEEP previously staged MP4s (current-*/next-*) so the
-    // index fast-path can adopt them instantly across launches — wiping them
-    // here turned every app start into a full re-download despite the index.
-    // Only partial downloads and stray temp files are removed.
-    let index = root.join(INDEX_FILE);
+    // The video store is a SESSION cache, not a library. A fresh app runtime
+    // must not resurrect videos from an earlier launch (or silently retain
+    // hundreds of MB indefinitely). Within one runtime the VideoStage and its
+    // index remain alive, so revisiting a track and queue prefetch handoffs are
+    // still instant. Startup removes the MP4s, index, partials, and upgrades.
     for entry in fs::read_dir(root)? {
         let path = entry?.path();
-        if path == index { continue; }
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with("current-") || name.starts_with("next-") { continue; }
-        }
         if path.is_file() { let _ = fs::remove_file(path); }
     }
     Ok(())
@@ -281,4 +277,19 @@ mod staging_index_tests {
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+
+    #[test]
+    fn a_new_runtime_clears_videos_and_index_from_the_previous_session() {
+        let root = std::env::temp_dir().join(format!("luno-session-video-cleanup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let first = VideoStage::at(&root, None).unwrap();
+        fs::write(first.external_destination(Slot::Current, "old").unwrap(), b"old video").unwrap();
+        first.record_index("artisttitle", "old");
+        fs::write(root.join(".old.part"), b"partial").unwrap();
+
+        let second = VideoStage::at(&root, None).unwrap();
+        assert!(second.indexed_id("artisttitle").is_none());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
 }

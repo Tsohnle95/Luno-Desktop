@@ -54,15 +54,15 @@ impl TaskRegistry {
         Self { limit, inner: Mutex::new(Inner { closing: false, next_id: 0, entries: HashMap::new(), latest: HashMap::new(), failed: false }) }
     }
 
-    pub fn active_count(&self) -> usize { self.inner.lock().unwrap().entries.len() }
-    pub fn is_closing(&self) -> bool { self.inner.lock().unwrap().closing }
-    pub fn begin_shutdown(&self) { self.inner.lock().unwrap().closing = true; }
+    pub fn active_count(&self) -> usize { self.inner.lock().unwrap_or_else(|e| e.into_inner()).entries.len() }
+    pub fn is_closing(&self) -> bool { self.inner.lock().unwrap_or_else(|e| e.into_inner()).closing }
+    pub fn begin_shutdown(&self) { self.inner.lock().unwrap_or_else(|e| e.into_inner()).closing = true; }
 
     pub fn spawn<T, F>(&self, spec: TaskSpec, work: F) -> Result<TaskHandle<T>, SpawnError>
     where T: Send + 'static, F: FnOnce(CancellationToken) -> T + Send + 'static {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let (id, token) = {
-            let mut state = self.inner.lock().unwrap();
+            let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             self.reap_finished(&mut state);
             if state.closing { return Err(SpawnError::ShuttingDown); }
             if state.entries.len() >= self.limit { return Err(SpawnError::AtCapacity); }
@@ -93,16 +93,16 @@ impl TaskRegistry {
     }
 
     pub fn cancel_key(&self, key: &str) -> bool {
-        let state = self.inner.lock().unwrap();
+        let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         state.latest.get(key).and_then(|id| state.entries.get(id)).map(|e| { e.token.cancel(); true }).unwrap_or(false)
     }
 
     pub fn cancel_all(&self) {
-        for entry in self.inner.lock().unwrap().entries.values() { entry.token.cancel(); }
+        for entry in self.inner.lock().unwrap_or_else(|e| e.into_inner()).entries.values() { entry.token.cancel(); }
     }
 
     pub fn is_current(&self, spec: &TaskSpec) -> bool {
-        let state = self.inner.lock().unwrap();
+        let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         !state.closing
             && state
                 .latest
@@ -114,13 +114,13 @@ impl TaskRegistry {
 
     pub fn shutdown(&self, deadline: Duration) -> ShutdownReport {
         let started = Instant::now();
-        let mut state = self.inner.lock().unwrap();
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if !state.closing { state.closing = true; }
         for entry in state.entries.values() { entry.token.cancel(); }
         drop(state);
         let mut joined = 0;
         loop {
-            let mut state = self.inner.lock().unwrap();
+            let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             joined += self.reap_finished(&mut state);
             if state.entries.is_empty() { return ShutdownReport { joined, timed_out: false, failed: state.failed, undelivered: 0 }; }
             if started.elapsed() >= deadline { return ShutdownReport { joined, timed_out: true, failed: state.failed, undelivered: 0 }; }

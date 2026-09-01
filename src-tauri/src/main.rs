@@ -58,7 +58,27 @@ async fn backend_command(
     let app_state = state.inner().clone();
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = app_state.dispatch(envelope);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app_state.dispatch(envelope)))
+            .unwrap_or_else(|panic| {
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("dispatch panicked");
+                // PoisonError is an internal detail — surface a sanitized internal error
+                // so the UI does not show `PoisonError { .. }` and a restart can recover
+                // via lock poisoning recovery.
+                let sanitized = if message.contains("PoisonError") {
+                    "internal dispatch error (poison recovered)".to_string()
+                } else {
+                    format!("dispatch panicked: {message}")
+                };
+                Err(ContractError {
+                    code: luno_desktop_lib::contracts::types::ErrorCode::Internal,
+                    message: sanitized,
+                    retryable: true,
+                })
+            });
         if let Err(error) = drain_pending_events(&handle, &app_state) {
             return Err(error_json(ContractError {
                 code: luno_desktop_lib::contracts::types::ErrorCode::Internal,
@@ -88,9 +108,24 @@ async fn dispatch_target_async(
 ) -> Result<Value, String> {
     let inner = state.inner().clone();
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || dispatch_target(&handle, &inner, command))
-        .await
-        .map_err(|error| format!("command worker failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch_target(&handle, &inner, command)))
+            .unwrap_or_else(|panic| {
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("dispatch panicked");
+                let sanitized = if message.contains("PoisonError") {
+                    "internal dispatch error (poison recovered)".to_string()
+                } else {
+                    format!("dispatch panicked: {message}")
+                };
+                Err(sanitized)
+            })
+    })
+    .await
+    .map_err(|error| format!("command worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -125,11 +160,11 @@ fn error_json(error: ContractError) -> String {
 
 #[tauri::command]
 fn migration_status(state: tauri::State<'_, AppState>) -> Result<MigrationStatus, String> {
-    state
+    Ok(state
         .migration_status
         .lock()
-        .map(|status| status.clone())
-        .map_err(|_| "migration status unavailable".into())
+        .unwrap_or_else(|e| e.into_inner())
+        .clone())
 }
 
 #[tauri::command]

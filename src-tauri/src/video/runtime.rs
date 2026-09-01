@@ -20,7 +20,11 @@ use std::time::Duration;
 /// a staged pipeline must always settle, even if only with an error.
 /// Pipes are drained by reader threads so a chatty child can never fill the
 /// OS pipe buffer and deadlock against our poll loop.
-fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<std::process::Output, String> {
+fn run_with_timeout_cancel(
+    mut command: Command,
+    timeout: Duration,
+    cancel: Option<&AtomicBool>,
+) -> Result<std::process::Output, String> {
     command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     let mut child = command.spawn().map_err(|error| format!("process could not start: {error}"))?;
     let mut stdout_pipe = child.stdout.take();
@@ -43,6 +47,11 @@ fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<std::proc
     });
     let started = std::time::Instant::now();
     loop {
+        if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("cancelled".into());
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 return Ok(std::process::Output { status, stdout: stdout_reader.join().unwrap_or_default(), stderr: stderr_reader.join().unwrap_or_default() });
@@ -60,12 +69,20 @@ fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<std::proc
     }
 }
 
+fn run_with_timeout(command: Command, timeout: Duration) -> Result<std::process::Output, String> {
+    run_with_timeout_cancel(command, timeout, None)
+}
+
 const YT_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Search yt-dlp (`ytsearchN:`) and parse one JSON object per line. Eight
 /// raw results per form keep the relaxed fallback tier in `video::source::lookup`
 /// supplied — five left one-refused-upload dead ends with no alternates.
 pub fn yt_search(helper: &Path, query: &str) -> Vec<VideoCandidate> {
+    yt_search_cancellable(helper, query, None)
+}
+
+fn yt_search_cancellable(helper: &Path, query: &str, cancel: Option<&AtomicBool>) -> Vec<VideoCandidate> {
     let mut command = Command::new(helper);
     command.args([
         "--dump-json",
@@ -77,7 +94,7 @@ pub fn yt_search(helper: &Path, query: &str) -> Vec<VideoCandidate> {
         "1:8",
         &format!("ytsearch8:{query}"),
     ]);
-    let output = match run_with_timeout(command, YT_SEARCH_TIMEOUT) {
+    let output = match run_with_timeout_cancel(command, YT_SEARCH_TIMEOUT, cancel) {
         Ok(output) => output,
         Err(error) => {
             eprintln!("[luno-video] yt search failed: {error}");
@@ -111,11 +128,15 @@ pub fn yt_search(helper: &Path, query: &str) -> Vec<VideoCandidate> {
 /// time now collapses to roughly ONE search regardless of how many forms the
 /// relevance tiers end up needing.
 pub fn find_sources(helper: &Path, artist: Option<&str>, title: &str) -> Vec<VideoSource> {
+    find_sources_cancellable(helper, artist, title, None)
+}
+
+fn find_sources_cancellable(helper: &Path, artist: Option<&str>, title: &str, cancel: Option<&AtomicBool>) -> Vec<VideoSource> {
     let forms = crate::video::source::query_forms(artist, title);
     let buffered: Vec<Vec<VideoCandidate>> = thread::scope(|scope| {
         let handles: Vec<_> = forms
             .iter()
-            .map(|query| scope.spawn(|| yt_search(helper, query)))
+            .map(|query| scope.spawn(|| yt_search_cancellable(helper, query, cancel)))
             .collect();
         handles.into_iter().map(|handle| handle.join().unwrap_or_default()).collect()
     });
@@ -200,6 +221,7 @@ fn download_ladder(
     cancel: &Arc<AtomicBool>,
     ladder: &str,
     progress: Option<&Arc<VideoProgress>>,
+    timeout: Duration,
 ) -> Result<(), String> {
     if cancel.load(Ordering::Acquire) { return Err("cancelled".into()); }
     let mut command = Command::new(helper);
@@ -211,7 +233,7 @@ fn download_ladder(
         command.stdout(std::process::Stdio::null());
         command.stderr(std::process::Stdio::piped());
     }
-    command.args(["--newline",
+    command.args(["--newline", "--no-color",
         // NO --extractor-args client overrides here: forcing specific clients
         // (tv/web) changes which format ladder YouTube serves and can match
         // NOTHING. The stock rotation works; per-video refusals are handled
@@ -220,6 +242,9 @@ fn download_ladder(
         // Parallel DASH fragment pulls — cuts long-video download times hard
         // (single-stream YouTube throttling was the 50s+ wait on a 15-min film).
         "--concurrent-fragments", "8",
+        // Stable machine-readable progress on stdout. Parsing yt-dlp's
+        // human layout was brittle across releases and terminal modes.
+        "--progress-template", "download:%(progress._percent_str)s",
         "--merge-output-format", "mp4",
         "-o",
     ]);
@@ -266,7 +291,6 @@ fn download_ladder(
     // Overall wall-clock budget: a wedged download must fail the candidate
     // (and fall through to the next one) instead of staging forever.
     let started = std::time::Instant::now();
-    const DOWNLOAD_BUDGET: Duration = Duration::from_secs(300);
     loop {
         if cancel.load(Ordering::Acquire) {
             let _ = child.kill();
@@ -274,11 +298,11 @@ fn download_ladder(
             let _ = fs::remove_file(destination);
             return Err("cancelled".into());
         }
-        if started.elapsed() >= DOWNLOAD_BUDGET {
+        if started.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
             let _ = fs::remove_file(destination);
-            return Err("video download timed out after 300s".into());
+            return Err(format!("video download timed out after {}s", timeout.as_secs()));
         }
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -306,7 +330,7 @@ fn download_ladder(
 /// track is downloaded BEFORE the user reaches it, and a single 1080p pull of
 /// a long video starved disk/network long enough to freeze the whole window.
 pub fn download_video(helper: &Path, ffmpeg_dir: Option<&Path>, url: &str, destination: &Path, cancel: &Arc<AtomicBool>) -> Result<(), String> {
-    download_ladder(helper, ffmpeg_dir, url, destination, cancel, FORMAT_LADDER_HIGH, None)
+    download_ladder(helper, ffmpeg_dir, url, destination, cancel, FORMAT_LADDER_HIGH, None, Duration::from_secs(300))
 }
 
 /// WKWebView decodes H.264/AAC in MP4 but NOT Opus-in-MP4. yt-dlp's fallback
@@ -400,7 +424,7 @@ pub fn prefetch_track(
         // recording nothing would make a later restage re-search anyway.
         if stager.index_lookup(key, Slot::Current).is_some() { return true; }
     }
-    let sources = find_sources(helper, artist, title);
+    let sources = find_sources_cancellable(helper, artist, title, Some(cancel));
     eprintln!("[luno-video] prefetch \"{artist:?} - {title}\" -> {} candidates", sources.len());
     let mut last_error = String::from("no candidate could be downloaded");
     for source in sources.into_iter().take(3) {
@@ -544,7 +568,7 @@ pub fn stage_track(
             };
         }
     }
-    let sources = find_sources(helper, artist, title);
+    let sources = find_sources_cancellable(helper, artist, title, Some(cancel));
     eprintln!("[luno-video] search for \"{artist:?} - {title}\" -> {} candidates", sources.len());
     if sources.is_empty() {
         return Ok(VideoOutcome::Unavailable("no relevant video found".into()));
@@ -554,8 +578,19 @@ pub fn stage_track(
     // hit is not always downloadable — fall through to alternates.
     let track_key = track_index_key(artist, title);
     let mut last_error = String::from("no candidate could be downloaded");
+    // Interactive staging has a hard TOTAL budget. Previously every one of
+    // three candidates could consume a five-minute timeout, so a bad result
+    // list left the spinner running for up to fifteen minutes.
+    const INTERACTIVE_TOTAL_BUDGET: Duration = Duration::from_secs(120);
+    const INTERACTIVE_CANDIDATE_BUDGET: Duration = Duration::from_secs(75);
+    let interactive_started = std::time::Instant::now();
     for source in sources.into_iter().take(3) {
         if cancel.load(Ordering::Acquire) { return Ok(VideoOutcome::Unavailable("cancelled".into())); }
+        let remaining = INTERACTIVE_TOTAL_BUDGET.saturating_sub(interactive_started.elapsed());
+        if remaining.is_zero() {
+            last_error = "video staging timed out after 120s".into();
+            break;
+        }
         let slot_generation = stager.begin_generation();
         let destination = match stager.external_destination(Slot::Current, &source.id) { Ok(path) => path, Err(error) => return Err(error) };
         let mut cached = destination.is_file() && fs::metadata(&destination).map(|m| m.len() > 0).unwrap_or(false);
@@ -574,9 +609,9 @@ pub fn stage_track(
             let result = match progress {
                 Some(reporter) => {
                     reporter.percent.store(0, Ordering::Release);
-                    download_ladder(helper, ffmpeg_dir, &source.url, &destination, cancel, FORMAT_LADDER_QUICK, Some(reporter))
+                    download_ladder(helper, ffmpeg_dir, &source.url, &destination, cancel, FORMAT_LADDER_QUICK, Some(reporter), remaining.min(INTERACTIVE_CANDIDATE_BUDGET))
                 }
-                None => download_ladder(helper, ffmpeg_dir, &source.url, &destination, cancel, FORMAT_LADDER_QUICK, None),
+                None => download_ladder(helper, ffmpeg_dir, &source.url, &destination, cancel, FORMAT_LADDER_QUICK, None, remaining.min(INTERACTIVE_CANDIDATE_BUDGET)),
             };
             if let Err(message) = result {
                 let _ = fs::remove_file(&destination);
@@ -648,7 +683,7 @@ pub fn upgrade_staged_video(
     let file_name = destination.file_name().and_then(|n| n.to_str()).ok_or("staged video has unusable name")?;
     let temporary = destination.with_file_name(format!(".upgrading-{file_name}"));
     let _ = fs::remove_file(&temporary);
-    let result = download_ladder(helper, ffmpeg_dir, &crate::video::source::canonical_url(video_id_from_destination(file_name)), &temporary, cancel, FORMAT_LADDER_HIGH, None)
+    let result = download_ladder(helper, ffmpeg_dir, &crate::video::source::canonical_url(video_id_from_destination(file_name)), &temporary, cancel, FORMAT_LADDER_HIGH, None, Duration::from_secs(300))
         .and_then(|_| {
             if let Some(dir) = ffmpeg_dir {
                 ensure_playable_audio(dir, &temporary)?;
@@ -700,6 +735,7 @@ mod runtime_tests {
         assert_eq!(extract_percent("[download]  42.3% of ~150.00MiB at 2.10MiB/s"), Some(42));
         assert_eq!(extract_percent("[download]   0.0% of 12.34MiB"), Some(0));
         assert_eq!(extract_percent("[download] 100% of 12.34MiB"), Some(100));
+        assert_eq!(extract_percent("download: 67.8%"), Some(68));
         assert_eq!(extract_percent("[download] Destination: already downloaded"), None);
         assert_eq!(extract_percent("no numbers here %"), None);
         assert_eq!(extract_percent("[download] 150.0% of x"), None);

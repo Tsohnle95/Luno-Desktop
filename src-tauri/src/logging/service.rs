@@ -38,15 +38,15 @@ struct Inner { entries: VecDeque<LogEntry>, subscribers: Vec<mpsc::Sender<LogEve
 impl Default for LogService { fn default() -> Self { Self::new() } }
 impl LogService {
     pub fn new() -> Self { Self { inner: Arc::new(Mutex::new(Inner { entries: VecDeque::with_capacity(MAX_ENTRIES), subscribers: Vec::new(), closed: false })) } }
-    pub fn subscribe(&self) -> mpsc::Receiver<LogEvent> { let (tx, rx) = mpsc::channel(); let mut inner = self.inner.lock().unwrap(); if inner.closed { let _ = tx.send(LogEvent::Shutdown); } else { inner.subscribers.push(tx); } rx }
+    pub fn subscribe(&self) -> mpsc::Receiver<LogEvent> { let (tx, rx) = mpsc::channel(); let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner()); if inner.closed { let _ = tx.send(LogEvent::Shutdown); } else { inner.subscribers.push(tx); } rx }
     pub fn record(&self, level: LogLevel, area: impl Into<String>, message: impl AsRef<str>) -> Result<LogEntry, ErrorKind> { self.record_kind(level, area, message, None) }
     pub fn worker_error(&self, area: impl Into<String>, message: impl AsRef<str>) -> Result<LogEntry, ErrorKind> { self.record_kind(LogLevel::Error, area, message, Some(ErrorKind::Worker)) }
     pub fn error(&self, area: impl Into<String>, message: impl AsRef<str>, kind: ErrorKind) -> Result<LogEntry, ErrorKind> { self.record_kind(LogLevel::Error, area, message, Some(kind)) }
-    pub fn entries(&self) -> Vec<LogEntry> { self.inner.lock().unwrap().entries.iter().cloned().collect() }
-    pub fn shutdown(&self) { let mut inner = self.inner.lock().unwrap(); if inner.closed { return; } inner.closed = true; for subscriber in inner.subscribers.drain(..) { let _ = subscriber.send(LogEvent::Shutdown); } }
-    pub fn is_shutdown(&self) -> bool { self.inner.lock().unwrap().closed }
+    pub fn entries(&self) -> Vec<LogEntry> { self.inner.lock().unwrap_or_else(|e| e.into_inner()).entries.iter().cloned().collect() }
+    pub fn shutdown(&self) { let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner()); if inner.closed { return; } inner.closed = true; for subscriber in inner.subscribers.drain(..) { let _ = subscriber.send(LogEvent::Shutdown); } }
+    pub fn is_shutdown(&self) -> bool { self.inner.lock().unwrap_or_else(|e| e.into_inner()).closed }
     fn record_kind(&self, level: LogLevel, area: impl Into<String>, message: impl AsRef<str>, error_kind: Option<ErrorKind>) -> Result<LogEntry, ErrorKind> {
-        let mut inner = self.inner.lock().unwrap(); if inner.closed { return Err(ErrorKind::ShuttingDown); }
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner()); if inner.closed { return Err(ErrorKind::ShuttingDown); }
         let entry = LogEntry { timestamp_ms: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(), level, area: redact(&area.into()), message: redact(message.as_ref()), error_kind };
         if inner.entries.len() == MAX_ENTRIES { inner.entries.pop_front(); } inner.entries.push_back(entry.clone());
         inner.subscribers.retain(|s| s.send(LogEvent::Added(entry.clone())).is_ok());

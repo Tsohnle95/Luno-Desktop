@@ -57,6 +57,9 @@ struct OutputState {
     buffer: VecDeque<f32>,
     /// Frames consumed by the output callback; the authoritative position.
     played_frames: u64,
+    /// Filled by the producer as soon as the container header is available.
+    /// This lets playback start without a duplicate synchronous pre-probe.
+    duration: Option<Duration>,
     playing: bool,
     /// The producer reached EOF (or a fatal decode error).
     ended: bool,
@@ -128,14 +131,17 @@ impl CpalSymphoniaBackend {
         state: Arc<Mutex<OutputState>>,
         stop: mpsc::Receiver<ProducerCommand>,
     ) {
-        let (mut format, track_id, _) = match Self::open_track(&path) {
+        let (mut format, track_id, duration) = match Self::open_track(&path) {
             Ok(probed) => probed,
             Err(error) => {
                 eprintln!("audio producer could not open track: {error}");
-                state.lock().unwrap().ended = true;
+                state.lock().unwrap_or_else(|e| e.into_inner()).ended = true;
                 return;
             }
         };
+        if duration.is_some() {
+            state.lock().unwrap_or_else(|e| e.into_inner()).duration = duration;
+        }
         let mut decoder = match symphonia::default::get_codecs().make(
             &format.tracks()[track_id as usize].codec_params,
             &DecoderOptions::default(),
@@ -143,7 +149,7 @@ impl CpalSymphoniaBackend {
             Ok(decoder) => decoder,
             Err(error) => {
                 eprintln!("audio producer could not build decoder: {error}");
-                state.lock().unwrap().ended = true;
+                state.lock().unwrap_or_else(|e| e.into_inner()).ended = true;
                 return;
             }
         };
@@ -152,9 +158,9 @@ impl CpalSymphoniaBackend {
                 break; // stopped or disconnected
             }
             // Pull a pending seek before consuming anything else.
-            let pending_seek = state.lock().unwrap().seek_to;
+            let pending_seek = state.lock().unwrap_or_else(|e| e.into_inner()).seek_to;
             if let Some(target) = pending_seek {
-                state.lock().unwrap().seek_to = None;
+                state.lock().unwrap_or_else(|e| e.into_inner()).seek_to = None;
                 let seconds = (target / SAMPLE_RATE as u64) as u64;
                 let to = SeekTo::Time {
                     time: symphonia::core::units::Time::new(seconds, 0.0),
@@ -171,7 +177,7 @@ impl CpalSymphoniaBackend {
                     ) {
                         Ok(next) => {
                             decoder = next;
-                            let mut state = state.lock().unwrap();
+                            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                             state.buffer.clear();
                             state.played_frames = target;
                             state.ended = false;
@@ -187,7 +193,7 @@ impl CpalSymphoniaBackend {
                 continue;
             }
             let full = {
-                let state = state.lock().unwrap();
+                let state = state.lock().unwrap_or_else(|e| e.into_inner());
                 state.buffer.len() / (CHANNELS as usize) >= BUFFER_CAPACITY_FRAMES
             };
             if full {
@@ -203,7 +209,7 @@ impl CpalSymphoniaBackend {
                         Ok(decoded) => {
                             let mut chunk = Vec::new();
                             append_stereo_44100(&decoded, &mut chunk);
-                            let mut state = state.lock().unwrap();
+                            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                             // A seek arrived while decoding; drop this stale chunk.
                             if state.seek_to.is_some() {
                                 continue;
@@ -216,17 +222,17 @@ impl CpalSymphoniaBackend {
                     }
                 }
                 Err(symphonia::core::errors::Error::IoError(_)) => {
-                    state.lock().unwrap().ended = true;
+                    state.lock().unwrap_or_else(|e| e.into_inner()).ended = true;
                     break; // expected end of stream
                 }
                 Err(error) => {
                     eprintln!("audio stream ended with error: {error}");
-                    state.lock().unwrap().ended = true;
+                    state.lock().unwrap_or_else(|e| e.into_inner()).ended = true;
                     break;
                 }
             }
         }
-        let _ = state.lock().unwrap().ended;
+        let _ = state.lock().unwrap_or_else(|e| e.into_inner()).ended;
     }
 
     fn spawn_producer(
@@ -278,7 +284,7 @@ impl CpalSymphoniaBackend {
             .build_output_stream(
                 &config,
                 move |data: &mut [f32], _| {
-                    let mut state = state.lock().unwrap();
+                    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                     let volume = state.volume;
                     for frame in data.chunks_mut(CHANNELS as usize) {
                         let mut left = 0.0f32;
@@ -394,9 +400,9 @@ impl AudioBackend for CpalSymphoniaBackend {
         self.load_streaming_with_duration(path, None)
     }
 
-    /// `known_duration` lets callers run the (potentially slow — cold disk,
-    /// iCloud materialization) file probe OUTSIDE the audio mutex; the swap-in
-    /// below then only touches in-memory state and thread spawns.
+    /// Starts the producer immediately and lets THAT producer perform the one
+    /// required container probe. `known_duration` seeds the UI when scan data
+    /// has it; an unknown duration is filled by the producer after open.
     fn load_streaming_with_duration(&mut self, path: &Path, known_duration: Option<Duration>) -> Result<TrackInfo, BackendError> {
         let ext = path
             .extension()
@@ -416,10 +422,7 @@ impl AudioBackend for CpalSymphoniaBackend {
             .as_ref()
             .map(|state| state.lock().map(|state| state.volume).unwrap_or(1.0))
             .unwrap_or(1.0);
-        let duration = match known_duration {
-            Some(duration) => Some(duration),
-            None => Self::open_track(path)?.2,
-        };
+        let duration = known_duration;
         let info = TrackInfo {
             path: path.to_path_buf(),
             duration,
@@ -431,6 +434,7 @@ impl AudioBackend for CpalSymphoniaBackend {
         let state = Arc::new(Mutex::new(OutputState {
             buffer: VecDeque::new(),
             played_frames: 0,
+            duration,
             playing: false,
             ended: false,
             volume: prior_volume.clamp(0.0, 1.0),
@@ -445,14 +449,14 @@ impl AudioBackend for CpalSymphoniaBackend {
 
     fn set_volume(&mut self, volume: f32) {
         if let Some(state) = &self.state {
-            state.lock().unwrap().volume = volume.clamp(0.0, 1.0);
+            state.lock().unwrap_or_else(|e| e.into_inner()).volume = volume.clamp(0.0, 1.0);
         }
     }
 
     fn play(&mut self) -> Result<(), BackendError> {
         let state = self.state.as_ref().ok_or(BackendError::NotLoaded)?.clone();
         let stream_failed = {
-            let mut guard = state.lock().unwrap();
+            let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
             let failed = guard.failed;
             guard.failed = false;
             failed
@@ -461,13 +465,13 @@ impl AudioBackend for CpalSymphoniaBackend {
             self.stop_stream();
             self.start_stream(state.clone())?;
         }
-        state.lock().unwrap().playing = true;
+        state.lock().unwrap_or_else(|e| e.into_inner()).playing = true;
         Ok(())
     }
 
     fn pause(&mut self) -> Result<(), BackendError> {
         let state = self.state.as_ref().ok_or(BackendError::NotLoaded)?;
-        state.lock().unwrap().playing = false;
+        state.lock().unwrap_or_else(|e| e.into_inner()).playing = false;
         Ok(())
     }
 
@@ -475,7 +479,7 @@ impl AudioBackend for CpalSymphoniaBackend {
         let state = self.state.as_ref().ok_or(BackendError::NotLoaded)?.clone();
         let frame = position.as_secs_f64().mul_add(SAMPLE_RATE as f64, 0.0) as u64;
         let ended = {
-            let mut state = state.lock().unwrap();
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
             state.seek_to = Some(frame);
             state.ended
         };
@@ -500,17 +504,17 @@ impl AudioBackend for CpalSymphoniaBackend {
     }
 
     fn duration(&self) -> Result<Option<Duration>, BackendError> {
-        self.track
-            .as_ref()
-            .map(|t| t.duration)
-            .ok_or(BackendError::NotLoaded)
+        let track = self.track.as_ref().ok_or(BackendError::NotLoaded)?;
+        Ok(self.state.as_ref()
+            .and_then(|state| state.lock().ok().and_then(|state| state.duration))
+            .or(track.duration))
     }
 
     fn stop(&mut self) {
         self.stop_stream();
         self.stop_producer();
         if let Some(state) = &self.state {
-            state.lock().unwrap().playing = false;
+            state.lock().unwrap_or_else(|e| e.into_inner()).playing = false;
         }
     }
 
@@ -568,7 +572,7 @@ mod tests {
         let path = wav_fixture("reload");
         backend.load_streaming(&path).expect("first track should load");
         assert_eq!(
-            backend.state.as_ref().unwrap().lock().unwrap().volume,
+            backend.state.as_ref().unwrap().lock().unwrap_or_else(|e| e.into_inner()).volume,
             1.0,
             "a fresh backend starts at full volume"
         );
@@ -576,11 +580,10 @@ mod tests {
         // A transition reloads the output state; the user's volume must carry
         // over instead of snapping back to 1.0.
         backend.load_streaming(&path).expect("reload should swap the output state");
-        let volume = backend.state.as_ref().unwrap().lock().unwrap().volume;
+        let volume = backend.state.as_ref().unwrap().lock().unwrap_or_else(|e| e.into_inner()).volume;
         assert!(
             (volume - 0.3).abs() < 1e-6,
             "master volume must survive a track reload, got {volume}"
         );
     }
 }
-
