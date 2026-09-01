@@ -4291,12 +4291,59 @@ impl AppState {
                     "permanent_failures": markers.failed.len()
                 }))
             }
-            Command::SearchDownloader { query, try_soundcloud } => {
+            Command::SearchDownloader { query, try_soundcloud, limit } => {
                 let sources = crate::download::workflows::search_sources(&query, try_soundcloud)
                     .map_err(|error| ContractError::invalid(format!("invalid downloader search: {error:?}")))?;
-                Ok(serde_json::to_value(sources.into_iter().map(|(provider, query)| {
-                    serde_json::json!({ "provider": format!("{provider:?}").to_lowercase(), "query": query })
-                }).collect::<Vec<_>>()).unwrap_or(Value::Null))
+                let limit = limit.clamp(1, crate::contracts::types::MAX_DOWNLOADER_SEARCH_LIMIT);
+                let helper = self.bundle_helper.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                // Without the bundled download helper there is nothing to
+                // search with: report Unavailable so the UI surfaces the exact
+                // reason instead of silently showing "no matches".
+                let Some(helper) = helper else {
+                    return Err(ContractError {
+                        code: ErrorCode::Unavailable,
+                        message: "downloader search is unavailable until the bundled download helper is configured".into(),
+                        retryable: false,
+                    });
+                };
+                // Search shells out to the bundled yt-dlp binary directly (the
+                // helper script is a download wrapper, not a search tool). The
+                // binary lives beside the helper in the managed resources dir.
+                let managed_dir = helper.parent().map(PathBuf::from);
+                let ytdlp = crate::process::executables::discover(
+                    crate::process::executables::ExecutableKind::YtDlp,
+                    managed_dir.as_deref(),
+                );
+                let ytdlp = match ytdlp {
+                    Ok(path) => path,
+                    Err(error) => {
+                        return Err(ContractError {
+                            code: ErrorCode::Unavailable,
+                            message: format!("downloader search is unavailable: {error}"),
+                            retryable: false,
+                        });
+                    }
+                };
+                let mut results = Vec::new();
+                for (provider, source_query) in sources {
+                    let provider_name = format!("{provider:?}").to_lowercase();
+                    // `workflows::search_sources` returns the full provider query
+                    // (`ytsearch1:<query>`); strip the prefix so the search module
+                    // rebuilds it with its own result limit (`ytsearchN:`).
+                    let user_query = source_query
+                        .split_once(':')
+                        .map(|(_, rest)| rest.to_string())
+                        .unwrap_or(source_query.clone());
+                    let mut found = crate::download::search::search_provider(&ytdlp, &provider_name, &user_query, limit);
+                    // The provider query (e.g. `ytsearch1:artist track`) is the
+                    // download source for each hit; carry it so a selected row
+                    // downloads exactly what the user picked.
+                    for result in &mut found {
+                        result.query = source_query.clone();
+                    }
+                    results.extend(found);
+                }
+                Ok(serde_json::to_value(results).unwrap_or(Value::Null))
             }
             Command::Discover { artist, title, limit } => {
                 let limit = limit.clamp(1, crate::contracts::types::MAX_DISCOVER_LIMIT);
@@ -4708,6 +4755,15 @@ impl AppState {
                 envelope.job_id = Some(worker_job.clone());
                 state.publish(envelope);
                 if let Some(error) = error { state.publish(state.event(generation, Event::Error { error })); }
+                if matches!(event, DownloadEvent::Succeeded { .. }) {
+                    // A completed download wrote a new audio file into the
+                    // library; refresh the snapshot so the song appears in the
+                    // app immediately (the legacy Python app called
+                    // `_refresh_library()` on completion). Scans are
+                    // generation-guarded and coalesce, so repeated downloads
+                    // queue at most one follow-up scan.
+                    let _ = state.scan_async();
+                }
                 if matches!(event, DownloadEvent::Succeeded { .. } | DownloadEvent::Failed { .. } | DownloadEvent::Cancelled { .. }) { break; }
             }
         }).map_err(|_| ContractError { code: ErrorCode::Internal, message: "download worker could not start".into(), retryable: true })?;

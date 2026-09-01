@@ -5,7 +5,7 @@ import { currentVideoForTrack, playRecentTrack, runBridgeCommand, safeVideoSourc
 import type { BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope } from "../shared/contracts";
 import type { SaveState } from "../shared/contracts";
-import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot } from "../shared/contracts";
+import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot, isSearchResults } from "../shared/contracts";
 
 const nativeInvoke = vi.hoisted(() => vi.fn());
 // convertFileSrc mirrors Tauri's injected macOS runtime implementation
@@ -45,6 +45,19 @@ describe("typed IPC bridge and projection", () => {
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover", payload: { artist: "", title: "Track", limit: 5 } } })).toBe(false);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover", payload: { artist: "Artist", title: "Track", limit: 0 } } })).toBe(false);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover", payload: { artist: "Artist", title: "Track", limit: 21 } } })).toBe(false);
+    // search_downloader now carries an explicit result limit (Load More).
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "search_downloader", payload: { query: "artist track", try_soundcloud: true, limit: 25 } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "search_downloader", payload: { query: "artist track", try_soundcloud: true } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "search_downloader", payload: { query: "artist track", try_soundcloud: true, limit: 0 } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "search_downloader", payload: { query: "artist track", try_soundcloud: true, limit: 51 } } })).toBe(false);
+  });
+
+  it("accepts rich downloader search results and rejects the legacy provider-query shape", () => {
+    const rich = [{ provider: "youtube", query: "ytsearch1:artist track", title: "Spaceboy", artist: "Smashing Pumpkins", duration: "4:28", thumbnail_url: "https://i.ytimg.com/vi/x/hqdefault.jpg", url: "https://www.youtube.com/watch?v=x" }];
+    expect(isSearchResults(rich)).toBe(true);
+    // Legacy provider-query-only results (no title) are no longer accepted.
+    expect(isSearchResults([{ provider: "youtube", query: "ytsearch1:artist track" }])).toBe(false);
+    expect(isSearchResults([{ ...rich[0], title: "" }])).toBe(false);
   });
 
   it("validates preview command envelopes", () => {

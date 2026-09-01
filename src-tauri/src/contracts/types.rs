@@ -4,9 +4,16 @@ pub const CONTRACT_VERSION: u16 = 1;
 pub const MAX_SAFE_EVENT_ID: u64 = 9_007_199_254_740_991;
 pub const MAX_DISCOVER_LIMIT: usize = 20;
 pub const MAX_PREVIEW_SEEDS: usize = 50;
+/// Downloader search result cap per provider (YouTube). The frontend "Load
+/// More" grows the cap; legacy parity capped at 10.
+pub const MAX_DOWNLOADER_SEARCH_LIMIT: usize = 50;
 
 pub fn default_discover_limit() -> usize {
     5
+}
+
+pub fn default_search_limit() -> usize {
+    10
 }
 
 pub(crate) fn non_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -318,7 +325,15 @@ pub struct SettingsInput {
 #[serde(deny_unknown_fields)]
 pub struct SearchResult {
     pub provider: String,
+    /// The exact source handed to the download helper: a URL or a provider
+    /// search query (`ytsearch1:...`). The frontend passes this verbatim as
+    /// `start_download`'s `source`.
     pub query: String,
+    pub title: String,
+    pub artist: Option<String>,
+    pub duration: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -3,7 +3,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import type { Bridge } from "./bridge";
 import type { EventEnvelope, JobState, SettingsInput } from "../shared/contracts";
 
-export type Gate4SmokeBridge = Pick<Bridge, "loadSettings" | "saveSettings" | "registerRoot" | "selectLibraryRoot" | "previewCsv" | "validateDirectUrl" | "queueUrls" | "syncMarkers" | "transferExport" | "transferPreview" | "transferApply" | "startDownload" | "getLibrary" | "scanLibrary" | "shutdown" | "subscribe">;
+export type Gate4SmokeBridge = Pick<Bridge, "loadSettings" | "saveSettings" | "registerRoot" | "selectLibraryRoot" | "previewCsv" | "validateDirectUrl" | "queueUrls" | "syncMarkers" | "transferExport" | "transferPreview" | "transferApply" | "startDownload" | "getLibrary" | "scanLibrary" | "searchDownloader" | "shutdown" | "subscribe">;
 export interface Gate4SmokeConfig { home: string; root: string; helper: string; destination: string; timeoutMs?: number }
 export interface Gate4CommandResult { name: string; succeeded: boolean }
 export interface Gate4SmokeResult {
@@ -17,7 +17,6 @@ export interface Gate4SmokeResult {
 }
 
 const UNEXERCISED_BOUNDARIES = [
-  "provider search and provider/network access",
   "native file-picker UI",
   "real external provider credentials or services",
 ];
@@ -78,6 +77,7 @@ export async function runGate4SmokeProbe(bridge: Gate4SmokeBridge, config: Gate4
     await runCommand("loadSettings", () => bridge.loadSettings(config.home));
     await runCommand("registerRoot", () => bridge.registerRoot(config.root));
     await runCommand("selectLibraryRoot", () => bridge.selectLibraryRoot(config.root));
+    await runCommand("searchDownloader", () => bridge.searchDownloader("gate 4 fixture search", false, 3));
     await runCommand("previewCsv", () => bridge.previewCsv("Track Name,Artist Name(s)\nGate 4 Fixture,Fixture Artist\n"));
     await runCommand("validateDirectUrl", () => bridge.validateDirectUrl("https://example.test/gate4-fixture", config.destination));
     await runCommand("queueUrls", () => bridge.queueUrls(["https://example.test/gate4-fixture"]));

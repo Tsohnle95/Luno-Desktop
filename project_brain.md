@@ -75,6 +75,7 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── src/app/gate5Smoke.tsx    # Development-only real-bridge discovery/preview/artwork/video staging smoke probe
 ├── src/test/gate3_smoke.test.ts # Deterministic command/event lifecycle coverage for the Gate 3 probe
 ├── src-tauri/src/gate5_tests.rs # Deterministic target-policy fixtures for discovery, previews, artwork, video, and shutdown
+├── src-tauri/src/download/search.rs # Downloader hub REAL yt-dlp search: `--dump-json --flat-playlist` per provider query (`ytsearchN:`/`scsearchN:`), 30s deadline, parsed into rich SearchResult rows
 ├── src-tauri/src/video/stream.rs # Range-aware `luno-video://` streaming protocol for staged MP4s (≤2 MB 206 windows; store-containment enforced)
 ├── src-tauri/src/video/runtime.rs # Live video pipeline: yt-dlp YouTube search (relevance-filtered), ≤720p MP4 download into the staging store, cancellation, and VideoState JSON
 ├── src-tauri/src/runtime/gate5_smoke.rs # Opt-in native Gate 5 command seam using caller-provided synthetic fixture roots
@@ -359,7 +360,19 @@ with a `CARGO_MANIFEST_DIR` fallback for development) with yt-dlp
 (AAC-LC), staged with an atomic rename and promoted on the MP4 `ftyp`
 signature; see `docs/decisions/download-format-m4a.md`. Destinations default to
 `Unsorted` under the configured library root, and destination directories are
-created inside the root when missing.
+created inside the root when missing. The Downloader hub's SEARCH now returns
+REAL results: `Command::SearchDownloader` shells out to the bundled yt-dlp
+binary (discovered beside the helper via `process::executables::discover`) with
+`--dump-json --flat-playlist --playlist-items 1:N` for each provider
+(`ytsearchN:` YouTube, `scsearchN:` SoundCloud), parsing each JSON line into
+`SearchResult {provider, query, title, artist, duration, thumbnail_url, url}` —
+the UI shows real songs with titles/artists/thumbnails instead of raw provider
+queries, and each row's `query` (the `ytsearch1:`/`scsearch1:` source) is what
+`start_download` hands to the helper. The frontend threads the user-chosen
+destination (default Unsorted plus every discovered playlist folder) through
+the download queue, and a SUCCEEDED download triggers an automatic library
+rescan on the backend so the new file appears immediately — the legacy Python
+app's `_refresh_library()`-on-completion behavior, restored in the Tauri target.
 Startup migration validates the legacy discovery inputs through
 `validate_existing_path`, which canonicalizes standard macOS system redirects
 (for example `/tmp` -> `/private/tmp`) instead of rejecting them, preserves the
@@ -420,6 +433,12 @@ startup failure banner.
 5. Progress hook → coalesced `controller.after(0, ...)` → UI update
 6. On complete → `_refresh_library()` → coalesced library scan
 7. Playlist sync compares candidates against the whole local music library root, not only the destination playlist folder, so Sync All avoids duplicating tracks that already exist in another playlist. It tracks successful/matched YouTube IDs in `.downloaded_vids` and permanent failures in `.sync_failed_vids` inside the playlist folder.
+
+**Tauri target (current app):** the Downloader hub drives the same download machinery through the versioned IPC:
+1. Search tab → `bridge.searchDownloader(query, try_soundcloud, limit)` → `Command::SearchDownloader` → shells the BUNDLED yt-dlp binary (discovered beside the helper) with `--dump-json --flat-playlist --playlist-items 1:N` per provider (`ytsearchN:` YouTube ≤50, `scsearchN:` SoundCloud ≤5, 30 s deadline) and returns rich `SearchResult` rows (title/artist/duration/thumbnail/url) — the UI renders real songs with thumbnails, not raw `ytsearch1:` query strings.
+2. The user picks a destination from the Save-to dropdown: `Unsorted` (default, created inside the root when missing) plus every playlist folder the scanner has discovered; "+ New" creates another folder (the backend creates it on the next download and a scan registers it as a playlist).
+3. `onDownload(ids, destination)` pushes `{id, source, destination}` rows onto the download queue; each row's `source` is the search hit's provider query or CSV URL. The queue runs one job at a time; a REJECTED start clears the active-job gate and advances to the next item (a stale gate previously wedged the queue silently).
+4. A SUCCEEDED download triggers `scan_async()` on the backend so the new file appears in the app immediately (legacy `_refresh_library()`-on-completion parity); the frontend's job-progress accordion and Home "Recently downloaded" journal reflect completion.
 
 ### Artwork Fetching
 1. `PlaylistArt` or `SongPageView` requests art → `ArtCache.get(path, size, callback)`; downloader search cards use a separate bounded 64-entry thumbnail cache and bounded in-flight executor (4 concurrent)

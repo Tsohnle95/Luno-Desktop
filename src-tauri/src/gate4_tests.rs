@@ -102,12 +102,24 @@ fn fake_helper(root: &std::path::Path) -> PathBuf {
     let helper = root.join("fake-helper");
     fs::write(
         &helper,
-        "#!/bin/sh\nprintf '%s' \"$HOME\" > \"$HOME/helper-home-seen\"\ncase \"$1\" in\n  missing) exit 0 ;;\n  partial) printf 'not audio' > \"$2\" ;;\n  valid) printf 'ID3synthetic-audio' > \"$2\" ;;\n  *) printf 'ID3synthetic-audio' > \"$1\" ;;\nesac\n",
+        "#!/bin/sh\nprintf '%s' \"$HOME\" > \"$HOME/helper-home-seen\"\nif [ \"$1\" = \"--dump-json\" ]; then\n  printf '%s\\n' '{\"id\":\"fixture-video\",\"title\":\"Fixture Track\",\"uploader\":\"Fixture Artist\",\"webpage_url\":\"https://example.test/watch?v=fixture-video\"}'\n  exit 0\nfi\ncase \"$1\" in\n  missing) exit 0 ;;\n  partial) printf 'not audio' > \"$2\" ;;\n  valid) printf 'ID3synthetic-audio' > \"$2\" ;;\n  *) printf 'ID3synthetic-audio' > \"$1\" ;;\nesac\n",
     )
     .unwrap();
     let mut permissions = fs::metadata(&helper).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&helper, permissions).unwrap();
+    // The downloader search discovers the yt-dlp BINARY beside the helper.
+    // A fake that answers `--dump-json` with one fixture hit keeps the search
+    // boundary deterministic without network access.
+    let ytdlp = root.join("yt-dlp");
+    fs::write(
+        &ytdlp,
+        "#!/bin/sh\nif [ \"$1\" = \"--dump-json\" ]; then\n  printf '%s\\n' '{\"id\":\"fixture-video\",\"title\":\"Fixture Track\",\"uploader\":\"Fixture Artist\",\"webpage_url\":\"https://example.test/watch?v=fixture-video\",\"duration\":268}'\n  exit 0\nfi\nexit 1\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&ytdlp).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&ytdlp, permissions).unwrap();
     helper
 }
 
@@ -599,6 +611,7 @@ fn target_dispatch_runs_search_settings_and_fake_download_event_path() {
     let helper = fake_helper(&root);
     let state = crate::state::AppState::new(8);
     state.set_scan_roots(vec![root.0.clone()]);
+    state.set_bundle_helper(Some(helper.clone()));
     let search = state
         .dispatch(CommandEnvelope {
             version: 1,
@@ -606,10 +619,22 @@ fn target_dispatch_runs_search_settings_and_fake_download_event_path() {
             command: BackendCommand::SearchDownloader {
                 query: "artist-a".into(),
                 try_soundcloud: true,
+                limit: 10,
             },
         })
         .unwrap();
-    assert_eq!(search.as_array().unwrap().len(), 2);
+    // Real search runs the bundled yt-dlp with `--dump-json`; the fake helper
+    // answers one fixture hit for every provider query (SoundCloud + YouTube).
+    let results = search.as_array().unwrap();
+    assert_eq!(results.len(), 2, "one hit per enabled provider: {results:?}");
+    let providers: Vec<_> = results.iter().map(|r| r["provider"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(providers, ["soundcloud", "youtube"], "legacy provider order preserved");
+    for result in results {
+        assert_eq!(result["title"], "Fixture Track");
+        assert_eq!(result["artist"], "Fixture Artist");
+        // The download source handed to start_download is the provider query.
+        assert!(result["query"].as_str().unwrap().contains("search1:"));
+    }
     let settings = crate::contracts::types::SettingsInput {
         music_root: Some(root.to_string_lossy().into_owned()),
         auto_discovery: Some(false),

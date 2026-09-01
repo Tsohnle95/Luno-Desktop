@@ -202,14 +202,27 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     }));
   };
   const [activeDownloadJob, setActiveDownloadJob] = useState<{ jobId: string } | null>(null);
-  const downloadQueueRef = useRef<Array<{ id: string; source: string }>>([]);
-  const downloadBase = fixtureDestination ?? (libraryRootPath ? `${libraryRootPath}/Unsorted` : null);
+  const downloadQueueRef = useRef<Array<{ id: string; source: string; destination: string }>>([]);
   const downloadHelperPath = fixtureHelper ?? bundleHelperPath;
-  const sourceForDownload = (id: string) => csvPreview.find((item) => item.id === id)?.source ?? id;
+  // Destinations are concrete folders under the library root. The default is
+  // `Unsorted` (created inside the root when missing); playlist folders that
+  // the scanner already discovered appear as additional choices.
+  const downloadDestinations = useMemo(() => {
+    if (fixtureDestination) return [fixtureDestination];
+    if (!libraryRootPath) return [];
+    const unsorted = `${libraryRootPath}/Unsorted`;
+    const playlistDirs = (projection.library?.playlists ?? [])
+      .map((playlist) => playlist.path)
+      .filter((path): path is string => !!path && path.startsWith(`${libraryRootPath}/`) && path !== unsorted)
+      .sort((a, b) => a.localeCompare(b));
+    return [unsorted, ...playlistDirs];
+  }, [fixtureDestination, libraryRootPath, projection.library]);
+  const downloadBase = downloadDestinations[0] ?? null;
+  const sourceForDownload = (id: string) => csvPreview.find((item) => item.id === id)?.source ?? downloadSources.find((item) => item.query === id || item.url === id)?.query ?? id;
   const startNextDownload = () => {
     const next = downloadQueueRef.current.shift();
     if (!next) return;
-    if (!downloadBase || !downloadHelperPath) {
+    if (!next.destination || !downloadHelperPath) {
       setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured.");
       setActiveDownloadJob(null);
       return;
@@ -221,14 +234,25 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     // so name downloads after their metadata whenever we know it — otherwise
     // every downloaded song shows up as "Unknown artist".
     const row = csvPreview.find((item) => item.id === next.id || item.source === next.source);
-    const label = [row?.artist, row?.title].filter(Boolean).join(" - ")
+    const searchRow = downloadSources.find((item) => item.query === next.id || item.url === next.id);
+    const label = [row?.artist ?? searchRow?.artist ?? "", row?.title ?? searchRow?.title ?? ""].filter(Boolean).join(" - ")
       .replace(/[\\/:*?"<>|]/g, "")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 96);
     const filename = label ? `${label}.${extension}` : `${jobId}.${extension}`;
     setActiveDownloadJob({ jobId });
-    runCommand(bridge?.startDownload(jobId, `${downloadBase}/${filename}`, downloadHelperPath, next.source.replace(/\r|\n/g, " ").trim()));
+    // A rejected start must clear the active-job gate so the NEXT queued item
+    // can run; otherwise the 15s fallback in the job-watch effect would
+    // double-start (Busy) and the queue wedges silently — the "nothing
+    // happened" symptom when a download could not start.
+    const start = bridge?.startDownload(jobId, `${next.destination}/${filename}`, downloadHelperPath, next.source.replace(/\r|\n/g, " ").trim());
+    if (!start) { setActiveDownloadJob(null); return; }
+    start.then(() => setCommandError(null)).catch((error: unknown) => {
+      setActiveDownloadJob(null);
+      setCommandError(normalizeRuntimeCommandError(error));
+      startNextDownload();
+    });
   };
   useEffect(() => {
     if (!activeDownloadJob) return;
@@ -569,7 +593,20 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const homeViewEl = <HomeView allTracksCount={tracks.length} madeForYou={madeForYouTracks} favorites={tracks.filter((track) => track.favorite)} recentTracks={recentTracks} popularTracks={popularTracks} popularPlaylists={popularPlaylists} recentlyDownloaded={downloadedTracks} onPlayTrack={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onOpenLibrary={() => setLibraryHome(false)} onOpenRecent={() => navigate("recent")} onOpenDownloader={() => navigate("downloader")} onOpenPlaylist={(playlistId) => { setLibraryScope(playlistId); setLibraryHome(false); navigate("library"); }} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} backendAvailable={available} />;
   const recentViewEl = <RecentView tracks={recentTracks} playback={projection.playback} backendAvailable={available} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />;
   const discoverViewEl = <DiscoverView seed={discoverSeed} recommendations={discover.items} session={projection.preview} saved={projection.saved} playlists={projection.library?.playlists ?? []} loading={discover.loading} error={discover.error} onRefresh={() => setDiscoverRefresh((value) => value + 1)} onTap={(key) => runCommand(bridge?.previewTap(discover.items.slice(0, 50).map((item) => ({ artist: item.artist, title: item.title })), key))} onNext={() => runCommand(bridge?.previewNext())} onPrevious={() => runCommand(bridge?.previewPrevious())} onCancel={() => runCommand(bridge?.previewCancel())} onSave={(key, playlistId) => runCommand(bridge?.saveRecommendation(key, playlistId))} />;
-  const downloaderViewEl = <DownloaderView error={commandError} jobs={projection.jobs} destinations={fixtureDestination ? [fixtureDestination] : libraryRootPath ? [`${libraryRootPath}/Unsorted`] : []} searchResults={downloadSources.map((item) => ({ id: item.query, title: item.query, artist: item.provider }))} previewTracks={csvPreview} onSearch={(query) => { if (bridge) bridge.searchDownloader(query).then((value) => setDownloadSources(value)).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onPreview={(value, kind) => { if (!bridge) return; if (kind === "csv") bridge.previewCsv(value).then((result) => { const rows = (result as { rows?: Array<{ id: string; title: string; artist?: string; url?: string }> }).rows ?? []; setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: row.url }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onDownload={(ids) => { if (!downloadBase || !downloadHelperPath) { setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured."); return; } for (const id of ids) downloadQueueRef.current.push({ id, source: sourceForDownload(id).replace(/\r|\n/g, " ").trim() }); startNextDownload(); }} onDirectUrl={(url, destination) => runCommand(bridge?.validateDirectUrl(url, destination))} onQueueUrl={(url) => runCommand(bridge?.queueUrls([url]))} onSync={(_, destination) => { if (!destination.startsWith("/")) { setCommandError("Sync requires the configured library folder, not a playlist label."); return; } runCommand(bridge?.syncMarkers(destination)); }} onCancel={(jobId) => runCommand(bridge?.cancelJob(jobId))} onRetry={(jobId) => { if (!downloadHelperPath) { setCommandError("Download retry is unavailable until the download helper is configured."); return; } runCommand(bridge?.retryDownload(jobId)); }} />;
+  const createDownloadDestination = () => {
+    if (!libraryRootPath) { setCommandError("Create a library folder in Settings first."); return; }
+    const name = window.prompt("New destination folder name (created under your library root):");
+    if (!name) return;
+    const clean = name.trim().replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").slice(0, 96);
+    if (!clean) { setCommandError("Destination folder name cannot be empty."); return; }
+    if (clean === "Unsorted") { setCommandError("Unsorted is the default; pick another name."); return; }
+    // The backend creates the folder inside the library root on the next
+    // download; the scanner will discover it as a playlist on the next scan.
+    // Kick a scan so the new folder appears as a destination right away.
+    runCommand(bridge?.selectLibraryRoot(libraryRootPath));
+    runCommand(bridge?.scanLibrary());
+  };
+  const downloaderViewEl = <DownloaderView error={commandError} jobs={projection.jobs} destinations={downloadDestinations} defaultDestination={downloadBase ?? undefined} searchResults={downloadSources.map((item) => ({ id: item.query || item.url || item.title, title: item.title, artist: item.artist ?? item.provider, duration: item.duration ?? undefined, thumbnailUrl: item.thumbnail_url ?? undefined, source: item.query }))} previewTracks={csvPreview} onSearch={(query, requested) => { if (bridge) bridge.searchDownloader(query, true, requested ?? 10).then((value) => setDownloadSources(value)).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onPreview={(value, kind) => { if (!bridge) return; if (kind === "csv") bridge.previewCsv(value).then((result) => { const rows = (result as { rows?: Array<{ id: string; title: string; artist?: string; url?: string }> }).rows ?? []; setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: row.url }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); else if (/^https?:\/\//i.test(value.trim())) { bridge.searchDownloader(value.trim(), false, 3).then((results) => { setCsvPreview(results.map((item) => ({ id: item.url ?? item.query, title: item.title, artist: item.artist ?? undefined, source: item.url ?? item.query }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); } else bridge.searchDownloader(value, false, 10).then((results) => { setCsvPreview(results.map((item) => ({ id: item.url ?? item.query, title: item.title, artist: item.artist ?? undefined, source: item.url ?? item.query }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onDownload={(ids, destination) => { if (!destination || !downloadHelperPath) { setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured."); return; } for (const id of ids) downloadQueueRef.current.push({ id, source: sourceForDownload(id).replace(/\r|\n/g, " ").trim(), destination }); startNextDownload(); }} onDirectUrl={(url, destination) => runCommand(bridge?.validateDirectUrl(url, destination))} onQueueUrl={(url) => runCommand(bridge?.queueUrls([url]))} onSync={(_, destination) => { if (!destination.startsWith("/")) { setCommandError("Sync requires the configured library folder, not a playlist label."); return; } runCommand(bridge?.syncMarkers(destination)); }} onCancel={(jobId) => runCommand(bridge?.cancelJob(jobId))} onRetry={(jobId) => { if (!downloadHelperPath) { setCommandError("Download retry is unavailable until the download helper is configured."); return; } runCommand(bridge?.retryDownload(jobId)); }} onCreateDestination={createDownloadDestination} />;
   const errorLogViewEl = <ErrorLogView />;
   const settingsScreens: Record<SettingsNavLink, ReactNode> = { home: homeViewEl, recent: recentViewEl, discover: discoverViewEl, downloader: downloaderViewEl, error_log: errorLogViewEl };
 

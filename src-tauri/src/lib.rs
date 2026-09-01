@@ -32,6 +32,7 @@ pub mod download {
     pub mod coordinator;
     pub mod markers;
     pub mod promotion;
+    pub mod search;
     pub mod sync;
     pub mod workflows;
 }
@@ -90,4 +91,6 @@ mod gate3_tests;
 mod gate4_tests;
 #[cfg(test)]
 mod gate5_tests;
+#[cfg(test)]
+mod gate4_real_dl_test;
 

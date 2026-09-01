@@ -38,6 +38,8 @@ pub enum Command {
         #[serde(deserialize_with = "super::types::non_empty_string")]
         query: String,
         try_soundcloud: bool,
+        #[serde(default = "super::types::default_search_limit")]
+        limit: usize,
     },
     Discover {
         #[serde(deserialize_with = "super::types::non_empty_string")]

@@ -129,8 +129,13 @@ async fn dispatch_target_async(
 }
 
 #[tauri::command]
-async fn downloader_search(app: tauri::AppHandle, state: tauri::State<'_, AppState>, query: String, try_soundcloud: bool) -> Result<Value, String> {
-    dispatch_target_async(app, state, luno_desktop_lib::contracts::events::Command::SearchDownloader { query, try_soundcloud }).await
+async fn downloader_search(app: tauri::AppHandle, state: tauri::State<'_, AppState>, query: String, try_soundcloud: bool, limit: Option<usize>) -> Result<Value, String> {
+    dispatch_target_async(app, state, luno_desktop_lib::contracts::events::Command::SearchDownloader {
+        query,
+        try_soundcloud,
+        limit: limit.unwrap_or(10),
+    })
+    .await
 }
 
 #[tauri::command]

@@ -16,6 +16,7 @@ function fakeBridge(options: { jobState?: "succeeded" | "failed"; shutdown?: boo
     registerRoot: async () => { calls.push("registerRoot"); }, selectLibraryRoot: async () => { calls.push("selectLibraryRoot"); },
     previewCsv: async () => { calls.push("previewCsv"); return {}; }, validateDirectUrl: async () => { calls.push("validateDirectUrl"); return {}; },
     queueUrls: async () => { calls.push("queueUrls"); return {}; }, syncMarkers: async () => { calls.push("syncMarkers"); return {}; },
+    searchDownloader: async () => { calls.push("searchDownloader"); return [{ provider: "youtube", query: "ytsearch1:gate 4 fixture search", title: "Fixture Track", artist: "Fixture Artist", duration: "4:28", thumbnail_url: null, url: "https://example.test/watch?v=fixture" }]; },
     scanLibrary: async () => { calls.push("scanLibrary"); }, getLibrary: async () => { calls.push("getLibrary"); return {}; },
     transferExport: async () => { calls.push("transferExport"); return { manifest: JSON.stringify({ format: "luno.library.export", manifest_version: 1, scope: "library", created_at: "1970-01-01T00:00:00Z", tracks: [], playlists: [], unassigned_track_refs: [] }) }; },
     transferPreview: async () => { calls.push("transferPreview"); return {}; }, transferApply: async () => { calls.push("transferApply"); return {}; },
@@ -37,7 +38,7 @@ describe("Gate 4 runtime smoke probe", () => {
     const fixture = fakeBridge();
     const result = await runGate4SmokeProbe(fixture.bridge, config);
     expect(result.passed).toBe(true);
-    expect(result.commands.map((command) => command.name)).toEqual(["subscribe", "saveSettings", "loadSettings", "registerRoot", "selectLibraryRoot", "previewCsv", "validateDirectUrl", "queueUrls", "syncMarkers", "scanLibrary", "getLibrary", "transferExport", "transferPreview", "transferApply", "startDownload", "shutdown"]);
+    expect(result.commands.map((command) => command.name)).toEqual(["subscribe", "saveSettings", "loadSettings", "registerRoot", "selectLibraryRoot", "searchDownloader", "previewCsv", "validateDirectUrl", "queueUrls", "syncMarkers", "scanLibrary", "getLibrary", "transferExport", "transferPreview", "transferApply", "startDownload", "shutdown"]);
     expect(result.jobStates).toEqual([{ id: "gate4-smoke-job", state: "succeeded" }]);
   });
 
