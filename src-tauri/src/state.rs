@@ -4324,25 +4324,38 @@ impl AppState {
                         });
                     }
                 };
+                // Run provider searches in parallel so combined latency is the
+                // max of the two rather than the sum (each can take up to 30s).
                 let mut results = Vec::new();
-                for (provider, source_query) in sources {
-                    let provider_name = format!("{provider:?}").to_lowercase();
-                    // `workflows::search_sources` returns the full provider query
-                    // (`ytsearch1:<query>`); strip the prefix so the search module
-                    // rebuilds it with its own result limit (`ytsearchN:`).
-                    let user_query = source_query
-                        .split_once(':')
-                        .map(|(_, rest)| rest.to_string())
-                        .unwrap_or(source_query.clone());
-                    let mut found = crate::download::search::search_provider(&ytdlp, &provider_name, &user_query, limit);
-                    // The provider query (e.g. `ytsearch1:artist track`) is the
-                    // download source for each hit; carry it so a selected row
-                    // downloads exactly what the user picked.
-                    for result in &mut found {
-                        result.query = source_query.clone();
+                std::thread::scope(|scope| {
+                    let mut handles = Vec::new();
+                    for (provider, source_query) in sources {
+                        let provider_name = format!("{provider:?}").to_lowercase();
+                        let user_query = source_query
+                            .split_once(':')
+                            .map(|(_, rest)| rest.to_string())
+                            .unwrap_or_else(|| source_query.clone());
+                        let ytdlp = ytdlp.clone();
+                        let source_query_clone = source_query.clone();
+                        let limit = limit;
+                        handles.push(scope.spawn(move || {
+                            let mut found = crate::download::search::search_provider(&ytdlp, &provider_name, &user_query, limit);
+                            // The provider query (e.g. `ytsearch1:artist track`) is the
+                            // download source for each hit; carry it so a selected row
+                            // downloads exactly what the user picked. The per-track
+                            // `url` stays distinct so the UI can key rows by URL.
+                            for result in &mut found {
+                                result.query = source_query_clone.clone();
+                            }
+                            found
+                        }));
                     }
-                    results.extend(found);
-                }
+                    for handle in handles {
+                        if let Ok(found) = handle.join() {
+                            results.extend(found);
+                        }
+                    }
+                });
                 Ok(serde_json::to_value(results).unwrap_or(Value::Null))
             }
             Command::Discover { artist, title, limit } => {
