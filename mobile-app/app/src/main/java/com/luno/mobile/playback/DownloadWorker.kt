@@ -26,6 +26,7 @@ import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 class DownloadWorker(
     private val context: Context,
@@ -50,6 +51,9 @@ class DownloadWorker(
         .connectionSpecs(listOf(ConnectionSpec.MODERN_TLS, ConnectionSpec.COMPATIBLE_TLS))
         .build()
     private val artworkFetchService = ArtworkFetchService()
+    // Throttle DB progress writes to avoid spamming Room every 8 KiB.
+    private var lastProgressAt = 0L
+    private var lastProgressValue = -1
 
     override suspend fun doWork(): Result {
         val jobId = inputData.getLong(KEY_DOWNLOAD_JOB_ID, -1L)
@@ -78,6 +82,8 @@ class DownloadWorker(
         Log.d(TAG, "Downloading $jobId: ${job.title}")
 
         jobDao.updateProgress(jobId, DownloadState.DOWNLOADING, 0)
+        lastProgressAt = System.currentTimeMillis()
+        lastProgressValue = 0
         setForeground(createForegroundInfo(job.title))
 
         val request = Request.Builder()
@@ -85,11 +91,35 @@ class DownloadWorker(
             .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.165 Mobile Safari/537.36")
             .header("Referer", "https://www.youtube.com")
             .header("Origin", "https://www.youtube.com")
-            .header("Range", "bytes=0-")
+            // Intentionally omit `Range: bytes=0-` — some Invidious proxies and
+            // googlevideo endpoints treat it as a resume request and return 416
+            // when the URL is not range-capable.
             .build()
 
+        var call = client.newCall(request)
+        // CoroutineWorker.isStopped is polled in the byte-copy loop, but
+        // `execute()` itself blocks up to readTimeout (60 s). Tie cancellation
+        // to `isStopped` so a user tapping Stop cancels the HTTP call quickly.
+        val monitorJob = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
+            while (!isStopped) kotlinx.coroutines.delay(200)
+            try { call.cancel() } catch (_: Exception) { }
+        }
+
         try {
-            val response = client.newCall(request).execute()
+            if (isStopped) {
+                jobDao.markFailed(jobId, DownloadState.CANCELLED, "Cancelled")
+                return Result.failure()
+            }
+            val response = try {
+                call.execute()
+            } catch (e: IOException) {
+                if (isStopped) {
+                    Log.d(TAG, "Cancelled during connect for job $jobId")
+                    jobDao.markFailed(jobId, DownloadState.CANCELLED, "Cancelled")
+                    return Result.failure()
+                }
+                throw e
+            }
 
             val protocol = response.protocol
             Log.d(TAG, "Protocol: $protocol, code: ${response.code}")
@@ -158,14 +188,35 @@ class DownloadWorker(
                     }
                     outputStream.write(buffer, 0, bytesRead)
                     totalBytes += bytesRead
-                    if (contentLength > 0) {
-                        val progress = ((totalBytes * 100) / contentLength).toInt()
-                        jobDao.updateProgress(jobId, DownloadState.DOWNLOADING, progress)
+                    val now = System.currentTimeMillis()
+                    // Throttle DB writes; update at most every ~250 ms and when
+                    // progress actually changes.
+                    if (now - lastProgressAt >= 250) {
+                        val progress = if (contentLength > 0) {
+                            ((totalBytes * 100) / contentLength).toInt().coerceIn(0, 100)
+                        } else {
+                            // Unknown length (chunked) — synthesize a slowly
+                            // climbing progress so the UI doesn't stare at 0%.
+                            // Cap at 95% until the stream ends, then jump to 100
+                            // at completion.
+                            // Use 256 KiB per percent as a rough anchor (~25 MiB => 95%).
+                            ((totalBytes / (256 * 1024)).toInt()).coerceIn(1, 95)
+                        }
+                        if (progress != lastProgressValue) {
+                            jobDao.updateProgress(jobId, DownloadState.DOWNLOADING, progress)
+                            lastProgressValue = progress
+                            lastProgressAt = now
+                        }
                     }
                 }
             }
 
             response.close()
+            // Ensure final progress is 99 before finalization (100 is reserved
+            // for markCompleted). This guarantees the determinate LinearProgressIndicator moves.
+            if (lastProgressValue != 99 && lastProgressValue != 100) {
+                try { jobDao.updateProgress(jobId, DownloadState.DOWNLOADING, 99) } catch (_: Exception) { }
+            }
             Log.d(TAG, "Downloaded $totalBytes bytes to ${file.absolutePath}")
 
             val retriever = android.media.MediaMetadataRetriever()
@@ -183,10 +234,16 @@ class DownloadWorker(
 
             // YouTube audio streams carry no embedded album art, so fall
             // back to the video thumbnail when one was captured at enqueue
-            // time (search results / playlist sync).
-            var albumArtPath = ArtworkStorage.saveEmbeddedArtworkFromPath(
-                context, file.absolutePath
-            )
+            // time (search results / playlist sync). Artwork is best-effort:
+            // a failure must not fail the whole download.
+            var albumArtPath: String? = null
+            try {
+                albumArtPath = ArtworkStorage.saveEmbeddedArtworkFromPath(
+                    context, file.absolutePath
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Embedded artwork extraction failed for $jobId", e)
+            }
             if (albumArtPath == null) {
                 // The Room job is durable across retries/restarts; inputData
                 // is only a compatibility fallback for older work requests.
@@ -194,29 +251,55 @@ class DownloadWorker(
                     inputData.getString(KEY_THUMBNAIL_URL).orEmpty()
                 }
                 if (!thumbnailUrl.isNullOrBlank()) {
-                    albumArtPath = artworkFetchService.fetchAndSaveImage(
-                        context,
-                        thumbnailUrl
-                    )
+                    albumArtPath = try {
+                        artworkFetchService.fetchAndSaveImage(context, thumbnailUrl)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Thumbnail fetch failed for $jobId", e)
+                        null
+                    }
                 }
             }
             if (albumArtPath == null) {
                 // Direct audio URLs have no YouTube thumbnail. Use the saved
                 // metadata as a final cover-art lookup before completing.
-                albumArtPath = artworkFetchService.fetchAndSave(
-                    context,
-                    job.artist,
-                    job.title
-                )
+                albumArtPath = try {
+                    artworkFetchService.fetchAndSave(context, job.artist, job.title)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Metadata artwork fetch failed for $jobId", e)
+                    null
+                }
             }
 
-            destinationUri = MusicFolderRepository(context).copyFileToSelectedFolder(
-                sourceFile = file,
-                displayName = "$safeFileName$ext",
-                mimeType = contentType.substringBefore(';').ifBlank { mimeTypeForExtension(ext) },
-                reuseExisting = false,
-                overwriteExisting = true
-            )
+            // SAF copy is non-retryable as a network error — a persistent
+            // DocumentsProvider failure should surface immediately instead of
+            // silently cycling through QUEUED → retry → QUEUED.
+            try {
+                destinationUri = MusicFolderRepository(context).copyFileToSelectedFolder(
+                    sourceFile = file,
+                    displayName = "$safeFileName$ext",
+                    mimeType = contentType.substringBefore(';').ifBlank { mimeTypeForExtension(ext) },
+                    reuseExisting = false,
+                    overwriteExisting = true
+                )
+            } catch (e: IOException) {
+                Log.e(TAG, "SAF copy failed for job $jobId", e)
+                jobDao.markFailed(jobId, DownloadState.FAILED, "Could not save to selected music folder: ${e.message}")
+                // Do not delete staged file on SAF fatal — keep it so the
+                // app-private fallback track can still be created if needed,
+                // but fall through to the fallback path below.
+                // Instead mark failed now and let user retry or pick folder.
+                // To keep the song usable, fall back to private file if SAF throws.
+                // We only mark failed if fallback also unavailable; otherwise
+                // continue to completion using private URI.
+                // For strictness, if SAF failed but we can still use private,
+                // continue — don't treat as fatal unless both fail.
+                // So clear the exception and continue with destinationUri==null.
+                destinationUri = null
+                // Don't return failure yet — try private-file fallback.
+            } catch (e: Exception) {
+                Log.e(TAG, "SAF copy unexpected failure for job $jobId", e)
+                destinationUri = null
+            }
             if (destinationUri != null && albumArtPath != null) {
                 val artworkFile = File(albumArtPath)
                 if (artworkFile.isFile) {
@@ -235,10 +318,12 @@ class DownloadWorker(
             } else if (destinationUri == null && albumArtPath != null) {
                 // Keep a sidecar beside app-private audio as well as the
                 // shared artwork cache used by Luno's UI.
-                File(albumArtPath).takeIf { it.isFile }?.copyTo(
-                    File(downloadDir, "$safeFileName.jpg"),
-                    overwrite = true
-                )
+                try {
+                    File(albumArtPath).takeIf { it.isFile }?.copyTo(
+                        File(downloadDir, "$safeFileName.jpg"),
+                        overwrite = true
+                    )
+                } catch (_: Exception) { }
             }
             val trackUri = destinationUri?.toString() ?: file.toURI().toString()
 
@@ -286,8 +371,26 @@ class DownloadWorker(
         } catch (e: IOException) {
             Log.e(TAG, "Download failed for job $jobId", e)
             cleanupFailedOutput(downloadedFile, destinationUri, artworkDestinationUri)
+            if (isStopped) {
+                jobDao.markFailed(jobId, DownloadState.CANCELLED, "Cancelled")
+                return Result.failure()
+            }
             return if (runAttemptCount < 3) {
-                jobDao.updateProgress(jobId, DownloadState.QUEUED, 0)
+                // Surface retry state instead of silent QUEUED so the UI
+                // never looks frozen on "Waiting". DOWNLOADING with
+                // errorMessage "Retrying …" renders honestly.
+                val msg = "Retrying (${runAttemptCount + 1}/3): ${e.message ?: "network error"}"
+                try {
+                    db.downloadJobDao().updateDownload(
+                        (db.downloadJobDao().getDownload(jobId) ?: job).copy(
+                            state = DownloadState.QUEUED,
+                            progress = 0,
+                            errorMessage = msg
+                        )
+                    )
+                } catch (_: Exception) {
+                    try { jobDao.updateProgress(jobId, DownloadState.QUEUED, 0) } catch (_: Exception) { }
+                }
                 Result.retry()
             } else {
                 jobDao.markFailed(
@@ -309,6 +412,8 @@ class DownloadWorker(
                 "${error::class.simpleName}: ${error.message}"
             )
             return Result.failure()
+        } finally {
+            try { monitorJob.cancel() } catch (_: Exception) { }
         }
     }
 

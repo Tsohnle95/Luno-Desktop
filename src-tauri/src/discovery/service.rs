@@ -56,13 +56,30 @@ impl DiscoveryService {
         if self.api_key.as_deref().map(str::trim).unwrap_or("").is_empty() { return DiscoveryResult::Error(DiscoveryError::MissingApiKey); }
         if key.artist.is_empty() || key.title.is_empty() { return DiscoveryResult::Success(Vec::new()); }
         if let Some(items) = self.cache.get(&key).cloned() { return DiscoveryResult::Success(filter_recommendations(items, library)); }
-        let mut items = match self.call("track.getsimilar", artist, Some(title), limit) { Ok(v) => v, Err(e) => return DiscoveryResult::Error(e) };
+        let mut items = match self.call("track.getsimilar", artist, Some(title), limit) {
+            Ok(v) => v,
+            Err(e) if Self::is_not_found(&e) => Vec::new(),
+            Err(e) => return DiscoveryResult::Error(e),
+        };
         if items.is_empty() {
-            items = match self.call("artist.gettoptracks", artist, None, limit) { Ok(v) => v.into_iter().map(|mut r| { r.match_score = 0.8; r }).collect(), Err(e) => return DiscoveryResult::Error(e) };
+            items = match self.call("artist.gettoptracks", artist, None, limit) {
+                Ok(v) => v.into_iter().map(|mut r| { r.match_score = 0.8; r }).collect(),
+                Err(e) if Self::is_not_found(&e) => Vec::new(),
+                Err(e) => return DiscoveryResult::Error(e),
+            };
         }
         items = deduplicate(items);
         if !items.is_empty() { self.store(key, items.clone()); }
         DiscoveryResult::Success(filter_recommendations(items, library))
+    }
+
+    fn is_not_found(error: &DiscoveryError) -> bool {
+        if let DiscoveryError::Request(message) = error {
+            let lower = message.to_lowercase();
+            lower.contains("not found") || lower.contains("could not be found") || lower.contains("no such")
+        } else {
+            false
+        }
     }
 
     fn call(&self, method: &str, artist: &str, title: Option<&str>, limit: usize) -> Result<Vec<Recommendation>, DiscoveryError> {
@@ -102,3 +119,75 @@ pub fn normalized_key(artist: &str, title: &str) -> String {
 }
 pub fn deduplicate(items: Vec<Recommendation>) -> Vec<Recommendation> { let mut seen = HashSet::new(); items.into_iter().filter(|r| seen.insert(normalized_key(&r.artist, &r.title))).collect() }
 pub fn filter_recommendations(items: Vec<Recommendation>, library: &[Recommendation]) -> Vec<Recommendation> { let known: HashSet<_> = library.iter().map(|r| normalized_key(&r.artist, &r.title)).collect(); deduplicate(items).into_iter().filter(|r| !known.contains(&normalized_key(&r.artist, &r.title))).collect() }
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    fn start_mock_server(responses: Vec<(String, String)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        let addr = listener.local_addr().unwrap();
+        let responses = Arc::new(Mutex::new(responses));
+        thread::spawn(move || {
+            for stream in listener.incoming().take(5) {
+                let mut stream = stream.unwrap();
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let mut response_body = r#"{"error":6,"message":"Track not found"}"#.to_string();
+                {
+                    let mut lock = responses.lock().unwrap();
+                    if !lock.is_empty() {
+                        let (needle, body) = lock.remove(0);
+                        if request.contains(&needle) {
+                            response_body = body;
+                        } else {
+                            // keep it for next request if not matched
+                            lock.insert(0, (needle, body));
+                        }
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    #[test]
+    fn track_not_found_falls_back_to_artist_top_tracks() {
+        // First call (track.getsimilar) -> Track not found, second call (artist.gettoptracks) -> one result
+        let server = start_mock_server(vec![
+            ("track.getsimilar".into(), r#"{"error":6,"message":"Track not found"}"#.into()),
+            (
+                "artist.gettoptracks".into(),
+                r#"{"toptracks":{"track":[{"name":"Fallback Song","artist":{"name":"Fallback Artist"},"match":0.5,"image":[]}]}}"#.into(),
+            ),
+        ]);
+        // small delay to ensure server is listening
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mut service = DiscoveryService::with_base_url(Some("test_key".into()), server);
+        let result = service.get_similar("Some Artist", "Missing Track", 5, &[]);
+        assert!(matches!(result, DiscoveryResult::Success(items) if items.len() == 1 && items[0].title == "Fallback Song"));
+    }
+
+    #[test]
+    fn track_not_found_with_empty_fallback_returns_empty_success() {
+        let server = start_mock_server(vec![
+            ("track.getsimilar".into(), r#"{"error":6,"message":"Track not found"}"#.into()),
+            ("artist.gettoptracks".into(), r#"{"error":6,"message":"The artist you supplied could not be found"}"#.into()),
+        ]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mut service = DiscoveryService::with_base_url(Some("test_key".into()), server);
+        let result = service.get_similar("Unknown Artist", "Unknown Track", 5, &[]);
+        assert!(matches!(result, DiscoveryResult::Success(items) if items.is_empty()));
+    }
+}

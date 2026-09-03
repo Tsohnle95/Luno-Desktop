@@ -1,12 +1,16 @@
 import { useRef, useState, type ReactNode } from "react";
-import type { Track } from "../shared/contracts";
-import { Artwork } from "./Artwork";
+import type { Track, PreviewSnapshot, SaveState, Playlist, DownloadJob } from "../shared/contracts";
+import { previewKey as backendPreviewKey } from "../shared/contracts";
+import { RecommendationArtworkImage } from "./RecommendationArtwork";
+import { DownloadRing } from "./VideoStage";
+import { PlaylistPicker } from "./PlaylistPicker";
 
 export interface Recommendation {
   id?: string;
   title: string;
   artist: string;
   artwork_url?: string | null;
+  match_score?: number;
   status?: "idle" | "waiting" | "resolving" | "preparing" | "ready" | "failed";
   error?: string | null;
   saved?: boolean;
@@ -29,37 +33,270 @@ export interface RecommendationsProps {
   onRefresh?: () => void;
   onLoadMore?: () => void;
   onPreview?: (item: Recommendation) => void;
-  onSave?: (item: Recommendation) => void;
+  onSave?: (item: Recommendation, playlistId?: string) => void;
   emptyMessage?: ReactNode;
+  // Mobile parity additions
+  preview?: PreviewSnapshot | null;
+  saved?: Record<string, SaveState>;
+  playlists?: Playlist[];
+  jobs?: Record<string, DownloadJob>;
+  backendAvailable?: boolean;
+  onCreatePlaylist?: () => void;
 }
 
-const recommendationKey = (item: Recommendation) => item.id ?? `${item.artist}\u0000${item.title}`;
+const legacyKey = (item: Recommendation) => item.id ?? `${item.artist}\u0000${item.title}`;
+const safeKey = (item: Recommendation) => backendPreviewKey(item.artist, item.title);
 
-export function Recommendations({ seed, items, state, hasApiKey = true, error, exhausted = false, loadingMore = false, loadMoreError, sessionActive = false, discoverMode = false, onRetry, onRefresh, onLoadMore, onPreview, onSave, emptyMessage = "No recommendations available for this song" }: RecommendationsProps) {
+export function Recommendations({
+  seed,
+  items,
+  state,
+  hasApiKey = true,
+  error,
+  exhausted = false,
+  loadingMore = false,
+  loadMoreError,
+  sessionActive = false,
+  discoverMode = false,
+  onRetry,
+  onRefresh,
+  onLoadMore,
+  onPreview,
+  onSave,
+  emptyMessage = "No recommendations available for this song",
+  preview = null,
+  saved = {},
+  playlists = [],
+  jobs = {},
+  backendAvailable = true,
+  onCreatePlaylist,
+}: RecommendationsProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set());
+  const [pickerItem, setPickerItem] = useState<Recommendation | null>(null);
   const canRefresh = Boolean(seed && hasApiKey && !sessionActive);
-  const save = (item: Recommendation) => {
-    const key = recommendationKey(item);
-    setSavedKeys((previous) => new Set(previous).add(key));
-    onSave?.(item);
-  };
-  const stateMessage = !seed ? "Play a song to see recommendations" : !hasApiKey ? "Add a Last.fm API key in Settings to see recommendations" : state === "loading" ? "Finding similar songs..." : state === "error" ? (error || "Could not load recommendations") : state === "ready" && items.length === 0 ? emptyMessage : null;
 
-  return <section className="luno-recommendations" aria-labelledby="recommendations-title">
-    <header className="luno-recommendations-header">
-      <div><h2 id="recommendations-title">Recommended for this song</h2><p>{sessionActive ? (discoverMode ? "Temporary preview queue - tap a song to restart from there" : "Temporary preview - Next returns to your library") : `${items.length} similar songs - tap to preview`}</p></div>
-      <button type="button" aria-label="Refresh recommendations" disabled={!canRefresh} onClick={onRefresh}>⟳</button>
-    </header>
-    {seed && hasApiKey && <p className="luno-recommendations-hint">↓ Scroll for recommendations</p>}
-    {stateMessage && <div className={`luno-recommendations-state ${state === "error" ? "is-error" : ""}`} role={state === "error" ? "alert" : undefined}><span>{stateMessage}</span>{state === "error" && <button type="button" onClick={onRetry}>Retry</button>}</div>}
-    {items.length > 0 && <div ref={scrollRef} className="luno-recommendation-list" aria-live="polite">
-      {items.map((item) => { const key = recommendationKey(item); const saved = item.saved || savedKeys.has(key); return <article className="luno-recommendation-row" key={key}>
-        <Artwork src={item.artwork_url} alt={`${item.title} artwork`} size={48} />
-        <button className="luno-recommendation-info" type="button" onClick={() => onPreview?.(item)}><strong>{item.title}</strong><span>{item.artist}</span><small>{item.status === "resolving" ? "Finding a playable source..." : item.status === "preparing" ? "Downloading temporary preview..." : item.status === "waiting" ? "Queued for temporary preview" : item.status === "failed" ? (item.error || "Preview failed") : item.status === "ready" ? "Ready in temporary queue" : "Tap to preview"}</small></button>
-        <div className="luno-recommendation-actions">{item.status === "failed" && <button type="button" onClick={() => onPreview?.(item)}>Retry</button>} {item.status === "ready" && <button type="button" onClick={() => onPreview?.(item)}>Play</button>}<button type="button" disabled={saved} aria-label={saved ? `Saved ${item.title}` : `Add ${item.title} to playlist`} onClick={() => save(item)}>{saved ? "✓ Saved" : "＋ Add to playlist"}</button></div>
-      </article>; })}
-      {!exhausted && <footer className="luno-recommendations-footer">{loadMoreError && <p role="alert">{loadMoreError}</p>}{loadingMore ? <span>Loading more...</span> : <button type="button" onClick={onLoadMore}>Load 25 more</button>}</footer>}
-    </div>}
-  </section>;
+  const stateMessage = !seed
+    ? "Play a song to see recommendations"
+    : !hasApiKey
+      ? "Add a Last.fm API key in Settings to see recommendations"
+      : state === "loading"
+        ? "Finding similar songs..."
+        : state === "error"
+          ? error || "Could not load recommendations"
+          : state === "ready" && items.length === 0
+            ? emptyMessage
+            : null;
+
+  const handleAddClick = (item: Recommendation) => {
+    if (!backendAvailable) return;
+    const key = safeKey(item);
+    const lKey = legacyKey(item);
+    const saveState = saved[key] ?? saved[lKey];
+    if (saveState && (saveState.state === "saving" || saveState.state === "queued" || saveState.state === "saved")) return;
+    // Mobile parity: the add button always opens the playlist picker so the
+    // user chooses the destination. This replaces the old auto-pick-first-
+    // playlist behaviour and keeps the picker visible even when no playlists
+    // exist (empty state + create action).
+    setPickerItem(item);
+  };
+
+  const handlePick = (pl: Playlist) => {
+    if (!pickerItem) return;
+    const item = pickerItem;
+    setPickerItem(null);
+    // Don't use local savedKeys when backend saved map is authoritative; the
+    // backend will emit a SaveState event that drives the button label/spinner.
+    // Only fall back to local for the no-backend case handled above.
+    onSave?.(item, pl.id);
+  };
+
+  return (
+    <section className="luno-recommendations" aria-labelledby="recommendations-title">
+      <header className="luno-recommendations-header">
+        <div>
+          <h2 id="recommendations-title">Recommended for this song</h2>
+          <p>
+            {sessionActive
+              ? discoverMode
+                ? "Temporary preview queue - tap a song to restart from there"
+                : "Temporary preview - Next returns to your library"
+              : `${items.length} similar songs - tap to preview`}
+          </p>
+        </div>
+        <button type="button" aria-label="Refresh recommendations" disabled={!canRefresh} onClick={onRefresh}>
+          ⟳
+        </button>
+      </header>
+      {seed && hasApiKey && <p className="luno-recommendations-hint">↓ Scroll for recommendations</p>}
+      {stateMessage && (
+        <div className={`luno-recommendations-state ${state === "error" ? "is-error" : ""}`} role={state === "error" ? "alert" : undefined}>
+          <span>{stateMessage}</span>
+          {state === "error" && (
+            <button type="button" onClick={onRetry}>
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+      {items.length > 0 && (
+        <div ref={scrollRef} className="luno-recommendation-list" aria-live="polite">
+          {items.map((item) => {
+            const k = safeKey(item);
+            const lK = legacyKey(item);
+            const saveState = saved[k] ?? saved[lK];
+            const isLegacySaved = (item.saved || savedKeys.has(lK) || savedKeys.has(k)) && !saveState;
+            const job = saveState?.job_id ? jobs[saveState.job_id] : undefined;
+            const jobProgress = job?.progress;
+            const determinate = typeof jobProgress === "number" && jobProgress !== null && Number.isFinite(jobProgress);
+            const percent = determinate ? Math.round((jobProgress as number) * 100) : null;
+
+            const isUnavailable = preview ? preview.unavailable.includes(k) || preview.unavailable.includes(lK) : false;
+            const isCurrent = preview ? preview.current === k || preview.current === lK : false;
+            const isPrepared = preview ? preview.prepared.includes(k) || preview.prepared.includes(lK) : false;
+            const isInWindow = preview ? preview.window.includes(k) || preview.window.includes(lK) : false;
+            const isQueuedPreview = Boolean(preview?.active && isInWindow && !isPrepared && !isCurrent && !isUnavailable);
+
+            // --- status text (save overrides preview, like mobile) ---
+            let statusText: string;
+            let statusIsError = false;
+            if (saveState?.state === "saving") statusText = "Saving to playlist…";
+            else if (saveState?.state === "queued") statusText = "Download queued for playlist";
+            else if (saveState?.state === "saved") statusText = saveState.already_saved ? "Added to playlist" : "Saved to library";
+            else if (saveState?.state === "failed") {
+              statusText = saveState.error ? `Save failed: ${saveState.error}` : "Save failed";
+              statusIsError = true;
+            } else if (isCurrent) statusText = "Previewing now";
+            else if (isUnavailable) {
+              statusText = "Preview unavailable";
+              statusIsError = true;
+            } else if (item.status === "failed" && item.error) {
+              statusText = item.error;
+              statusIsError = true;
+            } else if (isQueuedPreview) statusText = "Queued for temporary preview";
+            else if (isPrepared) statusText = "Ready in temporary queue";
+            else if (item.status) {
+              switch (item.status) {
+                case "resolving":
+                  statusText = "Finding a playable source…";
+                  break;
+                case "preparing":
+                  statusText = "Downloading temporary preview…";
+                  break;
+                case "waiting":
+                  statusText = "Queued for temporary preview";
+                  break;
+                case "failed":
+                  statusText = item.error || "Preview failed";
+                  statusIsError = true;
+                  break;
+                case "ready":
+                  statusText = "Ready in temporary queue";
+                  break;
+                default:
+                  statusText = "Tap to preview";
+              }
+            } else if (typeof item.match_score === "number") {
+              statusText = `${item.artist} • ${Math.round(item.match_score * 100)}% match`;
+            } else {
+              statusText = "Tap to preview";
+            }
+
+            const saveLabel = (() => {
+              if (isLegacySaved) return { label: "✓ Saved", disabled: true };
+              if (!saveState) return { label: "＋ Add to playlist", disabled: !backendAvailable };
+              if (saveState.state === "saving") return { label: "Saving…", disabled: true };
+              if (saveState.state === "queued") return { label: "Queued…", disabled: true };
+              if (saveState.state === "saved") return { label: "✓ Saved", disabled: true };
+              if (saveState.state === "failed") return { label: "Retry", disabled: false };
+              return { label: "＋ Add to playlist", disabled: !backendAvailable };
+            })();
+
+            const showSaveSpinner = saveState?.state === "saving" || saveState?.state === "queued";
+            const showPreviewSpinner = !showSaveSpinner && isQueuedPreview && !!preview?.active;
+            const showReadyCheck = !showSaveSpinner && !showPreviewSpinner && isPrepared && saveState?.state !== "saved";
+
+            const canPlayPreview = isPrepared || item.status === "ready";
+            const canRetryPreview = isUnavailable || item.status === "failed" || saveState?.state === "failed";
+
+            // Use deterministic artwork fallback instead of grey ♫
+            const art = (
+              <RecommendationArtworkImage artist={item.artist} title={item.title} artworkUrl={item.artwork_url} size={48} alt={`${item.title} artwork`} />
+            );
+
+            return (
+              <article className="luno-recommendation-row" key={k}>
+                {art}
+                <button className="luno-recommendation-info" type="button" onClick={() => onPreview?.(item)}>
+                  <strong>{item.title}</strong>
+                  <span>{item.artist}</span>
+                  <small style={statusIsError ? { color: "#f08080" } : undefined}>{statusText}</small>
+                </button>
+
+                {/* Center status icon: preview spinner / ready check */}
+                <span className="luno-rec-center" style={{ width: 32, height: 32, display: "inline-flex", alignItems: "center", justifyContent: "center", flex: "0 0 32px" }}>
+                  {showPreviewSpinner ? <DownloadRing progress={null} size={22} /> : showReadyCheck ? <span style={{ color: "var(--luno-green)", fontSize: 18, lineHeight: 1 }}>✓</span> : null}
+                </span>
+
+                <div className="luno-recommendation-actions">
+                  {canRetryPreview && saveState?.state !== "failed" && (
+                    <button type="button" onClick={() => onPreview?.(item)}>
+                      Retry
+                    </button>
+                  )}
+                  {saveState?.state === "failed" && (
+                    <button type="button" onClick={() => handleAddClick(item)}>
+                      Retry
+                    </button>
+                  )}
+                  {canPlayPreview && !saveState && (
+                    <button type="button" onClick={() => onPreview?.(item)}>
+                      Play
+                    </button>
+                  )}
+                  {showSaveSpinner ? (
+                    <span className="luno-rec-save-progress" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <DownloadRing progress={percent} size={28} />
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={saveLabel.disabled}
+                      aria-label={saveLabel.disabled && saveLabel.label === "✓ Saved" ? `Saved ${item.title}` : `Add ${item.title} to playlist`}
+                      onClick={() => handleAddClick(item)}
+                      title={playlists.length === 0 && !isLegacySaved ? "Create a playlist in Your Library first" : undefined}
+                    >
+                      {saveLabel.label}
+                    </button>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+          {!exhausted && (
+            <footer className="luno-recommendations-footer">
+              {loadMoreError && <p role="alert">{loadMoreError}</p>}
+              {loadingMore ? <span>Loading more...</span> : <button type="button" onClick={onLoadMore}>Load 25 more</button>}
+            </footer>
+          )}
+        </div>
+      )}
+      {pickerItem && (
+        <PlaylistPicker
+          title={`Add “${pickerItem.title}” to playlist`}
+          playlists={playlists}
+          onPick={handlePick}
+          onDismiss={() => setPickerItem(null)}
+          onCreateNew={
+            onCreatePlaylist
+              ? () => {
+                  setPickerItem(null);
+                  onCreatePlaylist();
+                }
+              : undefined
+          }
+        />
+      )}
+    </section>
+  );
 }

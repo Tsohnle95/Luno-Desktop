@@ -139,7 +139,7 @@ export function DownloadRing({ progress, size = 64 }: { progress: number | null;
 const stageChromeStyles = `
 .luno-video-loading { position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; background:rgba(0,0,0,.35); }
 .luno-video-progress { position:relative; width:64px; height:64px; display:inline-flex; align-items:center; justify-content:center; }
-.luno-video-progress svg { width:64px; height:64px; overflow:visible; }
+.luno-video-progress svg { width:100%; height:100%; overflow:visible; }
 .luno-video-progress circle { fill:none; stroke-width:3.5; }
 .luno-video-progress-track { stroke:rgba(255,255,255,.16); }
 .luno-video-progress-fill { stroke:var(--luno-green,#1db954); stroke-linecap:round; transition:stroke-dashoffset .45s linear; }

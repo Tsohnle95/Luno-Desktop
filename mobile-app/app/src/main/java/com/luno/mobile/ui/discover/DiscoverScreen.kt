@@ -205,7 +205,8 @@ fun DiscoverScreen(
                             fallbackImage.orEmpty().ifBlank {
                                 WebSearchService.thumbnailUrlForVideoId(firstResult.videoId)
                             }
-                        }
+                        },
+                    videoId = firstResult.videoId
                 )
                 true
             }

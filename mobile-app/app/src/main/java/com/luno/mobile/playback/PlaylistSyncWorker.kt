@@ -85,8 +85,9 @@ class PlaylistSyncWorker(
                         continue
                     }
 
-                    val queuedCount = jobDao.countByVideoQuery(video.videoId)
-                    if (queuedCount > 0) continue
+                    // Prefer durable videoId check, fall back to legacy sourceUrl LIKE.
+                    val queuedCount = try { jobDao.countByVideoId(video.videoId) } catch (_: Exception) { 0 }
+                    if (queuedCount > 0 || jobDao.countByVideoQuery(video.videoId) > 0) continue
 
                     val audioResult = WebSearchService.getAudioStreamUrl(video.videoId)
                     when (audioResult) {
@@ -110,7 +111,8 @@ class PlaylistSyncWorker(
                                 state = DownloadState.QUEUED,
                                 playlistId = playlistId,
                                 thumbnailUrl = thumbnailUrl,
-                                addedAt = System.currentTimeMillis()
+                                addedAt = System.currentTimeMillis(),
+                                videoId = video.videoId
                             )
                             val jobId = jobDao.insertDownload(job)
 

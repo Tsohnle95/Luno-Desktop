@@ -3492,7 +3492,19 @@ impl AppState {
         let seed = self.seed_for(&key.0);
         let filename = Self::save_filename(seed.as_ref(), &key.0);
         let query = seed
-            .map(|seed| format!("{} {}", seed.artist.trim(), seed.title.trim()))
+            .map(|seed| {
+                let artist = seed.artist.trim();
+                let title = seed.title.trim();
+                if artist.is_empty() && title.is_empty() {
+                    String::new()
+                } else if artist.is_empty() {
+                    format!("ytsearch1:{title}")
+                } else if title.is_empty() {
+                    format!("ytsearch1:{artist}")
+                } else {
+                    format!("ytsearch1:{artist} {title}")
+                }
+            })
             .unwrap_or_default();
         let staged = self
             .preview_store

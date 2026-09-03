@@ -164,7 +164,8 @@ class LibraryTransferRepository(
                     artist = track.artist,
                     playlistId = resolvedDestinations.firstOrNull(),
                     thumbnailUrl = resolved.second,
-                    playlistIds = resolvedDestinations.drop(1)
+                    playlistIds = resolvedDestinations.drop(1),
+                    videoId = resolved.third
                 )
                 queued++
             }
@@ -308,14 +309,17 @@ class LibraryTransferRepository(
         }.toMap()
     }
 
-    private suspend fun resolveTrack(track: ManifestTrack): Pair<String, String>? {
+    private suspend fun resolveTrack(track: ManifestTrack): Triple<String, String, String>? {
         track.source?.let { source ->
             if (source.provider != "youtube") return null
             return when (val result = withContext(Dispatchers.IO) {
                 WebSearchService.getAudioStreamUrl(source.id)
             }) {
-                is ExtractionResult.Success -> result.data.url to
-                    WebSearchService.thumbnailUrlForVideoId(source.id)
+                is ExtractionResult.Success -> Triple(
+                    result.data.url,
+                    WebSearchService.thumbnailUrlForVideoId(source.id),
+                    source.id
+                )
                 is ExtractionResult.Error -> null
             }
         }
@@ -328,9 +332,13 @@ class LibraryTransferRepository(
                 when (val audio = withContext(Dispatchers.IO) {
                     WebSearchService.getAudioStreamUrl(found.videoId)
                 }) {
-                    is ExtractionResult.Success -> audio.data.url to found.thumbnailUrl.ifBlank {
-                        WebSearchService.thumbnailUrlForVideoId(found.videoId)
-                    }
+                    is ExtractionResult.Success -> Triple(
+                        audio.data.url,
+                        found.thumbnailUrl.ifBlank {
+                            WebSearchService.thumbnailUrlForVideoId(found.videoId)
+                        },
+                        found.videoId
+                    )
                     is ExtractionResult.Error -> null
                 }
             }

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Track } from "../shared/contracts";
-import { Artwork } from "../components/Artwork";
+import type { DownloadJob, Playlist, PreviewSnapshot, SaveState, Track } from "../shared/contracts";
 import { Recommendations, type Recommendation, type RecommendationState } from "../components/Recommendations";
 import { VideoStage, type VideoStageProps } from "../components/VideoStage";
 
@@ -26,9 +25,14 @@ export interface SongPageViewProps { track?: Track | null;
   onRefreshRecommendations?: () => void;
   onLoadMoreRecommendations?: () => void;
   onPreviewRecommendation?: (item: Recommendation) => void;
-  onSaveRecommendation?: (item: Recommendation) => void;
+  onSaveRecommendation?: (item: Recommendation, playlistId?: string) => void;
   onFavoriteToggle?: (track: Track) => void;
   backendAvailable?: boolean;
+  preview?: PreviewSnapshot | null;
+  saved?: Record<string, SaveState>;
+  playlists?: Playlist[];
+  jobs?: Record<string, DownloadJob>;
+  onCreatePlaylist?: () => void;
   video?: VideoStageProps;
   videoConnection?: "connected" | "loading" | "disconnected";
   /** Requests (or retries) the music video for the current track. */
@@ -38,7 +42,7 @@ export interface SongPageViewProps { track?: Track | null;
   onVideoModeChange?: (enabled: boolean) => void;
 }
 
-export function SongPageView({ track = null, recommendations = [], recommendationState = "idle", recommendationError, recommendationLoadMoreError, recommendationsExhausted, recommendationsLoadingMore, hasApiKey = true, sessionActive = false, discoverMode = false, onRetryRecommendations, onRefreshRecommendations, onLoadMoreRecommendations, onPreviewRecommendation, onSaveRecommendation, onFavoriteToggle, backendAvailable = true, video, videoConnection = "disconnected", onLoadVideo, videoMode = false, onVideoModeChange }: SongPageViewProps) {
+export function SongPageView({ track = null, recommendations = [], recommendationState = "idle", recommendationError, recommendationLoadMoreError, recommendationsExhausted, recommendationsLoadingMore, hasApiKey = true, sessionActive = false, discoverMode = false, onRetryRecommendations, onRefreshRecommendations, onLoadMoreRecommendations, onPreviewRecommendation, onSaveRecommendation, onFavoriteToggle, backendAvailable = true, preview = null, saved = {}, playlists = [], jobs = {}, onCreatePlaylist, video, videoConnection = "disconnected", onLoadVideo, videoMode = false, onVideoModeChange }: SongPageViewProps) {
   const [lastTrack, setLastTrack] = useState<Track | null>(track);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -95,7 +99,7 @@ export function SongPageView({ track = null, recommendations = [], recommendatio
       <main className="luno-song-page-content">
         <div className="luno-song-media-slot" data-video-slot="song-page"><VideoStage {...video} status={videoConnection === "loading" ? "loading" : videoConnection === "disconnected" ? "not-checked" : video?.status} artworkUrl={video?.artworkUrl ?? displayedTrack?.artwork_url} artworkAlt={displayedTrack ? `${displayedTrack.title} artwork` : "Artwork unavailable"} videoModeEnabled={videoMode} onVideoModeChange={onVideoModeChange} /><span className="luno-video-connection" role="status">{videoConnection === "loading" ? "Connecting video preview..." : videoConnection === "disconnected" ? "Video preview unavailable; showing artwork." : null}</span>{onLoadVideo && backendAvailable && videoConnection === "connected" && videoMode && !video?.src && (video?.status === "unavailable" || video?.status === "error" || video?.status === "fallback") && <button type="button" className="luno-video-load" onClick={onLoadVideo}>{video?.status === "unavailable" ? "Video unavailable — retry?" : "Retry music video"}</button>}</div>
         <div className="luno-song-meta">{displayedTrack ? <><h1>{displayedTrack.title}</h1><p>{displayedTrack.artist || "Unknown artist"}</p><button type="button" aria-label={favoriteLabel} aria-describedby={!backendAvailable ? "song-page-favorite-help" : undefined} disabled={!backendAvailable} onClick={() => backendAvailable && onFavoriteToggle?.(displayedTrack)}>{displayedTrack.favorite ? "★" : "☆"} {displayedTrack.favorite ? "Favorited" : "Add to Favorites"}</button>{!backendAvailable && <p id="song-page-favorite-help" role="status">Favorites are unavailable while the backend is disconnected.</p>}</> : <><h1>Nothing playing</h1><p>Play a song to open its page.</p></>}</div>
-        <Recommendations seed={displayedTrack} items={recommendations} state={recommendationState} error={recommendationError} loadMoreError={recommendationLoadMoreError} exhausted={recommendationsExhausted} loadingMore={recommendationsLoadingMore} hasApiKey={hasApiKey} sessionActive={sessionActive} discoverMode={discoverMode} onRetry={onRetryRecommendations} onRefresh={onRefreshRecommendations} onLoadMore={onLoadMoreRecommendations} onPreview={onPreviewRecommendation} onSave={onSaveRecommendation} />
+        <Recommendations seed={displayedTrack} items={recommendations} state={recommendationState} error={recommendationError} loadMoreError={recommendationLoadMoreError} exhausted={recommendationsExhausted} loadingMore={recommendationsLoadingMore} hasApiKey={hasApiKey} sessionActive={sessionActive} discoverMode={discoverMode} onRetry={onRetryRecommendations} onRefresh={onRefreshRecommendations} onLoadMore={onLoadMoreRecommendations} onPreview={onPreviewRecommendation} onSave={onSaveRecommendation} preview={preview} saved={saved} playlists={playlists} jobs={jobs} backendAvailable={backendAvailable} onCreatePlaylist={onCreatePlaylist} />
       </main>
     </div>
   </div>;

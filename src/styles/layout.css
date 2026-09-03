@@ -420,6 +420,21 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   cursor: col-resize;
 }
 
+/* ---- Download ring (used by VideoStage and recommendation rows) ---- */
+.luno-video-progress { position:relative; display:inline-flex; align-items:center; justify-content:center; }
+.luno-video-progress svg { width:100%; height:100%; overflow:visible; }
+.luno-video-progress circle { fill:none; stroke-width:3.5; }
+.luno-video-progress-track { stroke:rgba(255,255,255,.16); }
+.luno-video-progress-fill { stroke:var(--luno-green,#1db954); stroke-linecap:round; transition:stroke-dashoffset .45s linear; }
+.luno-video-progress.is-determinate svg { transform:rotate(-90deg); }
+.luno-video-progress:not(.is-determinate) svg { animation:luno-video-spin 1.1s linear infinite; }
+.luno-video-progress:not(.is-determinate) .luno-video-progress-fill { transition:none; }
+@keyframes luno-video-spin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
+.luno-video-progress-pct { position:absolute; font-size:13px; font-weight:700; color:#fff; font-variant-numeric:tabular-nums; }
+
+/* ---- Recommendation artwork fallback ---- */
+.luno-rec-art { display:inline-grid; place-items:center; overflow:hidden; border-radius:6px; }
+
 /* ---- Responsive ---- */
 @media (max-width: 1280px) {
   .luno-track-grid, .luno-track-grid-template { grid-template-columns: 16px 40px minmax(0, 4fr) minmax(0, 2fr) 24px 48px; }

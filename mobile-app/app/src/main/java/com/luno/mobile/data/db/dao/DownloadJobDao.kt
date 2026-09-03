@@ -55,4 +55,10 @@ interface DownloadJobDao {
 
     @Query("SELECT COUNT(*) FROM download_jobs WHERE sourceUrl LIKE '%' || :videoId || '%' AND state IN ('QUEUED', 'DOWNLOADING')")
     suspend fun countByVideoQuery(videoId: String): Int
+
+    @Query("SELECT COUNT(*) FROM download_jobs WHERE videoId = :videoId AND state IN ('QUEUED', 'DOWNLOADING')")
+    suspend fun countByVideoId(videoId: String): Int
+
+    @Query("SELECT * FROM download_jobs WHERE videoId = :videoId AND state IN ('QUEUED', 'DOWNLOADING', 'COMPLETED') ORDER BY addedAt DESC LIMIT 1")
+    suspend fun latestByVideoId(videoId: String): DownloadJob?
 }

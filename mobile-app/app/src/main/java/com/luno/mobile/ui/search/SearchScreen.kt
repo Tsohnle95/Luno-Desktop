@@ -181,7 +181,6 @@ fun SearchScreen(
     var csvImporting by remember { mutableStateOf(false) }
     var csvStatus by rememberSaveable { mutableStateOf("") }
     var downloadingVideoIds by remember { mutableStateOf(setOf<String>()) }
-    var jobIdByVideoId by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
     var downloadedExpanded by rememberSaveable { mutableStateOf(false) }
     var downloadedSelectionMode by rememberSaveable { mutableStateOf(false) }
     var selectedDownloadedUris by remember { mutableStateOf(setOf<String>()) }
@@ -221,28 +220,37 @@ fun SearchScreen(
 
     fun queueSearchResult(result: WebSearchResult, playlistId: Long? = null) {
         val videoId = result.videoId
-        if (videoId in downloadingVideoIds) return
+        if (videoId.isBlank() || videoId in downloadingVideoIds) return
+        val alreadyActive = downloads.any {
+            it.videoId == videoId && (it.state == DownloadState.QUEUED || it.state == DownloadState.DOWNLOADING)
+        }
+        if (alreadyActive) {
+            Toast.makeText(context, "Already queued", Toast.LENGTH_SHORT).show()
+            return
+        }
         downloadingVideoIds = downloadingVideoIds + videoId
         scope.launch {
             try {
                 val audioResult = withContext(Dispatchers.IO) {
-                    WebSearchService.getAudioStreamUrl(videoId)
+                    kotlinx.coroutines.withTimeoutOrNull(30_000L) {
+                        WebSearchService.getAudioStreamUrl(videoId)
+                    } ?: ExtractionResult.Error("Timed out while preparing the download. Tap to retry.")
                 }
                 when (audioResult) {
                     is ExtractionResult.Success -> {
                         val titleParts = result.title.split(" - ", limit = 2)
                         val artist = if (titleParts.size > 1) titleParts[0].trim() else result.artist
                         val title = if (titleParts.size > 1) titleParts[1].trim() else result.title
-                        val jobId = downloadRepository.enqueueDownload(
+                        downloadRepository.enqueueDownload(
                             sourceUrl = audioResult.data.url,
                             title = title,
                             artist = artist,
                             playlistId = playlistId,
                             thumbnailUrl = result.thumbnailUrl.ifBlank {
                                 WebSearchService.thumbnailUrlForVideoId(videoId)
-                            }
+                            },
+                            videoId = videoId
                         )
-                        jobIdByVideoId = jobIdByVideoId + (videoId to jobId)
                         Toast.makeText(
                             context,
                             if (playlistId == null) "Download queued: $title"
@@ -317,7 +325,9 @@ fun SearchScreen(
 
                     val result = searchResult.data.first()
                     val audioResult = withContext(Dispatchers.IO) {
-                        WebSearchService.getAudioStreamUrl(result.videoId)
+                        kotlinx.coroutines.withTimeoutOrNull(30_000L) {
+                            WebSearchService.getAudioStreamUrl(result.videoId)
+                        } ?: ExtractionResult.Error("Timed out")
                     }
                     if (audioResult is ExtractionResult.Success) {
                         downloadRepository.enqueueDownload(
@@ -326,7 +336,8 @@ fun SearchScreen(
                             artist = artist,
                             thumbnailUrl = result.thumbnailUrl.ifBlank {
                                 WebSearchService.thumbnailUrlForVideoId(result.videoId)
-                            }
+                            },
+                            videoId = result.videoId
                         )
                         queued++
                     } else {
@@ -347,12 +358,26 @@ fun SearchScreen(
     }
 
     val jobForResult: (WebSearchResult) -> DownloadJob? = { result ->
-        jobIdByVideoId[result.videoId]?.let { id -> downloads.firstOrNull { it.id == id } }
+        // Durable lookup by videoId — survives rotation, process death, and
+        // navigation. Falls back to thumbnailUrl for jobs created before the
+        // videoId column existed (migration 9→10).
+        downloads.firstOrNull { it.videoId.isNotBlank() && it.videoId == result.videoId }
+            ?: downloads.firstOrNull { job ->
+                job.thumbnailUrl.isNotBlank() &&
+                    job.thumbnailUrl == result.thumbnailUrl &&
+                    job.title.contains(result.title, ignoreCase = true)
+            }
     }
 
     val activeDownloads = downloads.count {
         it.state == DownloadState.QUEUED || it.state == DownloadState.DOWNLOADING
     }
+    // Determinate progress when at least one job is actively downloading with
+    // a percentage; otherwise indeterminate (queued/waiting for WorkManager).
+    val downloadingWithProgress = downloads.filter { it.state == DownloadState.DOWNLOADING && it.progress > 0 }
+    val avgProgress: Float? = downloadingWithProgress.takeIf { it.isNotEmpty() }
+        ?.map { it.progress.coerceIn(0, 100) / 100f }
+        ?.average()?.toFloat()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -383,13 +408,24 @@ fun SearchScreen(
 
         if (activeDownloads > 0) {
             item(key = "download-progress") {
-                LinearProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(2.dp),
-                    color = AccentGreen,
-                    trackColor = SurfaceDark
-                )
+                if (avgProgress != null) {
+                    LinearProgressIndicator(
+                        progress = { avgProgress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp),
+                        color = AccentGreen,
+                        trackColor = SurfaceDark
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp),
+                        color = AccentGreen,
+                        trackColor = SurfaceDark
+                    )
+                }
             }
         }
 
@@ -1549,11 +1585,29 @@ private fun ResultAction(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
+                val isRetrying = job.state == DownloadState.QUEUED &&
+                    job.errorMessage.startsWith("Retrying")
+                val label = when {
+                    isRetrying -> job.errorMessage.substringBefore(":").ifBlank { "Retrying…" }
+                    job.state == DownloadState.DOWNLOADING && job.progress > 0 -> "${job.progress}%"
+                    job.state == DownloadState.DOWNLOADING -> "Downloading…"
+                    else -> "Queued"
+                }
                 Text(
-                    text = if (job.state == DownloadState.DOWNLOADING) "${job.progress}%" else "Waiting",
+                    text = label,
                     style = MaterialTheme.typography.labelSmall,
-                    color = AccentGreen
+                    color = AccentGreen,
+                    maxLines = 1
                 )
+                if (isRetrying && job.errorMessage.isNotBlank()) {
+                    Text(
+                        text = job.errorMessage.substringAfter(":", "").trim().takeIf { it.isNotBlank() } ?: "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = SecondaryText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 TextButton(
                     onClick = { onCancel(job.id) },
                     contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)

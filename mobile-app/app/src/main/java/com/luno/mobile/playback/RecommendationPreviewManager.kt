@@ -72,7 +72,8 @@ sealed interface RecommendationSaveOutcome {
 data class ResolvedRecommendation(
     val sourceUrl: String,
     val thumbnailUrl: String,
-    val mimeType: String
+    val mimeType: String,
+    val videoId: String = ""
 )
 
 private data class PreviewAsset(
@@ -1328,7 +1329,8 @@ class RecommendationPreviewManager(
                 title = recommendation.title,
                 artist = recommendation.artist,
                 playlistId = playlistId,
-                thumbnailUrl = resolved.thumbnailUrl.ifBlank { artworkUri.orEmpty() }
+                thumbnailUrl = resolved.thumbnailUrl.ifBlank { artworkUri.orEmpty() },
+                videoId = resolved.videoId
             )
             synchronized(lock) {
                 savingKeys -= key
@@ -2165,7 +2167,8 @@ class RecommendationPreviewManager(
                 thumbnailUrl = result.thumbnailUrl.ifBlank {
                     WebSearchService.thumbnailUrlForVideoId(result.videoId)
                 },
-                mimeType = stream.mimeType
+                mimeType = stream.mimeType,
+                videoId = result.videoId
             )
         }
 

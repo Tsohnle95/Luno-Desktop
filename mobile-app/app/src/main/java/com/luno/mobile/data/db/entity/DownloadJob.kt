@@ -27,5 +27,7 @@ data class DownloadJob(
     val workManagerId: String = "",
     val thumbnailUrl: String = "",
     /** Additional destination playlist ids for one imported download. */
-    val playlistIdsCsv: String = ""
+    val playlistIdsCsv: String = "",
+    /** Original YouTube videoId for durable cross-process job lookup. */
+    val videoId: String = ""
 )
