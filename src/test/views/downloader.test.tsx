@@ -39,8 +39,24 @@ describe("Gate 6 downloader view", () => {
   it("exposes progress, cancel, and live-region affordances for active jobs", () => {
     const html = renderToStaticMarkup(<DownloaderView jobs={{ "job-1": runningJob }} />);
     expect(html).toContain("Downloading — 50%");
+    expect(html).toContain("luno-video-progress");
     expect(html).toContain("Cancel");
     expect(html).toContain('aria-live="polite"');
+    expect(html).toContain('aria-label="Download progress"');
+  });
+
+  it("retains an explicit completion status after the active job finishes", () => {
+    const completed = { ...runningJob, state: "succeeded" as const, progress: 1 };
+    const html = renderToStaticMarkup(<DownloaderView jobs={{ "job-1": completed }} />);
+    expect(html).toContain("Download complete — added to your library.");
+    expect(html).toContain('role="status"');
+  });
+
+  it("renders an animated search indicator without the obsolete 30-second warning", () => {
+    const html = renderToStaticMarkup(<DownloaderView searching={true} />);
+    expect(html).toContain("luno-download-spinner");
+    expect(html).toContain("Searching YouTube…");
+    expect(html).not.toContain("30 seconds");
   });
 });
 describe("Gate 6 library view", () => {

@@ -80,6 +80,14 @@ describe("typed IPC bridge and projection", () => {
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "save" } })).toBe(false);
   });
 
+  it("validates playlist and track mutation envelopes", () => {
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "create_playlist", payload: { name: "Road trip" } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "create_playlist", payload: { name: "" } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "add_tracks_to_playlist", payload: { track_ids: ["track-1"], playlist_id: "playlist:Road trip" } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "add_tracks_to_playlist", payload: { track_ids: [], playlist_id: "playlist:Road trip" } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "delete_tracks", payload: { track_ids: ["track-1"] } } })).toBe(true);
+  });
+
   it("validates save_state event envelopes", () => {
     const base: SaveState = { key: "Artist0-Track0", playlist_id: "playlist:playlist-a", state: "saved", already_saved: false, path: "/library/playlist-a/Artist0 - Track0.m4a", job_id: null, error: null };
     const saveEvent = (payload: unknown) => event({ type: "save_state", payload: payload as { state: SaveState } });

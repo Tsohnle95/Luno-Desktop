@@ -41,7 +41,7 @@ export interface RecommendationsProps {
   playlists?: Playlist[];
   jobs?: Record<string, DownloadJob>;
   backendAvailable?: boolean;
-  onCreatePlaylist?: () => void;
+  onCreatePlaylist?: (item: Recommendation) => void;
 }
 
 const legacyKey = (item: Recommendation) => item.id ?? `${item.artist}\u0000${item.title}`;
@@ -291,7 +291,7 @@ export function Recommendations({
             onCreatePlaylist
               ? () => {
                   setPickerItem(null);
-                  onCreatePlaylist();
+                  onCreatePlaylist(pickerItem);
                 }
               : undefined
           }

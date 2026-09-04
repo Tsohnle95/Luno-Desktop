@@ -632,8 +632,8 @@ fn target_dispatch_runs_search_settings_and_fake_download_event_path() {
     for result in results {
         assert_eq!(result["title"], "Fixture Track");
         assert_eq!(result["artist"], "Fixture Artist");
-        // The download source handed to start_download is the provider query.
-        assert!(result["query"].as_str().unwrap().contains("search1:"));
+        // Every row carries the exact provider URL used by start_download.
+        assert!(result["query"].as_str().unwrap().starts_with("https://"));
     }
     let settings = crate::contracts::types::SettingsInput {
         music_root: Some(root.to_string_lossy().into_owned()),

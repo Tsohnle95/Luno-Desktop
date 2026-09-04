@@ -29,7 +29,7 @@ fn real_helper_download_lands_in_unsorted_and_publishes_job_events() {
     state.set_scan_roots(vec![root.clone()]);
     state.set_bundle_helper(Some(helper.clone()));
 
-    // Exact frontend flow: search -> take the provider query -> start download
+    // Exact frontend flow: search -> take the exact result URL -> start download
     let search = state
         .dispatch(CommandEnvelope {
             version: 1,
@@ -51,7 +51,7 @@ fn real_helper_download_lands_in_unsorted_and_publishes_job_events() {
     let url = first["url"].as_str().expect("result url").to_owned();
     assert!(url.starts_with("https://"), "result url must be absolute: {url}");
     let query = first["query"].as_str().unwrap().to_owned();
-    assert!(query.starts_with("ytsearch1:"), "query should be a yt search: {query}");
+    assert!(query.starts_with("https://"), "query should be an exact provider URL: {query}");
     eprintln!("REAL SEARCH OK: {title} ({url})");
 
     let job_id = "real-dl-job";
@@ -89,9 +89,22 @@ fn real_helper_download_lands_in_unsorted_and_publishes_job_events() {
         std::thread::sleep(Duration::from_millis(250));
     }
     assert!(saw_succeeded, "job never reached succeeded; last={last}");
+    assert!(state.events().iter().any(|event| matches!(&event.event, Event::JobUpdated { job } if job.id.0 == job_id && job.progress.is_some_and(|progress| progress > 0.0 && progress < 1.0))), "real download must publish intermediate percentage progress");
     assert!(destination.is_file(), "file did not land at {destination:?}");
     let size = std::fs::metadata(&destination).unwrap().len();
     assert!(size > 100_000, "downloaded file suspiciously small: {size}");
+    #[cfg(target_os = "macos")]
+    assert!(crate::library::artwork::embedded_artwork_data_url(&destination).is_some(), "downloaded audio must retain embedded cover art");
+    let ffprobe = helper.parent().unwrap().join("ffprobe");
+    if ffprobe.is_file() {
+        let output = std::process::Command::new(ffprobe)
+            .args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate", "-of", "default=nw=1:nk=1"])
+            .arg(&destination)
+            .output()
+            .expect("ffprobe downloaded audio");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "44100", "downloads must be normalized to 44.1 kHz");
+    }
 
     // The download completion must trigger a library rescan so the new file
     // appears in the app immediately (the "nothing appeared in Unsorted" bug).

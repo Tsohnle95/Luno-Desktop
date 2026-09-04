@@ -16,7 +16,7 @@ if (!libraryViewChecks.favorites || !libraryViewChecks.sort || libraryViewChecks
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { LibraryView, normalizeFilterText, virtualWindow } from "../../views/LibraryView";
+import { LibraryView, normalizeFilterText, shuffledFirstTrack, virtualWindow } from "../../views/LibraryView";
 
 describe("normalizeFilterText", () => {
   it("matches straight and typographic apostrophes", () => {
@@ -66,6 +66,13 @@ describe("virtualWindow", () => {
 
   it("handles an empty list", () => {
     expect(virtualWindow(500, 36, 0)).toEqual({ start: 0, end: 0 });
+  });
+});
+
+describe("shuffled Play", () => {
+  it("can choose any track as the first song instead of pinning index zero", () => {
+    expect(shuffledFirstTrack(snapshot.tracks, 0)?.id).toBe("a");
+    expect(shuffledFirstTrack(snapshot.tracks, 0.999999)?.id).toBe("b");
   });
 });
 

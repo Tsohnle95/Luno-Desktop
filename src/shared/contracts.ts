@@ -46,6 +46,10 @@ export type Command =
   | { type: "preview_csv"; payload: { csv: string } }
   | { type: "queue_urls"; payload: { urls: string[] } }
   | { type: "select_library_root"; payload: { root: string } }
+  | { type: "create_playlist"; payload: { name: string } }
+  | { type: "delete_playlist"; payload: { playlist_id: PlaylistId } }
+  | { type: "add_tracks_to_playlist"; payload: { track_ids: TrackId[]; playlist_id: PlaylistId } }
+  | { type: "delete_tracks"; payload: { track_ids: TrackId[] } }
   | { type: "start_download"; payload: { job_id: JobId; destination: string; helper: string; source: string } }
   | { type: "retry_download"; payload: { job_id: JobId } }
   | { type: "bundle_helper_path" }
@@ -140,6 +144,10 @@ function isCommand(v: unknown): v is Command {
     if (v.type === "preview_csv") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.csv === "string" && v.payload.csv.length <= 10_485_760 && Object.keys(v.payload).length === 1;
     if (v.type === "queue_urls") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.urls) && v.payload.urls.every((url) => typeof url === "string" && url.trim().length > 0) && Object.keys(v.payload).length === 1;
     if (v.type === "select_library_root") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.root === "string" && v.payload.root.trim().length > 0 && Object.keys(v.payload).length === 1;
+    if (v.type === "create_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.name) && Object.keys(v.payload).length === 1;
+    if (v.type === "delete_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 1;
+    if (v.type === "add_tracks_to_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.track_ids) && v.payload.track_ids.length > 0 && v.payload.track_ids.every(nonEmptyId) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 2;
+    if (v.type === "delete_tracks") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.track_ids) && v.payload.track_ids.length > 0 && v.payload.track_ids.every(nonEmptyId) && Object.keys(v.payload).length === 1;
     if (v.type === "start_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && typeof v.payload.helper === "string" && v.payload.helper.trim().length > 0 && typeof v.payload.source === "string" && Object.keys(v.payload).length === 4;
     if (v.type === "retry_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && Object.keys(v.payload).length === 1;
     if (v.type === "load_settings") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && Object.keys(v.payload).length === 1;

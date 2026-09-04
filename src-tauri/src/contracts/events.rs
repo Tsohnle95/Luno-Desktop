@@ -81,6 +81,13 @@ pub enum Command {
     SelectLibraryRoot {
         root: String,
     },
+    CreatePlaylist {
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        name: String,
+    },
+    DeletePlaylist { playlist_id: PlaylistId },
+    AddTracksToPlaylist { track_ids: Vec<TrackId>, playlist_id: PlaylistId },
+    DeleteTracks { track_ids: Vec<TrackId> },
     StartDownload {
         job_id: JobId,
         #[serde(deserialize_with = "super::types::non_empty_string")]

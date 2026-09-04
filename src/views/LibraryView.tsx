@@ -115,6 +115,25 @@ export function sortLibraryTracks(tracks: Track[], sort: LibrarySort): Track[] {
   });
 }
 
+/** Pick the first song for shuffled Play. WebCrypto avoids the short-period,
+ * implementation-defined Math.random stream that made large libraries feel
+ * repetitive; injected values keep the selection deterministic in tests. */
+export function shuffledFirstTrack(tracks: Track[], randomValue?: number): Track | undefined {
+  if (tracks.length === 0) return undefined;
+  let unit = randomValue;
+  if (unit === undefined) {
+    const values = new Uint32Array(1);
+    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+      crypto.getRandomValues(values);
+      unit = values[0] / 0x1_0000_0000;
+    } else {
+      unit = Math.random();
+    }
+  }
+  const index = Math.min(tracks.length - 1, Math.max(0, Math.floor(unit * tracks.length)));
+  return tracks[index];
+}
+
 function formatTotal(ms: number) {
   if (ms <= 0) return "";
   const hours = Math.floor(ms / 3_600_000);
@@ -249,7 +268,7 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
             </div>
           </div>
           <div className="luno-hero-actions">
-            <button className="luno-fab" type="button" aria-label={`Play ${scopeName}`} disabled={!backendAvailable || tracks.length === 0} onClick={() => { const first = tracks[0]; if (backendAvailable && first) onPlay?.(first, tracks); }}><IconPlay size={18} /></button>
+            <button className="luno-fab" type="button" aria-label={`Play ${scopeName}`} disabled={!backendAvailable || tracks.length === 0} onClick={() => { const first = playback?.shuffle ? shuffledFirstTrack(tracks) : tracks[0]; if (backendAvailable && first) onPlay?.(first, tracks); }}><IconPlay size={18} /></button>
             <button className="luno-action-toggle" type="button" aria-label={playback?.shuffle ? "Disable shuffle" : "Enable shuffle"} aria-pressed={!!playback?.shuffle} disabled={!backendAvailable || !onShuffle} onClick={() => onShuffle?.(tracks)}><IconShuffle size={17} /></button>
             <button className="luno-action-toggle" type="button" aria-label="Scan library for changes" disabled={!backendAvailable} onClick={() => onScan?.()}><IconRefresh size={16} /></button>
             {selected.size > 0 && <span className="luno-selection-count">{selected.size} selected</span>}

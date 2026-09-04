@@ -19,10 +19,10 @@ fi
 TMP="$TARGET.part"
 rm -f "$TMP".*
 if [ -x "$HERE/yt-dlp" ]; then
-  "$HERE/yt-dlp" --no-playlist --no-progress -f 'bestaudio/best' -x --audio-format m4a --audio-quality 0 $FF_LOCATION_FLAG -o "$TMP.%(ext)s" -- "$SOURCE"
+  "$HERE/yt-dlp" --no-playlist --newline --progress-delta 0.25 --progress-template 'download:LUNO_PROGRESS=%(progress._percent_str)s' -f 'bestaudio/best' -x --audio-format m4a --audio-quality 0 --embed-thumbnail --embed-metadata --convert-thumbnails jpg --ppa 'ExtractAudio+ffmpeg_o:-ar 44100 -ac 2 -af loudnorm=I=-14:LRA=11:TP=-1.5' $FF_LOCATION_FLAG -o "$TMP.%(ext)s" -- "$SOURCE"
 else
   if command -v yt-dlp >/dev/null 2>&1; then
-    yt-dlp --no-playlist --no-progress -f 'bestaudio/best' -x --audio-format m4a --audio-quality 0 $FF_LOCATION_FLAG -o "$TMP.%(ext)s" -- "$SOURCE"
+    yt-dlp --no-playlist --newline --progress-delta 0.25 --progress-template 'download:LUNO_PROGRESS=%(progress._percent_str)s' -f 'bestaudio/best' -x --audio-format m4a --audio-quality 0 --embed-thumbnail --embed-metadata --convert-thumbnails jpg --ppa 'ExtractAudio+ffmpeg_o:-ar 44100 -ac 2 -af loudnorm=I=-14:LRA=11:TP=-1.5' $FF_LOCATION_FLAG -o "$TMP.%(ext)s" -- "$SOURCE"
   else
     echo "download helper: yt-dlp is not available" >&2
     exit 1

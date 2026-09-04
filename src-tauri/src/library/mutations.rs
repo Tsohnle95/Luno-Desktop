@@ -73,6 +73,17 @@ impl PlaylistService {
         }
         let failed = errors.len(); let mut result = self.result_with_errors(CopyResult { copied, failed }, errors, index); if failed > 0 { result.errors.push(MutationError::PartialCopy(failed)); } Ok(result)
     }
+    /// Copy selected library files into a physical playlist folder without
+    /// overwriting same-named audio that is already there.
+    pub fn add_files(&self, files: &[PathBuf], destination: &str, index: &mut LibraryIndex) -> Result<MutationResult<CopyResult>, MutationError> {
+        let destination_path = self.playlist_path(destination)?; let mut copied = 0; let mut errors = Vec::new();
+        for source in files {
+            let Some(name) = source.file_name() else { continue }; let target = destination_path.join(name);
+            if target.exists() { continue; }
+            match fs::copy(source, &target) { Ok(_) => copied += 1, Err(error) => errors.push(io_error(&target, error)) }
+        }
+        let failed = errors.len(); let mut result = self.result_with_errors(CopyResult { copied, failed }, errors, index); if failed > 0 { result.errors.push(MutationError::PartialCopy(failed)); } Ok(result)
+    }
     fn playlist_path(&self, name: &str) -> Result<PathBuf, MutationError> { let safe = sanitize_name(name).ok_or(MutationError::InvalidName)?; self.check_name(&safe)?; let path = self.root.join(&safe); if !path.exists() || !path.is_dir() { return Err(MutationError::NotFound(safe)); } Ok(path) }
     fn check_name(&self, name: &str) -> Result<(), MutationError> { let root = self.root.file_name().and_then(|n| n.to_str()).unwrap_or(""); if ["All Music", "Unsorted", "Luno_Library", root].contains(&name) { Err(MutationError::Protected(name.to_owned())) } else { Ok(()) } }
     fn result<T>(&self, value: T, index: &mut LibraryIndex) -> MutationResult<T> { self.result_with_errors(value, Vec::new(), index) }

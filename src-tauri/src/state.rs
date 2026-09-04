@@ -1728,6 +1728,7 @@ pub struct AppState {
     discover_completions: Arc<Mutex<Option<std::sync::mpsc::Sender<PreviewCompletion>>>>,
     discover_deferred: Arc<Mutex<Vec<PathBuf>>>,
     save_in_flight: Arc<Mutex<std::collections::HashSet<TrackId>>>,
+    pending_download_saves: Arc<Mutex<BTreeMap<String, (TrackId, PlaylistId, PathBuf)>>>,
     roots: Arc<Mutex<Vec<PathBuf>>>,
     root_statuses: Arc<Mutex<Vec<RootStatus>>>,
     events: Arc<Mutex<Vec<EventEnvelope>>>,
@@ -1947,6 +1948,7 @@ impl AppState {
             discover_completions: Arc::new(Mutex::new(None)),
             discover_deferred: Arc::new(Mutex::new(Vec::new())),
             save_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            pending_download_saves: Arc::new(Mutex::new(BTreeMap::new())),
             roots: Arc::new(Mutex::new(Vec::new())),
             root_statuses: Arc::new(Mutex::new(Vec::new())),
             events: Arc::new(Mutex::new(Vec::new())),
@@ -2773,6 +2775,7 @@ impl AppState {
         self.publish_preview_snapshot(generation);
         let value = self.preview_snapshot_value()?;
         self.spawn_preview_driver(generation);
+        self.adopt_existing_preview_window(generation);
         self.ensure_window_prepared(generation);
         Ok(value)
     }
@@ -2807,8 +2810,8 @@ impl AppState {
                 self.publish_preview_snapshot(generation);
                 self.preview_snapshot_value()
             }
-            SessionAction::LeaveToNext { .. } | SessionAction::ReturnToSeed { .. } | SessionAction::Ended => {
-                self.cancel_preview_tasks();
+            action @ (SessionAction::LeaveToNext { .. } | SessionAction::ReturnToSeed { .. } | SessionAction::Ended) => {
+                self.handle_session_action(action, generation);
                 self.publish_preview_snapshot(generation);
                 self.preview_snapshot_value()
             }
@@ -2816,7 +2819,7 @@ impl AppState {
     }
 
     fn preview_cancel(&self) -> Result<Value, ContractError> {
-        let generation = {
+        let (generation, handoff) = {
             let mut session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
             let Some(session) = session.as_mut() else {
                 return Err(ContractError {
@@ -2825,11 +2828,12 @@ impl AppState {
                     retryable: false,
                 });
             };
-            session.invalidate(self.next_generation().0);
-            session.generation()
+            let handoff = session.invalidate(self.next_generation().0);
+            (session.generation(), handoff)
         };
         self.preview_cancelled.store(true, Ordering::Release);
         self.cancel_preview_tasks();
+        self.restore_preview_queue(handoff.queue, handoff.index);
         self.publish_preview_snapshot(generation);
         self.preview_snapshot_value()
     }
@@ -2853,12 +2857,20 @@ impl AppState {
                         let action = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.prepared_asset(generation, TrackId(key.clone()), path)).unwrap_or(SessionAction::Ended);
                         state.publish_preview_snapshot(generation);
                         state.handle_session_action(action, generation);
+                        state.ensure_window_prepared(generation);
                     }
-                    Ok(PreviewCompletion::Failed { key }) => {
+                    Ok(PreviewCompletion::Failed { key, error }) => {
+                        eprintln!("[luno-preview] preparation failed for {key}: {error}");
                         let id = TrackId::new(key.clone()).unwrap_or_else(|_| TrackId(key.clone()));
                         let action = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &id)).unwrap_or(SessionAction::Ended);
                         state.publish_preview_snapshot(generation);
+                        state.publish(state.event(Generation(generation), Event::Error { error: ContractError {
+                            code: ErrorCode::Unavailable,
+                            message: format!("preview could not be prepared: {error}"),
+                            retryable: true,
+                        }}));
                         state.handle_session_action(action, generation);
+                        state.ensure_window_prepared(generation);
                     }
                     Err(_) => {}
                 }
@@ -2869,29 +2881,103 @@ impl AppState {
     fn handle_session_action(&self, action: SessionAction, generation: u64) {
         match action {
             SessionAction::Play(key) => {
-                // Audio routing into the native player lands with the
-                // player-integration unit (9W-4); the snapshot already
-                // carries the current selection and prepared set.
-                let _ = (key, generation);
+                if let Ok(path) = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).ready_path(&key.0) {
+                    self.play_preview_audio(key, path, generation);
+                }
             }
             SessionAction::Wait(key) => {
-                self.ensure_prepared(generation, &key);
+                let prepared = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_prepared(&key));
+                if !prepared { self.ensure_prepared(generation, &key); }
             }
-            SessionAction::LeaveToNext { .. } | SessionAction::ReturnToSeed { .. } | SessionAction::Ended => {
+            SessionAction::LeaveToNext { queue, index } => {
+                self.cancel_preview_tasks();
+                self.restore_preview_queue(queue, index);
+            }
+            SessionAction::ReturnToSeed { queue, index } => {
+                self.cancel_preview_tasks();
+                self.restore_preview_queue(queue, Some(index));
+            }
+            SessionAction::Ended => {
                 self.cancel_preview_tasks();
             }
         }
     }
 
+    fn restore_preview_queue(&self, queue: Vec<TrackId>, index: Option<usize>) {
+        if let Some(index) = index {
+            self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
+        } else {
+            self.playback.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        }
+        self.publish_queue_snapshot();
+        #[cfg(target_os = "macos")]
+        if index.is_some() { let _ = self.start_current_track(); }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn play_preview_audio(&self, key: TrackId, path: PathBuf, generation: u64) {
+        self.tasks.cancel_key("playback-heartbeat");
+        let state = self.clone();
+        let task_key = format!("preview-audio-{generation}");
+        self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).push(task_key.clone());
+        let _ = self.submit(self.generation(task_key, Generation(generation)), move |token| {
+            if token.is_cancelled() { return; }
+            let volume = *state.volume.lock().unwrap_or_else(|e| e.into_inner());
+            let loaded = {
+                let mut backend = match state.audio.lock() { Ok(backend) => backend, Err(_) => return };
+                match backend.load_streaming(&path) {
+                    Ok(info) => { backend.set_volume(volume); info }
+                    Err(error) => {
+                        eprintln!("[luno-preview] audio load failed for {}: {error:?}", key.0);
+                        return;
+                    }
+                }
+            };
+            if token.is_cancelled() { return; }
+            let mut backend = match state.audio.lock() { Ok(backend) => backend, Err(_) => return };
+            if let Err(error) = backend.play() {
+                eprintln!("[luno-preview] audio play failed for {}: {error:?}", key.0);
+                return;
+            }
+            drop(backend);
+            *state.clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlaybackClock::new(loaded.duration));
+            if let Some(clock) = state.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.start(0.0); }
+            *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(key);
+            *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Playing;
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn play_preview_audio(&self, _key: TrackId, _path: PathBuf, _generation: u64) {}
+
     fn ensure_window_prepared(&self, generation: u64) {
         let keys = {
             let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
-            session.as_ref().map(|s| s.window().to_vec()).unwrap_or_default()
+            session.as_ref().filter(|s| s.is_active()).map(|s| s.window().to_vec()).unwrap_or_default()
         };
+        let raised = self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).clone();
         for key in keys {
             let prepared = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_prepared(&key));
-            if !prepared { self.ensure_prepared(generation, &key); }
+            let task_key = format!("preview-{generation}-{}", key.0);
+            if !prepared && !raised.iter().any(|task| task == &task_key) {
+                // One yt-dlp helper at a time. Launching the whole six-item
+                // window concurrently exhausted the bundled executable and
+                // made the tapped item lose the race to its own prefetches.
+                self.ensure_prepared(generation, &key);
+                break;
+            }
         }
+    }
+
+    fn adopt_existing_preview_window(&self, generation: u64) {
+        let keys = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|session| session.window().to_vec()).unwrap_or_default();
+        for key in keys {
+            let path = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).ready_path(&key.0).ok().filter(|path| path.is_file());
+            let Some(path) = path else { continue };
+            let action = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|session| session.prepared_asset(generation, key, path)).unwrap_or(SessionAction::Ended);
+            self.handle_session_action(action, generation);
+        }
+        self.publish_preview_snapshot(generation);
     }
 
     fn ensure_current_prepared(&self, generation: u64) {
@@ -2944,12 +3030,23 @@ fn prepare_one(
     ffmpeg: &Option<PathBuf>,
     task_token: &crate::runtime::task_registry::CancellationToken,
 ) -> PreviewCompletion {
-    let failed = || PreviewCompletion::Failed { key: key.0.clone() };
-    let (Some(helper), Some(ffmpeg)) = (helper, ffmpeg) else { return failed(); };
+    let failed = |error: String| PreviewCompletion::Failed { key: key.0.clone(), error };
+    let (Some(helper), Some(ffmpeg)) = (helper, ffmpeg) else { return failed("preview toolchain is unavailable".into()); };
+    let source = if crate::download::workflows::validate_http_url(query).is_ok() || query.starts_with("ytsearch") || query.starts_with("scsearch") {
+        query.to_owned()
+    } else if helper.file_name().and_then(|name| name.to_str()) == Some("luno-download-helper") {
+        crate::download::search::search_youtube_web(query, 1)
+            .ok()
+            .and_then(|results| results.into_iter().next())
+            .and_then(|result| result.url)
+            .unwrap_or_else(|| format!("ytsearch1:{query}"))
+    } else {
+        query.to_owned()
+    };
     let store = store.lock().unwrap_or_else(|e| e.into_inner());
-    match prepare_preview(&store, &key.0, store_generation, query, helper, ffmpeg, task_token) {
+    match prepare_preview(&store, &key.0, store_generation, &source, helper, ffmpeg, task_token) {
         Ok(path) => PreviewCompletion::Prepared { key: key.0.clone(), path },
-        Err(_) => failed(),
+        Err(error) => failed(format!("{error:?}")),
     }
 }
 
@@ -3463,23 +3560,37 @@ impl AppState {
     /// durable download through the configured downloader. Duplicate requests
     /// for the same key are rejected while one is in flight.
     fn save_preview(&self, key: &TrackId, playlist_id: &PlaylistId) -> Result<Value, ContractError> {
-        let playlist = self
+        let known_directory = self
             .library
             .lock()
             .unwrap()
             .playlists
             .iter()
             .find(|playlist| &playlist.id == playlist_id)
-            .cloned()
-            .ok_or_else(|| ContractError {
-                code: ErrorCode::NotFound,
-                message: "playlist not found".into(),
-                retryable: false,
-            })?;
-        let directory = playlist
-            .path
-            .ok_or_else(|| ContractError::invalid("playlist has no directory"))?;
-        let directory = PathBuf::from(directory);
+            .map(|playlist| playlist.path.clone().map(PathBuf::from));
+        let known_playlist = known_directory.is_some();
+        let directory = match known_directory {
+            Some(Some(directory)) => directory,
+            Some(None) | None => {
+                // Create-new + save is intentionally one frontend gesture.
+                // The folder exists before the asynchronous library rescan
+                // publishes it, so safely resolve that just-created stable id
+                // instead of racing the snapshot and returning "not found".
+                let name = playlist_id.0.strip_prefix("playlist:").ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "playlist not found".into(), retryable: false })?;
+                if Self::sanitize_name(name) != name || name.eq_ignore_ascii_case("unsorted") {
+                    return Err(ContractError::invalid("playlist is unavailable"));
+                }
+                let root = self.playlist_mutation_root()?;
+                let candidate = root.join(name);
+                let canonical = std::fs::canonicalize(&candidate).map_err(|_| ContractError {
+                    code: if known_playlist { ErrorCode::InvalidRequest } else { ErrorCode::NotFound },
+                    message: if known_playlist { "playlist has no directory".into() } else { "playlist not found".into() },
+                    retryable: !known_playlist,
+                })?;
+                if !canonical.starts_with(&root) || !canonical.is_dir() { return Err(ContractError::invalid("playlist is unavailable")); }
+                canonical
+            }
+        };
         {
             let mut in_flight = self.save_in_flight.lock().unwrap_or_else(|e| e.into_inner());
             if in_flight.contains(key) {
@@ -3530,7 +3641,9 @@ impl AppState {
             })?;
             let job_id = JobId(format!("save-{}", key.0));
             let target = directory.join(&filename);
+            self.pending_download_saves.lock().unwrap_or_else(|e| e.into_inner()).insert(job_id.0.clone(), (key.clone(), playlist_id.clone(), target.clone()));
             if let Err(error) = self.start_download(job_id.clone(), target.clone(), helper, query) {
+                self.pending_download_saves.lock().unwrap_or_else(|e| e.into_inner()).remove(&job_id.0);
                 self.save_in_flight.lock().unwrap_or_else(|e| e.into_inner()).remove(key);
                 return Err(error);
             }
@@ -4304,6 +4417,7 @@ impl AppState {
                 }))
             }
             Command::SearchDownloader { query, try_soundcloud, limit } => {
+                let query = query.trim().to_owned();
                 let sources = crate::download::workflows::search_sources(&query, try_soundcloud)
                     .map_err(|error| ContractError::invalid(format!("invalid downloader search: {error:?}")))?;
                 let limit = limit.clamp(1, crate::contracts::types::MAX_DOWNLOADER_SEARCH_LIMIT);
@@ -4336,9 +4450,22 @@ impl AppState {
                         });
                     }
                 };
+                // The bundled yt-dlp is a large self-extracting executable and
+                // can spend most of the old 30-second window merely starting.
+                // YouTube's public results page gives us the same metadata in
+                // one request; retain yt-dlp below as a compatibility fallback.
+                if helper.file_name().and_then(|name| name.to_str()) == Some("luno-download-helper") {
+                    match crate::download::search::search_youtube_web(&query, limit) {
+                        Ok(found) if !found.is_empty() => return Ok(serde_json::to_value(found).unwrap_or(Value::Null)),
+                        Ok(_) => eprintln!("[luno-downloader] fast YouTube search returned no parsable results; trying yt-dlp"),
+                        Err(error) => eprintln!("[luno-downloader] fast YouTube search unavailable: {error}; trying yt-dlp"),
+                    }
+                }
                 // Run provider searches in parallel so combined latency is the
-                // max of the two rather than the sum (each can take up to 30s).
+                // max of the two rather than the sum.
                 let mut results = Vec::new();
+                let mut failures = Vec::new();
+                let provider_count = sources.len();
                 std::thread::scope(|scope| {
                     let mut handles = Vec::new();
                     for (provider, source_query) in sources {
@@ -4348,26 +4475,26 @@ impl AppState {
                             .map(|(_, rest)| rest.to_string())
                             .unwrap_or_else(|| source_query.clone());
                         let ytdlp = ytdlp.clone();
-                        let source_query_clone = source_query.clone();
                         let limit = limit;
                         handles.push(scope.spawn(move || {
-                            let mut found = crate::download::search::search_provider(&ytdlp, &provider_name, &user_query, limit);
-                            // The provider query (e.g. `ytsearch1:artist track`) is the
-                            // download source for each hit; carry it so a selected row
-                            // downloads exactly what the user picked. The per-track
-                            // `url` stays distinct so the UI can key rows by URL.
-                            for result in &mut found {
-                                result.query = source_query_clone.clone();
-                            }
-                            found
+                            crate::download::search::search_provider(&ytdlp, &provider_name, &user_query, limit)
                         }));
                     }
                     for handle in handles {
-                        if let Ok(found) = handle.join() {
-                            results.extend(found);
+                        match handle.join() {
+                            Ok(Ok(found)) => results.extend(found),
+                            Ok(Err(error)) => failures.push(error),
+                            Err(_) => failures.push("downloader search worker stopped unexpectedly".into()),
                         }
                     }
                 });
+                if results.is_empty() && failures.len() == provider_count {
+                    return Err(ContractError {
+                        code: ErrorCode::Unavailable,
+                        message: format!("music search failed: {}", failures.join("; ")),
+                        retryable: true,
+                    });
+                }
                 Ok(serde_json::to_value(results).unwrap_or(Value::Null))
             }
             Command::Discover { artist, title, limit } => {
@@ -4434,6 +4561,10 @@ impl AppState {
                 self.set_scan_roots(vec![root.clone()]);
                 Ok(serde_json::json!({ "root": root.display().to_string() }))
             }
+            Command::CreatePlaylist { name } => self.create_playlist(&name),
+            Command::DeletePlaylist { playlist_id } => self.delete_playlist(&playlist_id),
+            Command::AddTracksToPlaylist { track_ids, playlist_id } => self.add_tracks_to_playlist(&track_ids, &playlist_id),
+            Command::DeleteTracks { track_ids } => self.delete_tracks(&track_ids),
             Command::StartDownload { job_id, destination, helper, source } => self.start_download(job_id, PathBuf::from(destination), PathBuf::from(helper), source),
             Command::RetryDownload { job_id } => {
                 let (destination, helper, source) = self.download_requests.lock().unwrap_or_else(|e| e.into_inner()).get(&job_id.0).cloned().ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "download request not found".into(), retryable: false })?;
@@ -4735,23 +4866,7 @@ impl AppState {
         std::fs::create_dir_all(&worker_home).map_err(|_| ContractError::invalid("download worker home is unavailable"))?;
         let start_result = coordinator.start(crate::download::coordinator::DownloadRequest { job_id: job.0.clone(), destination }, Box::new(move |temporary, token, progress| {
             if token.is_cancelled() { return Err("cancelled".into()); }
-            let mut command = std::process::Command::new(&helper_for_worker);
-            command.arg(temporary).env("HOME", &worker_home);
-            if !source_for_worker.is_empty() {
-                command.arg(&source_for_worker).env("LUNO_DOWNLOAD_SOURCE", &source_for_worker);
-            }
-            let mut child = command.spawn().map_err(|_| "download helper could not start".to_string())?;
-            loop {
-                if token.is_cancelled() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("cancelled".into());
-                }
-                match child.try_wait().map_err(|_| "download helper failed".to_string())? {
-                    Some(status) => { progress(1.0); return if status.success() { Ok(()) } else { Err("download helper failed".into()) }; }
-                    None => std::thread::sleep(Duration::from_millis(5)),
-                }
-            }
+            crate::download::workflows::run_download_helper(&helper_for_worker, temporary, &source_for_worker, &worker_home, token, progress)
         }));
         if let Err(error) = start_result {
             coordinator.remove_events_for(&job.0);
@@ -4780,6 +4895,26 @@ impl AppState {
                 envelope.job_id = Some(worker_job.clone());
                 state.publish(envelope);
                 if let Some(error) = error { state.publish(state.event(generation, Event::Error { error })); }
+                if matches!(event, DownloadEvent::Succeeded { .. } | DownloadEvent::Failed { .. } | DownloadEvent::Cancelled { .. }) {
+                    if let Some((key, playlist_id, path)) = state.pending_download_saves.lock().unwrap_or_else(|e| e.into_inner()).remove(&worker_job.0) {
+                        state.save_in_flight.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+                        let (save_state, save_error) = match &event {
+                            DownloadEvent::Succeeded { .. } => (SaveStateKind::Saved, None),
+                            DownloadEvent::Failed { error, .. } => (SaveStateKind::Failed, Some(sanitize_download_error(error))),
+                            DownloadEvent::Cancelled { .. } => (SaveStateKind::Failed, Some("download cancelled".into())),
+                            _ => unreachable!(),
+                        };
+                        state.publish(state.event(generation, Event::SaveState { state: SaveState {
+                            key,
+                            playlist_id,
+                            state: save_state,
+                            already_saved: false,
+                            path: matches!(save_state, SaveStateKind::Saved).then(|| path.display().to_string()),
+                            job_id: Some(worker_job.clone()),
+                            error: save_error,
+                        }}));
+                    }
+                }
                 if matches!(event, DownloadEvent::Succeeded { .. }) {
                     // A completed download wrote a new audio file into the
                     // library; refresh the snapshot so the song appears in the
@@ -4834,6 +4969,58 @@ impl AppState {
         let approvals = approvals.into_iter().map(|(key, value)| (key, PathBuf::from(value))).collect();
         let result = crate::transfer::planner::apply_import_plan(&plan, &approvals);
         Ok(serde_json::json!({ "copied": result.copied.len(), "failures": result.failures.len(), "no_deletions": plan.no_deletions }))
+    }
+
+    fn playlist_mutation_root(&self) -> Result<PathBuf, ContractError> {
+        let root = self.scan_roots().first().cloned().ok_or_else(|| ContractError::invalid("no configured library root"))?;
+        std::fs::canonicalize(root).map_err(|_| ContractError { code: ErrorCode::NotFound, message: "configured library root is unavailable".into(), retryable: false })
+    }
+
+    fn playlist_name(&self, playlist_id: &PlaylistId) -> Result<String, ContractError> {
+        self.library.lock().unwrap_or_else(|e| e.into_inner()).playlists.iter()
+            .find(|playlist| &playlist.id == playlist_id).map(|playlist| playlist.name.clone())
+            .ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "playlist not found".into(), retryable: false })
+    }
+
+    fn schedule_mutation_scan(&self) -> Result<u64, ContractError> {
+        self.scan_async().map(|generation| generation.0).map_err(|error| match error {
+            SpawnError::AtCapacity => ContractError { code: ErrorCode::Busy, message: "playlist changed, but the library refresh queue is full".into(), retryable: true },
+            SpawnError::ShuttingDown => ContractError { code: ErrorCode::ShuttingDown, message: "backend is shutting down".into(), retryable: false },
+        })
+    }
+
+    fn create_playlist(&self, name: &str) -> Result<Value, ContractError> {
+        let service = crate::library::mutations::PlaylistService::new(self.playlist_mutation_root()?); let mut index = crate::library::index::LibraryIndex::default();
+        let result = service.create(name, &mut index).map_err(playlist_mutation_error)?; let generation = self.schedule_mutation_scan()?;
+        Ok(serde_json::json!({ "name": name.trim(), "path": result.value.display().to_string(), "generation": generation }))
+    }
+
+    fn delete_playlist(&self, playlist_id: &PlaylistId) -> Result<Value, ContractError> {
+        let name = self.playlist_name(playlist_id)?; let service = crate::library::mutations::PlaylistService::new(self.playlist_mutation_root()?); let mut index = crate::library::index::LibraryIndex::default();
+        service.delete(&name, &mut index).map_err(playlist_mutation_error)?; let generation = self.schedule_mutation_scan()?;
+        Ok(serde_json::json!({ "deleted": name, "generation": generation }))
+    }
+
+    fn add_tracks_to_playlist(&self, track_ids: &[TrackId], playlist_id: &PlaylistId) -> Result<Value, ContractError> {
+        if track_ids.is_empty() { return Err(ContractError::invalid("choose at least one track")); }
+        // Create-and-add can arrive before the empty folder's scan publishes;
+        // only the non-destructive add path may resolve that stable id early.
+        let name = self.playlist_name(playlist_id).or_else(|_| playlist_id.0.strip_prefix("playlist:").map(str::to_owned).ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "playlist not found".into(), retryable: false }))?;
+        let paths = { let map = self.track_paths.lock().unwrap_or_else(|e| e.into_inner()); track_ids.iter().map(|id| map.get(id).cloned().ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "one or more tracks are no longer in the library".into(), retryable: true })).collect::<Result<Vec<_>, _>>()? };
+        let service = crate::library::mutations::PlaylistService::new(self.playlist_mutation_root()?); let mut index = crate::library::index::LibraryIndex::default();
+        let result = service.add_files(&paths, &name, &mut index).map_err(playlist_mutation_error)?; let generation = self.schedule_mutation_scan()?;
+        Ok(serde_json::json!({ "playlist": name, "copied": result.value.copied, "failed": result.value.failed, "generation": generation }))
+    }
+
+    fn delete_tracks(&self, track_ids: &[TrackId]) -> Result<Value, ContractError> {
+        if track_ids.is_empty() { return Err(ContractError::invalid("choose at least one track")); }
+        let paths = { let map = self.track_paths.lock().unwrap_or_else(|e| e.into_inner()); track_ids.iter().map(|id| map.get(id).cloned().ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "one or more tracks are no longer in the library".into(), retryable: true })).collect::<Result<Vec<_>, _>>()? };
+        for path in &paths {
+            validate_library_path(self, path, true)?;
+            std::fs::remove_file(path).map_err(|error| ContractError { code: ErrorCode::Internal, message: format!("could not delete '{}': {error}", path.file_name().and_then(|name| name.to_str()).unwrap_or("track")), retryable: true })?;
+        }
+        let generation = self.schedule_mutation_scan()?;
+        Ok(serde_json::json!({ "deleted": paths.len(), "generation": generation }))
     }
 
     fn validate_transfer_destination(&self, destination: &PathBuf) -> Result<(), ContractError> {
@@ -5847,6 +6034,12 @@ fn validate_home(home: &PathBuf) -> Result<(), ContractError> {
         return Err(ContractError::invalid("settings home must be an absolute safe directory"));
     }
     Ok(())
+}
+
+fn playlist_mutation_error(error: crate::library::mutations::MutationError) -> ContractError {
+    use crate::library::mutations::MutationError;
+    let code = match &error { MutationError::Io { .. } | MutationError::PartialCopy(_) => ErrorCode::Internal, MutationError::NotFound(_) => ErrorCode::NotFound, _ => ErrorCode::InvalidRequest };
+    ContractError { code, message: error.to_string(), retryable: matches!(code, ErrorCode::Internal) }
 }
 
 fn validate_library_path(state: &AppState, path: &Path, allow_file: bool) -> Result<PathBuf, ContractError> {

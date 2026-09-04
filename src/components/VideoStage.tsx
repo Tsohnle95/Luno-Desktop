@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
 import { Artwork } from "./Artwork";
+import { IconVolume } from "./icons";
 
 export type VideoStageStatus = "not-checked" | "loading" | "ready" | "playing" | "paused" | "ended" | "unavailable" | "error" | "fallback";
 
@@ -19,6 +20,10 @@ export interface VideoStageProps {
   onEnded?: () => void;
   onError?: () => void;
   onFullscreenChange?: (fullscreen: boolean) => void;
+  /** Master audio volume shown with the fullscreen hover controls. */
+  volume?: number;
+  onVolume?: (volume: number) => void;
+  onVolumeCommit?: (volume: number) => void;
   /** Song-page video mode (hover pill). Undefined hides the control. */
   videoModeEnabled?: boolean;
   onVideoModeChange?: (enabled: boolean) => void;
@@ -152,7 +157,7 @@ const stageChromeStyles = `
 `;
 
 /** Presentation-only video surface. The supplied audio position remains authoritative. */
-export function VideoStage({ src, status = "not-checked", positionMs = 0, playing = false, artworkUrl, artworkAlt = "Album artwork", onResize, onSeek, onPause, onResume, onEnded, onError, onFullscreenChange, videoModeEnabled, onVideoModeChange, downloadProgress: videoProgress }: VideoStageProps & { downloadProgress?: number | null }) {
+export function VideoStage({ src, status = "not-checked", positionMs = 0, playing = false, artworkUrl, artworkAlt = "Album artwork", onResize, onSeek, onPause, onResume, onEnded, onError, onFullscreenChange, volume = 1, onVolume, onVolumeCommit, videoModeEnabled, onVideoModeChange, downloadProgress: videoProgress }: VideoStageProps & { downloadProgress?: number | null }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   // Position we last pushed INTO the element. Every programmatic currentTime
@@ -172,6 +177,8 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
   const latestPositionRef = useRef(positionMs);
   latestPositionRef.current = positionMs;
   const [fullscreenWanted, setFullscreenWanted] = useState(false);
+  const [volumeDraft, setVolumeDraft] = useState(volume);
+  useEffect(() => setVolumeDraft(volume), [volume]);
   const showVideo = Boolean(src) && !fallbackStatuses.has(status);
   // Fullscreen is CSS-driven: the stage expands to fill the entire app
   // window (video + hover controls only) — WKWebView cannot do native
@@ -194,6 +201,7 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
   // Hover controls are pure CSS (opacity on .luno-video-stage:hover), so they
   // work identically over video and over artwork, and are unit-testable.
   const hoverControls = <div className="luno-video-hover-controls" data-testid="video-hover-controls">
+    {fullscreenWanted && onVolume && <label className="luno-video-volume"><IconVolume size={16} /><span className="sr-only">Volume</span><input aria-label="Fullscreen volume" type="range" min="0" max="1" step="0.01" value={Math.min(1, Math.max(0, volumeDraft))} onChange={(event) => { const next = Number(event.currentTarget.value); setVolumeDraft(next); onVolume(next); }} onPointerUp={(event) => onVolumeCommit?.(Number(event.currentTarget.value))} onKeyUp={(event) => onVolumeCommit?.(Number(event.currentTarget.value))} /></label>}
     {onVideoModeChange !== undefined && <button type="button" className={`luno-video-mode-mini${videoModeEnabled ? " is-on" : ""}`} role="switch" aria-checked={!!videoModeEnabled} aria-label={videoModeEnabled ? "Music mode on" : "Music mode off"} title="Music mode" onClick={() => onVideoModeChange(!videoModeEnabled)}><span className="luno-video-mode-mini-knob" aria-hidden="true" /></button>}
     {showVideo && <button type="button" className="luno-video-fullscreen" aria-label={fullscreenWanted ? "Exit fullscreen" : "Enter fullscreen"} onClick={toggleFullscreen}>⛶</button>}
   </div>;

@@ -30,8 +30,16 @@ const pendingQueue: Array<{ id: string; fetcher: ArtworkFetcher }> = [];
  * module cache and stayed invisible, because a STATIC id list (sidebar
  * playlist cards, the queue window, Home cards) never re-runs its effect to
  * read the cache back. Playlist art beyond the first ~6 entries disappeared.
+ *
+ * A second event — eviction — lets components forget the per-instance
+ * "requested" marker for ids the bounded module cache dropped. Without it,
+ * scrolling a large library evicts older rows' data URLs (CAP is 80), and
+ * the requested set then blocks re-requesting those rows forever: artwork
+ * that was visible moments earlier stayed blank for the whole session
+ * (single-song-page art survived because its one-id request is prioritized
+ * fresh on every navigation).
  */
-type Listener = (urls: Record<string, string>) => void;
+type Listener = (event: { type: "resolved"; urls: Record<string, string> } | { type: "evicted"; id: string }) => void;
 const listeners = new Set<Listener>();
 
 function remember(id: string, url: string | null): void {
@@ -40,12 +48,21 @@ function remember(id: string, url: string | null): void {
   resolvedCache.set(id, url);
   if (url) {
     const urls = { [id]: url };
-    for (const listener of listeners) listener(urls);
+    for (const listener of listeners) listener({ type: "resolved", urls });
   }
   while (resolvedCache.size > CAP) {
     const oldest = resolvedCache.keys().next().value;
     if (oldest === undefined) break;
+    // Only evicting a VALUE matters — a cached null means "no artwork,
+    // never retry", and re-requesting it is exactly what the no-art
+    // fast-path exists to prevent. Evicting a data URL means a later
+    // scroll-back must be allowed to re-extract it, so forget the id in
+    // every component's requested set.
+    const wasValue = resolvedCache.get(oldest) !== null;
     resolvedCache.delete(oldest);
+    if (wasValue) {
+      for (const listener of listeners) listener({ type: "evicted", id: oldest });
+    }
   }
 }
 
@@ -56,6 +73,29 @@ function capTrimmed(next: Record<string, string>): Record<string, string> {
   const trimmed: Record<string, string> = {};
   for (const k of keys.slice(-CAP)) trimmed[k] = next[k];
   return trimmed;
+}
+
+/**
+ * Whether a visible id still needs a fetch request on this pass.
+ * Exported for deterministic tests of the eviction-retry contract.
+ *
+ * The per-component `requested` set is the "ever asked in this mount" gate.
+ * It must be cleared when the module LRU cache evicts the id's entry —
+ * otherwise a scroll-back after eviction would skip the id forever. The
+ * module emits an `evicted` event exactly for that purpose; components
+ * delete the id from their set and the next pass sees `requested === false`
+ * and re-enqueues.
+ */
+export function needsArtworkRequest(
+  requested: ReadonlySet<string>,
+  resolved: ReadonlyMap<string, string | null>,
+  inFlightIds: ReadonlySet<string>,
+  id: string,
+): boolean {
+  if (resolved.has(id)) return false;      // known (value or definitive no-art)
+  if (inFlightIds.has(id)) return false;   // already fetching
+  if (requested.has(id)) return false;     // already asked this mount
+  return true;
 }
 
 function scheduleNext(): void {
@@ -116,6 +156,7 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
       return next ? capTrimmed(next) : prev;
     });
 
+    const inFlightIds = new Set(inFlight.keys());
     for (const id of ids) {
       const cached = resolvedCache.get(id);
       if (cached !== undefined) {
@@ -127,7 +168,7 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
         }
         continue;
       }
-      if (requested.current.has(id) || inFlight.has(id)) continue;
+      if (!needsArtworkRequest(requested.current, resolvedCache, inFlightIds, id)) continue;
       requested.current.add(id);
       // Prioritize single-track requests (e.g., footer now-playing) over
       // bulk HomeView/Queue bursts so playing a song never waits behind 80
@@ -147,18 +188,25 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
     // STATIC id list (sidebar playlists, queue window, Home cards) never
     // re-runs its effect to read them back — without this subscription the
     // URLs stayed invisible and playlist art "disappeared".
-    const onResolved = (urls: Record<string, string>) => {
+    // Eviction events unmark the id so a later visible pass re-requests it
+    // (the LRU cache drops old rows while scrolling a large library, and the
+    // requested marker would otherwise keep those rows blank forever).
+    const onCacheEvent = (event: { type: "resolved"; urls: Record<string, string> } | { type: "evicted"; id: string }) => {
+      if (event.type === "evicted") {
+        if (requested.current.has(event.id)) requested.current.delete(event.id);
+        return;
+      }
       const currentIds = idsRef.current;
-      for (const id of Object.keys(urls)) {
+      for (const id of Object.keys(event.urls)) {
         if (!currentIds.includes(id)) continue;
-        const url = urls[id];
+        const url = event.urls[id];
         setArt((prev) => {
           if (prev[id] === url) return prev;
           return capTrimmed({ ...prev, [id]: url });
         });
       }
     };
-    listeners.add(onResolved);
+    listeners.add(onCacheEvent);
 
     // Wire up in-flight promises that were already queued to update this
     // component (covers the subscribe-race where a promise resolved between
@@ -176,7 +224,7 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
         });
       }).catch(() => {});
     }
-    return () => { listeners.delete(onResolved); };
+    return () => { listeners.delete(onCacheEvent); };
   }, [idsKey]);
   return art;
 }

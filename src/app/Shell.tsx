@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "../styles/tokens.css";
@@ -6,7 +6,7 @@ import "../styles/layout.css";
 import { SettingsView } from "../views/SettingsView";
 import { ErrorLogView } from "../views/ErrorLogView";
 import { HomeView } from "../views/HomeView";
-import { LibraryView, libraryPlaylists, libraryAlbums, playlistTracks, albumScope, type LibraryScope } from "../views/LibraryView";
+import { LibraryView, libraryPlaylists, libraryAlbums, playlistTracks, shuffledFirstTrack, albumScope, type LibraryScope } from "../views/LibraryView";
 import { RecentView } from "../views/RecentView";
 import { SongPageView } from "../views/SongPageView";
 import { DownloaderView } from "../views/DownloaderView";
@@ -16,11 +16,12 @@ import { currentTrack } from "../state/backend_projection";
 import { useTrackArtwork } from "../state/track_artwork";
 import { bumpPlayCount, loadDownloadJournal, loadPlayCounts, madeForYouIds, popularTrackIds, recordDownloadCompletions, saveDownloadJournal, savePlayCounts, type DownloadEntry, type PlayCounts } from "../state/play_stats";
 import type { Bridge, MigrationStatus } from "./bridge";
-import { type Recommendation, type SearchResult, type SettingsInput, type Track } from "../shared/contracts";
+import { type Playlist, type Recommendation, type SearchResult, type SettingsInput, type Track } from "../shared/contracts";
 import { previewKey } from "../shared/contracts";
 import type { RecommendationState } from "../components/Recommendations";
 import { Queue } from "../components/Queue";
 import { PlayerBar } from "../components/PlayerBar";
+import { PlaylistPicker } from "../components/PlaylistPicker";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
 import { IconChevronLeft, IconChevronRight, IconClose, IconDownload, IconHeart, IconHome, IconLibrary, IconMusicNote, IconSearch, IconUser } from "../components/icons";
@@ -123,6 +124,17 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const projection = useSyncExternalStore(backendProjection?.subscribe ?? (() => () => {}), backendProjection?.getSnapshot ?? (() => ({ library: null, playback: null } as BackendProjection)), backendProjection?.getSnapshot ?? (() => ({ library: null, playback: null } as BackendProjection)));
   const [migrationStatus, setMigrationStatus] = useState<MigrationStatus | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; track?: Track; playlist?: Playlist } | null>(null);
+  const [playlistPickerSelection, setPlaylistPickerSelection] = useState<{ tracks: Track[]; title: string } | null>(null);
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    document.addEventListener("keydown", escape);
+    return () => { window.removeEventListener("pointerdown", close); window.removeEventListener("blur", close); document.removeEventListener("keydown", escape); };
+  }, [contextMenu]);
   useEffect(() => {
     if (!commandError) return;
     // Auto-dismiss poison/worker errors after a short window — they now
@@ -135,6 +147,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   }, [commandError]);
   const [downloadSources, setDownloadSources] = useState<SearchResult[]>([]);
   const [downloadSearchLoading, setDownloadSearchLoading] = useState(false);
+  const [queuedDownloadUrls, setQueuedDownloadUrls] = useState<string[]>([]);
   const [discover, setDiscover] = useState<{ items: Recommendation[]; loading: boolean; error: string | null }>({ items: [], loading: false, error: null });
   const [discoverRefresh, setDiscoverRefresh] = useState(0);
   const [csvPreview, setCsvPreview] = useState<Array<{ id: string; title: string; artist?: string; source?: string }>>([]);
@@ -154,6 +167,28 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const runCommand = (command: Promise<unknown> | null | undefined) => {
     if (!available || !command) return;
     void command.then(() => setCommandError(null)).catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
+  };
+  const openTrackMenu = (event: ReactMouseEvent, item: Track) => {
+    event.preventDefault(); event.stopPropagation();
+    setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 350)), track: item });
+  };
+  const cleanPlaylistName = (value: string) => value.trim().replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").slice(0, 96);
+  const createPlaylist = (tracksToAdd: Track[] = []) => {
+    if (!bridge || !available) return;
+    const raw = window.prompt(tracksToAdd.length === 1 ? `Create a playlist for “${tracksToAdd[0].title}”:` : tracksToAdd.length > 1 ? `Create a playlist for these ${tracksToAdd.length} songs:` : "New playlist name:");
+    if (!raw) return;
+    const name = cleanPlaylistName(raw);
+    if (!name || name.toLowerCase() === "unsorted") { setCommandError("Choose a non-empty playlist name other than Unsorted."); return; }
+    void bridge.createPlaylist(name)
+      .then(() => tracksToAdd.length ? bridge.addTracksToPlaylist(tracksToAdd.map((track) => track.id), `playlist:${name}`) : null)
+      .then(() => setCommandError(null))
+      .catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
+  };
+  const playShuffled = (items: Track[]) => {
+    const first = shuffledFirstTrack(items);
+    if (!first || !bridge || !available) return;
+    const enable = projection.playback?.shuffle ? Promise.resolve(null) : bridge.toggleShuffle();
+    void enable.then(() => bridge.playWithContext(first.id, items.map((item) => item.id))).catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
   };
   useEffect(() => { if (!bridge) return; bridge.migrationStatus().then(setMigrationStatus).catch(() => setMigrationStatus(null)); }, [bridge]);
   useEffect(() => {
@@ -203,6 +238,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     }));
   };
   const [activeDownloadJob, setActiveDownloadJob] = useState<{ jobId: string } | null>(null);
+  const activeDownloadJobRef = useRef<string | null>(null);
   const downloadQueueRef = useRef<Array<{ id: string; source: string; destination: string }>>([]);
   const downloadHelperPath = fixtureHelper ?? bundleHelperPath;
   // Destinations are concrete folders under the library root. The default is
@@ -221,6 +257,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const downloadBase = downloadDestinations[0] ?? null;
   const sourceForDownload = (id: string) => csvPreview.find((item) => item.id === id)?.source ?? downloadSources.find((item) => item.query === id || item.url === id)?.url ?? downloadSources.find((item) => item.query === id || item.url === id)?.query ?? id;
   const startNextDownload = () => {
+    if (activeDownloadJobRef.current) return;
     const next = downloadQueueRef.current.shift();
     if (!next) return;
     if (!next.destination || !downloadHelperPath) {
@@ -242,14 +279,16 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       .trim()
       .slice(0, 96);
     const filename = label ? `${label}.${extension}` : `${jobId}.${extension}`;
+    activeDownloadJobRef.current = jobId;
     setActiveDownloadJob({ jobId });
     // A rejected start must clear the active-job gate so the NEXT queued item
     // can run; otherwise the 15s fallback in the job-watch effect would
     // double-start (Busy) and the queue wedges silently — the "nothing
     // happened" symptom when a download could not start.
     const start = bridge?.startDownload(jobId, `${next.destination}/${filename}`, downloadHelperPath, next.source.replace(/\r|\n/g, " ").trim());
-    if (!start) { setActiveDownloadJob(null); return; }
+    if (!start) { activeDownloadJobRef.current = null; setActiveDownloadJob(null); return; }
     start.then(() => setCommandError(null)).catch((error: unknown) => {
+      activeDownloadJobRef.current = null;
       setActiveDownloadJob(null);
       setCommandError(normalizeRuntimeCommandError(error));
       startNextDownload();
@@ -259,10 +298,19 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     if (!activeDownloadJob) return;
     const job = projection.jobs[activeDownloadJob.jobId];
     if (job) {
-      if (["succeeded", "failed", "cancelled"].includes(job.state)) startNextDownload();
+      if (["succeeded", "failed", "cancelled"].includes(job.state)) {
+        activeDownloadJobRef.current = null;
+        setActiveDownloadJob(null);
+        startNextDownload();
+      }
       return;
     }
-    const deadline = window.setTimeout(() => startNextDownload(), 15000);
+    const deadline = window.setTimeout(() => {
+      activeDownloadJobRef.current = null;
+      setActiveDownloadJob(null);
+      setCommandError("The download did not start. Check the download helper and try again.");
+      startNextDownload();
+    }, 15000);
     return () => window.clearTimeout(deadline);
   }, [projection.jobs, activeDownloadJob]);
   const chooseRoot = () => {
@@ -429,7 +477,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // progress ring on the media stage — gated on loading status, NOT on video
   // mode (mode only decides whether the staged src auto-plays).
   const downloadProgress = currentVideo?.status === "loading" ? currentVideo.download_progress ?? null : null;
-  const video = track ? { src: videoModeActive ? videoSrc : null, status: videoModeActive || videoStatus === "loading" ? videoStatus : "not-checked", positionMs: audioPositionMs, downloadProgress, playing: videoModeActive && audioPlaying, artworkUrl: currentArtwork, onResize: (size: { width: number; height: number }) => { if (videoModeActive) runCommand(bridge?.videoResize(size.width, size.height)); }, onSeek: (positionMs: number) => { if (videoModeActive) runCommand(bridge?.videoSeek(positionMs)); }, onPause: (positionMs: number) => { if (videoModeActive) { runCommand(bridge?.videoPause()); runCommand(bridge?.videoSeek(positionMs)); } }, onResume: (positionMs: number) => { if (videoModeActive) { runCommand(bridge?.videoSeek(positionMs)); runCommand(bridge?.videoPlay()); } }, onEnded: () => { if (videoModeActive) runCommand(bridge?.videoPause()); }, onError: () => { if (videoModeActive || videoSrc) setVideoFailedFor(videoSrc); }, onFullscreenChange: (fullscreen: boolean) => { if (!available) return; /* CSS-driven only: window.setFullscreen() blacks out the whole window over the CSS hide-transition and can stay black on exit in WKWebView. */ if (videoModeActive) runCommand(bridge?.videoFullscreen(fullscreen)); } } : undefined;
+  const video = track ? { src: videoModeActive ? videoSrc : null, status: videoModeActive || videoStatus === "loading" ? videoStatus : "not-checked", positionMs: audioPositionMs, downloadProgress, playing: videoModeActive && audioPlaying, artworkUrl: currentArtwork, volume: settings.volume ?? 1, onVolume: (value: number) => runCommand(bridge?.setVolume(value)), onVolumeCommit: (value: number) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }, onResize: (size: { width: number; height: number }) => { if (videoModeActive) runCommand(bridge?.videoResize(size.width, size.height)); }, onSeek: (positionMs: number) => { if (videoModeActive) runCommand(bridge?.videoSeek(positionMs)); }, onPause: (positionMs: number) => { if (videoModeActive) { runCommand(bridge?.videoPause()); runCommand(bridge?.videoSeek(positionMs)); } }, onResume: (positionMs: number) => { if (videoModeActive) { runCommand(bridge?.videoSeek(positionMs)); runCommand(bridge?.videoPlay()); } }, onEnded: () => { if (videoModeActive) runCommand(bridge?.videoPause()); }, onError: () => { if (videoModeActive || videoSrc) setVideoFailedFor(videoSrc); }, onFullscreenChange: (fullscreen: boolean) => { if (!available) return; /* CSS-driven only: window.setFullscreen() blacks out the whole window over the CSS hide-transition and can stay black on exit in WKWebView. */ if (videoModeActive) runCommand(bridge?.videoFullscreen(fullscreen)); } } : undefined;
   const recentHistory = projection.recentHistory ?? [];
   const recentKey = recentHistory.join("\u0000");
   const recentTracks = useMemo(() => {
@@ -592,26 +640,17 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   };
 
   const homeViewEl = <HomeView allTracksCount={tracks.length} madeForYou={madeForYouTracks} favorites={tracks.filter((track) => track.favorite)} recentTracks={recentTracks} popularTracks={popularTracks} popularPlaylists={popularPlaylists} recentlyDownloaded={downloadedTracks} onPlayTrack={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onOpenLibrary={() => setLibraryHome(false)} onOpenRecent={() => navigate("recent")} onOpenDownloader={() => navigate("downloader")} onOpenPlaylist={(playlistId) => { setLibraryScope(playlistId); setLibraryHome(false); navigate("library"); }} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} backendAvailable={available} />;
-  const recentViewEl = <RecentView tracks={recentTracks} playback={projection.playback} backendAvailable={available} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />;
+  const recentViewEl = <RecentView tracks={recentTracks} playback={projection.playback} backendAvailable={available} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onContextMenu={openTrackMenu} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />;
   const discoverViewEl = <DiscoverView seed={discoverSeed} recommendations={discover.items} session={projection.preview} saved={projection.saved} playlists={projection.library?.playlists ?? []} loading={discover.loading} error={discover.error} onRefresh={() => setDiscoverRefresh((value) => value + 1)} onTap={(key) => runCommand(bridge?.previewTap(discover.items.slice(0, 50).map((item) => ({ artist: item.artist, title: item.title })), key))} onNext={() => runCommand(bridge?.previewNext())} onPrevious={() => runCommand(bridge?.previewPrevious())} onCancel={() => runCommand(bridge?.previewCancel())} onSave={(key, playlistId) => runCommand(bridge?.saveRecommendation(key, playlistId))} />;
   const createDownloadDestination = () => {
     if (!libraryRootPath) { setCommandError("Create a library folder in Settings first."); return; }
-    const name = window.prompt("New destination folder name (created under your library root):");
-    if (!name) return;
-    const clean = name.trim().replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").slice(0, 96);
-    if (!clean) { setCommandError("Destination folder name cannot be empty."); return; }
-    if (clean === "Unsorted") { setCommandError("Unsorted is the default; pick another name."); return; }
-    // The backend creates the folder inside the library root on the next
-    // download; the scanner will discover it as a playlist on the next scan.
-    // Kick a scan so the new folder appears as a destination right away.
-    runCommand(bridge?.selectLibraryRoot(libraryRootPath));
-    runCommand(bridge?.scanLibrary());
+    createPlaylist();
   };
-  const downloaderViewEl = <DownloaderView error={commandError} jobs={projection.jobs} destinations={downloadDestinations} defaultDestination={downloadBase ?? undefined} searching={downloadSearchLoading} searchResults={downloadSources.map((item) => ({ id: item.url || item.query || item.title, title: item.title, artist: item.artist ?? item.provider, duration: item.duration ?? undefined, thumbnailUrl: item.thumbnail_url ?? undefined, source: item.url || item.query }))} previewTracks={csvPreview} onSearch={(query, requested) => { if (!bridge) return; const trimmed = query.trim(); if (!trimmed) return; setDownloadSearchLoading(true); setCommandError(null); bridge.searchDownloader(trimmed, true, requested ?? 10).then((value) => setDownloadSources(value)).catch((error) => setCommandError(normalizeRuntimeCommandError(error))).finally(() => setDownloadSearchLoading(false)); }} onPreview={(value, kind) => { if (!bridge) return; if (kind === "csv") bridge.previewCsv(value).then((result) => { const rows = (result as { rows?: Array<{ id: string; title: string; artist?: string; url?: string }> }).rows ?? []; setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: row.url }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); else if (/^https?:\/\//i.test(value.trim())) { bridge.searchDownloader(value.trim(), false, 3).then((results) => { setCsvPreview(results.map((item) => ({ id: item.url ?? item.query, title: item.title, artist: item.artist ?? undefined, source: item.url ?? item.query }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); } else bridge.searchDownloader(value, false, 10).then((results) => { setCsvPreview(results.map((item) => ({ id: item.url ?? item.query, title: item.title, artist: item.artist ?? undefined, source: item.url ?? item.query }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onDownload={(ids, destination) => { if (!destination || !downloadHelperPath) { setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured."); return; } for (const id of ids) downloadQueueRef.current.push({ id, source: sourceForDownload(id).replace(/\r|\n/g, " ").trim(), destination }); startNextDownload(); }} onDirectUrl={(url, destination) => runCommand(bridge?.validateDirectUrl(url, destination))} onQueueUrl={(url) => runCommand(bridge?.queueUrls([url]))} onSync={(_, destination) => { if (!destination.startsWith("/")) { setCommandError("Sync requires the configured library folder, not a playlist label."); return; } runCommand(bridge?.syncMarkers(destination)); }} onCancel={(jobId) => runCommand(bridge?.cancelJob(jobId))} onRetry={(jobId) => { if (!downloadHelperPath) { setCommandError("Download retry is unavailable until the download helper is configured."); return; } runCommand(bridge?.retryDownload(jobId)); }} onCreateDestination={createDownloadDestination} />;
+  const downloaderViewEl = <DownloaderView error={commandError} jobs={projection.jobs} destinations={downloadDestinations} defaultDestination={downloadBase ?? undefined} queue={queuedDownloadUrls} searching={downloadSearchLoading} searchResults={downloadSources.map((item) => ({ id: item.url || item.query || item.title, title: item.title, artist: item.artist ?? item.provider, duration: item.duration ?? undefined, thumbnailUrl: item.thumbnail_url ?? undefined, source: item.url || item.query }))} previewTracks={csvPreview} onSearch={(query, requested) => { if (!bridge) return; const trimmed = query.trim(); if (!trimmed) return; setDownloadSearchLoading(true); setDownloadSources([]); setCommandError(null); bridge.searchDownloader(trimmed, true, requested ?? 10).then((value) => setDownloadSources(value)).catch((error) => setCommandError(normalizeRuntimeCommandError(error))).finally(() => setDownloadSearchLoading(false)); }} onPreview={(value, kind) => { if (!bridge) return; if (kind === "csv") bridge.previewCsv(value).then((result) => { const rows = (result as { rows?: Array<{ id: string; title: string; artist?: string; url?: string }> }).rows ?? []; setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: row.url }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); else if (/^https?:\/\//i.test(value.trim())) { bridge.searchDownloader(value.trim(), false, 3).then((results) => { setCsvPreview(results.map((item) => ({ id: item.url ?? item.query, title: item.title, artist: item.artist ?? undefined, source: item.url ?? item.query }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); } else bridge.searchDownloader(value, false, 10).then((results) => { setCsvPreview(results.map((item) => ({ id: item.url ?? item.query, title: item.title, artist: item.artist ?? undefined, source: item.url ?? item.query }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onDownload={(ids, destination) => { if (!destination || !downloadHelperPath) { setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured."); return; } for (const id of ids) downloadQueueRef.current.push({ id, source: sourceForDownload(id).replace(/\r|\n/g, " ").trim(), destination }); startNextDownload(); }} onDirectUrl={(url, destination) => { if (!bridge || !downloadHelperPath) { setCommandError("Downloads are unavailable until the bundled download helper is configured."); return; } bridge.validateDirectUrl(url, destination).then(() => { downloadQueueRef.current.push({ id: url, source: url, destination }); startNextDownload(); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onQueueUrl={(url) => { if (!bridge) return; bridge.queueUrls([url]).then((result) => { const accepted = (result as { accepted?: string[] }).accepted ?? []; if (accepted.length) setQueuedDownloadUrls((current) => [...current, ...accepted]); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onDownloadQueue={(destination) => { if (!destination || !downloadHelperPath) { setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured."); return; } for (const url of queuedDownloadUrls) downloadQueueRef.current.push({ id: url, source: url, destination }); setQueuedDownloadUrls([]); startNextDownload(); }} onSync={(_, destination) => { if (!destination.startsWith("/")) { setCommandError("Sync requires the configured library folder, not a playlist label."); return; } runCommand(bridge?.syncMarkers(destination)); }} onCancel={(jobId) => runCommand(bridge?.cancelJob(jobId))} onRetry={(jobId) => { if (!downloadHelperPath) { setCommandError("Download retry is unavailable until the download helper is configured."); return; } runCommand(bridge?.retryDownload(jobId)); }} onCreateDestination={createDownloadDestination} />;
   const errorLogViewEl = <ErrorLogView />;
   const settingsScreens: Record<SettingsNavLink, ReactNode> = { home: homeViewEl, recent: recentViewEl, discover: discoverViewEl, downloader: downloaderViewEl, error_log: errorLogViewEl };
 
-   const content = views[route] ?? (route === "library" ? (libraryHome ? homeViewEl : <LibraryView snapshot={projection.library} loading={!projection.library || projection.library.generation <= 0} playback={projection.playback} backendAvailable={available} selectedScope={libraryScope} query={libraryQuery} onQueryChange={setLibraryQuery} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onShuffle={() => runCommand(bridge?.toggleShuffle())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onScan={() => runCommand(bridge?.scanLibrary())} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />) : route === "recent" ? recentViewEl : route === "discover" ? discoverViewEl : route === "downloader" ? downloaderViewEl : route === "settings" ? <SettingsView lastfmKey="" keychainStatus={discoveryKeyConfigured === null ? "loading" : discoveryKeyConfigured ? "available" : "missing"} onSaveLastfmKey={available ? saveLastfmKey : undefined} musicRoot={musicRoot} autoDiscovery={settings.auto_discovery ?? false} mediaKeys={settings.global_keys ?? true} transferManifest={transferManifest} transferDestination={transferDestination} transferResult={transferResult} error={commandError} libraryRootPath={viteEnv?.DEV ? undefined : libraryRootPath ?? undefined} onLibraryRootSubmit={viteEnv?.DEV ? undefined : submitLibraryRoot} onChooseMusicRoot={viteEnv?.DEV ? chooseRoot : undefined} onAutoDiscoveryChange={(value) => saveSettings({ ...settings, auto_discovery: value })} onMediaKeysChange={(value) => saveSettings({ ...settings, global_keys: value })} onTransferManifestChange={setTransferManifest} onTransferDestinationChange={setTransferDestination} onTransferExport={() => { if (!available) { setCommandError("Transfer export is unavailable until the backend is connected."); return; } runCommand(bridge?.transferExport().then((result) => { const manifest = (result as { manifest?: string }).manifest ?? ""; setTransferManifest(manifest); setTransferResult(manifest ? "Exported manifest is ready for review." : "Export returned no manifest."); })); }} onTransferPreview={() => runCommand(bridge?.transferPreview(transferManifest, transferDestination).then((result) => setTransferResult(JSON.stringify(result))))} onTransferApply={() => runCommand(bridge?.transferApply(transferManifest, transferDestination, {}).then((result) => setTransferResult(JSON.stringify(result))))} onOpenErrorLog={() => navigate("error_log")} activeScreen={settingsScreen} screen={settingsScreen ? settingsScreens[settingsScreen] : null} onNavigate={(target) => { if (target === "home") { setSettingsScreen(null); navigate("library"); setLibraryHome(true); } else setSettingsScreen(target); }} onScreenClosed={() => setSettingsScreen(null)} /> : route === "error_log" ? errorLogViewEl : route === "song_page" ? <SongPageView track={track} backendAvailable={available} recommendations={songRecs.items} recommendationState={songRecs.state} recommendationError={songRecs.error} hasApiKey={discoveryKeyConfigured !== false} sessionActive={!!projection.preview?.active} onRetryRecommendations={() => setSongRecRefresh((value) => value + 1)} onRefreshRecommendations={() => setSongRecRefresh((value) => value + 1)} onPreviewRecommendation={(item) => runCommand(bridge?.previewTap(songRecs.items.slice(0, 50).map((entry) => ({ artist: entry.artist, title: entry.title })), previewKey(item.artist, item.title)))} onSaveRecommendation={(item, playlistId) => {
+   const content = views[route] ?? (route === "library" ? (libraryHome ? homeViewEl : <LibraryView snapshot={projection.library} loading={!projection.library || projection.library.generation <= 0} playback={projection.playback} backendAvailable={available} selectedScope={libraryScope} query={libraryQuery} onQueryChange={setLibraryQuery} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onShuffle={() => runCommand(bridge?.toggleShuffle())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onContextMenu={openTrackMenu} onScan={() => runCommand(bridge?.scanLibrary())} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />) : route === "recent" ? recentViewEl : route === "discover" ? discoverViewEl : route === "downloader" ? downloaderViewEl : route === "settings" ? <SettingsView lastfmKey="" keychainStatus={discoveryKeyConfigured === null ? "loading" : discoveryKeyConfigured ? "available" : "missing"} onSaveLastfmKey={available ? saveLastfmKey : undefined} musicRoot={musicRoot} autoDiscovery={settings.auto_discovery ?? false} mediaKeys={settings.global_keys ?? true} transferManifest={transferManifest} transferDestination={transferDestination} transferResult={transferResult} error={commandError} libraryRootPath={viteEnv?.DEV ? undefined : libraryRootPath ?? undefined} onLibraryRootSubmit={viteEnv?.DEV ? undefined : submitLibraryRoot} onChooseMusicRoot={viteEnv?.DEV ? chooseRoot : undefined} onAutoDiscoveryChange={(value) => saveSettings({ ...settings, auto_discovery: value })} onMediaKeysChange={(value) => saveSettings({ ...settings, global_keys: value })} onTransferManifestChange={setTransferManifest} onTransferDestinationChange={setTransferDestination} onTransferExport={() => { if (!available) { setCommandError("Transfer export is unavailable until the backend is connected."); return; } runCommand(bridge?.transferExport().then((result) => { const manifest = (result as { manifest?: string }).manifest ?? ""; setTransferManifest(manifest); setTransferResult(manifest ? "Exported manifest is ready for review." : "Export returned no manifest."); })); }} onTransferPreview={() => runCommand(bridge?.transferPreview(transferManifest, transferDestination).then((result) => setTransferResult(JSON.stringify(result))))} onTransferApply={() => runCommand(bridge?.transferApply(transferManifest, transferDestination, {}).then((result) => setTransferResult(JSON.stringify(result))))} onOpenErrorLog={() => navigate("error_log")} activeScreen={settingsScreen} screen={settingsScreen ? settingsScreens[settingsScreen] : null} onNavigate={(target) => { if (target === "home") { setSettingsScreen(null); navigate("library"); setLibraryHome(true); } else setSettingsScreen(target); }} onScreenClosed={() => setSettingsScreen(null)} /> : route === "error_log" ? errorLogViewEl : route === "song_page" ? <SongPageView track={track} backendAvailable={available} recommendations={songRecs.items} recommendationState={songRecs.state} recommendationError={songRecs.error} hasApiKey={discoveryKeyConfigured !== false} sessionActive={!!projection.preview?.active} onRetryRecommendations={() => setSongRecRefresh((value) => value + 1)} onRefreshRecommendations={() => setSongRecRefresh((value) => value + 1)} onPreviewRecommendation={(item) => runCommand(bridge?.previewTap(songRecs.items.slice(0, 50).map((entry) => ({ artist: entry.artist, title: entry.title })), previewKey(item.artist, item.title)))} onSaveRecommendation={(item, playlistId) => {
                       if (playlistId) {
                         runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), playlistId));
                         return;
@@ -620,7 +659,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
                       const target = playlists.find((playlist) => playlist.name.toLowerCase() !== "unsorted") ?? playlists[0];
                       if (!target) { setCommandError("Create a playlist before saving recommendations."); return; }
                       runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), target.id));
-                    }} preview={projection.preview} saved={projection.saved} playlists={projection.library?.playlists ?? []} jobs={projection.jobs} onCreatePlaylist={createDownloadDestination} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} onLoadVideo={() => { if (track && available) bridge?.videoStage(track.id).catch(() => undefined); }} videoMode={videoMode} onVideoModeChange={(enabled) => { setVideoMode(enabled); runCommand(bridge?.setVideoMode(enabled)); }} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
+                    }} preview={projection.preview} saved={projection.saved} playlists={projection.library?.playlists ?? []} jobs={projection.jobs} onCreatePlaylist={(item) => { if (!bridge || !available) return; const raw = window.prompt(`Create a playlist for “${item.title}”:`); if (!raw) return; const name = cleanPlaylistName(raw); if (!name || name.toLowerCase() === "unsorted") { setCommandError("Choose a non-empty playlist name other than Unsorted."); return; } void bridge.createPlaylist(name).then(() => bridge.saveRecommendation(previewKey(item.artist, item.title), `playlist:${name}`)).then(() => setCommandError(null)).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} onLoadVideo={() => { if (track && available) bridge?.videoStage(track.id).catch(() => undefined); }} videoMode={videoMode} onVideoModeChange={(enabled) => { setVideoMode(enabled); runCommand(bridge?.setVideoMode(enabled)); }} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
 
   const showSidebar = !sidebarCollapsed && route !== "settings";
   const narrowViewport = shellWidth > 0 && shellWidth < 1100;
@@ -661,6 +700,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
           const active = libraryScope === entry.scope;
           const art = entry.artId ? sidebarArtwork[entry.artId] : undefined;
           return <button className="luno-playlist-card" type="button" key={`${entry.kind}-${entry.key}`} aria-current={active ? "page" : undefined}
+            onContextMenu={(event) => { if (entry.kind !== "playlist") return; event.preventDefault(); event.stopPropagation(); const playlist = projection.library?.playlists.find((item) => item.id === entry.scope); if (playlist) setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 390)), playlist }); }}
             onClick={() => { setLibraryScope(entry.scope); setLibraryHome(false); navigate("library"); }}>
             {entry.kind === "favorites"
               ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #4c8bf5, #b3b3b3)" }}><IconHeart size={18} /></span>
@@ -680,10 +720,33 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <main className="luno-main" data-slot="main" aria-disabled={!available}>{(() => { const backendError = projection.errors.length ? projection.errors[projection.errors.length - 1].message : null; const displayCommandError = commandError && (commandError.includes("PoisonError") || commandError.includes("poison recovered") || commandError.includes("command worker failed"))
               ? "A background task hit an internal error and was recovered. If this repeats, restart the app."
               : commandError; return (!available || !connectedVideo || displayCommandError || backendError) && <div className="luno-runtime-status" role="status">{!available && <span data-state="backend-unavailable">Backend unavailable; runtime commands are unavailable.</span>}{displayCommandError && <span data-state="command-rejected">{displayCommandError} <button type="button" onClick={() => setCommandError(null)} aria-label="Dismiss error" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{backendError && <span data-state="backend-error">{backendError}</span>}{!connectedVideo && route === "song_page" && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}</div>; })()}<div className="luno-main-content luno-scroll">{content}</div></main>
-       <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : queueTracks} currentIndex={panelRecent ? null : projection.playback?.current_index} recent={panelRecent} backendAvailable={available} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => runCommand(bridge?.playWithContext(item.id, (panelRecent ? recentTracks : queueTracks).map((track) => track.id)))} onPlayNext={(item) => runCommand(bridge?.playNext([item.id]))} onAddToQueue={(item) => runCommand(bridge?.addToQueue([item.id]))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} />}</aside>
-        <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={track} playback={projection.playback} artwork={currentArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => runCommand(projection.playback?.status === "playing" ? bridge?.pause() : projection.playback?.status === "paused" ? bridge?.resume() : track && bridge?.playWithContext(track.id, queueTracks.map((item) => item.id)))} onNext={() => runCommand(bridge?.next())} onPrevious={() => runCommand(bridge?.previous())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onSeek={(positionMs) => runCommand(bridge?.seek(positionMs))} onVolume={(value) => runCommand(bridge?.setVolume(value))} onVolumeCommit={(value) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }} onOpenTrack={() => navigate("song_page")} />}</footer>
+       <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : queueTracks} currentIndex={panelRecent ? null : projection.playback?.current_index} recent={panelRecent} backendAvailable={available} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => runCommand(bridge?.playWithContext(item.id, (panelRecent ? recentTracks : queueTracks).map((track) => track.id)))} onPlayNext={(item) => runCommand(bridge?.playNext([item.id]))} onAddToQueue={(item) => runCommand(bridge?.addToQueue([item.id]))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} onContextMenu={openTrackMenu} />}</aside>
+        <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={track} playback={projection.playback} artwork={currentArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => runCommand(projection.playback?.status === "playing" ? bridge?.pause() : projection.playback?.status === "paused" ? bridge?.resume() : track && bridge?.playWithContext(track.id, queueTracks.map((item) => item.id)))} onNext={() => runCommand(projection.preview?.active ? bridge?.previewNext() : bridge?.next())} onPrevious={() => runCommand(projection.preview?.active ? bridge?.previewPrevious() : bridge?.previous())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onSeek={(positionMs) => runCommand(bridge?.seek(positionMs))} onVolume={(value) => runCommand(bridge?.setVolume(value))} onVolumeCommit={(value) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }} onOpenTrack={() => navigate("song_page")} />}</footer>
     {route !== "settings" && <div className="luno-resize-handle" style={{ left: showSidebar ? 8 + sidebarWidth - 4 : 2 }} role="separator" aria-orientation="vertical" aria-label="Resize library panel width" onPointerDown={startPanelDrag("sidebar")} />}
     {route !== "settings" && !narrowViewport && <div className="luno-resize-handle" style={{ left: showQueue ? Math.max(0, shellWidth - 8 - queueWidth - 4) : Math.max(2, shellWidth - 6) }} role="separator" aria-orientation="vertical" aria-label="Resize queue panel width" onPointerDown={startPanelDrag("queue")} />}
+    {contextMenu && <div className="luno-context-menu" role="menu" aria-label={contextMenu.track ? `${contextMenu.track.title} actions` : `${contextMenu.playlist?.name ?? "Playlist"} actions`} style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
+      {contextMenu.track ? <>
+        <button role="menuitem" type="button" onClick={() => { runCommand(bridge?.playWithContext(contextMenu.track!.id, [contextMenu.track!.id])); setContextMenu(null); }}>Play now</button>
+        <button role="menuitem" type="button" onClick={() => { runCommand(bridge?.playNext([contextMenu.track!.id])); setContextMenu(null); }}>Play next</button>
+        <button role="menuitem" type="button" onClick={() => { runCommand(bridge?.addToQueue([contextMenu.track!.id])); setContextMenu(null); }}>Add to queue</button>
+        <hr />
+        <button role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setPlaylistPickerSelection({ tracks: [item], title: `Add “${item.title}” to playlist` }); setContextMenu(null); }}>Add to playlist…</button>
+        <button role="menuitem" type="button" onClick={() => { createPlaylist([contextMenu.track!]); setContextMenu(null); }}>Add to new playlist…</button>
+        <button role="menuitem" type="button" onClick={() => { runCommand(bridge?.toggleFavorite(contextMenu.track!.id)); setContextMenu(null); }}>{contextMenu.track.favorite ? "Remove from favorites" : "Add to favorites"}</button>
+        <hr />
+        <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setContextMenu(null); if (window.confirm(`Permanently delete “${item.title}” from your library?`)) runCommand(bridge?.deleteTracks([item.id])); }}>Delete from library…</button>
+      </> : contextMenu.playlist ? <>
+        <button role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const items = playlistTracks(projection.library, contextMenu.playlist!); const first = items[0]; if (first) runCommand(bridge?.playWithContext(first.id, items.map((item) => item.id))); setContextMenu(null); }}>Play</button>
+        <button role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { playShuffled(playlistTracks(projection.library, contextMenu.playlist!)); setContextMenu(null); }}>Shuffle and play</button>
+        <hr />
+        <button role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const item = contextMenu.playlist!; setPlaylistPickerSelection({ tracks: playlistTracks(projection.library, item), title: `Add “${item.name}” songs to playlist` }); setContextMenu(null); }}>Add all to playlist…</button>
+        <button role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { createPlaylist(playlistTracks(projection.library, contextMenu.playlist!)); setContextMenu(null); }}>Add all to new playlist…</button>
+        <button role="menuitem" type="button" onClick={() => { createPlaylist(); setContextMenu(null); }}>Create new playlist…</button>
+        <button className="is-danger" role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); if (window.confirm(`Permanently delete every song in “${item.name}” but keep the playlist?`)) runCommand(bridge?.deleteTracks(item.ordered_track_ids)); }}>Empty playlist…</button>
+        <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); if (window.confirm(`Permanently delete the playlist “${item.name}” and all files inside it?`)) { if (libraryScope === item.id) { setLibraryScope("all"); setLibraryHome(false); } runCommand(bridge?.deletePlaylist(item.id)); } }}>Delete playlist…</button>
+      </> : null}
+    </div>}
+    {playlistPickerSelection && <PlaylistPicker title={playlistPickerSelection.title} playlists={projection.library?.playlists ?? []} onPick={(playlist) => { runCommand(bridge?.addTracksToPlaylist(playlistPickerSelection.tracks.map((track) => track.id), playlist.id)); setPlaylistPickerSelection(null); }} onCreateNew={() => { const items = playlistPickerSelection.tracks; setPlaylistPickerSelection(null); createPlaylist(items); }} onDismiss={() => setPlaylistPickerSelection(null)} />}
   </div>;
 }
 

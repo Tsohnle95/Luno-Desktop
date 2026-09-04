@@ -26,7 +26,7 @@ pub const PREVIEW_BITRATE: &str = "192k";
 #[derive(Debug)]
 pub enum PreviewCompletion {
     Prepared { key: String, path: PathBuf },
-    Failed { key: String },
+    Failed { key: String, error: String },
 }
 
 /// Prepares one recommendation preview.
@@ -284,5 +284,21 @@ mod tests {
         let bytes = fs::metadata(&prepared).unwrap().len();
         assert!(bytes > 1024, "ADTS encode must be substantially populated, got {bytes} bytes");
         assert_ne!(bytes, fs::metadata(&source).unwrap().len(), "encode must not pass the source through verbatim");
+    }
+
+    #[test]
+    #[ignore = "requires live YouTube network access"]
+    fn live_bundled_toolchain_prepares_a_recommendation_preview() {
+        let managed = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/bin");
+        let helper = managed.join("luno-download-helper");
+        let ffmpeg = managed.join("ffmpeg");
+        assert!(helper.is_file() && ffmpeg.is_file());
+        let result = crate::download::search::search_youtube_web("spaceboy smashing pumpkins", 1).expect("resolve preview source").into_iter().next().expect("preview result");
+        let toolchain = TempToolchain { root: std::env::temp_dir().join(format!("luno-live-preview-{}", std::process::id())) };
+        fs::create_dir_all(&toolchain.root).unwrap();
+        let store = PreviewAssetStore::at(toolchain.root.join("store")).unwrap();
+        let generation = store.current_generation();
+        let path = prepare_preview(&store, "spaceboy-preview", generation, result.url.as_deref().unwrap(), &helper, &ffmpeg, &CancellationToken::new()).expect("prepare live preview");
+        assert!(fs::metadata(path).unwrap().len() > 100_000);
     }
 }

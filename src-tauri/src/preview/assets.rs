@@ -12,7 +12,10 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MAX_PREVIEW_BYTES: u64 = 512 * 1024 * 1024;
-pub const RESOLVE_DEADLINE: Duration = Duration::from_secs(15);
+// This stage includes the helper's yt-dlp startup AND the bounded audio fetch.
+// The bundled executable can need >15s merely to self-extract on a cold start,
+// which incorrectly marked perfectly playable recommendations unavailable.
+pub const RESOLVE_DEADLINE: Duration = Duration::from_secs(2 * 60);
 pub const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

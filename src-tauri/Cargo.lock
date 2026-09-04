@@ -2014,6 +2014,7 @@ dependencies = [
  "block2 0.5.1",
  "cpal",
  "crc32fast",
+ "getrandom 0.3.4",
  "id3",
  "libc",
  "objc2 0.5.2",

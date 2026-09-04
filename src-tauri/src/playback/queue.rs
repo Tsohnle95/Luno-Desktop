@@ -2,13 +2,13 @@ use crate::contracts::TrackId;
 
 pub const HISTORY_LIMIT: usize = 100;
 
-/// Entropy source for shuffle: wall-clock nanos ^ pid ^ call counter. The
-/// call counter guarantees consecutive shuffles NEVER share a stream even
-/// within the same nanosecond (two shuffles in one test used to be able to
-/// pick identical seeds).
+/// Seed each shuffle from the operating system's CSPRNG. The fallback only
+/// exists for an OS entropy failure; its counter separates consecutive calls.
 static SHUFFLE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn seed_from_entropy() -> u64 {
+    let mut bytes = [0_u8; 8];
+    if getrandom::fill(&mut bytes).is_ok() { return u64::from_ne_bytes(bytes); }
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
     let calls = SHUFFLE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -103,11 +103,9 @@ impl QueueState {
     fn shuffle_current_first(&mut self) {
         let Some(current) = self.current().cloned() else { return; };
         let rest: Vec<_> = self.physical.iter().filter(|x| **x != current).cloned().collect();
-        // TRUE random order (2026-08-25): the old code rotated the rest by a
-        // FIXED offset (len-1), so "shuffle" replayed the identical sequence
-        // every app launch — and since next/previous rebuilt the queue
-        // through play_with_context, skips kept re-applying that same fixed
-        // permutation. Fisher-Yates over OS entropy; current stays first.
+        // Fisher-Yates from an OS-random seed; current stays first when
+        // shuffle is toggled during playback. Shuffled Play chooses a random
+        // current song before entering this path.
         let order = shuffled_order(rest.len(), seed_from_entropy());
         let shuffled: Vec<TrackId> = order.into_iter().map(|i| rest[i].clone()).collect();
         self.physical = std::iter::once(current).chain(shuffled).collect();

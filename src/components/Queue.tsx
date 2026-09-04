@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type UIEvent } from "react";
+import { useLayoutEffect, useRef, useState, type MouseEvent, type UIEvent } from "react";
 import type { Track } from "../shared/contracts";
 import { Artwork } from "./Artwork";
 import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
@@ -13,6 +13,7 @@ export interface QueueProps {
   onAddToQueue?: (track: Track) => void;
   onRemove?: (index: number) => void;
   onReorder?: (from: number, to: number) => void;
+  onContextMenu?: (event: MouseEvent, track: Track) => void;
   backendAvailable?: boolean;
   /** Panel chrome: tab switcher header. Panels open/close by edge-drag only. */
   recentLabel?: string | null;
@@ -36,7 +37,7 @@ export function queueVirtualWindow(scrollTop: number, rowsTop: number, viewportH
   return { start, end: Math.min(count, start + visibleCount + overscan * 2) };
 }
 
-export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onFavoriteToggle, onPlayNext, onAddToQueue, onRemove, onReorder, backendAvailable = true, recentLabel = null, onTabChange, nextFromLabel = null, onArtwork }: QueueProps) {
+export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onFavoriteToggle, onPlayNext, onAddToQueue, onRemove, onReorder, onContextMenu, backendAvailable = true, recentLabel = null, onTabChange, nextFromLabel = null, onArtwork }: QueueProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const rowsRef = useRef<HTMLDivElement>(null);
   const scrollTop = useRef(0);
@@ -90,7 +91,7 @@ export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onF
     <div ref={scrollRef} className="luno-queue-body luno-scroll" onScroll={rememberScroll}>
       {current && !recent ? <>
         <h2 className="luno-queue-section">Now playing</h2>
-        <div className="luno-queue-now-card">
+        <div className="luno-queue-now-card" onContextMenu={(event) => onContextMenu?.(event, current)}>
           <Artwork src={artwork[current.id] ?? current.artwork_url} alt="" size={56} />
           <span className="luno-queue-copy"><strong>{current.title}</strong><small>{current.artist ?? "Unknown artist"}</small></span>
           {current.favorite && <span className="luno-queue-favorite" aria-label="Favorite">★</span>}
@@ -109,6 +110,7 @@ export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onF
         if (!recent && index === currentIndex) return null;
         return <div key={`${track.id}-${index}`} role="button" tabIndex={0}
           className="luno-queue-row"
+          onContextMenu={(event) => onContextMenu?.(event, track)}
           onClick={() => onPlay?.(track, index)}
           onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onPlay?.(track, index); } }}>
           <Artwork src={artwork[track.id] ?? track.artwork_url} alt="" size={40} />

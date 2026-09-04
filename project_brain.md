@@ -62,7 +62,8 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── src-tauri/src/gate3_tests.rs # Deterministic playback, queue, clock, recovery, and synthetic-WAV contract tests
 ├── src-tauri/src/media_keys.rs  # macOS MPRemoteCommandCenter + MPNowPlayingInfoCenter claim so hardware play/pause/next/previous control Luno (not Apple Music); honors the global_keys setting live
 ├── src-tauri/src/library/artwork.rs # Lazy embedded-artwork extraction (ID3 APIC, ISO-BMFF covr, FLAC PICTURE) served as data: URLs through a bounded in-memory cache (`ARTWORK_CACHE_BYTES`, 32 MiB; single artworks over `MAX_SINGLE_ARTWORK_BYTES` = 2 MiB are rejected)
-├── src/state/track_artwork.ts   # React hook that lazily fetches embedded artwork only for the currently visible rows (BOUNDED 80-entry LRU data-URL cache, 6-wide concurrency limiter, in-flight dedupe, and a cache-resolution listener so queued fetches still reach component state; an unbounded Map here grew past WebKit memory limits on long scroll sessions and killed the web content process)
+├── src/state/track_artwork.ts   # React hook that lazily fetches embedded artwork only for the currently visible rows (BOUNDED 80-entry LRU data-URL cache, 6-wide concurrency limiter, in-flight dedupe, cache-resolution listener so queued fetches still reach component state, and an `evicted` event that unblocks re-requesting ids the LRU dropped — see artwork data-flow note; an unbounded Map here grew past WebKit memory limits on long scroll sessions and killed the web content process)
+├── src/test/artwork_eviction.test.ts # Deterministic regression tests for the artwork cache eviction-retry gate (`needsArtworkRequest`)
 ├── src/state/play_stats.ts      # Client-side listening stats for Home: localStorage play counters, download-completion journal, deterministic Made-for-you shuffle, popularity ranking (all tolerant of missing/corrupt storage)
 ├── src/components/icons.tsx     # Inline SVG icon set (stroke-based, aria-hidden) used by the top bar, transport, and action clusters
 ├── src/components/VideoStage.tsx # Presentation-only video surface: audio-authoritative play/pause+drift sync, end-of-media hold, determinate green download-progress ring
@@ -75,7 +76,7 @@ This document is a high-level architectural map for the **Luno**. It provides th
 ├── src/app/gate5Smoke.tsx    # Development-only real-bridge discovery/preview/artwork/video staging smoke probe
 ├── src/test/gate3_smoke.test.ts # Deterministic command/event lifecycle coverage for the Gate 3 probe
 ├── src-tauri/src/gate5_tests.rs # Deterministic target-policy fixtures for discovery, previews, artwork, video, and shutdown
-├── src-tauri/src/download/search.rs # Downloader hub REAL yt-dlp search: `--dump-json --flat-playlist` per provider query (`ytsearchN:`/`scsearchN:`), 30s deadline, parsed into rich SearchResult rows
+├── src-tauri/src/download/search.rs # Fast YouTube-web downloader search (ytInitialData parser, 7s HTTP deadline) with bounded yt-dlp provider fallback and rich SearchResult rows
 ├── src-tauri/src/video/stream.rs # Range-aware `luno-video://` streaming protocol for staged MP4s (≤2 MB 206 windows; store-containment enforced)
 ├── src-tauri/src/video/runtime.rs # Live video pipeline: yt-dlp YouTube search (relevance-filtered), ≤720p MP4 download into the staging store, cancellation, and VideoState JSON
 ├── src-tauri/src/runtime/gate5_smoke.rs # Opt-in native Gate 5 command seam using caller-provided synthetic fixture roots
@@ -149,14 +150,24 @@ The project follows a **Controller-View-Engine (CVE)** pattern. All stateful pre
 ### Rust Target Runtime Boundary
 The Tauri target exposes the versioned command envelope through `src-tauri/src/main.rs`.
 `AppState` owns configured scan roots, session-only recent track IDs (capped at 100),
-Shuffle is TRUE-random (2026-08-25): `shuffle_current_first` Fisher-Yateses
-the remaining tracks from OS entropy (time ^ pid ^ call counter) instead of
+Shuffle is TRUE-random (updated 2026-09-03): `shuffle_current_first` Fisher-Yateses
+the remaining tracks from an OS CSPRNG seed (`getrandom`) instead of
 the old fixed rotation that replayed the identical order every launch, and
 `next_track`/`previous_track` walk the EXISTING (possibly shuffled) order via
 `start_current_track` — they no longer re-enter `play_with_context`, which
 used to re-shuffle on every skip, pin Previous at index 0 ("can't go back a
 couple songs"), and clobber the original order so toggle-off restored the
 shuffled sequence. Toggle-off still restores the true original playlist.
+When shuffle is already enabled, the React library hero's Play action chooses
+its first track with WebCrypto before handing the context to Rust, so shuffled
+play does not always begin at row one; toggling shuffle during an active song
+still keeps that current song first. Track rows and physical playlist cards
+have native-feeling React context menus wired through typed commands to the
+safe folder mutation layer: create playlist, copy a song into an existing or
+new playlist without overwrite, empty/delete with confirmation, favorite,
+and queue/play actions all trigger a coalesced library rescan. The song-page
+CSS fullscreen hover chrome includes the persisted master-volume slider, so
+volume changes no longer require leaving fullscreen.
 normalized favorite paths, and authoritative `QueueState`, `PlaybackClock`, and
 `FailureRecovery` playback state. Hardware MEDIA KEYS route to Luno through
 `media_keys.rs` (MPRemoteCommandCenter targets + a published now-playing
@@ -178,9 +189,9 @@ production download dispatch, typed settings persistence, transfer export, and t
 dispatch through the same `AppState` event boundary;
 ALL Tauri command handlers run their dispatch inside
 `spawn_blocking` — sync commands would execute on the MAIN thread, and
-blocking work there (Last.fm discovery uses a 10 s-timeout `reqwest::blocking`
-client; downloader search shells out to yt-dlp) froze the entire window for
-tens of seconds per track change. The frontend additionally fetches discovery
+blocking work there (Last.fm discovery and downloader search use bounded
+blocking HTTP/process fallbacks) froze the entire window for tens of seconds
+per track change. The frontend additionally fetches discovery
 data ONLY while its surface is visible: Song Page recommendations require
 route `song_page`, and the Discover feed requires route/embed `discover`.
 download job snapshots are projected through the React bridge without exposing
@@ -202,7 +213,18 @@ in-memory cache (single artworks over 2 MiB are rejected;
 `src-tauri/src/library/artwork.rs`). The frontend hook (`src/state/track_artwork.ts`)
 bounds its own cache to 80 entries with a 6-wide concurrency limiter and
 broadcasts cache resolutions to every mounted consumer, so queued fetches
-still populate sidebar/queue/Home artwork after the first 6 resolve. The desktop window is a
+still populate sidebar/queue/Home artwork after the first 6 resolve.
+LRU EVICTION RETRY (2026-09-03): scrolling a large library evicts older
+rows' data URLs past the 80-entry cap, and the per-component "requested"
+set used to block re-requesting those ids for the rest of the session —
+library rows, Home cards, queue rows and sidebar art went blank after
+scroll churn while the single-song page (fresh prioritized one-id request
+per navigation) kept working. The cache now emits an `evicted` event when
+it drops a *value* (never for definitive null = no-art entries), and every
+mounted hook deletes the id from its `requested` set so a scroll-back
+re-extracts it; the request gate is the exported pure
+`needsArtworkRequest` (regression-tested in `src/test/artwork_eviction.test.ts`).
+The desktop window is a
 Spotify-style frame: a black shell with rounded floating panels and a compact
 (56 px) full-width top bar. Sidebar and queue panel widths are USER-RESIZABLE and OPEN AT THEIR MINIMUM WIDTHS (2026-08-25 user-set; sidebar 240, queue 240):
 the shell's grid columns are pixel-driven state (`sidebarWidth` 240–440,
@@ -357,22 +379,32 @@ Production downloads run through the bundled
 `luno-download-helper` (resolved via `bundle_helper_path`, resource-dir path
 with a `CARGO_MANIFEST_DIR` fallback for development) with yt-dlp
 `bestaudio/best` extraction converted by the reviewed LGPL FFmpeg into M4A
-(AAC-LC), staged with an atomic rename and promoted on the MP4 `ftyp`
+(AAC-LC), with the provider thumbnail and metadata embedded, converted to
+44.1 kHz stereo, and EBU R128-normalized (`I=-14`, `LRA=11`, `TP=-1.5`). The
+result is staged with an atomic rename and promoted on the MP4 `ftyp`
 signature; see `docs/decisions/download-format-m4a.md`. Destinations default to
 `Unsorted` under the configured library root, and destination directories are
 created inside the root when missing. The Downloader hub's SEARCH now returns
-REAL results: `Command::SearchDownloader` shells out to the bundled yt-dlp
-binary (discovered beside the helper via `process::executables::discover`) with
-`--dump-json --flat-playlist --playlist-items 1:N` for each provider
-(`ytsearchN:` YouTube, `scsearchN:` SoundCloud), parsing each JSON line into
-`SearchResult {provider, query, title, artist, duration, thumbnail_url, url}` —
-the UI shows real songs with titles/artists/thumbnails instead of raw provider
-queries, and each row's `query` (the `ytsearch1:`/`scsearch1:` source) is what
-`start_download` hands to the helper. The frontend threads the user-chosen
-destination (default Unsorted plus every discovered playlist folder) through
-the download queue, and a SUCCEEDED download triggers an automatic library
-rescan on the backend so the new file appears immediately — the legacy Python
-app's `_refresh_library()`-on-completion behavior, restored in the Tauri target.
+REAL results: `Command::SearchDownloader` first requests YouTube's public
+results page with a 7-second deadline and parses `ytInitialData`, avoiding the
+10–20 second startup cost of the bundled PyInstaller yt-dlp binary. If that
+fast path is unavailable, the binary discovered beside the helper remains a
+bounded 12-second compatibility fallback (`--dump-json --flat-playlist` for
+YouTube/SoundCloud). Provider failures are returned as retryable errors instead
+of being misreported as an empty successful search. Results carry
+`SearchResult {provider, query, title, artist, duration, thumbnail_url, url}`
+and downloads use the exact result URL. The frontend threads the user-chosen
+destination (default Unsorted plus every discovered playlist folder) through a
+strictly serial queue; direct URLs and the URL Queue now enter that same real
+download path rather than stopping after validation. The helper emits
+machine-readable yt-dlp percentages, Rust drains stdout/stderr concurrently and
+publishes 0–95% while downloading/finalizing, and the coordinator publishes
+100% only after validation and atomic promotion. A SUCCEEDED download triggers
+an automatic library rescan so the new file appears immediately — the legacy
+Python app's `_refresh_library()`-on-completion behavior, restored in Tauri.
+The Downloader header renders that value in a determinate circular progress
+ring (an indeterminate arc before the first percentage) and retains a clear
+completion message after the active job leaves the queue.
 Startup migration validates the legacy discovery inputs through
 `validate_existing_path`, which canonicalizes standard macOS system redirects
 (for example `/tmp` -> `/private/tmp`) instead of rejecting them, preserves the
@@ -435,10 +467,11 @@ startup failure banner.
 7. Playlist sync compares candidates against the whole local music library root, not only the destination playlist folder, so Sync All avoids duplicating tracks that already exist in another playlist. It tracks successful/matched YouTube IDs in `.downloaded_vids` and permanent failures in `.sync_failed_vids` inside the playlist folder.
 
 **Tauri target (current app):** the Downloader hub drives the same download machinery through the versioned IPC:
-1. Search tab → `bridge.searchDownloader(query, try_soundcloud, limit)` → `Command::SearchDownloader` → shells the BUNDLED yt-dlp binary (discovered beside the helper) with `--dump-json --flat-playlist --playlist-items 1:N` per provider (`ytsearchN:` YouTube ≤50, `scsearchN:` SoundCloud ≤5, 30 s deadline) and returns rich `SearchResult` rows (title/artist/duration/thumbnail/url) — the UI renders real songs with thumbnails, not raw `ytsearch1:` query strings.
+1. Search tab → `bridge.searchDownloader(query, try_soundcloud, limit)` → `Command::SearchDownloader` → parses YouTube's public results page under a 7 s deadline, falling back to the bundled yt-dlp provider search under a bounded 12 s deadline, and returns rich `SearchResult` rows (title/artist/duration/thumbnail/exact URL). Errors remain errors rather than false empty-result pages, and the blocking work stays off the UI thread.
 2. The user picks a destination from the Save-to dropdown: `Unsorted` (default, created inside the root when missing) plus every playlist folder the scanner has discovered; "+ New" creates another folder (the backend creates it on the next download and a scan registers it as a playlist).
-3. `onDownload(ids, destination)` pushes `{id, source, destination}` rows onto the download queue; each row's `source` is the search hit's provider query or CSV URL. The queue runs one job at a time; a REJECTED start clears the active-job gate and advances to the next item (a stale gate previously wedged the queue silently).
-4. A SUCCEEDED download triggers `scan_async()` on the backend so the new file appears in the app immediately (legacy `_refresh_library()`-on-completion parity); the frontend's job-progress accordion and Home "Recently downloaded" journal reflect completion.
+3. `onDownload(ids, destination)` pushes `{id, source, destination}` rows onto the download queue; each search row uses its exact provider URL, while direct and CSV inputs retain their validated URLs. The queue runs one job at a time; a REJECTED start clears the active-job gate and advances to the next item (a stale gate previously wedged the queue silently).
+4. The helper embeds the provider thumbnail and metadata while producing normalized 44.1 kHz stereo M4A. Machine-readable helper percentages flow through `JobUpdated` into both a circular percentage ring and the linear detail bar; a terminal success leaves a visible completion status.
+5. A SUCCEEDED download triggers `scan_async()` on the backend so the new file appears in the app immediately (legacy `_refresh_library()`-on-completion parity); the frontend's job-progress accordion and Home "Recently downloaded" journal reflect completion.
 
 ### Artwork Fetching
 1. `PlaylistArt` or `SongPageView` requests art → `ArtCache.get(path, size, callback)`; downloader search cards use a separate bounded 64-entry thumbnail cache and bounded in-flight executor (4 concurrent)
@@ -471,8 +504,9 @@ startup failure banner.
 
 ### Discovery & Recommendations (Last.fm)
 1. The Last.fm API key lives in a `0600` key file under the app data directory (`~/Library/Application Support/com.ty.luno/lastfm-key`), read at startup into the discovery service; the macOS Keychain item (`com.ty.luno`) is legacy seed material read AT MOST ONCE, silently, via a UI-denied SecItemCopyMatching — startup can never raise a Keychain prompt (2026-08-23). Settings ▸ Discovery saves/clears the key FILE live through the non-contract `save_discovery_key` / `discovery_key_status` Tauri commands (the same pattern as `track_artwork`), so Discover and Song Page recommendations start working without a restart.
-2. The Song Page's "Recommended for this song" section is wired for the first time in React: Shell calls `Command::Discover { artist, title, limit: 10 }` seeded by the current track, rendering honest idle/loading/error(+Retry)/ready states, match scores, tap-to-preview (shared `preview_tap` session machinery) and save-to-playlist (first non-Unsorted playlist) actions.
-3. Downloads/discover mode were already fully implemented end-to-end (search → preview → save/download with the bundled helper); the missing pieces were this key management surface and the song-page wiring above.
+2. The Song Page's "Recommended for this song" section calls `Command::Discover { artist, title, limit: 10 }` seeded by the current track, rendering honest idle/loading/error(+Retry)/ready states, match scores, tap-to-preview (`preview_tap`) and an explicit playlist picker.
+3. Tauri preview preparation resolves plain recommendation metadata through the fast YouTube search into an exact URL before invoking the helper (with `ytsearch1:` only as a compatibility fallback). The two-minute preparation deadline covers the real audio fetch, and the tapped item plus five-song window is prepared sequentially so bundled yt-dlp processes cannot starve one another. Existing staged assets are adopted immediately. A ready item loads and plays through the macOS audio backend; next/previous terminal handoffs restore the captured physical queue and audio. Detailed worker failures are published instead of collapsing into a misleading generic "Preview unavailable" state.
+4. Saving a recommendation publishes `Queued` and then a terminal `Saved` or `Failed` state from the actual download job, clearing its in-flight gate either way. Creating a playlist from the picker retains the selected recommendation and immediately saves it; the backend securely resolves the new folder under the configured root even when the asynchronous library scan has not registered that playlist yet.
 
 ### Export / Import
 1. Export actions snapshot `_library` and selected paths, then build the manifest and probe metadata on a worker thread.

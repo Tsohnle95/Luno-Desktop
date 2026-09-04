@@ -580,6 +580,13 @@ fn playlist_crud_and_allowed_duplicate_persistence_keep_safeguards() {
             &mut index,
         )
         .unwrap();
+    let source = dir.join("source-track.mp3");
+    fs::write(&source, b"audio fixture").unwrap();
+    let copied = service.add_files(&[source.clone()], "playlista", &mut index).unwrap();
+    assert_eq!(copied.value.copied, 1);
+    assert_eq!(fs::read(dir.join("playlista/source-track.mp3")).unwrap(), b"audio fixture");
+    let duplicate = service.add_files(&[source], "playlista", &mut index).unwrap();
+    assert_eq!(duplicate.value.copied, 0, "adding an existing song must not overwrite it");
     let keys = std::collections::BTreeSet::from(["artistatracka".to_owned()]);
     let library = std::collections::BTreeMap::from([(
         "playlist-a".to_owned(),
@@ -1083,6 +1090,20 @@ fn discover_save_requires_explicit_playlist_and_queues_downloads_for_unstaged() 
         // so the filename falls back to the recommendation key.
         playlist_dir.join("Artist0-Track0.m4a").is_file()
     }, || format!("download never landed in {playlist_dir:?}: {:#?}", std::fs::read_dir(&playlist_dir).map(|entries| entries.collect::<Vec<_>>())));
+    wait_until(5, "saved terminal state", || {
+        save_states(&state).iter().any(|save| save.state == SaveStateKind::Saved && save.key == key)
+    }, || format!("save never left queued state: {:#?}", save_states(&state)));
+
+    // The picker supports "Create new playlist" followed immediately by
+    // saving the recommendation. This must not race the asynchronous scan of
+    // the new empty folder.
+    state.dispatch(command("create-for-save", Command::CreatePlaylist { name: "fresh-rec-list".into() })).expect("create recommendation playlist");
+    let fresh_key = TrackId("Artist1-Track1".into());
+    let fresh_playlist = PlaylistId("playlist:fresh-rec-list".into());
+    state.dispatch(command("save-created", Command::Save { key: fresh_key.clone(), playlist_id: fresh_playlist })).expect("save into just-created playlist");
+    wait_until(5, "created playlist save", || {
+        save_states(&state).iter().any(|save| save.state == SaveStateKind::Saved && save.key == fresh_key)
+    }, || format!("create-and-save never completed: {:#?}", save_states(&state)));
     state.cleanup_previews();
 }
 

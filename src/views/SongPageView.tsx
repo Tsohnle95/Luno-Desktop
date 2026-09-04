@@ -32,7 +32,7 @@ export interface SongPageViewProps { track?: Track | null;
   saved?: Record<string, SaveState>;
   playlists?: Playlist[];
   jobs?: Record<string, DownloadJob>;
-  onCreatePlaylist?: () => void;
+  onCreatePlaylist?: (item: Recommendation) => void;
   video?: VideoStageProps;
   videoConnection?: "connected" | "loading" | "disconnected";
   /** Requests (or retries) the music video for the current track. */
@@ -129,6 +129,8 @@ const songPageStyles = `
 .luno-video-hover-controls { position:absolute; right:10px; top:10px; z-index:6; display:flex; gap:6px; align-items:center; opacity:0; pointer-events:none; transition:opacity .15s ease; }
 .luno-video-stage:hover .luno-video-hover-controls, .luno-video-stage:focus-within .luno-video-hover-controls { opacity:1; pointer-events:auto; }
 .luno-video-hover-controls .luno-video-fullscreen { position:static; }
+.luno-video-volume { display:flex; align-items:center; gap:7px; min-height:30px; padding:0 9px; border-radius:6px; color:#fff; background:rgba(0,0,0,.7); }
+.luno-video-volume input { width:min(22vw,150px); accent-color:var(--luno-green,#1db954); }
 .luno-video-mode-mini { position:relative; width:38px; height:22px; border:0; border-radius:999px; background:rgba(255,255,255,.28); cursor:pointer; transition:background .15s ease; }
 .luno-video-mode-mini.is-on { background:var(--luno-green,#1db954); }
 .luno-video-mode-mini .luno-video-mode-mini-knob { position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:999px; background:#fff; transition:left .15s ease; }

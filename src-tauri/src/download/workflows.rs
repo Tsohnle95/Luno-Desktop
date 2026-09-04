@@ -1,8 +1,13 @@
 //! Acquisition workflow policy, independent of yt-dlp and the UI.
 
 use crate::download::csv::CsvTrack;
+use crate::runtime::task_registry::CancellationToken;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowError { InvalidUrl, EmptyUrl, EmptySearch, MissingDestination, Cancelled }
@@ -84,4 +89,66 @@ where F: FnMut(&str, &AtomicBool) -> Result<(), String> {
 
 pub fn destination_path(destination: Option<&Path>, unsorted: &Path) -> Result<PathBuf, WorkflowError> {
     match destination { Some(path) if !path.as_os_str().is_empty() => Ok(path.to_path_buf()), _ if !unsorted.as_os_str().is_empty() => Ok(unsorted.to_path_buf()), _ => Err(WorkflowError::MissingDestination) }
+}
+
+pub fn parse_download_progress(line: &str) -> Option<f32> {
+    let value = line.trim().strip_prefix("LUNO_PROGRESS=")?.trim().trim_end_matches('%').trim();
+    value.parse::<f32>().ok().filter(|value| value.is_finite()).map(|value| (value / 100.0).clamp(0.0, 1.0))
+}
+
+/// Run the bundled helper while continuously draining both pipes. yt-dlp's
+/// machine-readable progress lines are mapped to 0–95%; the remaining slice
+/// represents extraction, validation, and atomic promotion. The coordinator
+/// publishes 100% only after the final audio file is safely in place.
+pub fn run_download_helper(helper: &Path, temporary: &Path, source: &str, worker_home: &Path, token: &CancellationToken, progress: &dyn Fn(f32)) -> Result<(), String> {
+    let mut command = Command::new(helper);
+    command.arg(temporary).env("HOME", worker_home).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if !source.is_empty() { command.arg(source).env("LUNO_DOWNLOAD_SOURCE", source); }
+    let mut child = command.spawn().map_err(|error| format!("download helper could not start: {error}"))?;
+    let stdout = child.stdout.take().ok_or_else(|| "download helper output was unavailable".to_string())?;
+    let stderr = child.stderr.take().ok_or_else(|| "download helper error output was unavailable".to_string())?;
+    let (sender, receiver) = mpsc::channel::<(bool, String)>();
+    let stdout_sender = sender.clone();
+    let stdout_reader = std::thread::spawn(move || for line in BufReader::new(stdout).lines().map_while(Result::ok) { let _ = stdout_sender.send((false, line)); });
+    let stderr_reader = std::thread::spawn(move || for line in BufReader::new(stderr).lines().map_while(Result::ok) { let _ = sender.send((true, line)); });
+    let mut errors = Vec::new();
+    let mut handle_line = |is_error: bool, line: String| {
+        if let Some(fraction) = parse_download_progress(&line) { progress(fraction * 0.95); }
+        else if is_error && !line.trim().is_empty() {
+            if errors.len() >= 8 { errors.remove(0); }
+            errors.push(line.trim().to_owned());
+        }
+    };
+    let status = loop {
+        if token.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err("cancelled".into());
+        }
+        while let Ok(line) = receiver.try_recv() { handle_line(line.0, line.1); }
+        match child.try_wait().map_err(|error| format!("download helper wait failed: {error}"))? {
+            Some(status) => break status,
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    };
+    let _ = stdout_reader.join();
+    let _ = stderr_reader.join();
+    while let Ok(line) = receiver.try_recv() { handle_line(line.0, line.1); }
+    if status.success() { progress(0.97); Ok(()) }
+    else if errors.is_empty() { Err(format!("download helper exited with {status}")) }
+    else { Err(errors.join(" | ")) }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::parse_download_progress;
+
+    #[test]
+    fn parses_machine_readable_ytdlp_percentages() {
+        assert_eq!(parse_download_progress("LUNO_PROGRESS= 42.5%"), Some(0.425));
+        assert_eq!(parse_download_progress("[download] 42.5%"), None);
+        assert_eq!(parse_download_progress("LUNO_PROGRESS=125%"), Some(1.0));
+    }
 }
