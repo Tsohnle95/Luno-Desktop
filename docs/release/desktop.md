@@ -32,7 +32,7 @@ closed if they are absent or mismatched.
 
 ## Gates
 
-Run `./scripts/verify-desktop-bundle.sh <Luno.app>` after building. It checks
+Run `./scripts/verify-desktop-bundle.sh '<Luno Desktop.app>'` after building. It checks
 the bundle manifest, notices, executable bits, checksums, tool versions,
 architecture, and a clean-machine smoke with developer `PATH` unavailable.
 Missing or tampered tools, or missing inspection tools, are blocked/inconclusive
