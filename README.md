@@ -1,47 +1,55 @@
-# Luno
+# Luno Desktop
 
-Luno is a local-first music player implemented as two applications in one
-repository:
+Luno Desktop is the desktop edition of Luno, built with React, TypeScript,
+Vite, Tauri 2, and Rust. The stable application identifier is
+`com.ty.luno`.
 
-- **Desktop:** Python, Tkinter, Pygame, yt-dlp, and FFmpeg.
-- **Android:** Kotlin, Jetpack Compose, Media3, Room, SAF, and WorkManager.
+## Development
 
-The applications share a versioned, path-free library transfer format. They do
-not share playback or UI runtime code.
+```bash
+npm ci
+npm run dev
+```
 
-## Repository Guide
-
-- `music_player.py`, `engine.py`, `views/`: desktop application
-- `mobile-app/`: native Android application
-- `library_transfer.py`: desktop implementation of the transfer contract
-- `contracts/library-export/v1/`: language-neutral contract and fixtures
-- `docs/`: architecture, decisions, and product documentation
-- `project_brain.md`: desktop operational index
-- `mobile-app/project_brain.md`: Android operational index
-
-Source code and tests are authoritative when documentation is stale.
+The Tauri runtime and its compatibility/migration readers live under
+`src-tauri/`. The desktop app keeps existing Luno user data and first-run
+migration behavior intact.
 
 ## Verification
 
-Desktop tests:
-
 ```bash
-python -m pytest
+npm run typecheck
+npm test
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-Android unit tests and lint:
+For a local production bundle, use `npx tauri build`. The release workflow
+provisions the reviewed desktop binaries from `release-input/bin/`, packages
+the resources listed in `src-tauri/tauri.conf.json`, and verifies the resulting
+bundle with `scripts/verify-desktop-bundle.sh`.
 
-```bash
-cd mobile-app
-./gradlew testDebugUnitTest lintDebug
-```
+## Architecture
 
-Desktop packaging requires the local `.venv` and external FFmpeg binary. The
-Android debug helper is `./build-mobile.command`.
+- `src/` — React UI, typed bridge, state projections, and frontend tests.
+- `src-tauri/` — Rust commands, persistence, migration, scanning, playback,
+  downloads, discovery, artwork, video, and release runtime.
+- `contracts/library-export/v1/` — path-free shared library-transfer schema and
+  fixtures.
+- `release/`, `release-input/`, `scripts/` — reviewed binary provisioning,
+  third-party notices, and bundle verification.
+- `docs/` — architecture, decisions, product, release, and verification docs.
 
-## Documentation
+## Luno Mobile and legacy desktop
 
-- [Architecture overview](docs/architecture/README.md)
-- [Transfer contract](contracts/library-export/v1/README.md)
-- [Architecture decisions](docs/decisions/README.md)
-- [Product roadmap](docs/product/roadmap.md)
+Luno Mobile is now an independent Android repository:
+https://github.com/Tsohnle95/Luno-Mobile
+
+The final Python/Tkinter/Pygame desktop generation is frozen under the
+`archive/python-desktop-final` branch and `legacy-python-desktop-final` tag in
+this repository. It is retained for historical reference and compatibility
+research; active desktop development is Tauri/Rust only.
+
+The Desktop and Mobile repositories intentionally duplicate the small v1
+transfer fixture set. Neither active application requires cloning the other
+repository at build or runtime.

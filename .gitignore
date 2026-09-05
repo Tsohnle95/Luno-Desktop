@@ -19,11 +19,10 @@ src-tauri/gen/
 *.apk
 *.apk.zip
 
-# Android signing material
+# Local signing material
 *.jks
 *.keystore
 *.p12
-mobile-app/local.properties
 
 # OS metadata
 .DS_Store
