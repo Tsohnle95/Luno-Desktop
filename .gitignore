@@ -16,6 +16,7 @@ node_modules/
 src-tauri/target/
 src-tauri/gen/
 **/.gradle/
+local.properties
 *.apk
 *.apk.zip
 
