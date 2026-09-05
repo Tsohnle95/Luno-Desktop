@@ -53,7 +53,7 @@ jobs:
           test -n "$APPLE_TEAM_ID"
           npm run tauri -- build --bundles dmg
       - name: Verify bundle
-        run: ./scripts/verify-desktop-bundle.sh src-tauri/target/release/bundle/macos/Luno.app
+        run: ./scripts/verify-desktop-bundle.sh "src-tauri/target/release/bundle/macos/Luno Desktop.app"
       - name: Publish DMG
         uses: softprops/action-gh-release@v2
         with:

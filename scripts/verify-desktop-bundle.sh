@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-app=${1:?usage: verify-desktop-bundle.sh /path/to/Luno.app}
+app=${1:?usage: verify-desktop-bundle.sh '/path/to/Luno Desktop.app'}
 root="$app/Contents/Resources"
 manifest="$root/desktop-binaries.json"
 [ -f "$manifest" ] || { echo "bundle manifest missing: $manifest" >&2; exit 1; }

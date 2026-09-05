@@ -30,7 +30,7 @@ print_step "Tauri release build (app bundle)"
 npx tauri build --bundles app || { print_err "TAURI BUILD FAILED"; exit 1; }
 
 print_ok "ALL TESTS PASSED AND BUILD COMPLETE"
-app_bundle=src-tauri/target/release/bundle/macos/Luno.app
+app_bundle="src-tauri/target/release/bundle/macos/Luno Desktop.app"
 if [ -d "$app_bundle" ]; then
   echo "App bundle: $app_bundle"
   echo "Launching Luno…"

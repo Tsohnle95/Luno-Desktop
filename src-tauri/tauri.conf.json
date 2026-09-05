@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Luno",
+  "productName": "Luno Desktop",
   "version": "0.1.0",
   "identifier": "com.ty.luno",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Luno",
+        "title": "Luno Desktop",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "width": 1180,
