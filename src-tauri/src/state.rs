@@ -5019,6 +5019,22 @@ impl AppState {
             validate_library_path(self, path, true)?;
             std::fs::remove_file(path).map_err(|error| ContractError { code: ErrorCode::Internal, message: format!("could not delete '{}': {error}", path.file_name().and_then(|name| name.to_str()).unwrap_or("track")), retryable: true })?;
         }
+        // Optimistic snapshot so the rows disappear immediately in every view.
+        // The follow-up scan reconciles playlist membership from disk; without
+        // this the UI waited on a slow scan and reads as "delete did nothing".
+        {
+            let removed: std::collections::HashSet<&TrackId> = track_ids.iter().collect();
+            let mut library = self.library.lock().unwrap_or_else(|e| e.into_inner());
+            library.tracks.retain(|track| !removed.contains(&track.id));
+            for playlist in library.playlists.iter_mut() {
+                playlist.ordered_track_ids.retain(|id| !removed.contains(id));
+            }
+            let generation = self.next_generation();
+            library.generation = generation;
+            let snapshot = library.clone();
+            drop(library);
+            self.publish(self.event(snapshot.generation, Event::LibrarySnapshot { snapshot }));
+        }
         let generation = self.schedule_mutation_scan()?;
         Ok(serde_json::json!({ "deleted": paths.len(), "generation": generation }))
     }
@@ -5116,9 +5132,33 @@ fn promotion_error(error: PromotionError) -> ContractError {
             favorites.set(&path, next);
             next
         };
-        let mut library = self.library.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(track) = library.tracks.iter_mut().find(|track| track.id == track_id) {
-            track.favorite = favorite;
+        // Publish the mutated snapshot so every view (playlist rows, search
+        // results, queue, footer) re-renders the star immediately. The old
+        // code mutated in-memory state but emitted no event, so the UI never
+        // updated until the next rescan.
+        let snapshot = {
+            let mut library = self.library.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(track) = library.tracks.iter_mut().find(|track| track.id == track_id) {
+                track.favorite = favorite;
+            }
+            let generation = self.next_generation();
+            library.generation = generation;
+            library.clone()
+        };
+        self.publish(self.event(snapshot.generation, Event::LibrarySnapshot { snapshot }));
+        // Persist so the choice survives restarts. Merge semantics keep other
+        // prefs intact; failures are non-fatal (in-memory state already won).
+        if let Some(home) = self.settings_home.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            let settings = crate::contracts::types::SettingsInput {
+                music_root: None,
+                auto_discovery: None,
+                volume: None,
+                sleep_timer: None,
+                global_keys: None,
+                favorite_songs: self.favorites.lock().unwrap_or_else(|e| e.into_inner()).paths().map(str::to_owned).collect(),
+                video_mode: None,
+            };
+            let _ = self.save_settings(home, settings);
         }
         Ok(serde_json::json!({ "favorite": favorite }))
     }

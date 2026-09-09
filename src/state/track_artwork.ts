@@ -128,8 +128,12 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
   fetcherRef.current = fetcher;
   const idsRef = useRef(trackIds);
   idsRef.current = trackIds;
-  // Avoid allocating a huge join string for large queues (4k ids → ~150 KB per render).
-  const idsKey = trackIds.length === 0 ? "" : `${trackIds.length}:${trackIds[0] ?? ""}:${trackIds[trackIds.length - 1] ?? ""}:${trackIds.slice(0, 3).join(",")}`;
+  // Artwork id lists are already windowed by callers (library visible ~20,
+  // queue ~40, home ~40), so a full join is cheap and exact. The old
+  // length:first:last heuristic missed content changes (e.g. a new search
+  // with the same length/endpoints never re-ran the effect, leaving rows on
+  // ♫ while the footer — a single-id request — loaded fine).
+  const idsKey = trackIds.join("\0");
   useEffect(() => {
     const fetchArt = fetcherRef.current;
     const ids = idsRef.current;
@@ -194,6 +198,18 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
     const onCacheEvent = (event: { type: "resolved"; urls: Record<string, string> } | { type: "evicted"; id: string }) => {
       if (event.type === "evicted") {
         if (requested.current.has(event.id)) requested.current.delete(event.id);
+        // Re-request immediately when the evicted id is still visible. The
+        // old code only unmarked it and waited for the next idsKey change —
+        // scrolled-back queue/library rows stayed blank for the session.
+        if (idsRef.current.includes(event.id) && !resolvedCache.has(event.id) && !inFlight.has(event.id)) {
+          const fetchArt = fetcherRef.current;
+          if (fetchArt) {
+            requested.current.add(event.id);
+            if (idsRef.current.length === 1) pendingQueue.unshift({ id: event.id, fetcher: fetchArt });
+            else pendingQueue.push({ id: event.id, fetcher: fetchArt });
+            scheduleNext();
+          }
+        }
         return;
       }
       const currentIds = idsRef.current;
