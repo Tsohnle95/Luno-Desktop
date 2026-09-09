@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "verify": "npm run typecheck && npm test && ./scripts/check-docs.sh",
+    "launch": "scripts/luno-tray.sh launch",
     "tauri": "tauri"
   },
   "dependencies": {

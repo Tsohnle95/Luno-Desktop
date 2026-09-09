@@ -46,6 +46,18 @@ developer PATH unavailable.
 typecheck, frontend tests, production build, app launch, best-effort DMG)
 for a macOS GUI session. `./dev.command` launches development.
 
+For daily use without a terminal window, `npm run launch` starts the same
+development server detached (PID and logs live under the system temp
+directory; `scripts/luno-tray.sh status|logs|stop` manages it).
+`scripts/install-dock-icon.sh` builds a double-clickable `Luno` app in
+`~/Applications` from `scripts/Luno.applescript` that fires the launcher
+in the background, so a Dock icon click starts (or focuses) the app.
+Rebuilds stay automatic through the dev server's file watching (frontend
+hot-reload plus incremental Rust rebuilds); repeat clicks only focus the
+running app. The installed `.app` is a generated local artifact holding
+this machine's repository path — never commit it, and re-run the
+installer after moving the repository.
+
 ## Known verification gaps (do not treat as passes)
 
 - Root `tests/**/*.rs` are not wired into Cargo (no `[[test]]` targets;

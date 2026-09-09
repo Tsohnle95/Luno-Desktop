@@ -1,0 +1,32 @@
+#!/bin/bash
+# Luno — build the double-clickable Dock icon (~/Applications/Luno.app).
+# The .app is a generated local artifact, never committed: it embeds this
+# machine's repository path and simply fires scripts/luno-tray.sh in the
+# background. Re-run after moving the repository. Idempotent.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+APP="$HOME/Applications/Luno.app"
+TMP_SCRIPT="$(mktemp -t luno-applescript).applescript"
+trap 'rm -f "$TMP_SCRIPT"' EXIT
+
+mkdir -p "$HOME/Applications"
+sed "s#__LUNO_REPO__#$REPO#" "$REPO/scripts/Luno.applescript" > "$TMP_SCRIPT"
+
+rm -rf "$APP"
+osacompile -o "$APP" "$TMP_SCRIPT"
+
+# Best-effort icon: stamp the applet with the app artwork when sips can
+# convert it, otherwise keep the default script icon (cosmetic only).
+if [ -f "$REPO/src-tauri/icons/icon.png" ]; then
+  TMP_ICON="$(mktemp -t luno-applet).icns"
+  trap 'rm -f "$TMP_SCRIPT" "$TMP_ICON"' EXIT
+  if sips -s format icns "$REPO/src-tauri/icons/icon.png" --out "$TMP_ICON" >/dev/null 2>&1; then
+    cp "$TMP_ICON" "$APP/Contents/Resources/applet.icns"
+    touch "$APP"
+  fi
+fi
+
+echo "Installed $APP"
+echo "Drag it to the Dock for one-click launch (first click compiles the debug build; later clicks just focus the app)."
+echo "Manage the background server with: scripts/luno-tray.sh status|logs|stop"
