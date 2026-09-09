@@ -1,5 +1,10 @@
 # macOS Desktop Release
 
+Document role: canonical owner for release packaging — pinned managed
+binaries, provisioning, bundle verification, signing/notarization hooks,
+and rollback. Verification and CI procedure lives in
+`docs/verification/desktop.md`.
+
 Luno releases are macOS-only and retain the stable identifier
 `com.ty.luno`. The Tauri bundle targets a DMG and requires macOS 13 or newer.
 

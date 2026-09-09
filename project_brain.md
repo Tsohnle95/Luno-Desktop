@@ -1,5 +1,13 @@
 # Luno Desktop Project Brain
 
+Document role: canonical owner for cross-system architecture and durable
+architectural invariants — subsystem/process boundaries, dependency
+direction, ownership boundaries, major cross-system flows, cross-domain
+invariants, and trust boundaries. Detailed module truth lives in
+`docs/modules/`; operational procedures live in
+`docs/verification/desktop.md` and `docs/release/desktop.md`. This
+document never overrides those owners; routing pointers there stay short.
+
 This is the architectural map for the active Luno Desktop repository. Source
 and tests are authoritative when this document is stale. The former mixed
 Python/Android brain is preserved at
