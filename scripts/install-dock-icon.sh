@@ -1,17 +1,17 @@
 #!/bin/bash
-# Luno — build the double-clickable Dock icon (~/Applications/Luno.app).
+# Luno Dev — build the double-clickable Dock icon (~/Applications/Luno Dev.app).
 # The .app is a generated local artifact, never committed: it embeds this
 # machine's repository path and simply fires scripts/luno-tray.sh in the
 # background. Re-run after moving the repository. Idempotent.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$HOME/Applications/Luno.app"
+APP="$HOME/Applications/Luno Dev.app"
 TMP_SCRIPT="$(mktemp -t luno-applescript).applescript"
 trap 'rm -f "$TMP_SCRIPT"' EXIT
 
 mkdir -p "$HOME/Applications"
-sed "s#__LUNO_REPO__#$REPO#" "$REPO/scripts/Luno.applescript" > "$TMP_SCRIPT"
+sed "s#__LUNO_REPO__#$REPO#" "$REPO/scripts/Luno-Dev.applescript" > "$TMP_SCRIPT"
 
 rm -rf "$APP"
 osacompile -o "$APP" "$TMP_SCRIPT"

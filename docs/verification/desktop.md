@@ -49,8 +49,8 @@ for a macOS GUI session. `./dev.command` launches development.
 For daily use without a terminal window, `npm run launch` starts the same
 development server detached (PID and logs live under the system temp
 directory; `scripts/luno-tray.sh status|logs|stop` manages it).
-`scripts/install-dock-icon.sh` builds a double-clickable `Luno` app in
-`~/Applications` from `scripts/Luno.applescript` that fires the launcher
+`scripts/install-dock-icon.sh` builds a double-clickable `Luno Dev` app in
+`~/Applications` from `scripts/Luno-Dev.applescript` that fires the launcher
 in the background, so a Dock icon click starts (or focuses) the app.
 Rebuilds stay automatic through the dev server's file watching (frontend
 hot-reload plus incremental Rust rebuilds); repeat clicks only focus the
