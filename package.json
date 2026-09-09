@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build src --emptyOutDir --outDir ../dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "verify": "npm run typecheck && npm test && ./scripts/check-docs.sh",
     "tauri": "tauri"
   },
   "dependencies": {
