@@ -14,6 +14,7 @@ import {
   isSearchResults,
   isRecommendationList,
   isPreviewSnapshot,
+  isDiscoverSnapshot,
   type PreviewSeed,
   type Recommendation,
 } from "../shared/contracts";
@@ -90,6 +91,9 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
       previewNext: async () => { const value = await send<unknown>({ type: "preview_next" }); if (!isPreviewSnapshot(value)) throw new Error("invalid preview session response"); return value; },
       previewPrevious: async () => { const value = await send<unknown>({ type: "preview_previous" }); if (!isPreviewSnapshot(value)) throw new Error("invalid preview session response"); return value; },
       previewCancel: async () => { const value = await send<unknown>({ type: "preview_cancel" }); if (!isPreviewSnapshot(value)) throw new Error("invalid preview session response"); return value; },
+      discoverEnable: async (seeds: PreviewSeed[]) => { const value = await send<unknown>({ type: "discover_enable", payload: { seeds } }); if (!isDiscoverSnapshot(value)) throw new Error("invalid discover session response"); return value; },
+      discoverDisable: async () => { const value = await send<unknown>({ type: "discover_disable" }); if (!isDiscoverSnapshot(value)) throw new Error("invalid discover session response"); return value; },
+      discoverAdvance: async () => { const value = await send<unknown>({ type: "discover_advance" }); if (!isDiscoverSnapshot(value)) throw new Error("invalid discover session response"); return value; },
       saveRecommendation: (key: TrackId, playlist_id: PlaylistId) => send({ type: "save", payload: { key, playlist_id } }),
       validateDirectUrl: (url: string, destination: string) => send({ type: "validate_direct_url", payload: { url, destination } }),
       previewCsv: (csv: string) => send({ type: "preview_csv", payload: { csv } }),

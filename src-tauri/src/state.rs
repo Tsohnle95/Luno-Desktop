@@ -2832,6 +2832,7 @@ impl AppState {
             (session.generation(), handoff)
         };
         self.preview_cancelled.store(true, Ordering::Release);
+        self.tasks.cancel_key("preview-heartbeat");
         self.cancel_preview_tasks();
         self.restore_preview_queue(handoff.queue, handoff.index);
         self.publish_preview_snapshot(generation);
@@ -2890,14 +2891,17 @@ impl AppState {
                 if !prepared { self.ensure_prepared(generation, &key); }
             }
             SessionAction::LeaveToNext { queue, index } => {
+                self.tasks.cancel_key("preview-heartbeat");
                 self.cancel_preview_tasks();
                 self.restore_preview_queue(queue, index);
             }
             SessionAction::ReturnToSeed { queue, index } => {
+                self.tasks.cancel_key("preview-heartbeat");
                 self.cancel_preview_tasks();
                 self.restore_preview_queue(queue, Some(index));
             }
             SessionAction::Ended => {
+                self.tasks.cancel_key("preview-heartbeat");
                 self.cancel_preview_tasks();
             }
         }
@@ -2917,6 +2921,7 @@ impl AppState {
     #[cfg(target_os = "macos")]
     fn play_preview_audio(&self, key: TrackId, path: PathBuf, generation: u64) {
         self.tasks.cancel_key("playback-heartbeat");
+        self.tasks.cancel_key("preview-heartbeat");
         let state = self.clone();
         let task_key = format!("preview-audio-{generation}");
         self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).push(task_key.clone());
@@ -2929,21 +2934,83 @@ impl AppState {
                     Ok(info) => { backend.set_volume(volume); info }
                     Err(error) => {
                         eprintln!("[luno-preview] audio load failed for {}: {error:?}", key.0);
+                        drop(backend);
+                        // Truthful failure: mark the asset unavailable so the row
+                        // reads "Preview unavailable" instead of sticking on
+                        // "Previewing now" with a frozen footer tracker.
+                        let action = state.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &key)).unwrap_or(SessionAction::Ended);
+                        state.publish_preview_snapshot(generation);
+                        state.publish(state.event(Generation(generation), Event::Error { error: ContractError {
+                            code: ErrorCode::Unavailable,
+                            message: "preview could not be played".into(),
+                            retryable: true,
+                        }}));
+                        state.handle_session_action(action, generation);
                         return;
                     }
                 }
             };
             if token.is_cancelled() { return; }
-            let mut backend = match state.audio.lock() { Ok(backend) => backend, Err(_) => return };
-            if let Err(error) = backend.play() {
-                eprintln!("[luno-preview] audio play failed for {}: {error:?}", key.0);
-                return;
+            {
+                let mut backend = match state.audio.lock() { Ok(backend) => backend, Err(_) => return };
+                if let Err(error) = backend.play() {
+                    eprintln!("[luno-preview] audio play failed for {}: {error:?}", key.0);
+                    drop(backend);
+                    let action = state.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &key)).unwrap_or(SessionAction::Ended);
+                    state.publish_preview_snapshot(generation);
+                    state.publish(state.event(Generation(generation), Event::Error { error: ContractError {
+                        code: ErrorCode::Unavailable,
+                        message: "preview could not be played".into(),
+                        retryable: true,
+                    }}));
+                    state.handle_session_action(action, generation);
+                    return;
+                }
             }
-            drop(backend);
             *state.clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlaybackClock::new(loaded.duration));
             if let Some(clock) = state.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.start(0.0); }
-            *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(key);
+            *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(key.clone());
             *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Playing;
+            // Publish immediately so the footer leaves its stale library
+            // position instead of sticking, then heartbeat the preview
+            // position the same way library playback does.
+            let snapshot = state.playback_snapshot(
+                crate::contracts::types::PlaybackStatus::Playing,
+                Duration::ZERO,
+                loaded.duration,
+            );
+            state.publish_playback(snapshot, None);
+            let heartbeat_state = state.clone();
+            let heartbeat_key = key.clone();
+            let heartbeat_worker = heartbeat_state.clone();
+            let spec = heartbeat_state.generation("preview-heartbeat", Generation(generation));
+            let _ = heartbeat_state.submit(spec, move |heartbeat_token| {
+                while !heartbeat_token.is_cancelled() && !heartbeat_worker.is_closing() {
+                    std::thread::sleep(crate::playback::clock::HEARTBEAT);
+                    if heartbeat_token.is_cancelled() || heartbeat_worker.is_closing() { break; }
+                    // Stop when the session moved on: another preview (or a
+                    // library resume) owns the output now.
+                    let still_current = heartbeat_worker.current_track.lock().unwrap_or_else(|e| e.into_inner()).as_ref() == Some(&heartbeat_key);
+                    if !still_current { break; }
+                    let (position, duration) = {
+                        let backend = match heartbeat_worker.audio.lock() { Ok(backend) => backend, Err(_) => break };
+                        let position = match backend.position() { Ok(position) => position, Err(_) => break };
+                        let duration = backend.duration().ok().flatten();
+                        (position, duration)
+                    };
+                    let status = *heartbeat_worker.playback_status.lock().unwrap_or_else(|e| e.into_inner());
+                    let due = heartbeat_worker.clock.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|clock| clock.completion_due(position, true, position));
+                    if due && heartbeat_worker.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut().is_some_and(|clock| clock.dispatch_completion()) {
+                        // Natural end of the preview file: step to the next
+                        // prepared recommendation (or restore the library when
+                        // the window is exhausted) so autoplay keeps working.
+                        let _ = heartbeat_worker.preview_step(true);
+                        break;
+                    }
+                    let snapshot = heartbeat_worker.playback_snapshot(status, position, duration);
+                    heartbeat_worker.publish_playback(snapshot, None);
+                }
+            });
         });
     }
 
@@ -5335,6 +5402,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
             (effective, healed_context, path)
         };
         eprintln!("[luno-play] resolved -> {} queue_len={}", path.display(), context.len());
+        self.tasks.cancel_key("preview-heartbeat");
         self.purge_discover_deferred();
         self.playback.lock().unwrap_or_else(|e| e.into_inner()).play_with_context(track_id.clone(), context);
         // NOTE: video mode is NOT kicked here on purpose — `start_selected_track`
@@ -5513,6 +5581,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
                 retryable: false,
             }
         })?;
+        self.tasks.cancel_key("preview-heartbeat");
         self.purge_discover_deferred();
         let ack = self.playback_snapshot(
             *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()),

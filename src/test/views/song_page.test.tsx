@@ -93,3 +93,29 @@ describe("Music-mode hover controls", () => {
     expect(idleHtml).not.toContain(">Load music video<");
   });
 });
+
+describe("Discovery mode toggle", () => {
+  const recs: Recommendation[] = [{ artist: "Other", title: "Similar", match_score: 0.9, artwork_url: null }];
+
+  it("offers an enable toggle when recommendations are loaded", () => {
+    const html = renderToStaticMarkup(
+      <SongPageView track={track} backendAvailable recommendations={recs} recommendationState="ready" onToggleDiscoverMode={() => undefined} />
+    );
+    expect(html).toContain('aria-label="Enable discovery mode"');
+    expect(html).toContain("Discovery mode: Off");
+  });
+
+  it("announces the on state and restores library wording", () => {
+    const html = renderToStaticMarkup(
+      <SongPageView track={track} backendAvailable recommendations={recs} recommendationState="ready" discoverMode onToggleDiscoverMode={() => undefined} discoverHint="Pre-loaded 2 of 5 recommendations." />
+    );
+    expect(html).toContain('aria-label="Disable discovery mode"');
+    expect(html).toContain("Discovery mode: On");
+    expect(html).toContain("Pre-loaded 2 of 5 recommendations.");
+  });
+
+  it("hides the toggle when no handler is wired", () => {
+    const html = renderToStaticMarkup(<SongPageView track={track} backendAvailable />);
+    expect(html).not.toContain("Discovery mode:");
+  });
+});

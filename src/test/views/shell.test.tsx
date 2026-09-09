@@ -7,7 +7,7 @@ import type { BackendProjection } from "../../state/backend_projection";
 
 const projectionTrack = { id: "t1", path: null, title: "Aurora", artist: "Gate Six", album: "Chaos 93", duration_ms: 3000, artwork_url: null, favorite: false, provider: null };
 const projection = {
-  getSnapshot: (): BackendProjection => ({ library: { version: 1, generation: 1, tracks: [projectionTrack], playlists: [{ id: "p1", name: "Rap", path: null, url: null, ordered_track_ids: ["t1"] }] }, playback: { queue: ["t1"], current_index: 0, shuffle: false, repeat: "off", status: "playing", position_ms: 1250, duration_ms: 3000, generation: 1 }, preview: null, video: null, jobs: {}, saved: {}, errors: [], recentHistory: [], shutdown: null, generations: { library: 1, playback: 1, preview: -1, video: -1, jobs: -1, errors: -1 }, lastEventIds: {} }),
+  getSnapshot: (): BackendProjection => ({ library: { version: 1, generation: 1, tracks: [projectionTrack], playlists: [{ id: "p1", name: "Rap", path: null, url: null, ordered_track_ids: ["t1"] }] }, playback: { queue: ["t1"], current_index: 0, shuffle: false, repeat: "off", status: "playing", position_ms: 1250, duration_ms: 3000, generation: 1 }, preview: null, discover: null, video: null, jobs: {}, saved: {}, errors: [], recentHistory: [], shutdown: null, generations: { library: 1, playback: 1, preview: -1, discover: -1, video: -1, jobs: -1, errors: -1 }, lastEventIds: {} }),
   subscribe: () => () => {},
 };
 

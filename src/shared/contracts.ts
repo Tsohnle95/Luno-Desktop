@@ -41,6 +41,9 @@ export type Command =
   | { type: "preview_next" }
   | { type: "preview_previous" }
   | { type: "preview_cancel" }
+  | { type: "discover_enable"; payload: { seeds: PreviewSeed[] } }
+  | { type: "discover_disable" }
+  | { type: "discover_advance" }
   | { type: "save"; payload: { key: TrackId; playlist_id: PlaylistId } }
   | { type: "validate_direct_url"; payload: { url: string; destination: string } }
   | { type: "preview_csv"; payload: { csv: string } }
@@ -72,6 +75,7 @@ export type Event =
   | { type: "library_root_status"; payload: { root_index: number; status: RootStatus } }
   | { type: "playback_snapshot"; payload: { snapshot: PlaybackSnapshot } }
   | { type: "preview_snapshot"; payload: { snapshot: PreviewSnapshot } }
+  | { type: "discover_snapshot"; payload: { snapshot: DiscoverSnapshot } }
   | { type: "save_state"; payload: { state: SaveState } }
   | { type: "video_state"; payload: { state: VideoState } }
   | { type: "track_started"; payload: { track_id: TrackId } }
@@ -121,11 +125,19 @@ export interface PreviewSnapshot {
   cancelled: boolean;
 }
 
+export interface DiscoverSnapshot {
+  generation: number;
+  enabled: boolean;
+  window: string[];
+  ready: number;
+  queued: number;
+}
+
 /** Mirrors the backend `safe_key`: ASCII alphanumerics, `-` and `_` survive;
  * everything else collapses to `_`.  This is the session key shared between
  * the discover rows, the preview session, and the asset store. */
 export const previewKey = (artist: string, title: string): string =>
-  `${artist}-${title}`.replace(/[^a-zA-Z0-9\-_]/g, "_");
+  `${artist.trim()}-${title.trim()}`.replace(/[^a-zA-Z0-9\-_]/g, "_");
 
 export function isContractVersion(v: unknown): v is ContractVersion { return v === CONTRACT_VERSION; }
 function isCommand(v: unknown): v is Command {
@@ -138,7 +150,8 @@ function isCommand(v: unknown): v is Command {
     if (v.type === "search_downloader") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.query === "string" && v.payload.query.trim().length > 0 && typeof v.payload.try_soundcloud === "boolean" && typeof v.payload.limit === "number" && Number.isInteger(v.payload.limit) && v.payload.limit >= 1 && v.payload.limit <= 50 && Object.keys(v.payload).length === 3;
     if (v.type === "discover") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.artist === "string" && v.payload.artist.trim().length > 0 && typeof v.payload.title === "string" && v.payload.title.trim().length > 0 && typeof v.payload.limit === "number" && Number.isInteger(v.payload.limit) && v.payload.limit >= 1 && v.payload.limit <= 20 && Object.keys(v.payload).length === 3;
     if (v.type === "preview_tap") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.key) && Array.isArray(v.payload.seeds) && v.payload.seeds.length >= 1 && v.payload.seeds.length <= 50 && v.payload.seeds.every((seed) => object(seed) && exact(seed, ["artist", "title"]) && nonEmptyId(seed.artist) && nonEmptyId(seed.title)) && Object.keys(v.payload).length === 2;
-    if (["preview_next", "preview_previous", "preview_cancel"].includes(v.type)) return Object.keys(v).length === 1;
+    if (["preview_next", "preview_previous", "preview_cancel", "discover_disable", "discover_advance"].includes(v.type)) return Object.keys(v).length === 1;
+    if (v.type === "discover_enable") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.seeds) && v.payload.seeds.length <= 50 && v.payload.seeds.every((seed) => object(seed) && exact(seed, ["artist", "title"]) && typeof seed.artist === "string" && typeof seed.title === "string") && Object.keys(v.payload).length === 1;
     if (v.type === "save") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.key) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 2;
     if (v.type === "validate_direct_url") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.url === "string" && typeof v.payload.destination === "string" && v.payload.url.trim().length > 0 && v.payload.destination.trim().length > 0 && Object.keys(v.payload).length === 2;
     if (v.type === "preview_csv") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.csv === "string" && v.payload.csv.length <= 10_485_760 && Object.keys(v.payload).length === 1;
@@ -202,6 +215,7 @@ function isEvent(v: unknown): v is Event {
   if (v.type === "library_snapshot") return exact(v.payload, ["snapshot"]) && library(v.payload.snapshot);
    if (v.type === "playback_snapshot") return exact(v.payload, ["snapshot"]) && playback(v.payload.snapshot);
    if (v.type === "preview_snapshot") return exact(v.payload, ["snapshot"]) && isPreviewSnapshot(v.payload.snapshot);
+   if (v.type === "discover_snapshot") return exact(v.payload, ["snapshot"]) && isDiscoverSnapshot(v.payload.snapshot);
    if (v.type === "save_state") {
      const save = v.payload.state;
      return exact(v.payload, ["state"]) && object(save) && exact(save, ["key", "playlist_id", "state", "already_saved", "path", "job_id", "error"]) && id(save.key) && id(save.playlist_id) && ["saving", "queued", "saved", "failed"].includes(String(save.state)) && typeof save.already_saved === "boolean" && optionalString(save.path) && (save.job_id === null || id(save.job_id)) && (save.error === null || typeof save.error === "string");
@@ -227,3 +241,4 @@ export function parseEventEnvelope(json: string): EventEnvelope { const value: u
 export function isSearchResults(value: unknown): value is SearchResult[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["provider", "query", "title", "artist", "duration", "thumbnail_url", "url"]) && nonEmptyId(item.provider) && nonEmptyId(item.query) && nonEmptyId(item.title) && (item.artist === null || nonEmptyId(item.artist)) && (item.duration === null || typeof item.duration === "string") && (item.thumbnail_url === null || nonEmptyId(item.thumbnail_url)) && (item.url === null || nonEmptyId(item.url))); }
 export function isRecommendationList(value: unknown): value is Recommendation[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["artist", "title", "match_score", "artwork_url"]) && nonEmptyId(item.artist) && nonEmptyId(item.title) && typeof item.match_score === "number" && (item.artwork_url === null || typeof item.artwork_url === "string")); }
 export function isPreviewSnapshot(value: unknown): value is PreviewSnapshot { return object(value) && exact(value, ["generation", "active", "current", "window", "prepared", "unavailable", "cancelled"]) && typeof value.generation === "number" && Number.isSafeInteger(value.generation) && value.generation >= 0 && typeof value.active === "boolean" && (value.current === null || nonEmptyId(value.current)) && Array.isArray(value.window) && value.window.every(nonEmptyId) && Array.isArray(value.prepared) && value.prepared.every(nonEmptyId) && Array.isArray(value.unavailable) && value.unavailable.every(nonEmptyId) && typeof value.cancelled === "boolean"; }
+export function isDiscoverSnapshot(value: unknown): value is DiscoverSnapshot { return object(value) && exact(value, ["generation", "enabled", "window", "ready", "queued"]) && typeof value.generation === "number" && Number.isSafeInteger(value.generation) && value.generation >= 0 && typeof value.enabled === "boolean" && Array.isArray(value.window) && value.window.every(nonEmptyId) && Number.isSafeInteger(value.ready) && (value.ready as number) >= 0 && Number.isSafeInteger(value.queued) && (value.queued as number) >= 0; }

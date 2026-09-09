@@ -5,7 +5,7 @@ import { currentVideoForTrack, playRecentTrack, runBridgeCommand, safeVideoSourc
 import type { BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope } from "../shared/contracts";
 import type { SaveState } from "../shared/contracts";
-import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot, isSearchResults } from "../shared/contracts";
+import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot, isDiscoverSnapshot, isSearchResults } from "../shared/contracts";
 
 const nativeInvoke = vi.hoisted(() => vi.fn());
 // convertFileSrc mirrors Tauri's injected macOS runtime implementation
@@ -70,6 +70,10 @@ describe("typed IPC bridge and projection", () => {
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_next", payload: {} } })).toBe(false);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_previous" } })).toBe(true);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "preview_cancel" } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover_enable", payload: { seeds: [{ artist: "Artist", title: "Track" }] } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover_disable" } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover_advance" } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover_enable", payload: { seeds: "x" } } })).toBe(false);
   });
 
   it("validates save command envelopes", () => {
@@ -110,6 +114,12 @@ describe("typed IPC bridge and projection", () => {
     expect(isPreviewSnapshot({ ...snapshot, extra: 1 })).toBe(false);
     expect(isEventEnvelope(event({ type: "preview_snapshot", payload: { snapshot } }))).toBe(true);
     expect(isEventEnvelope(event({ type: "preview_snapshot", payload: { snapshot: { ...snapshot, unavailable: "x" } as unknown as typeof snapshot } }))).toBe(false);
+    const discover = { generation: 2, enabled: true, window: ["Artist-Track"], ready: 1, queued: 1 };
+    expect(isDiscoverSnapshot(discover)).toBe(true);
+    expect(isDiscoverSnapshot({ ...discover, enabled: "yes" })).toBe(false);
+    expect(isDiscoverSnapshot({ ...discover, window: [""] })).toBe(false);
+    expect(isDiscoverSnapshot({ ...discover, extra: 1 })).toBe(false);
+    expect(isEventEnvelope(event({ type: "discover_snapshot", payload: { snapshot: discover } }, 2))).toBe(true);
   });
 
   it("uses the required native backend command payload argument shape", () => {
@@ -252,6 +262,14 @@ describe("typed IPC bridge and projection", () => {
     store.apply({ ...event({ type: "preview_snapshot", payload: { snapshot: { generation: 8, active: false, current: null, window: [], prepared: [], unavailable: ["Artist-Track"], cancelled: true } } }, 8), event_id: "event-p2" });
     expect(store.getSnapshot().preview).toMatchObject({ generation: 8, active: false, cancelled: true, unavailable: ["Artist-Track"] });
     expect(store.getSnapshot().generations.preview).toBe(8);
+  });
+
+  it("projects discover snapshots on their own watermark without disturbing preview", () => {
+    const store = createBackendProjection();
+    store.apply({ ...event({ type: "discover_snapshot", payload: { snapshot: { generation: 3, enabled: true, window: ["A-T"], ready: 0, queued: 0 } } }, 3), event_id: "event-d1" });
+    expect(store.getSnapshot().discover).toMatchObject({ enabled: true, ready: 0 });
+    expect(store.getSnapshot().generations.discover).toBe(3);
+    expect(store.getSnapshot().preview).toBeNull();
   });
 
   it("projects save_state events per recommendation key and keeps the latest state", () => {
