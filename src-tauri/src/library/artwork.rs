@@ -18,6 +18,19 @@ pub const ARTWORK_CACHE_BYTES: usize = 32 * 1024 * 1024;
 /// Single artwork larger than this is rejected to avoid a single 10 MB JPEG
 /// becoming a 14 MB base64 string and spiking the WebView heap.
 pub const MAX_SINGLE_ARTWORK_BYTES: usize = 2 * 1024 * 1024;
+/// Display size served to the webview. Embedded covers are routinely
+/// 1400–3000 px, and every rendered row decodes its own bitmap (a 3000 px
+/// cover is ~36 MB decoded); a 4k-song Home view therefore put gigabytes
+/// into the renderer in seconds. The UI never shows art above ~200 px, so
+/// large JPEG/PNG art is downscaled here — source files are untouched.
+/// Small art is served byte-identical (preserves PNG transparency and
+/// avoids a lossy round-trip that buys nothing).
+#[cfg(target_os = "macos")]
+pub const MAX_ARTWORK_DIM: u32 = 512;
+/// JPEG quality for downscaled art: visually transparent at card sizes,
+/// roughly a quarter the bytes of the encoder default.
+#[cfg(target_os = "macos")]
+const DOWNSCALE_JPEG_QUALITY: u8 = 82;
 
 #[derive(Default)]
 pub struct ArtworkCache {
@@ -84,7 +97,6 @@ pub fn embedded_artwork_data_url(path: &Path) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn id3_artwork_data_url(path: &Path) -> Option<String> {
-    use base64::Engine;
     let tag = id3::Tag::read_from_path(path).ok()?;
     let picture = tag.pictures().next()?;
     if picture.data.is_empty() || picture.data.len() > MAX_SINGLE_ARTWORK_BYTES {
@@ -95,7 +107,27 @@ fn id3_artwork_data_url(path: &Path) -> Option<String> {
     } else {
         guess_mime(&picture.data).to_string()
     };
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&picture.data);
+    picture_data_url(&mime, &picture.data)
+}
+
+/// Shared tail for every container: downscale oversized JPEG/PNG to display
+/// size, then base64 the bytes that remain. Any failure anywhere in the
+/// imaging path falls back to the original bytes (or `None` when even those
+/// are unusable) — a single odd file must never break its row.
+#[cfg(target_os = "macos")]
+fn picture_data_url(declared_mime: &str, data: &[u8]) -> Option<String> {
+    use base64::Engine;
+    let mut mime = declared_mime.to_string();
+    let mut bytes: &[u8] = data;
+    let owned: Vec<u8>;
+    if mime == "image/jpeg" || mime == "image/png" {
+        if let Some(small) = downscaled_jpeg(data) {
+            owned = small;
+            bytes = &owned;
+            mime = "image/jpeg".to_string();
+        }
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     // Base64 inflates ~33%; reject if the final data URL would be huge.
     if encoded.len() > MAX_SINGLE_ARTWORK_BYTES * 4 / 3 + 64 {
         return None;
@@ -103,9 +135,26 @@ fn id3_artwork_data_url(path: &Path) -> Option<String> {
     Some(format!("data:{mime};base64,{encoded}"))
 }
 
+/// Downscales an oversized JPEG/PNG to [`MAX_ARTWORK_DIM`] and re-encodes
+/// as JPEG. Returns `None` when the image is already display-sized (serve
+/// the original) or when decoding fails (serve the original) — the caller
+/// only swaps bytes on `Some`.
+#[cfg(target_os = "macos")]
+fn downscaled_jpeg(data: &[u8]) -> Option<Vec<u8>> {
+    let image = image::load_from_memory(data).ok()?;
+    let (width, height) = (image.width(), image.height());
+    if width == 0 || height == 0 || (width <= MAX_ARTWORK_DIM && height <= MAX_ARTWORK_DIM) {
+        return None;
+    }
+    let small = image.thumbnail(MAX_ARTWORK_DIM, MAX_ARTWORK_DIM);
+    let mut out = Vec::new();
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, DOWNSCALE_JPEG_QUALITY);
+    encoder.encode_image(&small).ok()?;
+    Some(out)
+}
+
 #[cfg(target_os = "macos")]
 fn symphonia_artwork_data_url(path: &Path) -> Option<String> {
-    use base64::Engine;
     use symphonia::core::formats::FormatOptions;
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
@@ -132,15 +181,11 @@ fn symphonia_artwork_data_url(path: &Path) -> Option<String> {
         return None;
     }
     let mime = if visual.media_type.starts_with("image/") {
-        visual.media_type.as_str()
+        visual.media_type.to_string()
     } else {
-        guess_mime(data)
+        guess_mime(data).to_string()
     };
-    let encoded = base64::engine::general_purpose::STANDARD.encode(data);
-    if encoded.len() > MAX_SINGLE_ARTWORK_BYTES * 4 / 3 + 64 {
-        return None;
-    }
-    Some(format!("data:{mime};base64,{encoded}"))
+    picture_data_url(&mime, data)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -176,5 +221,65 @@ impl TrackArtwork {
             cache.insert(track_id.to_string(), url.clone());
         }
         Some(url)
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod artwork_tests {
+    use super::*;
+    use base64::Engine;
+    use image::{ImageBuffer, Rgb};
+
+    fn jpeg_bytes(width: u32, height: u32) -> Vec<u8> {
+        let frame: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(width, height, |x, y| {
+            Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
+        });
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90)
+            .encode_image(&frame)
+            .expect("fixture encodes");
+        out
+    }
+
+    fn served_dims(url: &str) -> (u32, u32) {
+        let payload = url.split_once(",").expect("data URL").1;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .expect("valid base64");
+        let image = image::load_from_memory(&raw).expect("served bytes decode");
+        (image.width(), image.height())
+    }
+
+    #[test]
+    fn oversized_covers_serve_at_display_size_as_jpeg() {
+        let big = jpeg_bytes(1600, 1200);
+        let url = picture_data_url("image/jpeg", &big).expect("large art serves");
+        assert!(url.starts_with("data:image/jpeg;base64,"));
+        let (width, height) = served_dims(&url);
+        assert!(width <= MAX_ARTWORK_DIM && height <= MAX_ARTWORK_DIM, "{width}x{height}");
+        assert_eq!((width, height), (512, 384));
+        assert!(url.len() < base64::engine::general_purpose::STANDARD.encode(&big).len());
+    }
+
+    #[test]
+    fn small_art_serves_byte_identical_without_reencode() {
+        let small = jpeg_bytes(200, 100);
+        let url = picture_data_url("image/jpeg", &small).expect("small art serves");
+        let payload = url.split_once(",").expect("data URL").1;
+        assert_eq!(
+            payload,
+            base64::engine::general_purpose::STANDARD.encode(&small),
+            "display-sized art must not take a lossy round-trip"
+        );
+    }
+
+    #[test]
+    fn undecodable_bytes_pass_through_instead_of_breaking_the_row() {
+        // Not decodable as JPEG/PNG: served as-is (existing behavior), since
+        // the browser may still render it. Emptiness is guarded by the
+        // container callers, not here.
+        let junk = vec![0xFF, 0xD8, 0x00, 0x01, 0x02, 0x03];
+        let url = picture_data_url("image/jpeg", &junk).expect("fallback serves");
+        assert!(url.starts_with("data:image/jpeg;base64,"));
     }
 }

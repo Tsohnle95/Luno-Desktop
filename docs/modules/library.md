@@ -63,8 +63,13 @@ transfer manifests (`docs/modules/contracts.md`).
   must fail rather than guess.
 - Mutations are safe-root-contained and atomic; downloads promote only
   inside the configured library root and trigger a coalesced rescan.
-- Artwork is lazy and bounded on both sides; the frontend LRU must retry
-  evicted entries.
+- Artwork is lazy and bounded on both sides; the frontend LRU evicts by
+  count and byte budget and retries evicted entries lazily on the next
+  visible pass — never eagerly from the eviction event (fetch-evict-refetch
+  loop, 2026-09-09).
+- Served artwork is downscaled to a 512 px display size (`MAX_ARTWORK_DIM`):
+  embedded covers are routinely far larger than anything the UI shows, and
+  serving them raw put gigabytes of decoded bitmaps into the renderer.
 - `com.ty.luno` identity, support/config paths, migration markers,
   favorites, settings, and queue semantics are stable. Deliberate
   compatibility changes need their own migration design + tests.

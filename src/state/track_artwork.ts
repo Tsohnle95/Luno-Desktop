@@ -9,18 +9,28 @@ export type ArtworkFetcher = (trackId: string) => Promise<string | null>;
  * The fetcher is read from a ref, so a new inline closure per render does not
  * re-run the effect.
  *
- * The module cache is BOUNDED: every value is a full data-URL string (often
- * hundreds of kilobytes), and libraries reach thousands of rows. An unbounded
- * Map here grew past WebKit's memory limits on long scroll sessions and killed
- * the web content process (black window). Entries are evicted least-recently
- * used beyond CAP, and oversized payloads are served once without caching.
+ * The module cache is BOUNDED by both entry count (CAP) and total payload
+ * bytes (MAX_CACHE_BYTES): every value is a full data-URL string, and
+ * libraries reach thousands of rows. An unbounded Map here grew past
+ * WebKit's memory limits on long scroll sessions and killed the web content
+ * process (black window). Oversized payloads are served once without caching.
+ *
+ * Eviction is LAZY by design: when the LRU drops a data URL, components only
+ * forget the id in their per-instance "requested" set. Nothing re-requests
+ * until the id becomes visible again AND the effect re-runs (scroll, nav, or
+ * a new id list). An earlier version re-requested evicted ids immediately,
+ * which looped forever once the mounted working set exceeded the cap — every
+ * fetch evicted another visible id, which instantly re-fetched, churning
+ * gigabytes through the JS heap in the background (2026-09-09).
  */
-const CAP = 80;
+const CAP = 240;
+const MAX_CACHE_BYTES = 24 * 1024 * 1024;
 const MAX_CACHED_BYTES = 1_000_000;
 const MAX_CONCURRENT = 6;
-const resolvedCache = new Map<string, string | null>();
+const resolvedCache = new Map<string, { url: string | null; bytes: number }>();
 const inFlight = new Map<string, Promise<string | null>>();
 let activeCount = 0;
+let cachedBytes = 0;
 const pendingQueue: Array<{ id: string; fetcher: ArtworkFetcher }> = [];
 
 /**
@@ -44,21 +54,29 @@ const listeners = new Set<Listener>();
 
 function remember(id: string, url: string | null): void {
   // Delete-then-set keeps insertion order reflecting recency for LRU eviction.
+  const previous = resolvedCache.get(id);
+  if (previous) cachedBytes -= previous.bytes;
+  const bytes = url ? url.length : 0;
   resolvedCache.delete(id);
-  resolvedCache.set(id, url);
+  resolvedCache.set(id, { url, bytes });
+  cachedBytes += bytes;
   if (url) {
     const urls = { [id]: url };
     for (const listener of listeners) listener({ type: "resolved", urls });
   }
-  while (resolvedCache.size > CAP) {
+  while (resolvedCache.size > CAP || cachedBytes > MAX_CACHE_BYTES) {
     const oldest = resolvedCache.keys().next().value;
     if (oldest === undefined) break;
     // Only evicting a VALUE matters — a cached null means "no artwork,
     // never retry", and re-requesting it is exactly what the no-art
     // fast-path exists to prevent. Evicting a data URL means a later
     // scroll-back must be allowed to re-extract it, so forget the id in
-    // every component's requested set.
-    const wasValue = resolvedCache.get(oldest) !== null;
+    // every component's requested set. The component re-requests LAZILY on
+    // its next visible pass — never here, or the eviction itself becomes a
+    // fetch that evicts the next id (fetch-evict-refetch loop, 2026-09-09).
+    const evicted = resolvedCache.get(oldest);
+    const wasValue = evicted?.url !== null;
+    cachedBytes -= evicted?.bytes ?? 0;
     resolvedCache.delete(oldest);
     if (wasValue) {
       for (const listener of listeners) listener({ type: "evicted", id: oldest });
@@ -88,7 +106,7 @@ function capTrimmed(next: Record<string, string>): Record<string, string> {
  */
 export function needsArtworkRequest(
   requested: ReadonlySet<string>,
-  resolved: ReadonlyMap<string, string | null>,
+  resolved: ReadonlyMap<string, { url: string | null }>,
   inFlightIds: ReadonlySet<string>,
   id: string,
 ): boolean {
@@ -151,7 +169,7 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
       }
       // Also pull in any newly cached visible ids
       for (const id of ids) {
-        const cached = resolvedCache.get(id);
+        const cached = resolvedCache.get(id)?.url;
         if (cached && !prev[id]) {
           if (!next) next = { ...prev };
           next[id] = cached;
@@ -162,7 +180,7 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
 
     const inFlightIds = new Set(inFlight.keys());
     for (const id of ids) {
-      const cached = resolvedCache.get(id);
+      const cached = resolvedCache.get(id)?.url;
       if (cached !== undefined) {
         if (cached) {
           setArt((prev) => {
@@ -197,19 +215,11 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
     // requested marker would otherwise keep those rows blank forever).
     const onCacheEvent = (event: { type: "resolved"; urls: Record<string, string> } | { type: "evicted"; id: string }) => {
       if (event.type === "evicted") {
+        // LAZY retry only: forget the per-instance marker so a later visible
+        // pass may re-request. Never fetch from here — an eviction-triggered
+        // fetch evicts the next id and loops forever once the mounted working
+        // set exceeds the cap (2026-09-09: gigabytes of heap churn).
         if (requested.current.has(event.id)) requested.current.delete(event.id);
-        // Re-request immediately when the evicted id is still visible. The
-        // old code only unmarked it and waited for the next idsKey change —
-        // scrolled-back queue/library rows stayed blank for the session.
-        if (idsRef.current.includes(event.id) && !resolvedCache.has(event.id) && !inFlight.has(event.id)) {
-          const fetchArt = fetcherRef.current;
-          if (fetchArt) {
-            requested.current.add(event.id);
-            if (idsRef.current.length === 1) pendingQueue.unshift({ id: event.id, fetcher: fetchArt });
-            else pendingQueue.push({ id: event.id, fetcher: fetchArt });
-            scheduleNext();
-          }
-        }
         return;
       }
       const currentIds = idsRef.current;
