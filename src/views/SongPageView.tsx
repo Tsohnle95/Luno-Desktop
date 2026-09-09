@@ -90,7 +90,9 @@ export function SongPageView({ track = null, recommendations = [], recommendatio
     root.addEventListener("wheel", onWheel, { passive: false });
     return () => root.removeEventListener("wheel", onWheel);
   }, []);
-  const favoriteLabel = displayedTrack?.favorite ? "Remove from favorites" : "Add to favorites";
+  // Favorites toggle lives in the footer PlayerBar; the song page keeps only
+  // title/artist here (see onFavoriteToggle prop retained for API compat).
+  void onFavoriteToggle;
   return <div ref={pageRef} className="luno-song-page" data-testid="song-page">
     <style>{songPageStyles}</style>
     <div className="luno-song-page-backdrop" aria-hidden="true" style={displayedTrack?.artwork_url ? { backgroundImage: `url(${displayedTrack.artwork_url})` } : undefined} />
@@ -98,7 +100,7 @@ export function SongPageView({ track = null, recommendations = [], recommendatio
     <div className="luno-song-page-scroll">
       <main className="luno-song-page-content">
         <div className="luno-song-media-slot" data-video-slot="song-page"><VideoStage {...video} status={videoConnection === "loading" ? "loading" : videoConnection === "disconnected" ? "not-checked" : video?.status} artworkUrl={video?.artworkUrl ?? displayedTrack?.artwork_url} artworkAlt={displayedTrack ? `${displayedTrack.title} artwork` : "Artwork unavailable"} videoModeEnabled={videoMode} onVideoModeChange={onVideoModeChange} /><span className="luno-video-connection" role="status">{videoConnection === "loading" ? "Connecting video preview..." : videoConnection === "disconnected" ? "Video preview unavailable; showing artwork." : null}</span>{onLoadVideo && backendAvailable && videoConnection === "connected" && videoMode && !video?.src && (video?.status === "unavailable" || video?.status === "error" || video?.status === "fallback") && <button type="button" className="luno-video-load" onClick={onLoadVideo}>{video?.status === "unavailable" ? "Video unavailable — retry?" : "Retry music video"}</button>}</div>
-        <div className="luno-song-meta">{displayedTrack ? <><h1>{displayedTrack.title}</h1><p>{displayedTrack.artist || "Unknown artist"}</p><button type="button" aria-label={favoriteLabel} aria-describedby={!backendAvailable ? "song-page-favorite-help" : undefined} disabled={!backendAvailable} onClick={() => backendAvailable && onFavoriteToggle?.(displayedTrack)}>{displayedTrack.favorite ? "★" : "☆"} {displayedTrack.favorite ? "Favorited" : "Add to Favorites"}</button>{!backendAvailable && <p id="song-page-favorite-help" role="status">Favorites are unavailable while the backend is disconnected.</p>}</> : <><h1>Nothing playing</h1><p>Play a song to open its page.</p></>}</div>
+        <div className="luno-song-meta">{displayedTrack ? <><h1>{displayedTrack.title}</h1><p>{displayedTrack.artist || "Unknown artist"}</p></> : <><h1>Nothing playing</h1><p>Play a song to open its page.</p></>}</div>
         <Recommendations seed={displayedTrack} items={recommendations} state={recommendationState} error={recommendationError} loadMoreError={recommendationLoadMoreError} exhausted={recommendationsExhausted} loadingMore={recommendationsLoadingMore} hasApiKey={hasApiKey} sessionActive={sessionActive} discoverMode={discoverMode} onRetry={onRetryRecommendations} onRefresh={onRefreshRecommendations} onLoadMore={onLoadMoreRecommendations} onPreview={onPreviewRecommendation} onSave={onSaveRecommendation} preview={preview} saved={saved} playlists={playlists} jobs={jobs} backendAvailable={backendAvailable} onCreatePlaylist={onCreatePlaylist} />
       </main>
     </div>

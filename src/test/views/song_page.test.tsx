@@ -13,7 +13,8 @@ export const songPageChecks = {
   pageSize: 25,
   cap: 1000,
   seedIdentity: track.id === "seed" && recommendation.id !== track.id,
-  favoriteUnavailable: renderToStaticMarkup(<SongPageView track={track} backendAvailable={false} />).includes('disabled=""') && renderToStaticMarkup(<SongPageView track={track} backendAvailable={false} />).includes("Favorites are unavailable"),
+  // Favorites toggle lives in the footer PlayerBar, not the song page body.
+  favoriteUnavailable: !renderToStaticMarkup(<SongPageView track={track} backendAvailable={false} />).includes("Add to Favorites") && !renderToStaticMarkup(<SongPageView track={track} backendAvailable={false} />).includes("song-page-favorite-help"),
 };
 
 if (!songPageChecks.page || songPageChecks.pageSize !== 25 || songPageChecks.cap !== 1000 || !songPageChecks.seedIdentity || !songPageChecks.favoriteUnavailable) throw new Error("Song page contract failed");

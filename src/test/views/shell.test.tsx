@@ -41,7 +41,7 @@ describe("Gate 6 player bar", () => {
     const html = renderToStaticMarkup(<Shell backendProjection={projection} backendAvailable={false} />);
     expect(html).toContain('aria-label="Primary navigation"');
     expect(html).toContain('aria-label="Home" aria-current="page"');
-    expect(html).toContain("What do you want to play?");
+    expect(html).toContain("Search a song");
     // All other destinations live inside the settings rail — no icons in the bar.
     expect(html).not.toContain('title="Discover"');
     expect(html).not.toContain('title="Downloader"');
