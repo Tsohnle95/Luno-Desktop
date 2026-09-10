@@ -152,3 +152,75 @@ mod progress_tests {
         assert_eq!(parse_download_progress("LUNO_PROGRESS=125%"), Some(1.0));
     }
 }
+
+#[cfg(all(test, unix))]
+mod helper_quoting_tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    /// Regression: the bundled `luno-download-helper` expanded its
+    /// `--ffmpeg-location` flag UNQUOTED, so any bundle path containing a
+    /// space (notably `/Applications/Luno Desktop.app/…`) split the flag
+    /// into a truncated directory plus a phantom source URL. yt-dlp then ran
+    /// without ffmpeg: every preview/download postprocessing step failed
+    /// with exit 1, surfacing as "preview download helper failed" and
+    /// marking every recommendation unavailable (2026-09-09).
+    ///
+    /// This test runs the REAL shipped helper script — not a fixture copy —
+    /// from a directory whose name contains a space, against a stub yt-dlp
+    /// that records its argv. The old script passed a split flag and a
+    /// phantom URL; the fixed script must pass exactly one intact
+    /// `--ffmpeg-location <dir>` pair and the real query as the final arg.
+    #[test]
+    fn helper_passes_ffmpeg_location_intact_from_space_containing_paths() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let shipped = manifest_dir.join("resources").join("bin").join("luno-download-helper");
+        assert!(shipped.is_file(), "shipped helper script must exist: {}", shipped.display());
+
+        let sandbox = std::env::temp_dir().join(format!("luno space probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sandbox);
+        std::fs::create_dir_all(&sandbox).unwrap();
+        for name in ["ffmpeg", "yt-dlp", "luno-download-helper"] {
+            let path = sandbox.join(name);
+            if name == "luno-download-helper" {
+                std::fs::copy(&shipped, &path).unwrap();
+            } else if name == "yt-dlp" {
+                std::fs::write(
+                    &path,
+                    "#!/bin/sh\nLOG=\"${YTDLP_ARG_LOG:?}\"\nOUT=\"\"\nPREV=\"\"\nfor a in \"$@\"; do\n  printf '%s\\n' \"$a\" >> \"$LOG\"\n  if [ \"$PREV\" = \"-o\" ]; then OUT=\"$a\"; fi\n  PREV=\"$a\"\n  if [ \"$PREV\" = \"--ffmpeg-location\" ]; then :; fi\ndone\nFILE=$(printf '%s' \"$OUT\" | sed 's/%(ext)s/m4a/')\nprintf 'ID3fake-bytes' > \"$FILE\"\nexit 0\n",
+                ).unwrap();
+            } else {
+                std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            }
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions).unwrap();
+        }
+        let log = sandbox.join("argv.log");
+        let target = sandbox.join("out.m4a");
+        let status = std::process::Command::new(sandbox.join("luno-download-helper"))
+            .arg(&target)
+            .env("LUNO_DOWNLOAD_SOURCE", "ytsearch1:spaceboy probe")
+            .env("YTDLP_ARG_LOG", &log)
+            .status()
+            .expect("helper must run");
+        assert!(status.success(), "helper must succeed from a space-containing dir");
+        assert!(target.is_file(), "helper must produce the target file");
+
+        let argv: Vec<String> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let flag_positions: Vec<usize> = argv.iter().enumerate()
+            .filter(|(_, arg)| *arg == "--ffmpeg-location")
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(flag_positions.len(), 1, "exactly one --ffmpeg-location flag: {argv:?}");
+        let dir = &argv[flag_positions[0] + 1];
+        assert_eq!(dir, &sandbox.to_string_lossy(), "--ffmpeg-location value must be the intact dir: {argv:?}");
+        assert_eq!(argv.last().map(String::as_str), Some("ytsearch1:spaceboy probe"), "final arg must be the real query: {argv:?}");
+        assert!(!argv.iter().any(|arg| arg.contains("Desktop.app") && *arg != *dir), "no phantom split-path URL may reach yt-dlp: {argv:?}");
+        let _ = std::fs::remove_dir_all(&sandbox);
+    }
+}

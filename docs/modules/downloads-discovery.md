@@ -60,6 +60,10 @@ What it does not own: library snapshots and promotion targets
 - Download helper invocations receive the source (`scsearch1:`-style or
   URL); the bundled helper resolves via `resolve_bundle_helper`
   (resource dir → manifest dir). Retry reuses the stored job.
+- The helper builds its yt-dlp argv without word-splitting so bundle paths
+  containing spaces (e.g. `/Applications/Luno Desktop.app/…`) survive as a
+  single `--ffmpeg-location` value; a split flag once starved yt-dlp of
+  ffmpeg, failing every preview/download postprocess step (2026-09-09).
 - Discovery metadata is validated before preview/download work; preview
   assets stay temporary and hidden from the library until an explicit
   save promotes them.

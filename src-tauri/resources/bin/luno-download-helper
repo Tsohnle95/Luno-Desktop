@@ -12,22 +12,28 @@ if [ -z "$SOURCE" ]; then
   echo "download helper: no download source (URL or search query) was provided" >&2
   exit 2
 fi
-FF_LOCATION_FLAG=""
+if [ -x "$HERE/yt-dlp" ]; then
+  DOWNLOADER="$HERE/yt-dlp"
+elif command -v yt-dlp >/dev/null 2>&1; then
+  DOWNLOADER="yt-dlp"
+else
+  echo "download helper: yt-dlp is not available" >&2
+  exit 1
+fi
+# Accumulate the argument vector with `set --` so every value stays exactly
+# one word. `$FF_LOCATION_FLAG` used to expand UNQUOTED here, which split any
+# bundle path containing spaces ("/Applications/Luno Desktop.app/...") into a
+# truncated --ffmpeg-location plus a phantom source URL — yt-dlp then ran
+# without ffmpeg and every preview/download postprocessing step failed with
+# exit 1 ("preview download helper failed", 2026-09-09).
+set -- --no-playlist --newline --progress-delta 0.25 --progress-template 'download:LUNO_PROGRESS=%(progress._percent_str)s' -f 'bestaudio/best' -x --audio-format m4a --audio-quality 0 --embed-thumbnail --embed-metadata --convert-thumbnails jpg --ppa 'ExtractAudio+ffmpeg_o:-ar 44100 -ac 2 -af loudnorm=I=-14:LRA=11:TP=-1.5'
 if [ -x "$HERE/ffmpeg" ]; then
-  FF_LOCATION_FLAG="--ffmpeg-location $HERE"
+  set -- "$@" --ffmpeg-location "$HERE"
 fi
 TMP="$TARGET.part"
 rm -f "$TMP".*
-if [ -x "$HERE/yt-dlp" ]; then
-  "$HERE/yt-dlp" --no-playlist --newline --progress-delta 0.25 --progress-template 'download:LUNO_PROGRESS=%(progress._percent_str)s' -f 'bestaudio/best' -x --audio-format m4a --audio-quality 0 --embed-thumbnail --embed-metadata --convert-thumbnails jpg --ppa 'ExtractAudio+ffmpeg_o:-ar 44100 -ac 2 -af loudnorm=I=-14:LRA=11:TP=-1.5' $FF_LOCATION_FLAG -o "$TMP.%(ext)s" -- "$SOURCE"
-else
-  if command -v yt-dlp >/dev/null 2>&1; then
-    yt-dlp --no-playlist --newline --progress-delta 0.25 --progress-template 'download:LUNO_PROGRESS=%(progress._percent_str)s' -f 'bestaudio/best' -x --audio-format m4a --audio-quality 0 --embed-thumbnail --embed-metadata --convert-thumbnails jpg --ppa 'ExtractAudio+ffmpeg_o:-ar 44100 -ac 2 -af loudnorm=I=-14:LRA=11:TP=-1.5' $FF_LOCATION_FLAG -o "$TMP.%(ext)s" -- "$SOURCE"
-  else
-    echo "download helper: yt-dlp is not available" >&2
-    exit 1
-  fi
-fi
+set -- "$@" -o "$TMP.%(ext)s" -- "$SOURCE"
+"$DOWNLOADER" "$@"
 status=$?
 if [ "$status" -ne 0 ]; then
   rm -f "$TMP".*
