@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { Track } from "../../shared/contracts";
 import { Recommendations, type Recommendation } from "../../components/Recommendations";
 import { VideoStage } from "../../components/VideoStage";
+import { DiscoverView } from "../../views/DiscoverView";
 import { SongPageView, VideoModePill } from "../../views/SongPageView";
 
 const track: Track = { id: "seed", path: null, title: "Seed", artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null };
@@ -117,5 +118,49 @@ describe("Discovery mode toggle", () => {
   it("hides the toggle when no handler is wired", () => {
     const html = renderToStaticMarkup(<SongPageView track={track} backendAvailable />);
     expect(html).not.toContain("Discovery mode:");
+  });
+});
+
+describe("Artistless seed honesty", () => {
+  // Regression: files without "Artist - Title" metadata (e.g. "[ spaceboy ]",
+  // which has no separator and no ID3 artist tag) publish `artist: None`, so
+  // the Last.fm seed — which requires an artist — is null. Every downstream
+  // surface used to degrade silently or misleadingly ("Play a song to see
+  // recommendations" while one was playing; a dead disabled toggle), which
+  // read as "discovery is completely broken".
+  const artistless: Track = { id: "spaceboy", path: null, title: "[ spaceboy ]", artist: null, album: null, duration_ms: null, artwork_url: null, favorite: true, provider: null };
+
+  it("explains the missing artist instead of asking the user to play a song", () => {
+    const html = renderToStaticMarkup(
+      <Recommendations seed={artistless} items={[]} state="idle" />
+    );
+    expect(html).toContain("has no artist info");
+    expect(html).not.toContain("Play a song to see recommendations");
+  });
+
+  it("keeps the refresh control disabled when there is no artist to look up", () => {
+    const html = renderToStaticMarkup(
+      <Recommendations seed={artistless} items={[]} state="idle" onRefresh={() => undefined} />
+    );
+    expect(html).toContain('aria-label="Refresh recommendations"');
+    expect(html).toContain("disabled");
+  });
+
+  it("still invites a genuinely trackless state to play something", () => {
+    const html = renderToStaticMarkup(<Recommendations seed={null} items={[]} state="idle" />);
+    expect(html).toContain("Play a song to see recommendations");
+  });
+
+  it("names the artistless track on the Discover route instead of asking for a seed", () => {
+    const base = {
+      recommendations: [], session: null, saved: {}, playlists: [], loading: false, error: null,
+      onRefresh: () => undefined, onTap: () => undefined, onNext: () => undefined,
+      onPrevious: () => undefined, onCancel: () => undefined, onSave: () => undefined,
+    };
+    const honest = renderToStaticMarkup(<DiscoverView seed={null} artistMissingTitle="[ spaceboy ]" {...base} />);
+    expect(honest).toContain("has no artist info");
+    expect(honest).not.toContain("Select or play a track to seed recommendations.");
+    const trackless = renderToStaticMarkup(<DiscoverView seed={null} {...base} />);
+    expect(trackless).toContain("Select or play a track to seed recommendations.");
   });
 });

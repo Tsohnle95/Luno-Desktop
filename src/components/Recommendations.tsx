@@ -74,13 +74,18 @@ export function Recommendations({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set());
   const [pickerItem, setPickerItem] = useState<Recommendation | null>(null);
-  const canRefresh = Boolean(seed && hasApiKey && !sessionActive);
+  // Refresh re-runs the Last.fm lookup, which requires an artist: without one
+  // there is nothing to look up (the seed file carries no "Artist - Title"
+  // metadata), so the button stays disabled instead of spinning into idle.
+  const canRefresh = Boolean(seed?.artist && hasApiKey && !sessionActive);
 
   const stateMessage = !seed
     ? "Play a song to see recommendations"
-    : !hasApiKey
-      ? "Add a Last.fm API key in Settings to see recommendations"
-      : state === "loading"
+    : !seed.artist
+      ? `“${seed.title}” has no artist info — similar tracks need "Artist - Title" in the filename.`
+      : !hasApiKey
+        ? "Add a Last.fm API key in Settings to see recommendations"
+        : state === "loading"
         ? "Finding similar songs..."
         : state === "error"
           ? error || "Could not load recommendations"

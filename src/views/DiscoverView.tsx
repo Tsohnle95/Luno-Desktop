@@ -2,8 +2,12 @@ import { useState } from "react";
 import type { Playlist, PreviewSnapshot, Recommendation, SaveState } from "../shared/contracts";
 import { previewKey } from "../shared/contracts";
 
-export function DiscoverView({ seed, recommendations, session, saved, playlists, loading, error, onRefresh, onTap, onNext, onPrevious, onCancel, onSave }: {
+export function DiscoverView({ seed, artistMissingTitle = null, recommendations, session, saved, playlists, loading, error, onRefresh, onTap, onNext, onPrevious, onCancel, onSave }: {
   seed: { artist: string; title: string } | null;
+  /** Set when a track is playing but its file carries no artist metadata, so
+   * the Last.fm seed (which requires an artist) cannot be built. Renders an
+   * honest reason instead of "select or play a track" while one is playing. */
+  artistMissingTitle?: string | null;
   recommendations: Recommendation[];
   session: PreviewSnapshot | null;
   saved: Record<string, SaveState>;
@@ -42,7 +46,7 @@ export function DiscoverView({ seed, recommendations, session, saved, playlists,
   };
   return <section aria-label="Discover" className="luno-discover">
     <h1>Discover</h1>
-    <p style={{ color: "var(--luno-text-2)" }}>{seed ? `Recommendations seeded from "${seed.title}" by ${seed.artist}.` : "Select or play a track to seed recommendations."}</p>
+    <p style={{ color: "var(--luno-text-2)" }}>{seed ? `Recommendations seeded from "${seed.title}" by ${seed.artist}.` : artistMissingTitle ? `“${artistMissingTitle}” has no artist info — similar tracks need "Artist - Title" in the filename.` : "Select or play a track to seed recommendations."}</p>
     {loading ? <p>Loading recommendations…</p> : null}
     {!loading && error ? <p role="alert" style={{ color: "var(--luno-danger, #E5484D)" }}>{error}</p> : null}
     {!loading && !error && recommendations.length === 0 && !seed ? <p style={{ color: "var(--luno-text-2)" }}>No recommendations yet.</p> : null}
