@@ -6,6 +6,52 @@ import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
 
 export interface PopularPlaylist { playlist: Playlist; plays: number }
 
+/** Inputs for the home-page artwork budget (one list per visible section). */
+export interface HomeArtworkInput {
+  madeForYou: Track[];
+  favorites: Track[];
+  recentTracks: Track[];
+  popularTracks: Track[];
+  popularPlaylists: PopularPlaylist[];
+  recentlyDownloaded: Track[];
+}
+
+/**
+ * Fair-share artwork id selection for the home dashboard. Every section gets
+ * a bounded share of the lazy-fetch budget instead of first-section-wins: a
+ * previous global first-40-wins cap let a full Made-for-you row (up to 50
+ * tracks) consume the whole budget, so Favorites / Recently played / Most
+ * popular / Recently downloaded never requested artwork and rendered blank
+ * even for files with embedded covers (2026-09-09). Duplicates across
+ * sections are fetched once via the first section that claims them.
+ */
+export const HOME_ARTWORK_SECTION_CAP = 30;
+export const HOME_ARTWORK_TOTAL_CAP = 180;
+export function homeArtworkIds(input: HomeArtworkInput): string[] {
+  const sections: string[][] = [
+    input.madeForYou.map((track) => track.id),
+    input.favorites.map((track) => track.id),
+    input.recentTracks.map((track) => track.id),
+    input.popularTracks.map((track) => track.id),
+    input.popularPlaylists.map((entry) => entry.playlist.ordered_track_ids[0]).filter((id): id is string => !!id),
+    input.recentlyDownloaded.map((track) => track.id),
+  ];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const section of sections) {
+    let taken = 0;
+    for (const id of section) {
+      if (taken >= HOME_ARTWORK_SECTION_CAP || out.length >= HOME_ARTWORK_TOTAL_CAP) break;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+      taken += 1;
+    }
+    if (out.length >= HOME_ARTWORK_TOTAL_CAP) break;
+  }
+  return out;
+}
+
 export interface HomeViewProps {
   allTracksCount: number;
   madeForYou: Track[];
@@ -37,20 +83,13 @@ function greeting() {
  * Most popular playlists → Recently downloaded.
  */
 export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, popularTracks, popularPlaylists, recentlyDownloaded, onPlayTrack, onOpenLibrary, onOpenRecent, onOpenDownloader, onOpenPlaylist, onArtwork, backendAvailable = true }: HomeViewProps) {
-  // One lazy artwork pass for every card on the page. Deduplicate and cap to
-  // 80 to avoid fetching 250+ artworks at once (each 1–2 MB data URL would be
-  // 250–500 MB). The hook's concurrency limiter (6) further smooths the burst.
-  const artworkIds = (() => {
-    const ids = [
-      ...madeForYou, ...favorites, ...recentTracks, ...popularTracks, ...recentlyDownloaded,
-    ].map((track) => track.id).concat(
-      popularPlaylists.map((entry) => entry.playlist.ordered_track_ids[0]).filter((id): id is string => !!id),
-    );
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const id of ids) if (!seen.has(id)) { seen.add(id); out.push(id); if (out.length >= 40) break; }
-    return out;
-  })();
+  // One lazy artwork pass for every card on the page, budgeted FAIRLY
+  // across sections: previously the first 40 deduplicated ids (Made-for-you
+  // order) consumed the whole budget, so Favorites / Recently played / Most
+  // popular / Recently downloaded never requested artwork and rendered blank
+  // even for files with embedded covers. The hook's concurrency limiter (6)
+  // further smooths the burst.
+  const artworkIds = homeArtworkIds({ madeForYou, favorites, recentTracks, popularTracks, popularPlaylists, recentlyDownloaded });
   const artwork = useTrackArtwork(artworkIds, onArtwork);
   const playFrom = (list: Track[]) => (track: Track) => { if (backendAvailable && onPlayTrack) onPlayTrack(track, list); };
 

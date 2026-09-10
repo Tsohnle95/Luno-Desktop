@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { needsArtworkRequest } from "../state/track_artwork";
+import type { Track } from "../shared/contracts";
+import { HOME_ARTWORK_SECTION_CAP, HOME_ARTWORK_TOTAL_CAP, homeArtworkIds } from "../views/HomeView";
 
 type Resolved = Map<string, { url: string | null }>;
 
@@ -83,5 +85,60 @@ describe("artwork cache eviction retry", () => {
     // ...and the eviction event removes it from the requested set.
     requested.delete("t1");
     expect(needsArtworkRequest(requested, resolved, noFlight(), "t1")).toBe(true);
+  });
+});
+
+const homeTrack = (id: string): Track => ({ id, path: null, title: id, artist: null, album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null });
+const manyTracks = (prefix: string, count: number): Track[] => Array.from({ length: count }, (_, index) => homeTrack(`${prefix}-${index}`));
+
+/**
+ * Regression: Favorite songs / Recently played / Most popular rendered blank
+ * even for files with embedded covers. The home dashboard's artwork budget
+ * was first-40-ids-wins in Made-for-you order, so a full Made-for-you row
+ * (up to 50 tracks) consumed the entire lazy-fetch budget and the lower
+ * sections never requested artwork (2026-09-09). Library tracks carry
+ * `artwork_url: None` by snapshot design — unrequested means blank.
+ */
+describe("home artwork fair-share budget", () => {
+  it("gives every non-empty section a share of the budget", () => {
+    const ids = homeArtworkIds({
+      madeForYou: manyTracks("mfy", 50),
+      favorites: [homeTrack("fav-spaceboy")],
+      recentTracks: [homeTrack("rec-1")],
+      popularTracks: [homeTrack("pop-1")],
+      popularPlaylists: [],
+      recentlyDownloaded: [homeTrack("dl-1")],
+    });
+    expect(ids).toContain("fav-spaceboy");
+    expect(ids).toContain("rec-1");
+    expect(ids).toContain("pop-1");
+    expect(ids).toContain("dl-1");
+  });
+
+  it("caps oversized sections and the total budget, fetching duplicates once", () => {
+    const shared = homeTrack("shared");
+    const ids = homeArtworkIds({
+      madeForYou: [shared, ...manyTracks("mfy", 100)],
+      favorites: [shared, ...manyTracks("fav", 100)],
+      recentTracks: manyTracks("rec", 100),
+      popularTracks: manyTracks("pop", 100),
+      popularPlaylists: [],
+      recentlyDownloaded: manyTracks("dl", 100),
+    });
+    expect(ids.length).toBeLessThanOrEqual(HOME_ARTWORK_TOTAL_CAP);
+    expect(ids.filter((id) => id.startsWith("mfy-")).length).toBeLessThanOrEqual(HOME_ARTWORK_SECTION_CAP);
+    expect(ids.filter((id) => id === "shared").length).toBe(1);
+  });
+
+  it("covers playlist-cover ids from the first track of popular playlists", () => {
+    const ids = homeArtworkIds({
+      madeForYou: [],
+      favorites: [],
+      recentTracks: [],
+      popularTracks: [],
+      popularPlaylists: [{ playlist: { id: "p1", name: "P", path: null, url: null, ordered_track_ids: ["cover-1"] }, plays: 3 }],
+      recentlyDownloaded: [],
+    });
+    expect(ids).toContain("cover-1");
   });
 });
