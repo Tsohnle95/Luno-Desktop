@@ -38,10 +38,13 @@ closed if they are absent or mismatched.
 ## App icon
 
 The master artwork is `src-tauri/icons/app-icon.png` (1024×1024). Generate the
-bundle set with `npx tauri icon src-tauri/icons/app-icon.png`, which writes the
+bundle set with `npx tauri icon src-tauri/icons/app-icon.png`. It writes the
 32/128/128@2x PNGs, `icon.icns`, `icon.ico`, and a 512×512 `icon.png`
-derivative; the generated set is listed under `bundle.icon` in
-`src-tauri/tauri.conf.json`. `icon.png` is a generated derivative, not the
+derivative; `bundle.icon` in `src-tauri/tauri.conf.json` lists the subset the
+bundle uses. The generator also emits extra platform artifacts (64×64, the
+Windows `Square*`/`StoreLogo` PNGs, and `android/`+`ios/` trees) into
+`src-tauri/icons/`; this macOS-only repo commits only the entries above, so
+prune the extras before committing. `icon.png` is a generated derivative, not the
 master — always regenerate from `app-icon.png`, never from `icon.png`, or the
 iconset silently loses resolution. Tauri's default is an empty icon list, which
 bundles no icon at all (macOS shows its generic app icon); `bundle.icon` must

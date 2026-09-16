@@ -3416,11 +3416,24 @@ impl AppState {
             // a new song deterministic.
             return self.discover_snapshot_value();
         }
-        // A recommendation may be sounding. Stop it BEFORE teardown deletes the
-        // staged file, then restore + resume the captured library seed so the
-        // picture/queue and the audio agree when the toggle goes off.
-        let was_playing = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner())
-            == crate::contracts::types::PlaybackStatus::Playing;
+        // Only a RECOMMENDATION must be torn down. If the user never left the
+        // seed, the sounding track is still the library current and disabling
+        // must leave it playing untouched (restarting it from 0:00 was a
+        // needless interruption). Resolve the audible id before the restore
+        // overwrites the queue.
+        let sounding_recommendation = {
+            let current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned();
+            current.is_some_and(|id| {
+                self.discover
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .is_some_and(|mode| mode.recommendations().contains(&id))
+            })
+        };
+        let was_playing = sounding_recommendation
+            && *self.playback_status.lock().unwrap_or_else(|e| e.into_inner())
+                == crate::contracts::types::PlaybackStatus::Playing;
         if was_playing {
             if let Ok(mut backend) = self.audio.lock() {
                 let _ = backend.stop();
@@ -3662,7 +3675,11 @@ impl AppState {
                         // transport simply parks when nothing stages); report
                         // the first failure once so the dead-end is explicable.
                         if first {
-                            state.publish(state.event(Generation(generation), Event::Error {
+                            // Mint a fresh generation: the frontend filters
+                            // `error` events by the shared errors watermark, and
+                            // the session generation captured at enable can be
+                            // older than an unrelated error published since.
+                            state.publish(state.event(state.next_generation(), Event::Error {
                                 error: ContractError {
                                     code: ErrorCode::Unavailable,
                                     message: format!("Discovery could not prepare recommendations: {error}"),
