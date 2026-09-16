@@ -17,11 +17,15 @@ rm -rf "$APP"
 osacompile -o "$APP" "$TMP_SCRIPT"
 
 # Best-effort icon: stamp the applet with the app artwork when sips can
-# convert it, otherwise keep the default script icon (cosmetic only).
-if [ -f "$REPO/src-tauri/icons/icon.png" ]; then
+# convert it, otherwise keep the default script icon (cosmetic only). Prefer
+# the 1024 master; `icon.png` is a 512 generated derivative and yields a
+# lower-resolution applet.icns.
+ICON_SRC="$REPO/src-tauri/icons/app-icon.png"
+[ -f "$ICON_SRC" ] || ICON_SRC="$REPO/src-tauri/icons/icon.png"
+if [ -f "$ICON_SRC" ]; then
   TMP_ICON="$(mktemp -t luno-applet).icns"
   trap 'rm -f "$TMP_SCRIPT" "$TMP_ICON"' EXIT
-  if sips -s format icns "$REPO/src-tauri/icons/icon.png" --out "$TMP_ICON" >/dev/null 2>&1; then
+  if sips -s format icns "$ICON_SRC" --out "$TMP_ICON" >/dev/null 2>&1; then
     cp "$TMP_ICON" "$APP/Contents/Resources/applet.icns"
     touch "$APP"
   fi

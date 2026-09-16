@@ -6,9 +6,9 @@ root="$app/Contents/Resources"
 manifest="$root/desktop-binaries.json"
 [ -f "$manifest" ] || { echo "bundle manifest missing: $manifest" >&2; exit 1; }
 [ -f "$root/THIRD_PARTY_NOTICES.md" ] || { echo "third-party notices missing" >&2; exit 1; }
-# The bundle must carry the Luno icon, not the stock Tauri default. The macOS
-# loader reads CFBundleIconFile (icon.icns in Contents/Resources); a missing or
-# default iconset is the "wrong app icon" regression.
+# Fail closed when the bundle has no icon at all (bundle.icon unset makes Tauri
+# omit CFBundleIconFile and macOS falls back to its generic app icon). This does
+# not compare bytes against the master; it guards the wiring regression.
 icon_name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist" 2>/dev/null || true)
 [ -n "$icon_name" ] || { echo "CFBundleIconFile missing from bundle Info.plist" >&2; exit 1; }
 case "$icon_name" in *.icns) ;; *) icon_name="$icon_name.icns";; esac
