@@ -35,11 +35,22 @@ The inputs themselves are intentionally not committed; the release owner
 re-supplies them per release, and provisioning and bundle verification fail
 closed if they are absent or mismatched.
 
+## App icon
+
+The bundle icon set is generated from `src-tauri/icons/icon.png` with
+`npx tauri icon src-tauri/icons/icon.png` and listed under `bundle.icon` in
+`src-tauri/tauri.conf.json` (32/128/128@2x PNGs plus `icon.icns`/`icon.ico`).
+Tauri's default is an empty icon list, which silently bundles its own logo;
+`bundle.icon` must stay populated or the app ships with the wrong icon. macOS
+reads `CFBundleIconFile` (`icon.icns`), which notarization also requires at
+512pt@2x. Regenerate and commit the set whenever the source art changes.
+
 ## Gates
 
 Run `./scripts/verify-desktop-bundle.sh '<Luno Desktop.app>'` after building. It checks
 the bundle manifest, notices, executable bits, checksums, tool versions,
-architecture, and a clean-machine smoke with developer `PATH` unavailable.
+architecture, the presence of the bundle icon, and a clean-machine smoke with
+developer `PATH` unavailable.
 Missing or tampered tools, or missing inspection tools, are blocked/inconclusive
 and never pass; application services must surface degraded media behavior.
 

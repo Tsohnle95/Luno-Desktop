@@ -6,6 +6,13 @@ root="$app/Contents/Resources"
 manifest="$root/desktop-binaries.json"
 [ -f "$manifest" ] || { echo "bundle manifest missing: $manifest" >&2; exit 1; }
 [ -f "$root/THIRD_PARTY_NOTICES.md" ] || { echo "third-party notices missing" >&2; exit 1; }
+# The bundle must carry the Luno icon, not the stock Tauri default. The macOS
+# loader reads CFBundleIconFile (icon.icns in Contents/Resources); a missing or
+# default iconset is the "wrong app icon" regression.
+icon_name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist" 2>/dev/null || true)
+[ -n "$icon_name" ] || { echo "CFBundleIconFile missing from bundle Info.plist" >&2; exit 1; }
+case "$icon_name" in *.icns) ;; *) icon_name="$icon_name.icns";; esac
+[ -f "$root/$icon_name" ] || { echo "bundle icon missing: $root/$icon_name" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
 command -v file >/dev/null 2>&1 || { echo "file is required for architecture inspection" >&2; exit 2; }
 
