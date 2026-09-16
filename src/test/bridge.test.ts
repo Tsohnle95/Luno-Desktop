@@ -235,6 +235,14 @@ describe("typed IPC bridge and projection", () => {
     expect(store.getSnapshot().shutdown?.state).toBe("complete");
   });
 
+  it("clears projected errors on demand so a transient failure is dismissable", () => {
+    const store = createBackendProjection();
+    store.apply(event({ type: "error", payload: { error: { code: "unavailable", message: "preview could not be prepared", retryable: true } } }, 2));
+    expect(store.getSnapshot().errors).toHaveLength(1);
+    store.clearErrors();
+    expect(store.getSnapshot().errors).toHaveLength(0);
+  });
+
   it("accepts library root status events without throwing", () => {
     const store = createBackendProjection();
     expect(() => store.apply(event({ type: "library_root_status", payload: { root_index: 0, status: "scanned" } }))).not.toThrow();

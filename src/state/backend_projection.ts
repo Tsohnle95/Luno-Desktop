@@ -22,6 +22,9 @@ export const initialBackendProjection = (): BackendProjection => ({
   generations: { library: -1, playback: -1, preview: -1, discover: -1, video: -1, jobs: -1, errors: -1 }, lastEventIds: {},
 });
 
+/** Bound the error log so a retrying pipeline cannot grow it without limit. */
+const MAX_PROJECTED_ERRORS = 50;
+
 type Domain = keyof BackendProjection["generations"];
 function domainOf(type: EventEnvelope["event"]["type"]): Domain | "control" {
   if (type === "library_snapshot" || type === "library_root_status") return "library";
@@ -37,7 +40,7 @@ function domainOf(type: EventEnvelope["event"]["type"]): Domain | "control" {
 export function reduceBackendProjection(state: BackendProjection, envelope: EventEnvelope): BackendProjection {
   if (isDeliveryErrorEventId(envelope.event_id)) {
     if (envelope.event.type !== "error") return state;
-    return { ...state, errors: [...state.errors, envelope.event.payload.error] };
+    return { ...state, errors: [...state.errors, envelope.event.payload.error].slice(-MAX_PROJECTED_ERRORS) };
   }
   const domain = domainOf(envelope.event.type);
   const payloadGeneration = domain === "library" && envelope.event.type === "library_snapshot" ? envelope.event.payload.snapshot.generation
@@ -72,7 +75,7 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
     }
     case "queue_changed": return next.playback ? { ...next, playback: { ...next.playback, queue: event.payload.queue } } : next;
     case "job_updated": return { ...next, jobs: { ...next.jobs, [event.payload.job.id]: event.payload.job } };
-    case "error": return { ...next, errors: [...next.errors, event.payload.error] };
+    case "error": return { ...next, errors: [...next.errors, event.payload.error].slice(-MAX_PROJECTED_ERRORS) };
     case "shutdown": return { ...next, shutdown: event.payload.envelope };
   }
   throw new Error("unhandled backend event");
@@ -101,6 +104,7 @@ export function createBackendProjection() {
     subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); },
     apply: (event: EventEnvelope) => { const next = reduceBackendProjection(state, event); if (next !== state) { state = next; listeners.forEach((listener) => listener()); } },
     applyVideoSnapshot: (video: VideoState) => { const next = mergeVideoSnapshot(state, video); if (next !== state) { state = next; listeners.forEach((listener) => listener()); } },
+    clearErrors: () => { if (state.errors.length === 0) return; state = { ...state, errors: [] }; listeners.forEach((listener) => listener()); },
     reset: () => { state = initialBackendProjection(); listeners.forEach((listener) => listener()); },
   };
 }

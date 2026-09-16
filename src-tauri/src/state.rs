@@ -2959,12 +2959,13 @@ impl AppState {
                         eprintln!("[luno-preview] preparation failed for {key}: {error}");
                         let id = TrackId::new(key.clone()).unwrap_or_else(|_| TrackId(key.clone()));
                         let action = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &id)).unwrap_or(SessionAction::Ended);
+                        // Per-row truth: the preview snapshot's `unavailable`
+                        // list drives "Preview unavailable" on the exact row.
+                        // A global error event added nothing and, because the
+                        // rolling prefetch retries every seed, it stacked an
+                        // undismissable banner on every failed recommendation
+                        // ("preview could not be prepared").
                         state.publish_preview_snapshot(generation);
-                        state.publish(state.event(Generation(generation), Event::Error { error: ContractError {
-                            code: ErrorCode::Unavailable,
-                            message: format!("preview could not be prepared: {error}"),
-                            retryable: true,
-                        }}));
                         state.handle_session_action(action, generation);
                         state.ensure_window_prepared(generation);
                         state.kick_video_pipeline();
@@ -3044,12 +3045,9 @@ impl AppState {
                         // reads "Preview unavailable" instead of sticking on
                         // "Previewing now" with a frozen footer tracker.
                         let action = state.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &key)).unwrap_or(SessionAction::Ended);
+                        // Per-row failure only; the global error stream is for
+                        // commands, not a retrying autoplay pipeline.
                         state.publish_preview_snapshot(generation);
-                        state.publish(state.event(Generation(generation), Event::Error { error: ContractError {
-                            code: ErrorCode::Unavailable,
-                            message: "preview could not be played".into(),
-                            retryable: true,
-                        }}));
                         state.handle_session_action(action, generation);
                         return;
                     }
@@ -3063,11 +3061,6 @@ impl AppState {
                     drop(backend);
                     let action = state.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &key)).unwrap_or(SessionAction::Ended);
                     state.publish_preview_snapshot(generation);
-                    state.publish(state.event(Generation(generation), Event::Error { error: ContractError {
-                        code: ErrorCode::Unavailable,
-                        message: "preview could not be played".into(),
-                        retryable: true,
-                    }}));
                     state.handle_session_action(action, generation);
                     return;
                 }
