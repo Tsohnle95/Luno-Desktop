@@ -59,6 +59,8 @@ What it does not own: library snapshots and track identity
   empty slot, its own placeholder, or a slot nothing newer claimed.
 - Under registry pressure staging defers instead of spawning, so
   playback-load/heartbeat always have slots.
+- Video source fallback forms run sequentially: concurrent PyInstaller
+  yt-dlp startups contend with interactive recommendation preview work.
 - Prefetch plans current + exactly `VIDEO_PREFETCH_DEPTH` successors.
 - Pause never gates staging: videos stage and publish `Ready` while
   paused; resume runs a catch-up pipeline pass when current video is

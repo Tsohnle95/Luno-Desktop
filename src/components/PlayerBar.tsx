@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { PlaybackSnapshot, Track } from "../shared/contracts";
 import { Artwork } from "./Artwork";
+import { RecommendationArtwork } from "./RecommendationArtwork";
 import { IconPlay, IconPause, IconQueueList, IconRepeat, IconShuffle, IconSkipBack, IconSkipForward, IconVolume } from "./icons";
 
 export interface PlayerBarProps {
@@ -215,7 +216,7 @@ export function PlayerBar({ track = null, playback = null, artwork = null, volum
   return <div className="luno-player-bar" style={{ "--luno-player-accent": accent } as CSSProperties} aria-disabled={!backendAvailable}>
     <div className="luno-player-row">
       <button className="luno-player-track" type="button" disabled={!backendAvailable || !track} onClick={() => track && onOpenTrack?.(track)}>
-        <Artwork src={artwork ?? track?.artwork_url} alt="" size={52} />
+        <Artwork src={artwork ?? track?.artwork_url} alt="" size={52} fallback={track ? <RecommendationArtwork artist={track.artist ?? ""} title={track.title} size={52} /> : undefined} />
         <span className="luno-player-copy"><strong title={track?.title ?? undefined}>{track?.title ?? "Nothing playing"}</strong><small>{track?.artist ?? ""}</small></span>
       </button>
       <div className="luno-transport" role="group" aria-label="Transport controls">

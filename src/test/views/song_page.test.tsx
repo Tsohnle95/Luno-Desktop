@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Track } from "../../shared/contracts";
-import { Recommendations, type Recommendation } from "../../components/Recommendations";
+import { Recommendations, recommendationPreviewState, type Recommendation } from "../../components/Recommendations";
 import { VideoStage } from "../../components/VideoStage";
 import { DiscoverView } from "../../views/DiscoverView";
 import { SongPageView, VideoModePill } from "../../views/SongPageView";
@@ -162,5 +162,41 @@ describe("Artistless seed honesty", () => {
     expect(honest).not.toContain("Select or play a track to seed recommendations.");
     const trackless = renderToStaticMarkup(<DiscoverView seed={null} {...base} />);
     expect(trackless).toContain("Select or play a track to seed recommendations.");
+  });
+});
+
+describe("Recommendation preview progress", () => {
+  const first: Recommendation = { title: "First", artist: "Artist" };
+  const second: Recommendation = { title: "Second", artist: "Artist" };
+  const firstKey = "Artist-First";
+  const secondKey = "Artist-Second";
+
+  it("does not make transfer completion playable before the asset is published", () => {
+    const state = recommendationPreviewState(first, {
+      generation: 1,
+      active: true,
+      current: null,
+      window: [firstKey],
+      prepared: [],
+      unavailable: [],
+      cancelled: false,
+      progress: [{ key: firstKey, percent: 100 }],
+    });
+    expect(state.progress).toBe(100);
+    expect(state.prepared).toBe(false);
+  });
+
+  it("shows source resolution only for the serialized active item", () => {
+    const html = renderToStaticMarkup(
+      <Recommendations
+        seed={track}
+        items={[first, second]}
+        state="ready"
+        preview={{ generation: 1, active: true, current: null, window: [firstKey, secondKey], prepared: [], unavailable: [], cancelled: false, progress: [] }}
+      />
+    );
+    expect(html).toContain("Finding a playable source");
+    expect(html).toContain("Queued for temporary preview");
+    expect(html.match(/<span class="luno-video-progress/g)).toHaveLength(1);
   });
 });

@@ -409,7 +409,7 @@ impl AudioBackend for CpalSymphoniaBackend {
             .and_then(|x| x.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if !matches!(ext.as_str(), "mp3" | "m4a" | "mp4" | "flac" | "wav") {
+        if !matches!(ext.as_str(), "mp3" | "m4a" | "mp4" | "aac" | "flac" | "wav") {
             return Err(BackendError::UnsupportedFormat(ext));
         }
         self.stop_stream();

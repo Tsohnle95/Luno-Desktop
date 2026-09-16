@@ -130,7 +130,7 @@ export function planVideoSync(input: {
 export function DownloadRing({ progress, size = 64 }: { progress: number | null; size?: number }) {
   const determinate = typeof progress === "number";
   return (
-    <span className={`luno-video-progress${determinate ? " is-determinate" : ""}`} style={{ width: size, height: size }}>
+    <span className={`luno-video-progress${determinate ? " is-determinate" : ""}${progress === 0 ? " is-starting" : ""}`} style={{ width: size, height: size }}>
       <svg viewBox="0 0 36 36" aria-hidden="true">
         <circle className="luno-video-progress-track" cx="18" cy="18" r="15.5" />
         <circle className="luno-video-progress-fill" cx="18" cy="18" r="15.5" strokeDasharray={VIDEO_RING_LENGTH} strokeDashoffset={determinate ? ringDashOffset(progress) : VIDEO_RING_LENGTH * 0.72} />
@@ -149,6 +149,7 @@ const stageChromeStyles = `
 .luno-video-progress-track { stroke:rgba(255,255,255,.16); }
 .luno-video-progress-fill { stroke:var(--luno-green,#1db954); stroke-linecap:round; transition:stroke-dashoffset .45s linear; }
 .luno-video-progress.is-determinate svg { transform:rotate(-90deg); }
+.luno-video-progress.is-starting svg { animation:luno-video-spin 1.1s linear infinite; }
 .luno-video-progress:not(.is-determinate) svg { animation:luno-video-spin 1.1s linear infinite; }
 .luno-video-progress:not(.is-determinate) .luno-video-progress-fill { transition:none; }
 @keyframes luno-video-spin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }

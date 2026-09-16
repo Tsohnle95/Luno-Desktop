@@ -246,6 +246,15 @@ pub struct PreviewSnapshot {
     pub prepared: Vec<String>,
     pub unavailable: Vec<String>,
     pub cancelled: bool,
+    #[serde(default)]
+    pub progress: Vec<PreviewProgress>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewProgress {
+    pub key: String,
+    pub percent: u8,
 }
 
 /// Discover-mode state: the rolling recommendation window, the number of

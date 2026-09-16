@@ -55,6 +55,10 @@ pub enum Command {
         #[serde(default)]
         seeds: Vec<PreviewSeed>,
     },
+    PreviewPrefetch {
+        #[serde(default)]
+        seeds: Vec<PreviewSeed>,
+    },
     PreviewNext,
     PreviewPrevious,
     PreviewCancel,

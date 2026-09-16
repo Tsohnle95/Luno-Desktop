@@ -34,10 +34,12 @@ pub struct PreviewSession {
     recommendations: Vec<TrackId>,
     paths: HashMap<TrackId, PathBuf>,
     failed: Vec<TrackId>,
+    progress: std::collections::HashMap<TrackId, u8>,
     window_start: usize,
     window_end: usize,
     current: Option<usize>,
     active: bool,
+    auto_play: bool,
 }
 
 impl PreviewSession {
@@ -50,6 +52,29 @@ impl PreviewSession {
         tapped: &TrackId,
     ) -> Option<Self> {
         let tapped_index = recommendations.iter().position(|id| id == tapped)?;
+        Self::create(generation, physical_queue, physical_index, recommendations, tapped_index, true)
+    }
+
+    pub fn start_prefetch(
+        generation: u64,
+        physical_queue: Vec<TrackId>,
+        physical_index: usize,
+        recommendations: Vec<TrackId>,
+    ) -> Option<Self> {
+        if recommendations.is_empty() { return None; }
+        let mut session = Self::create(generation, physical_queue, physical_index, recommendations, 0, false)?;
+        session.window_end = AHEAD_WINDOW.min(session.recommendations.len());
+        Some(session)
+    }
+
+    fn create(
+        generation: u64,
+        physical_queue: Vec<TrackId>,
+        physical_index: usize,
+        recommendations: Vec<TrackId>,
+        start: usize,
+        auto_play: bool,
+    ) -> Option<Self> {
         if physical_queue.is_empty() || physical_index >= physical_queue.len() { return None; }
         Some(Self {
             generation,
@@ -58,21 +83,28 @@ impl PreviewSession {
             recommendations,
             paths: HashMap::new(),
             failed: Vec::new(),
-            window_start: tapped_index,
-            window_end: tapped_index.saturating_add(1 + AHEAD_WINDOW),
+            progress: std::collections::HashMap::new(),
+            window_start: start,
+            window_end: start.saturating_add(1 + AHEAD_WINDOW),
             current: None,
             active: true,
+            auto_play,
         })
     }
 
     pub fn generation(&self) -> u64 { self.generation }
     pub fn is_active(&self) -> bool { self.active }
+    pub fn is_prefetch(&self) -> bool { !self.auto_play }
     pub fn current(&self) -> Option<&TrackId> { self.current.and_then(|i| self.recommendations.get(i)) }
     pub fn window(&self) -> &[TrackId] { &self.recommendations[self.window_start..self.window_end.min(self.recommendations.len())] }
     pub fn prepared(&self) -> usize { self.paths.len() }
     pub fn prepared_keys(&self) -> Vec<TrackId> { self.paths.keys().cloned().collect() }
     pub fn is_prepared(&self, id: &TrackId) -> bool { self.paths.contains_key(id) }
     pub fn unavailable(&self) -> &[TrackId] { &self.failed }
+    pub fn progress(&self) -> Vec<(TrackId, u8)> { self.progress.iter().map(|(key, value)| (key.clone(), *value)).collect() }
+    pub fn set_progress(&mut self, generation: u64, id: TrackId, percent: u8) {
+        if self.active && generation == self.generation && self.in_window(&id) { self.progress.insert(id, percent.min(100)); }
+    }
     pub fn physical_queue(&self) -> &[TrackId] { &self.physical_queue }
 
     /// Accepts a completed asset.  A stale completion is ignored and cannot
@@ -80,7 +112,8 @@ impl PreviewSession {
     pub fn prepared_asset(&mut self, generation: u64, id: TrackId, path: PathBuf) -> SessionAction {
         if !self.active || generation != self.generation || !self.in_window(&id) { return SessionAction::Ended; }
         self.paths.insert(id.clone(), path);
-        if self.current.is_none() {
+        self.progress.insert(id.clone(), 100);
+        if self.current.is_none() && self.auto_play {
             self.current = Some(self.window_start);
             return SessionAction::Play(id);
         }

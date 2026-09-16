@@ -47,6 +47,17 @@ export interface RecommendationsProps {
 const legacyKey = (item: Recommendation) => item.id ?? `${item.artist}\u0000${item.title}`;
 const safeKey = (item: Recommendation) => backendPreviewKey(item.artist, item.title);
 
+export function recommendationPreviewState(item: Recommendation, preview: PreviewSnapshot | null) {
+  const key = safeKey(item);
+  const legacy = legacyKey(item);
+  const progress = preview?.progress?.find((entry) => entry.key === key || entry.key === legacy)?.percent ?? null;
+  const prepared = Boolean(preview && (preview.prepared.includes(key) || preview.prepared.includes(legacy)));
+  const unavailable = Boolean(preview && (preview.unavailable.includes(key) || preview.unavailable.includes(legacy)));
+  const inWindow = Boolean(preview && (preview.window.includes(key) || preview.window.includes(legacy)));
+  const current = Boolean(preview && (preview.current === key || preview.current === legacy));
+  return { key, legacy, progress, prepared, unavailable, inWindow, current };
+}
+
 export function Recommendations({
   seed,
   items,
@@ -147,8 +158,8 @@ export function Recommendations({
       {items.length > 0 && (
         <div ref={scrollRef} className="luno-recommendation-list" aria-live="polite">
           {items.map((item) => {
-            const k = safeKey(item);
-            const lK = legacyKey(item);
+             const previewState = recommendationPreviewState(item, preview);
+             const { key: k, legacy: lK } = previewState;
             const saveState = saved[k] ?? saved[lK];
             const isLegacySaved = (item.saved || savedKeys.has(lK) || savedKeys.has(k)) && !saveState;
             const job = saveState?.job_id ? jobs[saveState.job_id] : undefined;
@@ -156,11 +167,16 @@ export function Recommendations({
             const determinate = typeof jobProgress === "number" && jobProgress !== null && Number.isFinite(jobProgress);
             const percent = determinate ? Math.round((jobProgress as number) * 100) : null;
 
-            const isUnavailable = preview ? preview.unavailable.includes(k) || preview.unavailable.includes(lK) : false;
-            const isCurrent = preview ? preview.current === k || preview.current === lK : false;
-            const isPrepared = preview ? preview.prepared.includes(k) || preview.prepared.includes(lK) : false;
-            const isInWindow = preview ? preview.window.includes(k) || preview.window.includes(lK) : false;
-            const isQueuedPreview = Boolean(preview?.active && isInWindow && !isPrepared && !isCurrent && !isUnavailable);
+             const isUnavailable = previewState.unavailable;
+             const isCurrent = previewState.current;
+             const isPrepared = previewState.prepared;
+             const isInWindow = previewState.inWindow;
+             const isQueuedPreview = Boolean(preview?.active && isInWindow && !isPrepared && !isCurrent && !isUnavailable);
+             const previewProgress = previewState.progress;
+             const preparingKey = preview?.window.find((candidate) =>
+               !preview.prepared.includes(candidate) && !preview.unavailable.includes(candidate)
+             );
+             const isPreparingPreview = isQueuedPreview && (preparingKey === k || preparingKey === lK);
 
             // --- status text (save overrides preview, like mobile) ---
             let statusText: string;
@@ -178,7 +194,9 @@ export function Recommendations({
             } else if (item.status === "failed" && item.error) {
               statusText = item.error;
               statusIsError = true;
-            } else if (isQueuedPreview) statusText = "Queued for temporary preview";
+            } else if (isPreparingPreview && previewProgress === null) statusText = "Finding a playable source…";
+            else if (isPreparingPreview) statusText = `Downloading temporary preview… ${previewProgress}%`;
+            else if (isQueuedPreview) statusText = "Queued for temporary preview";
             else if (isPrepared) statusText = "Ready in temporary queue";
             else if (item.status) {
               switch (item.status) {
@@ -218,7 +236,7 @@ export function Recommendations({
             })();
 
             const showSaveSpinner = saveState?.state === "saving" || saveState?.state === "queued";
-            const showPreviewSpinner = !showSaveSpinner && isQueuedPreview && !!preview?.active;
+            const showPreviewSpinner = !showSaveSpinner && isPreparingPreview && !!preview?.active;
             const showReadyCheck = !showSaveSpinner && !showPreviewSpinner && isPrepared && saveState?.state !== "saved";
 
             const canPlayPreview = isPrepared || item.status === "ready";
@@ -240,7 +258,7 @@ export function Recommendations({
 
                 {/* Center status icon: preview spinner / ready check */}
                 <span className="luno-rec-center" style={{ width: 32, height: 32, display: "inline-flex", alignItems: "center", justifyContent: "center", flex: "0 0 32px" }}>
-                  {showPreviewSpinner ? <DownloadRing progress={null} size={22} /> : showReadyCheck ? <span style={{ color: "var(--luno-green)", fontSize: 18, lineHeight: 1 }}>✓</span> : null}
+                  {showPreviewSpinner ? <DownloadRing progress={previewProgress} size={22} /> : showReadyCheck ? <span style={{ color: "var(--luno-green)", fontSize: 18, lineHeight: 1 }}>✓</span> : null}
                 </span>
 
                 <div className="luno-recommendation-actions">
@@ -278,7 +296,7 @@ export function Recommendations({
               </article>
             );
           })}
-          {!exhausted && (
+           {!exhausted && onLoadMore && (
             <footer className="luno-recommendations-footer">
               {loadMoreError && <p role="alert">{loadMoreError}</p>}
               {loadingMore ? <span>Loading more...</span> : <button type="button" onClick={onLoadMore}>Load 25 more</button>}

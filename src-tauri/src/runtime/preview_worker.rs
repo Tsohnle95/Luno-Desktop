@@ -7,7 +7,7 @@
 //! than the legacy loudnorm MP3 profile.
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +25,7 @@ pub const PREVIEW_BITRATE: &str = "192k";
 /// A worker's terminal report to the session driver.
 #[derive(Debug)]
 pub enum PreviewCompletion {
+    Progress { key: String, percent: u8 },
     Prepared { key: String, path: PathBuf },
     Failed { key: String, error: String },
 }
@@ -44,6 +45,14 @@ pub fn prepare_preview(
     helper: &Path,
     ffmpeg: &Path,
     token: &CancellationToken,
+) -> Result<PathBuf, AssetError> {
+    prepare_preview_with_progress(store, key, generation, query, helper, ffmpeg, token, Arc::new(|_| {}))
+}
+
+pub fn prepare_preview_with_progress(
+    store: &PreviewAssetStore, key: &str, generation: u64, query: &str,
+    helper: &Path, ffmpeg: &Path, token: &CancellationToken,
+    progress: Arc<dyn Fn(u8) + Send + Sync>,
 ) -> Result<PathBuf, AssetError> {
     // The token is the source of truth: a pre-cancelled token aborts before
     // any work is scheduled.  The bridge below only propagates cancellations
@@ -69,9 +78,10 @@ pub fn prepare_preview(
     let query_for_fetch = query.to_owned();
     let resolve_bridge = bridge.clone();
     let bridge_in_resolve = resolve_bridge.clone();
+    let progress_for_resolve = progress.clone();
     let fetched = store.resolve(generation, &resolve_bridge, move || {
         let output = temp_output("m4a");
-        fetch_source(&helper_owned, &query_for_fetch, &output, &bridge_in_resolve)
+        fetch_source(&helper_owned, &query_for_fetch, &output, &bridge_in_resolve, progress_for_resolve)
             .map_err(|error| if bridge_in_resolve.load(Ordering::Acquire) { "cancelled".to_owned() } else { error })?;
         Ok::<PathBuf, String>(output)
     })?;
@@ -93,24 +103,55 @@ fn temp_output(extension: &str) -> PathBuf {
     std::env::temp_dir().join(format!("luno-preview-{}-{}.{}", std::process::id(), stamp, extension))
 }
 
+fn parse_download_percent(line: &str) -> Option<u8> {
+    let value = line.split_once("LUNO_PROGRESS=")?.1;
+    let percent = value.trim().trim_end_matches('%').trim().parse::<f32>().ok()?;
+    Some(percent.clamp(0.0, 100.0).round() as u8)
+}
+
 /// Runs the download helper against the preview query with the same process
 /// contract the downloader uses (output path argument, `LUNO_DOWNLOAD_SOURCE`
 /// environment variable), polling cancellation while the child runs.
-fn fetch_source(helper: &Path, query: &str, output: &Path, cancel: &AtomicBool) -> Result<(), String> {
+fn fetch_source(helper: &Path, query: &str, output: &Path, cancel: &AtomicBool, progress: Arc<dyn Fn(u8) + Send + Sync>) -> Result<(), String> {
     if is_cancelled(cancel) { return Err("cancelled".into()); }
     let mut child = Command::new(helper)
         .arg(output)
         .env("LUNO_DOWNLOAD_SOURCE", query)
+        .env("LUNO_PREVIEW", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|_| "preview download helper could not start".to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| "preview download helper output unreadable".to_string())?;
+    let stderr = child.stderr.take().ok_or_else(|| "preview download helper error output unreadable".to_string())?;
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+    let progress_tx_stderr = progress_tx.clone();
+    let stdout_reader = thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().flatten() {
+            let _ = progress_tx.send(line);
+        }
+    });
+    let stderr_reader = thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().flatten() {
+            let _ = progress_tx_stderr.send(line);
+        }
+    });
     loop {
         if is_cancelled(cancel) {
             let _ = child.kill();
             let _ = child.wait();
             return Err("cancelled".into());
         }
+        while let Ok(line) = progress_rx.try_recv() {
+            if let Some(percent) = parse_download_percent(&line) { progress(percent); }
+        }
         match child.try_wait().map_err(|_| "preview download helper failed".to_string())? {
             Some(status) => {
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                while let Ok(line) = progress_rx.try_recv() {
+                    if let Some(percent) = parse_download_percent(&line) { progress(percent); }
+                }
                 if !status.success() {
                     let _ = fs::remove_file(output);
                     return Err("preview download helper failed".into());
@@ -167,13 +208,38 @@ fn encode_adts(ffmpeg: &Path, input: &Path, writer: &mut dyn Write, cancel: &Ato
 
 #[cfg(test)]
 mod tests {
-    use std::fs::OpenOptions;
     use std::os::unix::fs::PermissionsExt;
 
     use crate::process::executables::{discover, ExecutableKind};
     use crate::preview::assets::PreviewAssetStore;
 
     use super::*;
+
+    #[test]
+    fn parses_padded_ytdlp_download_percentages() {
+        assert_eq!(parse_download_percent("LUNO_PROGRESS= 25.0%"), Some(25));
+        assert_eq!(parse_download_percent("download:LUNO_PROGRESS= 42.6%"), Some(43));
+        assert_eq!(parse_download_percent("[download] 25.0%"), None);
+    }
+
+    #[test]
+    fn fast_helper_progress_is_drained_before_completion() {
+        let root = std::env::temp_dir().join(format!("luno-preview-progress-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        fs::write(&helper, "#!/bin/sh\nprintf 'LUNO_PROGRESS= 25.0%%\\nLUNO_PROGRESS= 75.0%%\\n'\nprintf 'ID3preview bytes' > \"$1\"\n").unwrap();
+        let mut permissions = fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper, permissions).unwrap();
+        let output = root.join("source.m4a");
+        let cancel = AtomicBool::new(false);
+        let values = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = values.clone();
+        fetch_source(&helper, "fixture", &output, &cancel, Arc::new(move |percent| captured.lock().unwrap().push(percent))).unwrap();
+        assert_eq!(*values.lock().unwrap(), vec![25, 75]);
+        let _ = fs::remove_dir_all(root);
+    }
 
     struct TempToolchain { root: PathBuf }
     impl Drop for TempToolchain { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.root); } }

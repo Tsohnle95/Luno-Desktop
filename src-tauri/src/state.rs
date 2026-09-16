@@ -24,7 +24,7 @@ use crate::preview::assets::PreviewAssetStore;
 use crate::preview::discover_mode::{DiscoverAction, DiscoverMode, ReadyAsset};
 use crate::preview::save::{remux_and_promote, PlaylistDestination};
 use crate::preview::session::{PreviewSession, SessionAction};
-use crate::runtime::preview_worker::{prepare_preview, PreviewCompletion};
+use crate::runtime::preview_worker::{prepare_preview_with_progress, PreviewCompletion};
 #[cfg(target_os = "macos")]
 use crate::playback::{
     backend::{AudioBackend, BackendError},
@@ -795,6 +795,28 @@ mod tests {
         let short = vec![id("x")];
         let plan = prefetch_plan(&short, Some(0), VIDEO_PREFETCH_DEPTH);
         assert_eq!(plan, short);
+    }
+
+    #[test]
+    fn pending_preview_work_cancels_and_gates_speculative_video() {
+        let state = AppState::new(1);
+        let library_track = TrackId::new("library-track").unwrap();
+        let recommendation = TrackId::new("recommendation-track").unwrap();
+        let session = PreviewSession::start_prefetch(
+            7,
+            vec![library_track],
+            0,
+            vec![recommendation],
+        )
+        .unwrap();
+        *state.preview_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
+        *state.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = true;
+
+        state.kick_video_pipeline();
+
+        assert!(state.video_cancel.lock().unwrap_or_else(|e| e.into_inner()).load(Ordering::Acquire));
+        assert!(state.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).load(Ordering::Acquire));
+        assert!(!*state.video_prefetch_running.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
     /// RED repro (2026-08-25): the recurring "searched a song, clicked it,
@@ -2567,6 +2589,23 @@ impl AppState {
     /// instant while bounding the background footprint.
     pub fn kick_video_pipeline(&self) {
         if !self.video_mode_enabled() { return; }
+        let preview_pending = {
+            let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
+            session.as_ref().is_some_and(|session| {
+                session.is_active()
+                    && session.window().iter().any(|key| {
+                        !session.is_prepared(key) && !session.unavailable().contains(key)
+                    })
+            })
+        };
+        if preview_pending {
+            // Recommendation audio is interactive; video staging is
+            // speculative. Do not let either video worker compete with the
+            // preview helper while its serialized window still has work.
+            self.video_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
+            self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
+            return;
+        }
         let helper = match self.video_helper.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             Some(helper) => helper,
             None => return,
@@ -2749,6 +2788,14 @@ impl AppState {
         if !ids.iter().any(|id| id == &tapped) {
             return Err(ContractError::invalid("tapped preview key is not among the seeds"));
         }
+        // A tap is an explicit handoff from the rolling discover queue to a
+        // focused preview session. Restore the physical queue first so the
+        // preview session never captures temporary recommendation IDs as its
+        // supposed library queue.
+        let discover_active = self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|mode| mode.is_active());
+        if discover_active {
+            self.handoff_discover_to_preview();
+        }
         let (queue, index) = {
             let playback = self.playback.lock().unwrap_or_else(|e| e.into_inner());
             let queue = playback.queue().to_vec();
@@ -2766,12 +2813,53 @@ impl AppState {
         let session = PreviewSession::start(generation, queue, index, ids, &tapped)
             .ok_or_else(|| ContractError::invalid("preview session could not start"))?;
         *self.preview_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
+        self.video_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
+        self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         *self.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.to_vec();
         self.purge_discover_deferred();
         self.preview_cancelled.store(false, Ordering::Release);
         // Publish the session-begin snapshot before any worker can complete,
         // so the response is the deterministic entry state; preparation and
         // subsequent transitions arrive as preview_snapshot events.
+        self.publish_preview_snapshot(generation);
+        let value = self.preview_snapshot_value()?;
+        self.spawn_preview_driver(generation);
+        self.adopt_existing_preview_window(generation);
+        self.ensure_window_prepared(generation);
+        Ok(value)
+    }
+
+    /// Stages the first recommendation window without entering discover mode,
+    /// changing the playback queue, or starting audio.
+    fn preview_prefetch(&self, seeds: &[PreviewSeed]) -> Result<Value, ContractError> {
+        if seeds.is_empty() || seeds.len() > MAX_PREVIEW_SEEDS {
+            return Err(ContractError::invalid("preview seeds must contain between 1 and 50 items"));
+        }
+        let ids = Self::preview_ids(seeds)?;
+        let (queue, index) = {
+            let playback = self.playback.lock().unwrap_or_else(|e| e.into_inner());
+            if playback.current().is_none() {
+                return Err(ContractError { code: ErrorCode::Unavailable, message: "preview prefetch needs a playing track".into(), retryable: true });
+            }
+            (playback.queue().to_vec(), playback.current_index().unwrap_or(0))
+        };
+        let active_prefetch = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active() && session.is_prefetch());
+        if self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active()) && !active_prefetch {
+            return self.preview_snapshot_value();
+        }
+        if active_prefetch {
+            self.cancel_preview_tasks();
+            let _ = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).cleanup_session(None);
+        }
+        self.cancel_preview_tasks();
+        let generation = self.next_generation().0;
+        let session = PreviewSession::start_prefetch(generation, queue, index, ids)
+            .ok_or_else(|| ContractError::invalid("preview prefetch could not start"))?;
+        *self.preview_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
+        self.video_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
+        self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
+        *self.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.to_vec();
+        self.preview_cancelled.store(false, Ordering::Release);
         self.publish_preview_snapshot(generation);
         let value = self.preview_snapshot_value()?;
         self.spawn_preview_driver(generation);
@@ -2849,7 +2937,7 @@ impl AppState {
         let key = format!("preview-driver-{generation}");
         self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).push(key.clone());
         let spec = self.generation(key, Generation(generation));
-        let _ = self.submit(spec, move |task_token| {
+        let submitted = self.submit(spec, move |task_token| {
             while !state.is_closing() && !task_token.is_cancelled() {
                 let current = session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_active() && s.generation() == generation);
                 if !current { break; }
@@ -2859,6 +2947,13 @@ impl AppState {
                         state.publish_preview_snapshot(generation);
                         state.handle_session_action(action, generation);
                         state.ensure_window_prepared(generation);
+                        state.kick_video_pipeline();
+                    }
+                    Ok(PreviewCompletion::Progress { key, percent }) => {
+                        if let Some(session) = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                            session.set_progress(generation, TrackId(key), percent);
+                        }
+                        state.publish_preview_snapshot(generation);
                     }
                     Ok(PreviewCompletion::Failed { key, error }) => {
                         eprintln!("[luno-preview] preparation failed for {key}: {error}");
@@ -2872,11 +2967,16 @@ impl AppState {
                         }}));
                         state.handle_session_action(action, generation);
                         state.ensure_window_prepared(generation);
+                        state.kick_video_pipeline();
                     }
                     Err(_) => {}
                 }
             }
         });
+        if submitted.is_err() {
+            self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).retain(|task| task != &format!("preview-driver-{generation}"));
+            self.publish_preview_snapshot(generation);
+        }
     }
 
     fn handle_session_action(&self, action: SessionAction, generation: u64) {
@@ -2922,6 +3022,11 @@ impl AppState {
     fn play_preview_audio(&self, key: TrackId, path: PathBuf, generation: u64) {
         self.tasks.cancel_key("playback-heartbeat");
         self.tasks.cancel_key("preview-heartbeat");
+        // The preview session is authoritative while it owns the output.
+        // Stop the library stream before the async load starts; otherwise the
+        // UI can report the prepared preview as current while the old stream
+        // continues playing during the load window.
+        if let Ok(mut backend) = self.audio.lock() { let _ = backend.stop(); }
         let state = self.clone();
         let task_key = format!("preview-audio-{generation}");
         self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).push(task_key.clone());
@@ -3076,15 +3181,25 @@ impl AppState {
         let generation_capture = generation;
         let sender = self.preview_completions.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let spec = self.generation(task_key.clone(), Generation(generation));
-        let _ = self.submit(spec, move |task_token| {
-            let completion = prepare_one(&store, store_generation, &key_for_task, &query, &helper, &ffmpeg, &task_token);
+        let task_key_for_worker = task_key.clone();
+        let submitted = self.submit(spec, move |task_token| {
+            let progress_sender = sender.clone();
+            let progress_key = key_for_task.0.clone();
+            let progress = std::sync::Arc::new(move |percent| { if let Some(sender) = &progress_sender { let _ = sender.send(PreviewCompletion::Progress { key: progress_key.clone(), percent }); } });
+            let completion = prepare_one(&store, store_generation, &key_for_task, &query, &helper, &ffmpeg, &task_token, progress);
             if let Some(sender) = sender {
                 let current = state
                     .tasks
-                    .is_current(&TaskSpec::new(&task_key, Generation(generation_capture), None));
+                    .is_current(&TaskSpec::new(&task_key_for_worker, Generation(generation_capture), None));
                 if current { let _ = sender.send(completion); }
             }
         });
+        if submitted.is_err() {
+            self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).retain(|task| task != &task_key);
+            if let Some(sender) = self.preview_completions.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                let _ = sender.send(PreviewCompletion::Failed { key: key.0.clone(), error: "preview task could not be scheduled".into() });
+            }
+        }
     }
 }
 
@@ -3096,6 +3211,7 @@ fn prepare_one(
     helper: &Option<PathBuf>,
     ffmpeg: &Option<PathBuf>,
     task_token: &crate::runtime::task_registry::CancellationToken,
+    progress: std::sync::Arc<dyn Fn(u8) + Send + Sync>,
 ) -> PreviewCompletion {
     let failed = |error: String| PreviewCompletion::Failed { key: key.0.clone(), error };
     let (Some(helper), Some(ffmpeg)) = (helper, ffmpeg) else { return failed("preview toolchain is unavailable".into()); };
@@ -3111,7 +3227,7 @@ fn prepare_one(
         query.to_owned()
     };
     let store = store.lock().unwrap_or_else(|e| e.into_inner());
-    match prepare_preview(&store, &key.0, store_generation, &source, helper, ffmpeg, task_token) {
+    match prepare_preview_with_progress(&store, &key.0, store_generation, &source, helper, ffmpeg, task_token, progress) {
         Ok(path) => PreviewCompletion::Prepared { key: key.0.clone(), path },
         Err(error) => failed(format!("{error:?}")),
     }
@@ -3136,6 +3252,7 @@ impl AppState {
             prepared: session.prepared_keys().into_iter().map(|id| id.0).collect(),
             unavailable: session.unavailable().iter().map(|id| id.0.clone()).collect(),
             cancelled: self.preview_cancelled.load(Ordering::Acquire),
+            progress: session.progress().into_iter().map(|(key, percent)| crate::contracts::types::PreviewProgress { key: key.0, percent }).collect(),
         })
     }
 
@@ -3275,7 +3392,10 @@ impl AppState {
             .as_ref()
             .is_some_and(|mode| mode.is_active());
         if !active {
-            return Ok(Value::Null);
+            // Keep the bridge response typed even when disabling an already
+            // inactive session. This also makes restarting auto-discovery on
+            // a new song deterministic.
+            return self.discover_snapshot_value();
         }
         self.end_discover(true);
         self.discover_snapshot_value()
@@ -3378,6 +3498,17 @@ impl AppState {
         self.publish_discover_snapshot(generation);
     }
 
+    /// Leaves discover mode for an explicit recommendation tap without
+    /// deleting staged assets. The focused preview session can then adopt the
+    /// files that were already downloaded by discover mode.
+    fn handoff_discover_to_preview(&self) {
+        let Some(generation) = self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|mode| mode.generation()) else { return };
+        let action = self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|mode| mode.disable(generation));
+        self.apply_discover_action(action);
+        self.cancel_discover_tasks();
+        self.publish_discover_snapshot(generation);
+    }
+
     fn apply_discover_action(&self, action: Option<DiscoverAction>) {
         if let Some(DiscoverAction::QueueChanged { queue, index }
         | DiscoverAction::Restore { queue, index }) = action
@@ -3425,6 +3556,10 @@ impl AppState {
                         state.discover_refill(generation);
                         state.discover_sync_queue();
                         state.publish_discover_snapshot(generation);
+                    }
+                    Ok(PreviewCompletion::Progress { .. }) => {
+                        // Discover mode exposes aggregate readiness; progress
+                        // is published by the focused preview driver.
                     }
                     Ok(PreviewCompletion::Failed { .. }) => {
                         state.publish_discover_snapshot(generation);
@@ -3522,7 +3657,11 @@ impl AppState {
         let generation_capture = generation;
         let sender = self.discover_completions.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let spec = self.generation(task_key.clone(), Generation(generation));
-        let _ = self.submit(spec, move |task_token| {
+        let task_key_for_worker = task_key.clone();
+        let submitted = self.submit(spec, move |task_token| {
+            let progress_sender = sender.clone();
+            let progress_key = key_for_task.0.clone();
+            let progress = std::sync::Arc::new(move |percent| { if let Some(sender) = &progress_sender { let _ = sender.send(PreviewCompletion::Progress { key: progress_key.clone(), percent }); } });
             let completion = prepare_one(
                 &store,
                 store_generation,
@@ -3531,14 +3670,21 @@ impl AppState {
                 &helper,
                 &ffmpeg,
                 &task_token,
+                progress,
             );
             if let Some(sender) = sender {
                 let current = state
                     .tasks
-                    .is_current(&TaskSpec::new(&task_key, Generation(generation_capture), None));
+                    .is_current(&TaskSpec::new(&task_key_for_worker, Generation(generation_capture), None));
                 if current { let _ = sender.send(completion); }
             }
         });
+        if submitted.is_err() {
+            self.discover_tasks.lock().unwrap_or_else(|e| e.into_inner()).retain(|task| task != &task_key);
+            if let Some(sender) = self.discover_completions.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                let _ = sender.send(PreviewCompletion::Failed { key: key.0.clone(), error: "discover task could not be scheduled".into() });
+            }
+        }
     }
 
     fn cancel_discover_tasks(&self) {
@@ -4584,6 +4730,7 @@ impl AppState {
                 }
             }
             Command::PreviewTap { key, seeds } => self.preview_tap(&seeds, &key),
+            Command::PreviewPrefetch { seeds } => self.preview_prefetch(&seeds),
             Command::PreviewNext => self.preview_step(true),
             Command::PreviewPrevious => self.preview_step(false),
             Command::PreviewCancel => self.preview_cancel(),
@@ -5371,7 +5518,9 @@ fn promotion_error(error: PromotionError) -> ContractError {
                     eprintln!("[luno-play] healed stale id {id:?} -> {healed:?}");
                 })
             };
-            let Some(effective) = resolve(&track_id) else {
+            let Some(effective) = resolve(&track_id).or_else(|| {
+                self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|mode| mode.path_for(&track_id).map(|_| track_id.clone()))
+            }) else {
                 eprintln!("[luno-play] rejected: track not found locally: {track_id:?}");
                 return Err(ContractError {
                     code: ErrorCode::NotFound,
@@ -5391,7 +5540,9 @@ fn promotion_error(error: PromotionError) -> ContractError {
             if !healed_context.iter().any(|id| id == &effective) {
                 healed_context.insert(0, effective.clone());
             }
-            let Some(path) = map.get(&effective).cloned() else {
+            let Some(path) = map.get(&effective).cloned().or_else(|| {
+                self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|mode| mode.path_for(&effective).cloned())
+            }) else {
                 eprintln!("[luno-play] rejected: healed track has no file: {effective:?}");
                 return Err(ContractError {
                     code: ErrorCode::NotFound,
@@ -5570,7 +5721,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
                 None => heal_track_id(&map, &track_id).and_then(|healed| {
                     eprintln!("[luno-play] healed stale id {track_id:?} -> {healed:?}");
                     map.get(&healed).cloned()
-                }),
+                }).or_else(|| self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|mode| mode.path_for(&track_id).cloned())),
             }
         }
         .ok_or_else(|| {
@@ -5607,7 +5758,24 @@ fn promotion_error(error: PromotionError) -> ContractError {
     }
 
     #[cfg(target_os = "macos")]
+    fn leave_preview_for_library(&self) {
+        let generation = self.next_generation().0;
+        if let Some(session) = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            session.invalidate(generation);
+        }
+        self.cancel_preview_tasks();
+        let _ = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).cleanup_session(None);
+        if let Ok(mut backend) = self.audio.lock() { let _ = backend.stop(); }
+        self.publish_preview_snapshot(generation);
+    }
+
+    #[cfg(target_os = "macos")]
     fn next_track(&self) -> Result<Value, ContractError> {
+        if self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active())
+            && !self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|mode| mode.is_active())
+        {
+            self.leave_preview_for_library();
+        }
         let advanced = self.playback.lock().unwrap_or_else(|e| e.into_inner()).next().cloned();
         if advanced.is_some() {
             self.start_current_track()
@@ -5626,6 +5794,11 @@ fn promotion_error(error: PromotionError) -> ContractError {
 
     #[cfg(target_os = "macos")]
     fn previous_track(&self) -> Result<Value, ContractError> {
+        if self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active())
+            && !self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|mode| mode.is_active())
+        {
+            self.leave_preview_for_library();
+        }
         let went_back = self.playback.lock().unwrap_or_else(|e| e.into_inner()).previous().cloned();
         if went_back.is_some() {
             self.start_current_track()

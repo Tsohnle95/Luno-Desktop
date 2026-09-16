@@ -67,6 +67,13 @@ What it does not own: library snapshots and promotion targets
 - Discovery metadata is validated before preview/download work; preview
   assets stay temporary and hidden from the library until an explicit
   save promotes them.
+- Preview percentages are raw yt-dlp media-transfer percentages. Helper
+  startup and source resolution remain indeterminate because no byte total
+  exists yet; fast preview files may complete between progress samples and
+  jump directly to 100%. Only atomic publication makes an item playable.
+- Serialized preview preparation has admission priority over speculative
+  video staging; pending preview work cancels/gates video helpers, and video
+  staging resumes after the preview window settles.
 - Missing or mismatched managed tools fail closed with degraded media
   behavior surfaced — never silent success, never an unreviewed download
   at build time.

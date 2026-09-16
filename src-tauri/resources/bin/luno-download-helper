@@ -26,7 +26,10 @@ fi
 # truncated --ffmpeg-location plus a phantom source URL — yt-dlp then ran
 # without ffmpeg and every preview/download postprocessing step failed with
 # exit 1 ("preview download helper failed", 2026-09-09).
-set -- --no-playlist --newline --progress-delta 0.25 --progress-template 'download:LUNO_PROGRESS=%(progress._percent_str)s' -f 'bestaudio/best' -x --audio-format m4a --audio-quality 0 --embed-thumbnail --embed-metadata --convert-thumbnails jpg --ppa 'ExtractAudio+ffmpeg_o:-ar 44100 -ac 2 -af loudnorm=I=-14:LRA=11:TP=-1.5'
+set -- --no-playlist --newline --progress-delta 0.25 --progress-template 'download:LUNO_PROGRESS=%(progress._percent_str)s' -f 'bestaudio/best'
+if [ "${LUNO_PREVIEW:-0}" != "1" ]; then
+  set -- "$@" -x --audio-format m4a --audio-quality 0 --embed-thumbnail --embed-metadata --convert-thumbnails jpg --ppa 'ExtractAudio+ffmpeg_o:-ar 44100 -ac 2 -af loudnorm=I=-14:LRA=11:TP=-1.5'
+fi
 if [ -x "$HERE/ffmpeg" ]; then
   set -- "$@" --ffmpeg-location "$HERE"
 fi

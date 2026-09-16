@@ -121,25 +121,20 @@ fn yt_search_cancellable(helper: &Path, query: &str, cancel: Option<&AtomicBool>
 
 /// Relevance-filtered candidates for an artist/title pair.
 ///
-/// The query forms are searched CONCURRENTLY: `lookup` consumes them
-/// sequentially in a fixed order, so all results are gathered up front and
-/// served from buffers. Sequential forms paid 1–3 back-to-back yt-dlp
-/// searches (~5–15 s each) before the download could even start — the wall
-/// time now collapses to roughly ONE search regardless of how many forms the
-/// relevance tiers end up needing.
+/// Search fallback forms sequentially. The bundled yt-dlp is a heavyweight
+/// PyInstaller executable; launching every form concurrently starves the
+/// interactive audio-preview resolver and leaves it waiting before any bytes
+/// exist to report. Cancellation is checked by every individual search.
 pub fn find_sources(helper: &Path, artist: Option<&str>, title: &str) -> Vec<VideoSource> {
     find_sources_cancellable(helper, artist, title, None)
 }
 
 fn find_sources_cancellable(helper: &Path, artist: Option<&str>, title: &str, cancel: Option<&AtomicBool>) -> Vec<VideoSource> {
     let forms = crate::video::source::query_forms(artist, title);
-    let buffered: Vec<Vec<VideoCandidate>> = thread::scope(|scope| {
-        let handles: Vec<_> = forms
-            .iter()
-            .map(|query| scope.spawn(|| yt_search_cancellable(helper, query, cancel)))
-            .collect();
-        handles.into_iter().map(|handle| handle.join().unwrap_or_default()).collect()
-    });
+    let buffered: Vec<Vec<VideoCandidate>> = forms
+        .iter()
+        .map(|query| yt_search_cancellable(helper, query, cancel))
+        .collect();
     let mut form_index = usize::MAX;
     // Form order here MUST match `lookup`'s internal iteration order
     // (`query_forms`) so each buffered result list feeds its own form.
