@@ -69,6 +69,26 @@ describe("virtualWindow", () => {
   });
 });
 
+describe("library sort", () => {
+  it("sorts Recently added by file mtime, newest first", () => {
+    const list = [
+      { ...track("a", "Old"), added_ms: 1_000 },
+      { ...track("b", "New"), added_ms: 3_000 },
+      { ...track("c", "Mid"), added_ms: 2_000 },
+    ];
+    expect(sortLibraryTracks(list, "Recently added").map((item) => item.id)).toEqual(["b", "c", "a"]);
+  });
+
+  it("sorts Z-A and Duration", () => {
+    const list = [
+      { ...track("a", "Alpha"), duration_ms: 2_000 },
+      { ...track("b", "Beta"), duration_ms: 1_000 },
+    ];
+    expect(sortLibraryTracks(list, "Z-A").map((item) => item.id)).toEqual(["b", "a"]);
+    expect(sortLibraryTracks(list, "Duration").map((item) => item.id)).toEqual(["b", "a"]);
+  });
+});
+
 describe("shuffled Play", () => {
   it("can choose any track as the first song instead of pinning index zero", () => {
     expect(shuffledFirstTrack(snapshot.tracks, 0)?.id).toBe("a");

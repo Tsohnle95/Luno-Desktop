@@ -175,6 +175,12 @@ pub struct Track {
     pub artwork_url: Option<String>,
     pub favorite: bool,
     pub provider: Option<ProviderId>,
+    /// File modification time (ms since the Unix epoch) when known. Drives the
+    /// frontend "Recently added" sort; `None` for tracks whose file metadata is
+    /// unavailable. Omitted from the wire when absent to keep the shape
+    /// backward compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

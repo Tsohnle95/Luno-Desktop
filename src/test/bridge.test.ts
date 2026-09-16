@@ -224,6 +224,12 @@ describe("typed IPC bridge and projection", () => {
     expect(isValidLibraryResponse({ ...response, generation: -1 })).toBe(false);
     expect(isValidLibraryResponse({ ...response, tracks: null })).toBe(false);
     expect(isValidLibraryResponse({ ...response, tracks: [{ id: "broken" }] })).toBe(false);
+    const validTrack = { id: "t1", path: null, title: "Song", artist: null, album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null };
+    expect(isValidLibraryResponse({ ...response, tracks: [validTrack] })).toBe(true);
+    // Optional mtime for "Recently added"; unknown fields stay rejected.
+    expect(isValidLibraryResponse({ ...response, tracks: [{ ...validTrack, added_ms: 1_700_000_000_000 }] })).toBe(true);
+    expect(isValidLibraryResponse({ ...response, tracks: [{ ...validTrack, added_ms: "soon" }] })).toBe(false);
+    expect(isValidLibraryResponse({ ...response, tracks: [{ ...validTrack, bogus: 1 }] })).toBe(false);
   });
 
   it("projects lifecycle events and rejects stale generations", () => {

@@ -3909,6 +3909,15 @@ impl AppState {
                             error: None,
                         },
                     }));
+                    // The promoted M4A now lives in the playlist folder, but the
+                    // published snapshot's ordered_track_ids is built by the
+                    // scanner. Without this refresh the save reported "Added to
+                    // playlist" while the song stayed invisible until an
+                    // unrelated scan (the unstaged/download path already
+                    // rescans on job completion).
+                    if !receipt.already_saved {
+                        let _ = state.schedule_mutation_scan();
+                    }
                 }
                 Err(error) => {
                     state.publish(state.event(Generation(generation), Event::SaveState {
@@ -4491,6 +4500,15 @@ impl AppState {
                             id: provider.id,
                         }
                     }),
+                    added_ms: std::fs::metadata(&path)
+                        .and_then(|metadata| metadata.modified())
+                        .ok()
+                        .and_then(|modified| {
+                            modified
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .ok()
+                                .map(|elapsed| elapsed.as_millis().min(u64::MAX as u128) as u64)
+                        }),
                 });
                 ids.push(id);
             }

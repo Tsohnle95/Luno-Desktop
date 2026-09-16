@@ -8,7 +8,7 @@ export type SessionId = string;
 export type Generation = number;
 
 export interface ProviderId { provider: string; id: string }
-export interface Track { id: TrackId; path: string | null; title: string; artist: string | null; album: string | null; duration_ms: number | null; artwork_url: string | null; favorite: boolean; provider: ProviderId | null }
+export interface Track { id: TrackId; path: string | null; title: string; artist: string | null; album: string | null; duration_ms: number | null; artwork_url: string | null; favorite: boolean; provider: ProviderId | null; /** File mtime (ms since epoch) when known; drives "Recently added". */ added_ms?: number | null }
 export interface Playlist { id: PlaylistId; name: string; path: string | null; url: string | null; ordered_track_ids: TrackId[] }
 export interface LibrarySnapshot { version: ContractVersion; generation: Generation; tracks: Track[]; playlists: Playlist[] }
 export type PlaybackStatus = "stopped" | "playing" | "paused" | "failed";
@@ -195,7 +195,13 @@ function isEvent(v: unknown): v is Event {
   const generation = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
   const nonNegativeInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
   const provider = (value: unknown): value is ProviderId => exact(value, ["provider", "id"]) && id(value.provider) && id(value.id);
-  const track = (value: unknown): value is Track => exact(value, ["id", "path", "title", "artist", "album", "duration_ms", "artwork_url", "favorite", "provider"]) && id(value.id) && optionalString(value.path) && typeof value.title === "string" && optionalString(value.artist) && optionalString(value.album) && (value.duration_ms === null || nonNegativeInt(value.duration_ms)) && optionalString(value.artwork_url) && typeof value.favorite === "boolean" && (value.provider === null || provider(value.provider));
+  // `added_ms` is an OPTIONAL trailing field: the backend omits it when the
+  // file mtime is unknown, so require the core keys and only bound the extra.
+  const track = (value: unknown): value is Track => object(value)
+    && (["id", "path", "title", "artist", "album", "duration_ms", "artwork_url", "favorite", "provider"] as const).every((key) => key in value)
+    && Object.keys(value).every((key) => ["id", "path", "title", "artist", "album", "duration_ms", "artwork_url", "favorite", "provider", "added_ms"].includes(key))
+    && id(value.id) && optionalString(value.path) && typeof value.title === "string" && optionalString(value.artist) && optionalString(value.album) && (value.duration_ms === null || nonNegativeInt(value.duration_ms)) && optionalString(value.artwork_url) && typeof value.favorite === "boolean" && (value.provider === null || provider(value.provider))
+    && (value.added_ms === undefined || value.added_ms === null || nonNegativeInt(value.added_ms));
   const playlist = (value: unknown): value is Playlist => exact(value, ["id", "name", "path", "url", "ordered_track_ids"]) && id(value.id) && typeof value.name === "string" && optionalString(value.path) && optionalString(value.url) && Array.isArray(value.ordered_track_ids) && value.ordered_track_ids.every(id);
   const library = (value: unknown): value is LibrarySnapshot => exact(value, ["version", "generation", "tracks", "playlists"]) && value.version === CONTRACT_VERSION && generation(value.generation) && Array.isArray(value.tracks) && value.tracks.every(track) && Array.isArray(value.playlists) && value.playlists.every(playlist);
     const playback = (value: unknown): value is PlaybackSnapshot => exact(value, ["queue", "current_index", "shuffle", "repeat", "position_ms", "duration_ms", "status", "generation"]) && Array.isArray(value.queue) && value.queue.every(id) && (value.current_index === null || nonNegativeInt(value.current_index)) && typeof value.shuffle === "boolean" && ["off", "one", "all"].includes(String(value.repeat)) && nonNegativeInt(value.position_ms) && (value.duration_ms === null || nonNegativeInt(value.duration_ms)) && ["stopped", "playing", "paused", "failed"].includes(String(value.status)) && generation(value.generation);

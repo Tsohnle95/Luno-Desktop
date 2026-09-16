@@ -109,6 +109,12 @@ function scopeTracks(snapshot: LibrarySnapshot | null | undefined, scope: Librar
 export function sortLibraryTracks(tracks: Track[], sort: LibrarySort): Track[] {
   return [...tracks].sort((a, b) => {
     if (sort === "Duration") return (a.duration_ms ?? 0) - (b.duration_ms ?? 0);
+    if (sort === "Recently added") {
+      // Newest file first; tracks with no mtime sort last, ties fall through to
+      // the alphabetical comparison below so the order stays deterministic.
+      const delta = (b.added_ms ?? 0) - (a.added_ms ?? 0);
+      if (delta !== 0) return delta;
+    }
     const left = `${a.artist ?? ""} ${a.title}`.toLocaleLowerCase();
     const right = `${b.artist ?? ""} ${b.title}`.toLocaleLowerCase();
     return sort === "Z-A" ? right.localeCompare(left) : left.localeCompare(right);
@@ -164,7 +170,7 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
   const needle = useMemo(() => normalizeFilterText(query), [query]);
   const tracks = useMemo(() => {
     const filtered = scopeTracks(snapshot, selectedScope).filter((track) => normalizeFilterText(`${track.title} ${track.artist ?? ""} ${track.album ?? ""}`).includes(needle));
-    return sort === "Recently added" ? filtered : sortLibraryTracks(filtered, sort);
+    return sortLibraryTracks(filtered, sort);
   }, [snapshot, selectedScope, needle, sort]);
   // Unfiltered scope size: the hero must report the LIBRARY size even when the
   // active query matches nothing — a zero-match filter previously made the hero
@@ -221,6 +227,12 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
     scheduleScrollUpdate();
   };
 
+  // Sort is per-scope, like the original desktop app: switching scope restores
+  // that scope's default instead of leaving the previous scope's choice (e.g.
+  // "Recently added") applied to a list that cannot honor it.
+  useEffect(() => {
+    setSort(selectedScope === "unsorted" ? "Recently added" : "A-Z");
+  }, [selectedScope]);
   // Keep the DOM scroller and state in agreement when the list resets.
   useEffect(() => {
     setScrollTop(0);
