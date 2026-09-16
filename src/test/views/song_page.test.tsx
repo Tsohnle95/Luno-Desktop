@@ -95,6 +95,17 @@ describe("Music-mode hover controls", () => {
   });
 });
 
+describe("Audible recommendation identity", () => {
+  const recommendationTrack: Track = { id: "Other-Similar", path: null, title: "Similar", artist: "Other", album: null, duration_ms: null, artwork_url: "rec.png", favorite: false, provider: null };
+
+  it("renders the recommendation's title/art while its preview owns the output", () => {
+    const html = renderToStaticMarkup(<SongPageView track={track} nowPlaying={recommendationTrack} backendAvailable />);
+    expect(html).toContain("Similar");
+    expect(html).toContain("rec.png");
+    expect(html).not.toContain(">Seed</h1>");
+  });
+});
+
 describe("Discovery mode toggle", () => {
   const recs: Recommendation[] = [{ artist: "Other", title: "Similar", match_score: 0.9, artwork_url: null }];
 

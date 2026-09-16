@@ -12,6 +12,9 @@ export function VideoModePill({ enabled, onToggle }: { enabled: boolean; onToggl
 }
 
 export interface SongPageViewProps { track?: Track | null;
+  /** The AUDIBLE track when it differs from `track` (a recommendation preview):
+   * drives the title, artwork, backdrop, and video correlation. */
+  nowPlaying?: Track | null;
   recommendations?: Recommendation[];
   recommendationState?: RecommendationState;
   recommendationError?: string | null;
@@ -44,11 +47,11 @@ export interface SongPageViewProps { track?: Track | null;
   onVideoModeChange?: (enabled: boolean) => void;
 }
 
-export function SongPageView({ track = null, recommendations = [], recommendationState = "idle", recommendationError, recommendationLoadMoreError, recommendationsExhausted, recommendationsLoadingMore, hasApiKey = true, sessionActive = false, discoverMode = false, onToggleDiscoverMode, discoverHint, onRetryRecommendations, onRefreshRecommendations, onLoadMoreRecommendations, onPreviewRecommendation, onSaveRecommendation, onFavoriteToggle, backendAvailable = true, preview = null, saved = {}, playlists = [], jobs = {}, onCreatePlaylist, video, videoConnection = "disconnected", onLoadVideo, videoMode = false, onVideoModeChange }: SongPageViewProps) {
-  const [lastTrack, setLastTrack] = useState<Track | null>(track);
+export function SongPageView({ track = null, nowPlaying = null, recommendations = [], recommendationState = "idle", recommendationError, recommendationLoadMoreError, recommendationsExhausted, recommendationsLoadingMore, hasApiKey = true, sessionActive = false, discoverMode = false, onToggleDiscoverMode, discoverHint, onRetryRecommendations, onRefreshRecommendations, onLoadMoreRecommendations, onPreviewRecommendation, onSaveRecommendation, onFavoriteToggle, backendAvailable = true, preview = null, saved = {}, playlists = [], jobs = {}, onCreatePlaylist, video, videoConnection = "disconnected", onLoadVideo, videoMode = false, onVideoModeChange }: SongPageViewProps) {
+  const [lastTrack, setLastTrack] = useState<Track | null>(nowPlaying ?? track);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => { if (track) setLastTrack(track); }, [track]);
+  useEffect(() => { const next = nowPlaying ?? track; if (next) setLastTrack(next); }, [nowPlaying, track]);
   // Close the ⋯ menu on any outside click or Escape — standard popover rules.
   useEffect(() => {
     if (!menuOpen) return;
@@ -60,7 +63,7 @@ export function SongPageView({ track = null, recommendations = [], recommendatio
     document.addEventListener("keydown", onKeyDown);
     return () => { document.removeEventListener("pointerdown", onPointerDown); document.removeEventListener("keydown", onKeyDown); };
   }, [menuOpen]);
-  const displayedTrack = track ?? lastTrack;
+  const displayedTrack = nowPlaying ?? track ?? lastTrack;
   // SCROLL FIX (v2): the page has TWO nested scrollers (.luno-song-page-scroll
   // inner, .luno-main-content outer) and rich children (playing <video>) can
   // swallow vertical wheel deltas in WKWebView. The first version pinned all
@@ -104,10 +107,10 @@ export function SongPageView({ track = null, recommendations = [], recommendatio
         <div className="luno-song-media-slot" data-video-slot="song-page"><VideoStage {...video} status={videoConnection === "loading" ? "loading" : videoConnection === "disconnected" ? "not-checked" : video?.status} artworkUrl={video?.artworkUrl ?? displayedTrack?.artwork_url} artworkAlt={displayedTrack ? `${displayedTrack.title} artwork` : "Artwork unavailable"} videoModeEnabled={videoMode} onVideoModeChange={onVideoModeChange} /><span className="luno-video-connection" role="status">{videoConnection === "loading" ? "Connecting video preview..." : videoConnection === "disconnected" ? "Video preview unavailable; showing artwork." : null}</span>{onLoadVideo && backendAvailable && videoConnection === "connected" && videoMode && !video?.src && (video?.status === "unavailable" || video?.status === "error" || video?.status === "fallback") && <button type="button" className="luno-video-load" onClick={onLoadVideo}>{video?.status === "unavailable" ? "Video unavailable — retry?" : "Retry music video"}</button>}</div>
         <div className="luno-song-meta">{displayedTrack ? <><h1>{displayedTrack.title}</h1><p>{displayedTrack.artist || "Unknown artist"}</p></> : <><h1>Nothing playing</h1><p>Play a song to open its page.</p></>}</div>
         {onToggleDiscoverMode && <div className="luno-discover-toggle" style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "center", marginBottom: 16, flexWrap: "wrap" }}>
-          <button type="button" aria-pressed={discoverMode} aria-label={discoverMode ? "Disable discovery mode" : "Enable discovery mode"} disabled={!backendAvailable || (!discoverMode && recommendations.length === 0)} onClick={onToggleDiscoverMode}>{discoverMode ? "Discovery mode: On" : "Discovery mode: Off"}</button>
+          <button type="button" aria-pressed={discoverMode} aria-label={discoverMode ? "Disable discovery mode" : "Enable discovery mode"} disabled={!backendAvailable} onClick={onToggleDiscoverMode}>{discoverMode ? "Discovery mode: On" : "Discovery mode: Off"}</button>
           <span role="status" style={{ fontSize: 13, color: "var(--luno-text-2)" }}>{discoverHint ?? (discoverMode ? "Autoplay follows recommendations; Next/Previous walk them. Turn off to restore your library queue." : "Turn on to pre-load the next recommendations and let autoplay follow them.")}</span>
         </div>}
-        <Recommendations seed={displayedTrack} items={recommendations} state={recommendationState} error={recommendationError} loadMoreError={recommendationLoadMoreError} exhausted={recommendationsExhausted} loadingMore={recommendationsLoadingMore} hasApiKey={hasApiKey} sessionActive={sessionActive} discoverMode={discoverMode} onRetry={onRetryRecommendations} onRefresh={onRefreshRecommendations} onLoadMore={onLoadMoreRecommendations} onPreview={onPreviewRecommendation} onSave={onSaveRecommendation} preview={preview} saved={saved} playlists={playlists} jobs={jobs} backendAvailable={backendAvailable} onCreatePlaylist={onCreatePlaylist} />
+        <Recommendations seed={track ?? lastTrack} items={recommendations} state={recommendationState} error={recommendationError} loadMoreError={recommendationLoadMoreError} exhausted={recommendationsExhausted} loadingMore={recommendationsLoadingMore} hasApiKey={hasApiKey} sessionActive={sessionActive} discoverMode={discoverMode} onRetry={onRetryRecommendations} onRefresh={onRefreshRecommendations} onLoadMore={onLoadMoreRecommendations} onPreview={onPreviewRecommendation} onSave={onSaveRecommendation} preview={preview} saved={saved} playlists={playlists} jobs={jobs} backendAvailable={backendAvailable} onCreatePlaylist={onCreatePlaylist} />
       </main>
     </div>
   </div>;
