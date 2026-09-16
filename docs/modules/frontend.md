@@ -49,6 +49,12 @@ envelope shapes (`docs/modules/contracts.md`).
   library list applies — preserve both when touching list rendering.
 - Discover/preview fetching is visibility-scoped: effects fire only while
   a Discover surface is visible.
+- The song page, player bar, queue, and video correlation follow the AUDIBLE
+  track: during a focused preview or discover-mode recommendation the shell
+  passes that recommendation as `nowPlaying` instead of the library track still
+  behind it. Queue rows resolve recommendation keys and keep placeholder slots
+  for unresolvable ids so row indices stay aligned with the backend queue.
+- "Recently added" sorts by `Track.added_ms` (file mtime), not queue order.
 - Video element behavior is CSS-driven; fullscreen toggles must not call
   `window.setFullscreen()` (blacks out WKWebView over the hide
   transition).

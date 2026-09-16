@@ -67,6 +67,13 @@ What it does not own: library snapshots and promotion targets
 - Discovery metadata is validated before preview/download work; preview
   assets stay temporary and hidden from the library until an explicit
   save promotes them.
+- Preview preparation/playback failures surface only through the preview
+  snapshot's per-row `unavailable` state; the retrying prefetch pipeline does
+  not publish global error events (which stacked an undismissable banner).
+- Discover mode projects its rolling recommendation window into the queue
+  immediately — pending items are prepared on selection — so Next/Previous walk
+  the temporary list instead of falling through to the physical library. It
+  takes ownership from an active preview/prefetch session rather than racing it.
 - Preview percentages are raw yt-dlp media-transfer percentages. Helper
   startup and source resolution remain indeterminate because no byte total
   exists yet; fast preview files may complete between progress samples and

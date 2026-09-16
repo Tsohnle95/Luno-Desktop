@@ -142,9 +142,16 @@ impl DiscoverMode {
             self.cursor = position.saturating_add(1);
         }
         self.adopt_window();
-        self.recommendations
+        // The window is projected up front, so "needs preparing" is defined by
+        // the ASSET table, not queue membership. Only look inside the rolling
+        // window: past items were already handed off.
+        let end = self
+            .cursor
+            .saturating_add(ROLLING_WINDOW)
+            .min(self.recommendations.len());
+        self.recommendations[self.cursor..end]
             .iter()
-            .find(|id| !self.queued.contains(*id) && !self.assets.contains_key(*id))
+            .find(|id| !self.assets.contains_key(*id))
             .cloned()
             .map_or(DiscoverAction::Noop, |id| DiscoverAction::Prepare { id })
     }

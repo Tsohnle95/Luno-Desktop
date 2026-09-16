@@ -282,7 +282,9 @@ fn ref_preview_session_and_discover_mode_cover_windows_handoff_and_intervention(
             id: recs[2].clone()
         }
     );
-    assert!(matches!(
+    // The rolling window is projected when the session enables, so a completion
+    // only fills in the asset table — it does not re-shape the queue.
+    assert_eq!(
         mode.ready_asset(
             1,
             ReadyAsset {
@@ -290,8 +292,8 @@ fn ref_preview_session_and_discover_mode_cover_windows_handoff_and_intervention(
                 path: PathBuf::from("c.mp3")
             }
         ),
-        DiscoverAction::QueueChanged { .. }
-    ));
+        DiscoverAction::Noop
+    );
     assert!(matches!(
         mode.disable(2),
         DiscoverAction::Restore { queue, index: 0 }

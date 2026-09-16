@@ -51,6 +51,11 @@ What it does not own: library snapshots and track identity
 
 - Skips walk the existing shuffled order — `Next`/`Previous` never
   rebuild or re-shuffle. Toggling shuffle off restores true playlist order.
+- The backend `PlaybackSnapshot.current_index` is authoritative; the frontend
+  never re-derives it from `track_started` (duplicate ids made first-occurrence
+  `indexOf` regress the queue panel).
+- Removing the currently-playing queue row restarts (or stops) output so audio
+  matches the newly-current track instead of leaving the removed song playing.
 - Single-instance guard: a localhost port claim (`LUNO_INSTANCE_PORT`
   override for QA) prevents two instances last-writer-winning shared
   config.
