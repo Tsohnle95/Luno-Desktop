@@ -933,6 +933,36 @@ fn discover_mode_enables_adopts_advances_and_restores() {
 }
 
 #[test]
+fn discover_mode_next_walks_recommendations_not_the_physical_library() {
+    let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
+    let state = isolated_preview_state("discover-next", 16);
+    state.set_preview_toolchain(Some(helper), Some(ffmpeg));
+    let seed = TrackId("seed".into());
+    let next = TrackId("next".into());
+    state.set_playing(seed.clone(), vec![seed.clone(), next.clone()]);
+    let seeds = vec![preview_seed("Artist0", "Track0"), preview_seed("Artist1", "Track1")];
+    state
+        .dispatch(command("next-enable", Command::DiscoverEnable { seeds: seeds.clone() }))
+        .expect("enable must start the session");
+
+    // The projection exposes the recommendation block immediately, before any
+    // asset is staged, so the very next skip targets a recommendation.
+    let playback = playback_snapshots(&state).into_iter().last().expect("queue snapshot");
+    assert_eq!(playback.queue.first(), Some(&seed));
+    assert_eq!(playback.queue.get(1), Some(&TrackId("Artist0-Track0".into())));
+
+    let value = state.dispatch(command("next", Command::Next)).expect("next must dispatch");
+    let playback: PlaybackSnapshot = serde_json::from_value(value).expect("next returns a snapshot");
+    let index = playback.current_index.expect("current index") as usize;
+    assert_eq!(
+        playback.queue[index],
+        TrackId("Artist0-Track0".into()),
+        "Next must select the recommendation, not the library successor: {playback:?}"
+    );
+    state.cleanup_previews();
+}
+
+#[test]
 fn discover_mode_handoff_ends_without_restoring_when_the_queue_is_replaced() {
     let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
     let state = isolated_preview_state("discover-handoff", 16);

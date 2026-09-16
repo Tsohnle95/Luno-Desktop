@@ -17,6 +17,21 @@ fn discover_adopts_ready_assets_and_restores_captured_queue() {
 }
 
 #[test]
+fn discover_projects_pending_recommendations_so_transport_walks_them() {
+    // Regression: enable only adopted ALREADY-STAGED assets, so until a
+    // download finished the projection equalled the physical queue and
+    // Next/Previous walked the library instead of the temporary list.
+    let recs = vec![id("r0"), id("r1"), id("r2")];
+    let mut d = DiscoverMode::new(1, vec![id("seed"), id("next")], 0, recs).unwrap();
+    assert!(matches!(d.enable(), DiscoverAction::QueueChanged { .. }));
+    assert_eq!(d.queued_assets().len(), 3, "pending window is projected immediately");
+    assert_eq!(
+        d.projected_queue(),
+        vec![id("seed"), id("r0"), id("r1"), id("r2"), id("next")]
+    );
+}
+
+#[test]
 fn stale_ready_asset_cannot_be_adopted() {
     let mut d = DiscoverMode::new(1, vec![id("seed")], 0, vec![id("r")]).unwrap();
     assert_eq!(d.ready_asset(2, ReadyAsset { id: id("r"), path: "r.mp3".into() }), DiscoverAction::Noop);

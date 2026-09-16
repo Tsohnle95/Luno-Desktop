@@ -108,8 +108,8 @@ impl DiscoverMode {
         DiscoverAction::Noop
     }
 
-    /// Enables Discover and adopts every ready recommendation in order. It
-    /// does not start playback: the ordinary completion path autoplays it.
+    /// Enables Discover and projects the rolling window in order. It does not
+    /// start playback: the ordinary completion path autoplays it.
     pub fn enable(&mut self) -> DiscoverAction {
         if self.active && self.discover {
             return DiscoverAction::Noop;
@@ -184,6 +184,12 @@ impl DiscoverMode {
         queue
     }
 
+    /// Adopts the rolling window into the projection. Items enter `queued`
+    /// whether or not their asset is staged yet: `projected_queue` is what the
+    /// transport walks, so leaving pending items out made Next/Previous fall
+    /// through to the physical library until a download happened to finish
+    /// (the reported "discover Next plays my library"). A pending id whose path
+    /// is unresolved is prepared on selection instead of being skipped.
     fn adopt_window(&mut self) {
         for id in self
             .recommendations
@@ -191,7 +197,7 @@ impl DiscoverMode {
             .skip(self.cursor)
             .take(ROLLING_WINDOW)
         {
-            if self.assets.contains_key(id) && !self.queued.contains(id) {
+            if !self.queued.contains(id) {
                 self.queued.push(id.clone());
             }
         }
@@ -201,5 +207,39 @@ impl DiscoverMode {
             queue: self.projected_queue(),
             index: self.physical_index,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(value: &str) -> TrackId {
+        TrackId::new(value).unwrap()
+    }
+
+    #[test]
+    fn enable_projects_pending_recommendations_so_transport_walks_them() {
+        // Regression: enable only adopted ALREADY-STAGED assets, so until a
+        // download finished the projection equalled the physical queue and
+        // Next/Previous walked the library instead of the temporary list.
+        let recs = vec![id("r0"), id("r1"), id("r2")];
+        let mut mode = DiscoverMode::new(1, vec![id("seed"), id("next")], 0, recs).unwrap();
+        assert!(matches!(mode.enable(), DiscoverAction::QueueChanged { .. }));
+        assert_eq!(mode.queued_assets().len(), 3, "pending window is projected immediately");
+        assert_eq!(
+            mode.projected_queue(),
+            vec![id("seed"), id("r0"), id("r1"), id("r2"), id("next")]
+        );
+    }
+
+    #[test]
+    fn stale_generation_ready_asset_is_ignored() {
+        let mut mode = DiscoverMode::new(1, vec![id("seed")], 0, vec![id("r")]).unwrap();
+        assert_eq!(
+            mode.ready_asset(2, ReadyAsset { id: id("r"), path: "r.mp3".into() }),
+            DiscoverAction::Noop
+        );
+        assert!(mode.path_for(&id("r")).is_none());
     }
 }

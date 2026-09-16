@@ -3349,6 +3349,7 @@ impl AppState {
         if active {
             return self.discover_snapshot_value();
         }
+        self.handoff_preview_to_discover();
         *self.discover_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.to_vec();
         self.cancel_discover_tasks();
         let generation = self.next_generation().0;
@@ -3491,6 +3492,29 @@ impl AppState {
         self.publish_discover_snapshot(generation);
     }
 
+    /// Ends a focused/prefetch preview session when discover mode takes over.
+    /// The two temporary-queue mechanisms must not both drive the asset store
+    /// and output; the queue itself is left for discover to replace with its
+    /// projection.
+    fn handoff_preview_to_discover(&self) {
+        let active = self
+            .preview_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|session| session.is_active());
+        if !active {
+            return;
+        }
+        self.tasks.cancel_key("preview-heartbeat");
+        self.cancel_preview_tasks();
+        let generation = self.next_generation().0;
+        if let Some(session) = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            session.invalidate(generation);
+        }
+        self.publish_preview_snapshot(generation);
+    }
+
     /// Leaves discover mode for an explicit recommendation tap without
     /// deleting staged assets. The focused preview session can then adopt the
     /// files that were already downloaded by discover mode.
@@ -3538,7 +3562,7 @@ impl AppState {
                             mode.ready_asset(
                                 generation,
                                 ReadyAsset {
-                                    id: TrackId(key),
+                                    id: TrackId(key.clone()),
                                     path,
                                 },
                             )
@@ -3549,6 +3573,18 @@ impl AppState {
                         state.discover_refill(generation);
                         state.discover_sync_queue();
                         state.publish_discover_snapshot(generation);
+                        // If the transport is parked on this recommendation
+                        // because it was still staging, start it now.
+                        #[cfg(target_os = "macos")]
+                        {
+                            let target = TrackId(key);
+                            let is_current = state.playback.lock().unwrap_or_else(|e| e.into_inner()).current() == Some(&target);
+                            let not_playing = *state.playback_status.lock().unwrap_or_else(|e| e.into_inner())
+                                != crate::contracts::types::PlaybackStatus::Playing;
+                            if is_current && not_playing {
+                                let _ = state.start_current_track();
+                            }
+                        }
                     }
                     Ok(PreviewCompletion::Progress { .. }) => {
                         // Discover mode exposes aggregate readiness; progress
@@ -3915,7 +3951,7 @@ impl AppState {
                     // playlist" while the song stayed invisible until an
                     // unrelated scan (the unstaged/download path already
                     // rescans on job completion).
-                    if !receipt.already_saved {
+                    if !receipt.already_saved && !state.scan_roots().is_empty() {
                         let _ = state.schedule_mutation_scan();
                     }
                 }
@@ -5760,15 +5796,46 @@ fn promotion_error(error: PromotionError) -> ContractError {
                     map.get(&healed).cloned()
                 }).or_else(|| self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|mode| mode.path_for(&track_id).cloned())),
             }
-        }
-        .ok_or_else(|| {
-            eprintln!("[luno-play] rejected: track not found locally: {track_id:?}");
-            ContractError {
-                code: ErrorCode::NotFound,
-                message: "track is not available locally".into(),
+        };
+        let Some(path) = path else {
+            // Discover mode projects recommendation ids before their asset is
+            // staged. Selecting one prepares it and HOLDS playback on that
+            // selection; the discover driver starts it once the asset lands.
+            // Failing here instead fell back to a library track ("Next plays my
+            // library").
+            let discover_generation = self
+                .discover
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .filter(|mode| mode.is_active() && mode.recommendations().contains(&track_id))
+                .map(|mode| mode.generation());
+            let Some(generation) = discover_generation else {
+                eprintln!("[luno-play] rejected: track not found locally: {track_id:?}");
+                return Err(ContractError {
+                    code: ErrorCode::NotFound,
+                    message: "track is not available locally".into(),
+                    retryable: false,
+                });
+            };
+            if let Ok(mut backend) = self.audio.lock() { let _ = backend.stop(); }
+            self.tasks.cancel_key("playback-heartbeat");
+            self.tasks.cancel_key("preview-heartbeat");
+            if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.stop(); }
+            *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Stopped;
+            self.ensure_discover_prepared(generation, &track_id);
+            let ack = self.playback_snapshot(
+                crate::contracts::types::PlaybackStatus::Stopped,
+                Duration::ZERO,
+                None,
+            );
+            self.publish_playback(ack.clone(), Some(track_id));
+            return serde_json::to_value(ack).map_err(|e| ContractError {
+                code: ErrorCode::Internal,
+                message: e.to_string(),
                 retryable: false,
-            }
-        })?;
+            });
+        };
         self.tasks.cancel_key("preview-heartbeat");
         self.purge_discover_deferred();
         let ack = self.playback_snapshot(
