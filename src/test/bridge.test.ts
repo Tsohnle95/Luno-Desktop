@@ -270,6 +270,14 @@ describe("typed IPC bridge and projection", () => {
     expect(store.getSnapshot().playback).toMatchObject({ queue: ["b", "a", "x"], current_index: 1, position_ms: 12, duration_ms: 90 });
   });
 
+  it("keeps the authoritative queue index instead of re-deriving it from track_started", () => {
+    const store = createBackendProjection();
+    // Duplicate ids are legal in a queue; the backend index is authoritative.
+    store.apply({ ...event({ type: "playback_snapshot", payload: { snapshot: { queue: ["a", "b", "a"], current_index: 2, shuffle: false, repeat: "off", position_ms: 0, duration_ms: null, status: "playing", generation: 5 } } }, 5), event_id: "event-20" });
+    store.apply({ ...event({ type: "track_started", payload: { track_id: "a" } }, 5), event_id: "event-21" });
+    expect(store.getSnapshot().playback?.current_index).toBe(2);
+  });
+
   it("projects preview snapshots and tracks their own generation watermark", () => {
     const store = createBackendProjection();
     store.apply({ ...event({ type: "preview_snapshot", payload: { snapshot: { generation: 7, active: true, current: "Artist-Track", window: ["Artist-Track"], prepared: ["Artist-Track"], unavailable: [], cancelled: false } } }, 7), event_id: "event-p1" });

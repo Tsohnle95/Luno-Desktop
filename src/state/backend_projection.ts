@@ -67,11 +67,14 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
     case "save_state": return { ...next, saved: { ...next.saved, [event.payload.state.key]: event.payload.state } };
     case "video_state": return { ...next, video: event.payload.state };
     case "track_started": {
-      const playback = next.playback;
+      // `track_started` rides the SAME generation as its authoritative
+      // playback_snapshot, which already carries the true `current_index`.
+      // Re-deriving it here with `queue.indexOf` regressed to the FIRST
+      // occurrence of duplicate ids and ignored queue entries the frontend had
+      // not resolved, so the queue panel's Now playing / Next up disagreed with
+      // what the backend would actually play. Trust the snapshot.
       const recentHistory = [event.payload.track_id, ...next.recentHistory.filter((id) => id !== event.payload.track_id)].slice(0, 100);
-      if (!playback) return { ...next, recentHistory };
-      const index = playback.queue.indexOf(event.payload.track_id as TrackId);
-      return { ...next, recentHistory, playback: { ...playback, current_index: index < 0 ? playback.current_index : index } };
+      return { ...next, recentHistory };
     }
     case "queue_changed": return next.playback ? { ...next, playback: { ...next.playback, queue: event.payload.queue } } : next;
     case "job_updated": return { ...next, jobs: { ...next.jobs, [event.payload.job.id]: event.payload.job } };

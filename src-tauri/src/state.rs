@@ -5483,9 +5483,35 @@ fn promotion_error(error: PromotionError) -> ContractError {
     }
 
     fn queue_remove(&self, index: usize) -> Result<Value, ContractError> {
-        if !self.playback.lock().unwrap_or_else(|e| e.into_inner()).remove(index) {
-            return Err(ContractError::invalid("queue index is out of range"));
+        let was_current = {
+            let mut queue = self.playback.lock().unwrap_or_else(|e| e.into_inner());
+            let was_current = queue.current_index() == Some(index);
+            if !queue.remove(index) {
+                return Err(ContractError::invalid("queue index is out of range"));
+            }
+            was_current
+        };
+        // Removing the PLAYING row re-points current_index at the track that
+        // shifted into its slot; without restarting audio the old track keeps
+        // sounding while the published snapshot names a different one. Align
+        // the output with the (new) current track, or stop when the queue emptied.
+        #[cfg(target_os = "macos")]
+        if was_current {
+            let has_current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().is_some();
+            if has_current {
+                return self.start_current_track();
+            }
+            if let Ok(mut backend) = self.audio.lock() {
+                let _ = backend.stop();
+            }
+            if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                clock.stop();
+            }
+            *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) =
+                crate::contracts::types::PlaybackStatus::Stopped;
         }
+        #[cfg(not(target_os = "macos"))]
+        let _ = was_current;
         self.publish_queue_snapshot();
         Ok(Value::Null)
     }
