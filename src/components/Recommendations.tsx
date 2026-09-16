@@ -187,11 +187,14 @@ export function Recommendations({
             else if (saveState?.state === "failed") {
               statusText = saveState.error ? `Save failed: ${saveState.error}` : "Save failed";
               statusIsError = true;
-            } else if (isCurrent) statusText = "Previewing now";
-            else if (isUnavailable) {
+            } else if (isUnavailable) {
+              // Unavailable must outrank "current": a failed current item keeps
+              // its session slot, so checking `isCurrent` first mislabelled the
+              // dead preview as "Previewing now".
               statusText = "Preview unavailable";
               statusIsError = true;
-            } else if (item.status === "failed" && item.error) {
+            } else if (isCurrent) statusText = "Previewing now";
+            else if (item.status === "failed" && item.error) {
               statusText = item.error;
               statusIsError = true;
             } else if (isPreparingPreview && previewProgress === null) statusText = "Finding a playable source…";

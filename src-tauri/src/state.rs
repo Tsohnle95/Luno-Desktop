@@ -3019,6 +3019,27 @@ impl AppState {
         if index.is_some() { let _ = self.start_current_track(); }
     }
 
+    /// A preview asset that could not be loaded/played must stop the transport
+    /// from reporting the (silent) recommendation as playing.
+    #[cfg(target_os = "macos")]
+    fn publish_preview_failure_status(&self) {
+        if let Ok(mut backend) = self.audio.lock() {
+            let _ = backend.stop();
+        }
+        if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            clock.stop();
+        }
+        *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) =
+            crate::contracts::types::PlaybackStatus::Stopped;
+        *self.current_track.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let snapshot = self.playback_snapshot(
+            crate::contracts::types::PlaybackStatus::Stopped,
+            Duration::ZERO,
+            None,
+        );
+        self.publish_playback(snapshot, None);
+    }
+
     #[cfg(target_os = "macos")]
     fn play_preview_audio(&self, key: TrackId, path: PathBuf, generation: u64) {
         self.tasks.cancel_key("playback-heartbeat");
@@ -3046,8 +3067,11 @@ impl AppState {
                         // "Previewing now" with a frozen footer tracker.
                         let action = state.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &key)).unwrap_or(SessionAction::Ended);
                         // Per-row failure only; the global error stream is for
-                        // commands, not a retrying autoplay pipeline.
+                        // commands, not a retrying autoplay pipeline. The
+                        // transport must also stop claiming it is playing: the
+                        // stream was stopped before the load attempt.
                         state.publish_preview_snapshot(generation);
+                        state.publish_preview_failure_status();
                         state.handle_session_action(action, generation);
                         return;
                     }
@@ -3061,6 +3085,7 @@ impl AppState {
                     drop(backend);
                     let action = state.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &key)).unwrap_or(SessionAction::Ended);
                     state.publish_preview_snapshot(generation);
+                    state.publish_preview_failure_status();
                     state.handle_session_action(action, generation);
                     return;
                 }
@@ -3391,7 +3416,21 @@ impl AppState {
             // a new song deterministic.
             return self.discover_snapshot_value();
         }
+        // A recommendation may be sounding. Stop it BEFORE teardown deletes the
+        // staged file, then restore + resume the captured library seed so the
+        // picture/queue and the audio agree when the toggle goes off.
+        let was_playing = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner())
+            == crate::contracts::types::PlaybackStatus::Playing;
+        if was_playing {
+            if let Ok(mut backend) = self.audio.lock() {
+                let _ = backend.stop();
+            }
+        }
         self.end_discover(true);
+        #[cfg(target_os = "macos")]
+        if was_playing {
+            let _ = self.start_current_track();
+        }
         self.discover_snapshot_value()
     }
 
@@ -3497,15 +3536,19 @@ impl AppState {
     /// and output; the queue itself is left for discover to replace with its
     /// projection.
     fn handoff_preview_to_discover(&self) {
-        let active = self
-            .preview_session
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .is_some_and(|session| session.is_active());
+        let (active, is_prefetch) = {
+            let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
+            match session.as_ref() {
+                Some(session) if session.is_active() => (true, session.is_prefetch()),
+                _ => (false, true),
+            }
+        };
         if !active {
             return;
         }
+        let was_playing = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner())
+            == crate::contracts::types::PlaybackStatus::Playing;
+        self.tasks.cancel_key("playback-heartbeat");
         self.tasks.cancel_key("preview-heartbeat");
         self.cancel_preview_tasks();
         let generation = self.next_generation().0;
@@ -3513,6 +3556,21 @@ impl AppState {
             session.invalidate(generation);
         }
         self.publish_preview_snapshot(generation);
+        // A focused preview owns the output until invalidated. Stop it so the
+        // (still-audible) recommendation does not keep sounding while every
+        // surface names the library seed. A prefetch session never played.
+        if was_playing && !is_prefetch {
+            if let Ok(mut backend) = self.audio.lock() {
+                let _ = backend.stop();
+            }
+            if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                clock.stop();
+            }
+            *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) =
+                crate::contracts::types::PlaybackStatus::Stopped;
+            *self.current_track.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            self.publish_queue_snapshot();
+        }
     }
 
     /// Leaves discover mode for an explicit recommendation tap without
@@ -3590,8 +3648,28 @@ impl AppState {
                         // Discover mode exposes aggregate readiness; progress
                         // is published by the focused preview driver.
                     }
-                    Ok(PreviewCompletion::Failed { .. }) => {
+                    Ok(PreviewCompletion::Failed { key, error }) => {
+                        eprintln!("[luno-discover] preparation failed for {key}: {error}");
+                        let id = TrackId::new(key.clone()).unwrap_or_else(|_| TrackId(key.clone()));
+                        let first = discover
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .as_mut()
+                            .map(|mode| mode.note_failure(generation, &id))
+                            .unwrap_or(false);
                         state.publish_discover_snapshot(generation);
+                        // Discover is user-initiated and otherwise silent (the
+                        // transport simply parks when nothing stages); report
+                        // the first failure once so the dead-end is explicable.
+                        if first {
+                            state.publish(state.event(Generation(generation), Event::Error {
+                                error: ContractError {
+                                    code: ErrorCode::Unavailable,
+                                    message: format!("Discovery could not prepare recommendations: {error}"),
+                                    retryable: true,
+                                },
+                            }));
+                        }
                     }
                     Err(_) => {}
                 }
@@ -5535,7 +5613,9 @@ fn promotion_error(error: PromotionError) -> ContractError {
         if was_current {
             let has_current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().is_some();
             if has_current {
-                return self.start_current_track();
+                // Even if the replacement track cannot start, the removal must
+                // still be published so the panel drops the removed row.
+                return self.start_current_track().inspect_err(|_| self.publish_queue_snapshot());
             }
             if let Ok(mut backend) = self.audio.lock() {
                 let _ = backend.stop();
@@ -5829,7 +5909,9 @@ fn promotion_error(error: PromotionError) -> ContractError {
                 Duration::ZERO,
                 None,
             );
-            self.publish_playback(ack.clone(), Some(track_id));
+            // No TrackStarted: the recommendation has not actually played yet,
+            // so it must not enter recent history or count as a play.
+            self.publish_playback(ack.clone(), None);
             return serde_json::to_value(ack).map_err(|e| ContractError {
                 code: ErrorCode::Internal,
                 message: e.to_string(),

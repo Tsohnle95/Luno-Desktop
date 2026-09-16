@@ -197,6 +197,21 @@ describe("Recommendation preview progress", () => {
     expect(state.prepared).toBe(false);
   });
 
+  it("reports a failed current preview as unavailable, not previewing", () => {
+    // A failed current item keeps its session slot, so the row must rank
+    // `unavailable` above `current` or the dead preview reads "Previewing now".
+    const html = renderToStaticMarkup(
+      <Recommendations
+        seed={track}
+        items={[first]}
+        state="ready"
+        preview={{ generation: 1, active: true, current: firstKey, window: [firstKey], prepared: [], unavailable: [firstKey], cancelled: false, progress: [] }}
+      />
+    );
+    expect(html).toContain("Preview unavailable");
+    expect(html).not.toContain("Previewing now");
+  });
+
   it("shows source resolution only for the serialized active item", () => {
     const html = renderToStaticMarkup(
       <Recommendations

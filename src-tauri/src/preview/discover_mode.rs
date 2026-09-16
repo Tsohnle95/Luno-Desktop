@@ -36,6 +36,9 @@ pub struct DiscoverMode {
     cursor: usize,
     discover: bool,
     active: bool,
+    /// One actionable preparation-failure error per session (the pipeline can
+    /// fail several recommendations in a row; a banner each time is noise).
+    failure_reported: bool,
 }
 
 impl DiscoverMode {
@@ -58,6 +61,7 @@ impl DiscoverMode {
             cursor: 0,
             discover: false,
             active: false,
+            failure_reported: false,
         })
     }
 
@@ -117,14 +121,27 @@ impl DiscoverMode {
         self.active = true;
         self.discover = true;
         self.cursor = 0;
+        self.failure_reported = false;
         self.adopt_window();
         self.queue_action()
+    }
+
+    /// Returns true the first time a preparation failure should be surfaced for
+    /// this session, so the driver publishes a single dismissible error instead
+    /// of one per failing recommendation.
+    pub fn note_failure(&mut self, generation: u64, _id: &TrackId) -> bool {
+        if generation != self.generation || !self.active || !self.discover || self.failure_reported {
+            return false;
+        }
+        self.failure_reported = true;
+        true
     }
 
     pub fn disable(&mut self, generation: u64) -> DiscoverAction {
         self.generation = generation;
         self.active = false;
         self.discover = false;
+        self.failure_reported = false;
         self.queued.clear();
         DiscoverAction::Restore {
             queue: self.physical_queue.clone(),
@@ -238,6 +255,15 @@ mod tests {
             mode.projected_queue(),
             vec![id("seed"), id("r0"), id("r1"), id("r2"), id("next")]
         );
+    }
+
+    #[test]
+    fn a_preparation_failure_is_reported_once_per_session() {
+        let mut mode = DiscoverMode::new(1, vec![id("seed")], 0, vec![id("r0"), id("r1")]).unwrap();
+        mode.enable();
+        assert!(mode.note_failure(1, &id("r0")), "first failure is surfaced");
+        assert!(!mode.note_failure(1, &id("r1")), "a second failure is not");
+        assert!(!mode.note_failure(2, &id("r0")), "stale generation is ignored");
     }
 
     #[test]
