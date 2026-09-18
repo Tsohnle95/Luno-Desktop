@@ -81,6 +81,13 @@ What it does not own: library snapshots and promotion targets
 - Serialized preview preparation has admission priority over speculative
   video staging; pending preview work cancels/gates video helpers, and video
   staging resumes after the preview window settles.
+- URL and URL-queue downloads resolve title/artist through a best-effort
+  yt-dlp metadata probe (`validate_direct_url` → `probe_media`) and name the
+  output `Artist - Title.m4a`, because the scanner derives metadata from the
+  filename; without it those downloads surfaced as the opaque job id +
+  "Unknown artist". A failed probe degrades the filename only, never the
+  download. `src/state/download_naming.ts` owns the shared naming/display
+  policy.
 - Missing or mismatched managed tools fail closed with degraded media
   behavior surfaced — never silent success, never an unreviewed download
   at build time.

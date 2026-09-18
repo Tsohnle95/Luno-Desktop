@@ -63,6 +63,10 @@ transfer manifests (`docs/modules/contracts.md`).
   must fail rather than guess.
 - Mutations are safe-root-contained and atomic; downloads promote only
   inside the configured library root and trigger a coalesced rescan.
+- Editing a track's artist/title (`edit_track_metadata`) renames its library
+  file in place: same folder, extension preserved, collision-rejecting,
+  path-keyed favorites moved to the new path, then a coalesced rescan. Because
+  identity is filename-derived, the track id changes after the rescan.
 - Artwork is lazy and bounded on both sides; the frontend LRU evicts by
   count and byte budget and retries evicted entries lazily on the next
   visible pass — never eagerly from the eviction event (fetch-evict-refetch

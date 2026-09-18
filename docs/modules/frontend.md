@@ -31,8 +31,8 @@ envelope shapes (`docs/modules/contracts.md`).
   `DiscoverView`, `DownloaderView`, `SettingsView`, `ErrorLogView`.
 - `src/components/` — `PlayerBar`, `Queue`, `TrackRow`, `Artwork`,
   `RecommendationArtwork`, `Recommendations`, `DownloadTabs`,
-  `PlaylistDialogs`, `PlaylistPicker`, `TransferDialogs`, `VideoStage`,
-  `icons`.
+  `PlaylistDialogs`, `PlaylistPicker`, `EditTrackDialog`, `TransferDialogs`,
+  `VideoStage`, `icons`.
 - `src/state/` — `backend_projection.ts` (snapshot store + subscriptions),
   `ui_state.ts`, `play_stats.ts`, `track_artwork.ts` (bounded LRU by count
   and bytes; evicted entries retry lazily, never eagerly).

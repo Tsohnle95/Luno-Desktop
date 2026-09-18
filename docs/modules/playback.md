@@ -75,6 +75,12 @@ What it does not own: library snapshots and track identity
 - Media keys control Luno via MPRemoteCommandCenter instead of falling
   through to Apple Music; test-harness volume is zeroed to keep `cargo
   test` silent on the production audio path.
+- `AppState::publish_playback` publishes truthful Now Playing metadata
+  (title/artist/album/duration/elapsed) plus
+  `MPNowPlayingInfoCenter.playbackState` (Playing/Paused) on every snapshot.
+  A launch-only claim without `playbackState` loses key routing on current
+  macOS; disabling Settings ▸ Playback releases the claim (Stopped + cleared
+  info).
 
 ## Core flows
 
