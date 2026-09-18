@@ -1902,6 +1902,11 @@ pub struct AppState {
     /// key handlers can check it cheaply on every press. Defaults to TRUE —
     /// Luno must own the media keys unless the user opts out.
     pub media_keys_enabled: Arc<AtomicBool>,
+    /// Cached (title, artist, album) for the Now Playing center. Updated only
+    /// when a track actually starts, so the audio-lock-held heartbeat path can
+    /// publish now-playing state without taking the library lock.
+    #[cfg(target_os = "macos")]
+    now_playing_track: Arc<Mutex<Option<(String, String, String)>>>,
 }
 
 type ScanWork = Arc<dyn Fn(&[PathBuf], CancellationToken) -> ScanOutcome + Send + Sync>;
@@ -2105,6 +2110,8 @@ impl AppState {
             video_heavy_work: Arc::new(Mutex::new(())),
             settings_home: Arc::new(Mutex::new(None)),
             media_keys_enabled: Arc::new(AtomicBool::new(true)),
+            #[cfg(target_os = "macos")]
+            now_playing_track: Arc::new(Mutex::new(None)),
         }
     }
     pub fn library(&self) -> LibrarySnapshot {
@@ -5232,6 +5239,12 @@ impl AppState {
         // Media keys: default ON — Luno must own the hardware keys unless the
         // user explicitly opted out (Settings ▸ Playback).
         self.media_keys_enabled.store(config.global_keys.unwrap_or(true), Ordering::Release);
+        #[cfg(target_os = "macos")]
+        if self.media_keys_enabled.load(Ordering::Acquire) {
+            crate::media_keys::MediaKeys::claim_now_playing();
+        } else {
+            crate::media_keys::clear_now_playing();
+        }
         Ok(serde_json::json!({
             "music_root": root.map(|path| path.display().to_string()),
             "auto_discovery": config.auto_discovery,
@@ -5291,6 +5304,13 @@ impl AppState {
         // Live-apply the media-keys toggle so hardware keys follow immediately.
         if let Some(enabled) = settings.global_keys {
             self.media_keys_enabled.store(enabled, Ordering::Release);
+            #[cfg(target_os = "macos")]
+            if enabled {
+                crate::media_keys::MediaKeys::claim_now_playing();
+            } else {
+                crate::media_keys::clear_now_playing();
+                *self.now_playing_track.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
         }
         Ok(serde_json::json!({ "saved": true }))
     }
@@ -5769,6 +5789,10 @@ fn promotion_error(error: PromotionError) -> ContractError {
         track: Option<TrackId>,
     ) {
         let snapshot_generation = snapshot.generation;
+        // Update the OS Now Playing session in lockstep with the backend
+        // snapshot so media keys keep routing to Luno during playback.
+        #[cfg(target_os = "macos")]
+        self.publish_now_playing(&snapshot, track.as_ref());
         self.publish(self.event(snapshot_generation, Event::PlaybackSnapshot { snapshot }));
         if let Some(track_id) = track {
             // TrackStarted rides the same generation as its snapshot so the
@@ -5776,6 +5800,49 @@ fn promotion_error(error: PromotionError) -> ContractError {
             // generation outruns the library generation during heartbeats).
             self.publish(self.event(snapshot_generation, Event::TrackStarted { track_id }));
         }
+    }
+
+    /// Publish truthful Now Playing metadata + playback state. Modern macOS
+    /// consults `MPNowPlayingInfoCenter.playbackState` when deciding which
+    /// process owns the hardware media keys; a launch-time claim without it
+    /// silently loses routing back to other players.
+    #[cfg(target_os = "macos")]
+    fn publish_now_playing(
+        &self,
+        snapshot: &crate::contracts::types::PlaybackSnapshot,
+        track: Option<&TrackId>,
+    ) {
+        if !self.media_keys_enabled.load(Ordering::Acquire) {
+            crate::media_keys::clear_now_playing();
+            return;
+        }
+        if let Some(track_id) = track {
+            let metadata = self
+                .library
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .tracks
+                .iter()
+                .find(|track| &track.id == track_id)
+                .map(|track| (track.title.clone(), track.artist.clone().unwrap_or_default(), track.album.clone().unwrap_or_default()));
+            if let Some(metadata) = metadata {
+                *self.now_playing_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(metadata);
+            }
+        }
+        let (title, artist, album) = self
+            .now_playing_track
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_default();
+        crate::media_keys::publish_now_playing(&crate::media_keys::NowPlaying {
+            title,
+            artist,
+            album,
+            duration_secs: snapshot.duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0),
+            elapsed_secs: snapshot.position_ms as f64 / 1000.0,
+            playing: snapshot.status == crate::contracts::types::PlaybackStatus::Playing,
+        });
     }
 
     fn publish_queue_snapshot(&self) {
