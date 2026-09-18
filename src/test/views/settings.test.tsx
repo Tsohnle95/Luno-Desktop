@@ -23,6 +23,12 @@ describe("Settings library root", () => {
     expect(html).not.toContain("Set folder");
     expect(html).toContain('value="Music"');
   });
+
+  it("disables OS autocorrect on the editable folder field", () => {
+    const html = renderToStaticMarkup(<SettingsView onLibraryRootSubmit={() => {}} />);
+    expect(html.toLowerCase()).toContain('autocorrect="off"');
+    expect(html.toLowerCase()).toContain('spellcheck="false"');
+  });
 });
 
 describe("Settings navigation rail", () => {

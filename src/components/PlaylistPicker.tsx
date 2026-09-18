@@ -73,6 +73,8 @@ export function PlaylistPicker({ title = "Add to playlist", playlists, onPick, o
             <span aria-hidden="true">⌕</span>
             <input
               autoFocus
+              autoCorrect="off"
+              spellCheck={false}
               aria-label="Search playlists"
               placeholder="Search playlists"
               value={query}

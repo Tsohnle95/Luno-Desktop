@@ -813,7 +813,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
           <button className="luno-home-button" type="button" aria-label="Home" aria-current={route === "library" ? "page" : undefined} title="Home" onClick={() => { navigate("library"); setLibraryHome(true); }}><IconHome size={16} /></button>
           <form className="luno-search" role="search" onSubmit={(event) => event.preventDefault()}>
             <IconSearch size={15} />
-            <input aria-label="Search a song" placeholder="Search a song" value={libraryQuery} onFocus={(event) => event.currentTarget.select()} onMouseUp={(event) => { if (libraryQuery) event.currentTarget.select(); }} onChange={(event) => { navigate("library"); setLibraryQuery(event.target.value); if (event.target.value) setLibraryHome(false); }} onKeyDown={(event) => { if (event.key === "Escape") setLibraryQuery(""); }} />
+            <input aria-label="Search a song" placeholder="Search a song" autoCorrect="off" spellCheck={false} value={libraryQuery} onFocus={(event) => event.currentTarget.select()} onMouseUp={(event) => { if (libraryQuery) event.currentTarget.select(); }} onChange={(event) => { navigate("library"); setLibraryQuery(event.target.value); if (event.target.value) setLibraryHome(false); }} onKeyDown={(event) => { if (event.key === "Escape") setLibraryQuery(""); }} />
             {libraryQuery && <button className="luno-icon-button" type="button" aria-label="Clear search" onClick={() => setLibraryQuery("")}><IconClose size={11} /></button>}
           </form>
         </div>
@@ -829,7 +829,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <button className="luno-chip" type="button" aria-label="Show albums" aria-pressed={sidebarChip === "albums"} onClick={() => setSidebarChip("albums")}>Albums</button>
         <button className="luno-icon-button" type="button" style={{ marginLeft: "auto" }} aria-label="Filter your library" aria-expanded={sidebarSearchOpen} onClick={() => { setSidebarSearchOpen((open) => !open); setSidebarQuery(""); }}><IconSearch size={13} /></button>
       </div>
-      {sidebarSearchOpen && <div style={{ padding: "0 16px 10px" }}><input className="luno-lib-filter" autoFocus aria-label="Filter playlists" placeholder="Filter…" value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} /></div>}
+      {sidebarSearchOpen && <div style={{ padding: "0 16px 10px" }}><input className="luno-lib-filter" autoFocus autoCorrect="off" spellCheck={false} aria-label="Filter playlists" placeholder="Filter…" value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} /></div>}
       <div className="luno-playlist-list luno-scroll" data-slot="playlists" aria-label="Playlists">
         {visibleSidebarEntries.map((entry) => {
           const active = libraryScope === entry.scope;

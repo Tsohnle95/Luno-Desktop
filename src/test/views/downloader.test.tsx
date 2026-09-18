@@ -58,6 +58,13 @@ describe("Gate 6 downloader view", () => {
     expect(html).toContain("Searching YouTube…");
     expect(html).not.toContain("30 seconds");
   });
+
+  it("disables OS autocorrect and spellcheck on the downloader search field", () => {
+    // Autocorrect silently rewrote pasted queries/URLs; every text entry point
+    // opts out. Only the active tab's fields are server-rendered here.
+    const html = renderToStaticMarkup(<DownloaderView />);
+    expect(html).toMatch(/<input[^>]*aria-label="Search for music"[^>]*autocorrect="off"[^>]*spellcheck="false"/i);
+  });
 });
 describe("Gate 6 library view", () => {
   it("announces the loading state while the first snapshot is pending", () => {

@@ -67,7 +67,7 @@ export function PlaylistDialog({ action, playlist, playlists = [], busy = false,
   };
   return <DialogFrame title={copy.title} error={error} busy={busy} onClose={onClose}>
     <form onSubmit={submit}>
-      {(action === "create" || action === "smart") && <label>Playlist name<input autoFocus value={name} onChange={(event) => setName(event.target.value)} maxLength={200} required /></label>}
+      {(action === "create" || action === "smart") && <label>Playlist name<input autoFocus autoCorrect="off" spellCheck={false} value={name} onChange={(event) => setName(event.target.value)} maxLength={200} required /></label>}
       {playlist && <p><strong>{playlist.name}</strong>{playlist.trackCount !== undefined && ` · ${playlist.trackCount} tracks`}</p>}
       {protectedRoot && <p role="alert">“{playlist?.name}” is a protected library root and cannot be {action}d.</p>}
       {action === "delete" && !protectedRoot && <p>This removes the playlist and its tracks from the library. This action cannot be undone.</p>}
