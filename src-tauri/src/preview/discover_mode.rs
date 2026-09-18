@@ -80,6 +80,11 @@ impl DiscoverMode {
     pub fn ready_count(&self) -> usize {
         self.assets.len()
     }
+    pub fn prepared_keys(&self) -> Vec<TrackId> {
+        let mut keys: Vec<_> = self.assets.keys().cloned().collect();
+        keys.sort_by(|left, right| left.0.cmp(&right.0));
+        keys
+    }
     pub fn queued_assets(&self) -> &[TrackId] {
         &self.queued
     }

@@ -56,7 +56,9 @@ What it does not own: library snapshots and promotion targets
   plus ID3/MPEG signatures; destinations are `*.m4a` in production.
 - Jobs publish truthful progress, validate staged media, promote
   atomically inside the configured library root, and trigger a coalesced
-  rescan. Missing parents outside the root are rejected, never created.
+  rescan. The post-transfer validation/promotion interval is published as
+  `finalizing` so the UI stays live while the file becomes playable. Missing
+  parents outside the root are rejected, never created.
 - Download helper invocations receive the source (`scsearch1:`-style or
   URL); the bundled helper resolves via `resolve_bundle_helper`
   (resource dir → manifest dir). Retry reuses the stored job.
@@ -73,7 +75,9 @@ What it does not own: library snapshots and promotion targets
 - Discover mode projects its rolling recommendation window into the queue
   immediately — pending items are prepared on selection — so Next/Previous walk
   the temporary list instead of falling through to the physical library. It
-  takes ownership from an active preview/prefetch session rather than racing it.
+  publishes the stable keys whose assets are ready, takes ownership from an
+  active preview/prefetch session rather than racing it, and adopts an
+  already published asset before starting another helper.
 - Preview percentages are raw yt-dlp media-transfer percentages. Helper
   startup and source resolution remain indeterminate because no byte total
   exists yet; fast preview files may complete between progress samples and

@@ -274,6 +274,10 @@ pub struct DiscoverSnapshot {
     pub window: Vec<String>,
     pub ready: usize,
     pub queued: usize,
+    /// Stable keys whose temporary audio is atomically available. The field
+    /// is additive so older clients can continue using the aggregate counts.
+    #[serde(default)]
+    pub prepared: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,7 +313,17 @@ pub struct DownloadJob {
     pub track_id: Option<TrackId>,
     #[serde(deserialize_with = "progress")]
     pub progress: Option<f32>,
+    /// Transfer completion is followed by validation/promotion/rescan work.
+    /// Keep that phase explicit so a 95–97% job cannot look stalled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<DownloadPhase>,
     pub generation: Generation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadPhase {
+    Finalizing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

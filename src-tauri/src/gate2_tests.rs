@@ -664,7 +664,11 @@ fn fixture_preview_toolchain() -> (FixtureToolchain, PathBuf, PathBuf) {
     std::fs::create_dir_all(&root).unwrap();
     let helper = root.join("helper");
     // The ID3 prefix keeps the fake payload past media-signature validation.
-    std::fs::write(&helper, "#!/bin/sh\nprintf 'ID3synthetic preview audio source bytes' > \"$1\"\n").unwrap();
+    std::fs::write(
+        &helper,
+        "#!/bin/sh\ncount=\"$0.calls\"\nn=0\nif [ -f \"$count\" ]; then n=$(cat \"$count\"); fi\necho $((n + 1)) > \"$count\"\nprintf 'ID3synthetic preview audio source bytes' > \"$1\"\n",
+    )
+    .unwrap();
     let ffmpeg = root.join("ffmpeg");
     // `-y -i INPUT -ar ... -f adts -` puts the input at positional argument 3
     // and streams the output to stdout (`-` is the final argument); saves
@@ -896,6 +900,8 @@ fn discover_mode_enables_adopts_advances_and_restores() {
     wait_until(5, "adoption", || {
         discover_snapshots(&state).iter().any(|snapshot| snapshot.enabled && snapshot.ready == 5 && snapshot.queued >= 1)
     }, || format!("{:#?}", discover_snapshots(&state)));
+    let latest_discover = discover_snapshots(&state).into_iter().last().expect("discover snapshot");
+    assert_eq!(latest_discover.prepared.len(), 5, "every ready recommendation must remain playable after handoff");
 
     let queue = playback_snapshots(&state).into_iter().last().expect("queue snapshot").queue;
     assert_eq!(queue.first(), Some(&seed), "the seed leads the projection");
@@ -929,6 +935,42 @@ fn discover_mode_enables_adopts_advances_and_restores() {
     wait_until(5, "disable", || {
         discover_snapshots(&state).iter().any(|snapshot| !snapshot.enabled)
     }, || format!("{:#?}", discover_snapshots(&state)));
+    state.cleanup_previews();
+}
+
+#[test]
+fn discover_handoff_adopts_ready_assets_without_downloading_again() {
+    let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
+    let state = isolated_preview_state("discover-handoff-ready", 16);
+    state.set_preview_toolchain(Some(helper.clone()), Some(ffmpeg));
+    let seed = TrackId("seed".into());
+    state.set_playing(seed.clone(), vec![seed.clone(), TrackId("next".into())]);
+    let seeds: Vec<_> = (0..5)
+        .map(|n| preview_seed(&format!("Artist{n}"), &format!("Track{n}")))
+        .collect();
+    state
+        .dispatch(command("handoff-ready-enable", Command::DiscoverEnable { seeds: seeds.clone() }))
+        .expect("discover mode must start");
+    wait_until(5, "discover ready assets", || {
+        discover_snapshots(&state).iter().any(|snapshot| snapshot.enabled && snapshot.prepared.len() == 5)
+    }, || format!("{:#?}", discover_snapshots(&state)));
+    let calls_path = helper.with_extension("calls");
+    let calls_before = fs::read_to_string(&calls_path).expect("fixture helper call count").trim().parse::<u32>().unwrap();
+
+    state
+        .dispatch(command(
+            "handoff-ready-tap",
+            Command::PreviewTap {
+                seeds,
+                key: "Artist0-Track0".into(),
+            },
+        ))
+        .expect("ready recommendation tap must hand off");
+    wait_until(5, "focused adoption", || {
+        preview_snapshots(&state).iter().any(|snapshot| snapshot.active && snapshot.prepared.iter().any(|key| key == "Artist0-Track0"))
+    }, || format!("{:#?}", preview_snapshots(&state)));
+    let calls_after = fs::read_to_string(&calls_path).expect("fixture helper call count").trim().parse::<u32>().unwrap();
+    assert_eq!(calls_after, calls_before, "handoff must adopt the existing staged asset");
     state.cleanup_previews();
 }
 

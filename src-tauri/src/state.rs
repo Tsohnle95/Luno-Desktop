@@ -3,7 +3,7 @@ use crate::contracts::{
         Command, CommandEnvelope, Event, EventEnvelope, RepeatMode as ContractRepeatMode, RootStatus, ShutdownEnvelope, ShutdownState,
     },
     types::{
-        ContractError, DiscoverSnapshot, ErrorCode, Generation, JobId, LibrarySnapshot, Playlist,
+        ContractError, DiscoverSnapshot, DownloadPhase, ErrorCode, Generation, JobId, LibrarySnapshot, Playlist,
         PlaylistId, PreviewSeed, PreviewSnapshot, SaveState, SaveStateKind, SessionId, Track,
         TrackId, CONTRACT_VERSION, MAX_PREVIEW_SEEDS, MAX_SAFE_EVENT_ID,
     },
@@ -3205,6 +3205,7 @@ impl AppState {
             if let Some(clock) = state.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.start(0.0); }
             *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(key.clone());
             *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Playing;
+            state.record_recent(key.clone());
             // Publish immediately so the footer leaves its stale library
             // position instead of sticking, then heartbeat the preview
             // position the same way library playback does.
@@ -3213,7 +3214,7 @@ impl AppState {
                 Duration::ZERO,
                 loaded.duration,
             );
-            state.publish_playback(snapshot, None);
+            state.publish_playback(snapshot, Some(key.clone()));
             let heartbeat_state = state.clone();
             let heartbeat_key = key.clone();
             let heartbeat_worker = heartbeat_state.clone();
@@ -3290,6 +3291,29 @@ impl AppState {
     }
 
     fn ensure_prepared(&self, generation: u64, key: &TrackId) {
+        // A worker may have published the file just as a focused tap or a
+        // next/previous action invalidated its old session. Re-adopt that
+        // atomically published asset before raising another helper. Without
+        // this check a ready recommendation was downloaded a second time.
+        let existing = self
+            .preview_store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .ready_path(&key.0)
+            .ok()
+            .filter(|path| path.is_file());
+        if let Some(path) = existing {
+            let action = self
+                .preview_session
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_mut()
+                .map(|session| session.prepared_asset(generation, key.clone(), path))
+                .unwrap_or(SessionAction::Ended);
+            self.handle_session_action(action, generation);
+            self.publish_preview_snapshot(generation);
+            return;
+        }
         let Some(query) = self.seed_for(&key.0) else { return };
         let query = format!("{} {}", query.artist.trim(), query.title.trim());
         let task_key = format!("preview-{generation}-{}", key.0);
@@ -3873,6 +3897,29 @@ impl AppState {
     }
 
     fn ensure_discover_prepared(&self, generation: u64, key: &TrackId) {
+        // Discover and focused preview share the same private asset store.
+        // Adopt a published file before starting a second helper when a
+        // handoff raced the completion event.
+        let existing = self
+            .preview_store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .ready_path(&key.0)
+            .ok()
+            .filter(|path| path.is_file());
+        if let Some(path) = existing {
+            let action = self
+                .discover
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_mut()
+                .map(|mode| mode.ready_asset(generation, ReadyAsset { id: key.clone(), path }))
+                .unwrap_or(DiscoverAction::Noop);
+            self.apply_discover_action(Some(action));
+            self.discover_sync_queue();
+            self.publish_discover_snapshot(generation);
+            return;
+        }
         let Some(query) = self.seed_for(&key.0) else { return };
         let query = format!("{} {}", query.artist.trim(), query.title.trim());
         let task_key = format!("discover-{generation}-{}", key.0);
@@ -3980,6 +4027,7 @@ impl AppState {
             window: mode.recommendations().iter().map(|id| id.0.clone()).collect(),
             ready: mode.ready_count(),
             queued: mode.queued_assets().len(),
+            prepared: mode.prepared_keys().into_iter().map(|id| id.0).collect(),
         })
     }
 
@@ -5404,17 +5452,18 @@ impl AppState {
                     continue;
                 };
                 use crate::download::coordinator::DownloadEvent;
-                let (state_value, progress, error) = match &event {
-                    DownloadEvent::Started { .. } => (crate::contracts::types::JobState::Running, None, None),
-                    DownloadEvent::Progress { fraction, .. } => (crate::contracts::types::JobState::Running, Some(*fraction), None),
-                    DownloadEvent::Cancelling { .. } => (crate::contracts::types::JobState::Cancelling, None, None),
-                    DownloadEvent::Succeeded { .. } => (crate::contracts::types::JobState::Succeeded, Some(1.0), None),
+                let (state_value, progress, error, phase) = match &event {
+                    DownloadEvent::Started { .. } => (crate::contracts::types::JobState::Running, None, None, None),
+                    DownloadEvent::Progress { fraction, .. } => (crate::contracts::types::JobState::Running, Some(*fraction), None, None),
+                    DownloadEvent::Finalizing { .. } => (crate::contracts::types::JobState::Running, Some(0.97), None, Some(DownloadPhase::Finalizing)),
+                    DownloadEvent::Cancelling { .. } => (crate::contracts::types::JobState::Cancelling, None, None, None),
+                    DownloadEvent::Succeeded { .. } => (crate::contracts::types::JobState::Succeeded, Some(1.0), None, None),
                     DownloadEvent::Failed { error, .. } => {
-                        (crate::contracts::types::JobState::Failed, None, Some(ContractError { code: ErrorCode::Unavailable, message: sanitize_download_error(error), retryable: true }))
+                        (crate::contracts::types::JobState::Failed, None, Some(ContractError { code: ErrorCode::Unavailable, message: sanitize_download_error(error), retryable: true }), None)
                     },
-                    DownloadEvent::Cancelled { .. } => (crate::contracts::types::JobState::Cancelled, None, None),
+                    DownloadEvent::Cancelled { .. } => (crate::contracts::types::JobState::Cancelled, None, None, None),
                 };
-                let mut envelope = state.event(generation, Event::JobUpdated { job: crate::contracts::types::DownloadJob { id: worker_job.clone(), kind: crate::contracts::types::DownloadKind::Single, state: state_value, track_id: None, progress, generation } });
+                let mut envelope = state.event(generation, Event::JobUpdated { job: crate::contracts::types::DownloadJob { id: worker_job.clone(), kind: crate::contracts::types::DownloadKind::Single, state: state_value, track_id: None, progress, phase, generation } });
                 envelope.job_id = Some(worker_job.clone());
                 state.publish(envelope);
                 if let Some(error) = error { state.publish(state.event(generation, Event::Error { error })); }

@@ -311,6 +311,7 @@ fn downloader_coordinator_exposes_busy_progress_cancel_error_and_terminal_states
         .unwrap();
     assert!(matches!(events.recv_timeout(Duration::from_millis(100)).unwrap(), DownloadEvent::Started { .. }));
     assert!(matches!(events.recv_timeout(Duration::from_millis(100)).unwrap(), DownloadEvent::Progress { .. }));
+    assert!(matches!(events.recv_timeout(Duration::from_millis(100)).unwrap(), DownloadEvent::Finalizing { .. }));
     assert!(matches!(events.recv_timeout(Duration::from_millis(100)).unwrap(), DownloadEvent::Succeeded { .. }));
     let error_coordinator = DownloadCoordinator::new();
     let error_events = error_coordinator.events().unwrap();

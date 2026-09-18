@@ -26,7 +26,8 @@ docs), release packaging (`docs/release/desktop.md`).
 - `src-tauri/src/contracts/events.rs` — `Command`, `CommandEnvelope`,
   `Event`, `EventEnvelope`, `RepeatMode`, `RootStatus`, shutdown types.
 - `src-tauri/src/contracts/types.rs` — shared shapes (`Track`, `TrackId`,
-  `LibrarySnapshot`, `JobState`, `PlaybackStatus`, …), `CONTRACT_VERSION`.
+  `LibrarySnapshot`, `JobState`, `DownloadPhase`, `DiscoverSnapshot`,
+  `PlaybackStatus`, …), `CONTRACT_VERSION`.
 - `src-tauri/src/contracts/mod.rs` — module root.
 - `src-tauri/src/state.rs` — `AppState::dispatch`, the single command
   entry point all Tauri commands funnel through.
@@ -50,8 +51,9 @@ docs), release packaging (`docs/release/desktop.md`).
   `n >= 1`.
 - Unknown fields are rejected on both sides and in transfer manifests.
   `exact()` shape checks in TS mirror `deny_unknown_fields`-style
-  strictness in Rust — adding a field to one side without the other is a
-  contract break, not an extension.
+  strictness in Rust — an approved additive shape such as `phase` or
+  `prepared` must be added to both validators together; arbitrary fields
+  remain invalid.
 - Frontend never recreates backend policy: it renders snapshots and sends
   commands. Queue order, scan results, job state, and playback position
   are backend-owned; frontend projections (`src/state/`) are read models.
@@ -61,6 +63,10 @@ docs), release packaging (`docs/release/desktop.md`).
 - Events publish over `backend-event`; a 25 ms delivery thread drains
   pending events. Shutdown publishes a terminal shutdown envelope and
   stops delivery.
+- Download jobs may publish an explicit `finalizing` phase after helper
+  transfer reaches its handoff and before validation/promotion completes.
+  Discover snapshots may include the stable keys in `prepared`; both fields
+  are additive for clients that still read the older snapshot shape.
 - Transfer manifests are metadata-only: no local paths, secrets, audio
   bytes, queue state, favorites, or history. Imports are additive —
   consumers never delete existing library content. A track without

@@ -294,6 +294,7 @@ fn ref_preview_session_and_discover_mode_cover_windows_handoff_and_intervention(
         ),
         DiscoverAction::Noop
     );
+    assert_eq!(mode.prepared_keys(), recs[..3].to_vec());
     assert!(matches!(
         mode.disable(2),
         DiscoverAction::Restore { queue, index: 0 }

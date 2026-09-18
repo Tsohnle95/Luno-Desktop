@@ -19,6 +19,9 @@ pub struct DownloadRequest {
 pub enum DownloadEvent {
     Started { job_id: String },
     Progress { job_id: String, fraction: f32 },
+    /// The helper has exited successfully; promotion and validation are still
+    /// in progress and the destination is not playable yet.
+    Finalizing { job_id: String },
     Cancelling { job_id: String },
     Succeeded { job_id: String, path: PathBuf, bytes: u64 },
     Failed { job_id: String, error: String },
@@ -105,9 +108,12 @@ impl DownloadCoordinator {
                 DownloadEvent::Cancelled { job_id: job_id.clone() }
             } else {
                 match result {
-                    Ok(()) => match promote_output(&temporary, &destination, Validation::audio(), CollisionPolicy::Reject, None) {
-                        Ok(receipt) => DownloadEvent::Succeeded { job_id: job_id.clone(), path: receipt.path, bytes: receipt.bytes },
-                        Err(error) => DownloadEvent::Failed { job_id: job_id.clone(), error: promotion_error(error) },
+                    Ok(()) => {
+                        emit(DownloadEvent::Finalizing { job_id: job_id.clone() });
+                        match promote_output(&temporary, &destination, Validation::audio(), CollisionPolicy::Reject, None) {
+                            Ok(receipt) => DownloadEvent::Succeeded { job_id: job_id.clone(), path: receipt.path, bytes: receipt.bytes },
+                            Err(error) => DownloadEvent::Failed { job_id: job_id.clone(), error: promotion_error(error) },
+                        }
                     },
                     Err(error) => { let _ = std::fs::remove_file(&temporary); DownloadEvent::Failed { job_id: job_id.clone(), error } },
                 }
@@ -172,7 +178,7 @@ fn promotion_error(error: PromotionError) -> String { format!("{error:?}") }
 
 impl DownloadEvent {
     fn job_id(&self) -> &str {
-        match self { Self::Started { job_id } | Self::Progress { job_id, .. } | Self::Cancelling { job_id } | Self::Succeeded { job_id, .. } | Self::Failed { job_id, .. } | Self::Cancelled { job_id } => job_id }
+        match self { Self::Started { job_id } | Self::Progress { job_id, .. } | Self::Finalizing { job_id } | Self::Cancelling { job_id } | Self::Succeeded { job_id, .. } | Self::Failed { job_id, .. } | Self::Cancelled { job_id } => job_id }
     }
 }
 
