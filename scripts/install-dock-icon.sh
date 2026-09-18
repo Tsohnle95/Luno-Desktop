@@ -31,6 +31,15 @@ if [ -f "$ICON_SRC" ]; then
   fi
 fi
 
+# Reveal the app so it can be dragged to the Dock. ~/Applications is hidden
+# in Finder by default, which is why "nothing appeared" after install.
+open -R "$APP" >/dev/null 2>&1 || open "$HOME/Applications" >/dev/null 2>&1 || true
+
 echo "Installed $APP"
-echo "Drag it to the Dock for one-click launch (first click compiles the debug build; later clicks just focus the app)."
-echo "Manage the background server with: scripts/luno-tray.sh status|logs|stop"
+echo
+echo "This NEVER adds anything to your Dock. To use it:"
+echo "  1. Finder is opening with the app selected (or: open ~/Applications)."
+echo "  2. Drag 'Luno Dev.app' to the Dock yourself."
+echo
+echo "Each click runs a fresh DEBUG rebuild (frontend HMR + incremental Rust)."
+echo "Manage the server with: scripts/luno-tray.sh status|logs|stop"

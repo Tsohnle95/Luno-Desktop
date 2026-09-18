@@ -22,7 +22,15 @@ describe("Video stage download-progress ring", () => {
     // .is-determinate inside its :not() selector for the spin animation.
     expect(html).toContain('<span class="luno-video-progress" style=');
     expect(html).not.toContain('class="luno-video-progress is-determinate"');
-    expect(html).toContain("Loading video preview...");
+    expect(html).toContain("Searching for video…");
+  });
+
+  it("keeps the spinner and explains the search phase at 0%", () => {
+    // yt-dlp reports 0 until the video resolves; a determinate 0% ring looked
+    // stuck, so 0 stays an indeterminate spinner with a search caption.
+    const html = renderToStaticMarkup(<VideoStage status="loading" downloadProgress={0} />);
+    expect(html).not.toContain('class="luno-video-progress is-determinate"');
+    expect(html).toContain("Searching for video…");
   });
 
   it("renders a determinate ring that fills with the reported percentage", () => {

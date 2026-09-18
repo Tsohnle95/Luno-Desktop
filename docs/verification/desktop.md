@@ -54,12 +54,12 @@ development server detached (PID and logs live under the system temp
 directory; `scripts/luno-tray.sh status|logs|stop` manages it).
 `scripts/install-dock-icon.sh` builds a double-clickable `Luno Dev` app in
 `~/Applications` from `scripts/Luno-Dev.applescript` that fires the launcher
-in the background, so a Dock icon click starts (or focuses) the app.
-Rebuilds stay automatic through the dev server's file watching (frontend
-hot-reload plus incremental Rust rebuilds); repeat clicks only focus the
-running app, and `scripts/luno-tray.sh restart` forces a clean rebuild.
-Starting dev quits the installed release app first: both share the
-single-instance port (48713) and config, so they cannot run concurrently.
+in the background. The installer reveals it in Finder for manual docking; it
+never modifies the user's Dock. Each click runs `luno-tray.sh restart`, so it
+stops any running dev server and starts a fresh debug build; while it runs,
+frontend edits hot-reload and Rust edits rebuild incrementally. Starting dev
+quits the installed release app first: both share the single-instance port
+(48713) and config, so they cannot run concurrently.
 The installed `.app` is a generated local artifact holding this machine's
 repository path — never commit it, and re-run the installer after moving the
 repository.

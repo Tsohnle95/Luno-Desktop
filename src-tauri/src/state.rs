@@ -1217,9 +1217,12 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
         let mut final_status = String::from("timeout");
         while std::time::Instant::now() < deadline {
+            // Drain so each event prints once (otherwise the growing pending
+            // queue re-prints the same envelope every poll and hides progress).
             for envelope in state.pending_events() {
+                state.acknowledge_event(&envelope.event_id);
                 if let crate::contracts::events::Event::VideoState { state: video } = &envelope.event {
-                    eprintln!("[e2e] video event: status={:?} staged={:?} gen={}", video.status, video.staged_path, video.generation.0);
+                    eprintln!("[e2e] video event: status={:?} progress={:?} staged={:?} gen={}", video.status, video.download_progress, video.staged_path, video.generation.0);
                     final_status = format!("{:?}", video.status);
                 }
             }
@@ -2322,7 +2325,11 @@ impl AppState {
         let _pump = std::thread::Builder::new().name("luno-video-progress".into()).spawn(move || {
             let mut last_sent: Option<u8> = None;
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                // 150ms (not 500ms): YouTube's download phase can finish in
+                // well under a second on fast links, so a coarse poll often
+                // observed only the final value and the ring never showed a
+                // real percentage.
+                std::thread::sleep(std::time::Duration::from_millis(150));
                 if pump_cancel.load(Ordering::Acquire) { break; }
                 // Stop when the owning stage settles or another track takes
                 // the slot. The old pump only stopped on cancellation, so one
@@ -2648,6 +2655,19 @@ impl AppState {
         }
     }
 
+    /// True while `track`'s video slot is Loading. Used to yield speculative
+    /// prefetch to the current track's own worker (current-first priority).
+    fn video_current_loading(&self, track: &TrackId) -> bool {
+        self.video_current
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|video| {
+                video.track_id.as_ref() == Some(track)
+                    && matches!(video.status, crate::contracts::events::VideoStatus::Loading)
+            })
+    }
+
     /// Video-mode core: stage the CURRENT track (if not already staged) and
     /// then sequentially pre-download the next [`VIDEO_PREFETCH_DEPTH`] queue
     /// tracks' videos. Safe to call repeatedly — it no-ops while a run is
@@ -2692,6 +2712,10 @@ impl AppState {
 
         let current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current_index();
         let queue = self.playback.lock().unwrap_or_else(|e| e.into_inner()).queue().to_vec();
+        // Track the CURRENT id so speculative prefetch can yield the staging
+        // lock to it (below): otherwise a prefetch download can win the lock
+        // and the current video spins with no progress until the prefetch ends.
+        let current_id = current.and_then(|index| queue.get(index).cloned());
         let library = self.library();
         let resolve = |track_id: &TrackId| -> Option<(String, Option<String>)> {
             library.tracks.iter().find(|track| track.id == *track_id).map(|track| (track.title.clone(), track.artist.clone()))
@@ -2723,6 +2747,22 @@ impl AppState {
                 if is_current {
                     let _ = state.video_stage_track(track_id.clone());
                 } else {
+                    // Current-first priority: do not steal the staging lock
+                    // while the CURRENT track's video is still Loading. Its
+                    // worker is the one publishing the live percentage; a
+                    // speculative prefetch winning the lock left the spinner
+                    // with no number until the prefetch finished.
+                    if let Some(current_id) = &current_id {
+                        while state.video_current_loading(current_id) {
+                            if cancel.load(Ordering::Acquire)
+                                || state.is_closing()
+                                || state.video_mode_changed_since(&cancel)
+                            {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                    }
                     // Next-slot prefetch must NOT block on video_stager: a
                     // staging worker holds that lock for its whole download,
                     // and blocking here parked the pass (deaf to cancellation)
