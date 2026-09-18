@@ -56,6 +56,12 @@ describe("Video stage download-progress ring", () => {
     // Empty ring at 0 %: the full circumference as offset.
     expect(ringDashOffset(0)).toBeCloseTo(VIDEO_RING_LENGTH, 1);
   });
+
+  it("uses the recommendation artwork fallback for a missing stage image", () => {
+    const html = renderToStaticMarkup(<VideoStage artworkArtist="Artist" artworkTitle="Spaceboy" />);
+    expect(html).toContain("luno-rec-art");
+    expect(html).not.toContain("luno-artwork-fallback");
+  });
 });
 
 describe("Video stage end-of-media hold", () => {

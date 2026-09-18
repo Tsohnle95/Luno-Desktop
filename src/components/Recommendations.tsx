@@ -85,6 +85,7 @@ export function Recommendations({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set());
   const [pickerItem, setPickerItem] = useState<Recommendation | null>(null);
+  const temporarySessionActive = sessionActive || discoverMode;
   // Refresh re-runs the Last.fm lookup, which requires an artist: without one
   // there is nothing to look up (the seed file carries no "Artist - Title"
   // metadata), so the button stays disabled instead of spinning into idle.
@@ -133,7 +134,7 @@ export function Recommendations({
         <div>
           <h2 id="recommendations-title">Recommended for this song</h2>
           <p>
-            {sessionActive
+            {temporarySessionActive
               ? discoverMode
                 ? "Temporary preview queue - tap a song to restart from there"
                 : "Temporary preview - Next returns to your library"

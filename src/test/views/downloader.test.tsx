@@ -57,6 +57,18 @@ describe("Gate 6 downloader view", () => {
     expect(html).toContain("Downloading — Rick Astley — Never Gonna Give You Up — 50%");
   });
 
+  it("shows an indeterminate finalization phase after transfer reaches the handoff", () => {
+    const finalizing = { ...runningJob, progress: 0.97, phase: "finalizing" as const };
+    const html = renderToStaticMarkup(<DownloaderView jobs={{ "job-1": finalizing }} />);
+    expect(html).toContain("Finalizing download — checking and adding the file");
+    expect(html).not.toContain(">97%</b>");
+  });
+
+  it("keeps the transfer boundary truthful until the backend announces finalization", () => {
+    const html = renderToStaticMarkup(<DownloaderView jobs={{ "job-1": { ...runningJob, progress: 0.95 } }} />);
+    expect(html).toContain("Downloading — 95%");
+  });
+
   it("renders an animated search indicator without the obsolete 30-second warning", () => {
     const html = renderToStaticMarkup(<DownloaderView searching={true} />);
     expect(html).toContain("luno-download-spinner");

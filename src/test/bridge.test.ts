@@ -116,10 +116,12 @@ describe("typed IPC bridge and projection", () => {
     expect(isEventEnvelope(event({ type: "preview_snapshot", payload: { snapshot: { ...snapshot, unavailable: "x" } as unknown as typeof snapshot } }))).toBe(false);
     const discover = { generation: 2, enabled: true, window: ["Artist-Track"], ready: 1, queued: 1 };
     expect(isDiscoverSnapshot(discover)).toBe(true);
+    expect(isDiscoverSnapshot({ ...discover, prepared: ["Artist-Track"] })).toBe(true);
     expect(isDiscoverSnapshot({ ...discover, enabled: "yes" })).toBe(false);
     expect(isDiscoverSnapshot({ ...discover, window: [""] })).toBe(false);
     expect(isDiscoverSnapshot({ ...discover, extra: 1 })).toBe(false);
     expect(isEventEnvelope(event({ type: "discover_snapshot", payload: { snapshot: discover } }, 2))).toBe(true);
+    expect(isEventEnvelope(event({ type: "job_updated", payload: { job: { id: "j", kind: "single", state: "running", track_id: null, progress: 0.97, phase: "finalizing", generation: 2 } } }, 2))).toBe(true);
   });
 
   it("uses the required native backend command payload argument shape", () => {

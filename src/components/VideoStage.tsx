@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
 import { Artwork } from "./Artwork";
+import { RecommendationArtwork } from "./RecommendationArtwork";
 import { IconVolume } from "./icons";
 
 export type VideoStageStatus = "not-checked" | "loading" | "ready" | "playing" | "paused" | "ended" | "unavailable" | "error" | "fallback";
@@ -11,6 +12,8 @@ export interface VideoStageProps {
   playing?: boolean;
   artworkUrl?: string | null;
   artworkAlt?: string;
+  artworkArtist?: string | null;
+  artworkTitle?: string | null;
   /** 0–100 while a download is running; shown on the loading overlay. */
   downloadProgress?: number | null;
   onResize?: (size: { width: number; height: number }) => void;
@@ -158,7 +161,7 @@ const stageChromeStyles = `
 `;
 
 /** Presentation-only video surface. The supplied audio position remains authoritative. */
-export function VideoStage({ src, status = "not-checked", positionMs = 0, playing = false, artworkUrl, artworkAlt = "Album artwork", onResize, onSeek, onPause, onResume, onEnded, onError, onFullscreenChange, volume = 1, onVolume, onVolumeCommit, videoModeEnabled, onVideoModeChange, downloadProgress: videoProgress }: VideoStageProps & { downloadProgress?: number | null }) {
+export function VideoStage({ src, status = "not-checked", positionMs = 0, playing = false, artworkUrl, artworkAlt = "Album artwork", artworkArtist = "", artworkTitle = "", onResize, onSeek, onPause, onResume, onEnded, onError, onFullscreenChange, volume = 1, onVolume, onVolumeCommit, videoModeEnabled, onVideoModeChange, downloadProgress: videoProgress }: VideoStageProps & { downloadProgress?: number | null }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   // Position we last pushed INTO the element. Every programmatic currentTime
@@ -286,7 +289,7 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
 
   return <div ref={stageRef} className={`luno-video-stage${fullscreenWanted ? " is-fullscreen" : ""}`} data-testid="video-stage" aria-label="Song video preview">
     <style>{stageChromeStyles}</style>
-    {showVideo ? <video ref={videoRef} src={src!} preload="auto" playsInline muted aria-label="Song video" onError={onVideoError} onSeeked={handleSeeked} onPause={handlePause} onPlay={handlePlay} onEnded={handleEnded} /> : <Artwork src={artworkUrl} alt={artworkAlt} size="100%" />}
+    {showVideo ? <video ref={videoRef} src={src!} preload="auto" playsInline muted aria-label="Song video" onError={onVideoError} onSeeked={handleSeeked} onPause={handlePause} onPlay={handlePlay} onEnded={handleEnded} /> : <Artwork src={artworkUrl} alt={artworkAlt} size="100%" fallback={<RecommendationArtwork artist={artworkArtist ?? ""} title={artworkTitle ?? ""} size="100%" />} />}
     {status === "loading" && <div className="luno-video-loading" role="status">
       <DownloadRing progress={typeof videoProgress === "number" && videoProgress > 0 ? videoProgress : null} />
       {/* 0/null means yt-dlp is still resolving the video (no byte total
