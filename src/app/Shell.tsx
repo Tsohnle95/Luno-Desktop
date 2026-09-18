@@ -81,6 +81,11 @@ export function videoCommandsEnabled(available: boolean, connected: boolean, sou
   return available && connected && !!source && !!status && !["not-checked", "loading", "unavailable", "error", "fallback"].includes(status);
 }
 
+/** Keep the stage mounted while a video source is resolving or downloading. */
+export function videoSurfaceActive(available: boolean, connected: boolean, mode: boolean, hasTrack: boolean): boolean {
+  return available && connected && mode && hasTrack;
+}
+
 interface SidebarEntry { key: string; label: string; subtitle: string; scope: LibraryScope; kind: "all" | "favorites" | "unsorted" | "playlist" | "album"; artId?: string }
 
 const songs = (count: number) => `${count} ${count === 1 ? "song" : "songs"}`;
@@ -677,7 +682,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // Keep the surface active while a source is being downloaded. The previous
   // gate required a playable source, so `loading` was immediately converted
   // to `not-checked` and VideoStage had no chance to render its progress ring.
-  const videoModeActive = videoMode && available && connectedVideo && !!displayTrack;
+  const videoModeActive = videoSurfaceActive(available, connectedVideo, videoMode, !!displayTrack);
   // TRANSPORT AUTHORITY: the <video> follows the AUDIO status directly —
   // pausing the song pauses the picture in the same render, even if a
   // video_state event were delayed or lost. Deriving this from

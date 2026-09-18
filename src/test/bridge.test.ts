@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { backendCommandArgs, createBridge, isValidLibraryResponse, parseMigrationStatus, tauriTransport } from "../app/bridge";
 import { createBackendProjection, mergeVideoSnapshot } from "../state/backend_projection";
-import { currentVideoForTrack, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled } from "../app/Shell";
+import { currentVideoForTrack, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled, videoSurfaceActive } from "../app/Shell";
 import type { BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope } from "../shared/contracts";
 import type { SaveState } from "../shared/contracts";
@@ -362,6 +362,8 @@ describe("typed IPC bridge and projection", () => {
   it("does not enable video commands for artwork fallback", () => {
     expect(videoCommandsEnabled(true, true, "https://example.test/video.mp4", "unavailable")).toBe(false);
     expect(videoCommandsEnabled(true, true, null, "ready")).toBe(false);
+    expect(videoSurfaceActive(true, true, true, true)).toBe(true);
+    expect(videoSurfaceActive(true, true, false, true)).toBe(false);
   });
 
   it("validates migration counters and catches rejected runtime commands", async () => {
