@@ -23,6 +23,7 @@ import type { RecommendationState } from "../components/Recommendations";
 import { Queue } from "../components/Queue";
 import { PlayerBar } from "../components/PlayerBar";
 import { PlaylistPicker } from "../components/PlaylistPicker";
+import { EditTrackDialog } from "../components/EditTrackDialog";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
 import { IconChevronLeft, IconChevronRight, IconClose, IconDownload, IconHeart, IconHome, IconLibrary, IconMusicNote, IconSearch, IconUser } from "../components/icons";
@@ -128,6 +129,9 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; track?: Track; playlist?: Playlist } | null>(null);
   const [playlistPickerSelection, setPlaylistPickerSelection] = useState<{ tracks: Track[]; title: string } | null>(null);
+  const [editTrack, setEditTrack] = useState<Track | null>(null);
+  const [editTrackBusy, setEditTrackBusy] = useState(false);
+  const [editTrackError, setEditTrackError] = useState<string | null>(null);
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
@@ -874,6 +878,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <button role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setPlaylistPickerSelection({ tracks: [item], title: `Add “${item.title}” to playlist` }); setContextMenu(null); }}>Add to playlist…</button>
         <button role="menuitem" type="button" onClick={() => { createPlaylist([contextMenu.track!]); setContextMenu(null); }}>Add to new playlist…</button>
         <button role="menuitem" type="button" onClick={() => { runCommand(bridge?.toggleFavorite(contextMenu.track!.id)); setContextMenu(null); }}>{contextMenu.track.favorite ? "Remove from favorites" : "Add to favorites"}</button>
+        <button role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setEditTrackError(null); setEditTrack(item); setContextMenu(null); }}>Edit song info…</button>
         <hr />
         <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setContextMenu(null); if (window.confirm(`Permanently delete “${item.title}” from your library?`)) runCommand(bridge?.deleteTracks([item.id])); }}>Delete from library…</button>
       </> : contextMenu.playlist ? <>
@@ -888,6 +893,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       </> : null}
     </div>}
     {playlistPickerSelection && <PlaylistPicker title={playlistPickerSelection.title} playlists={(projection.library?.playlists ?? []).filter((playlist) => playlist.name.toLowerCase() !== "unsorted")} onPick={(playlist) => { const items = playlistPickerSelection.tracks; setPlaylistPickerSelection(null); addTracksToPlaylist(items, playlist); }} onCreateNew={() => { const items = playlistPickerSelection.tracks; setPlaylistPickerSelection(null); createPlaylist(items); }} onDismiss={() => setPlaylistPickerSelection(null)} />}
+    {editTrack && <EditTrackDialog track={editTrack} busy={editTrackBusy} error={editTrackError} onClose={() => { if (!editTrackBusy) { setEditTrack(null); setEditTrackError(null); } }} onSubmit={(value) => { if (!bridge || !available) return; setEditTrackBusy(true); setEditTrackError(null); void bridge.editTrackMetadata(editTrack.id, value.artist, value.title).then(() => { setEditTrackBusy(false); setEditTrack(null); setCommandNotice(`Updated “${[value.artist, value.title].filter(Boolean).join(" — ")}”.`); }).catch((error: unknown) => { setEditTrackBusy(false); setEditTrackError(normalizeRuntimeCommandError(error)); }); }} />}
   </div>;
 }
 

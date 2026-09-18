@@ -819,6 +819,70 @@ mod tests {
         assert!(!*state.video_prefetch_running.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
+    #[test]
+    fn edit_track_metadata_renames_the_file_and_moves_favorites() {
+        let root = std::env::temp_dir().join(format!("luno-edit-track-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("Unsorted");
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("dl-1789755401728-httpswwwyoutubecomwatchv.m4a");
+        std::fs::write(&old, b"ID3fake").unwrap();
+        let state = AppState::new(4);
+        state.set_scan_roots(vec![root.clone()]);
+        let id = TrackId::new("metadata:test-edit:0").unwrap();
+        state.track_paths.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), old.clone());
+        // Favorites store the scanner's canonical path (roots are canonicalized
+        // before scanning), so seed the same form the rename will compare.
+        let canonical_old = std::fs::canonicalize(&old).unwrap();
+        state.set_favorite_path(&canonical_old);
+
+        let envelope = CommandEnvelope {
+            version: CONTRACT_VERSION,
+            request_id: "edit-1".into(),
+            command: Command::EditTrackMetadata {
+                track_id: id,
+                artist: "Rick Astley".into(),
+                title: "Never Gonna Give You Up".into(),
+            },
+        };
+        let result = state.dispatch(envelope).expect("edit succeeds");
+        let new_path = dir.join("Rick Astley - Never Gonna Give You Up.m4a");
+        assert!(new_path.is_file(), "renamed file must exist: {:?}", result);
+        assert!(!old.exists(), "old filename must be gone");
+        assert_eq!(result["title"], "Never Gonna Give You Up");
+        assert_eq!(result["artist"], "Rick Astley");
+        let favorites = state.favorites.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(favorites.contains(std::fs::canonicalize(&new_path).unwrap()), "favorite must follow the rename");
+        assert!(!favorites.contains(&canonical_old), "stale favorite path must be cleared");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn edit_track_metadata_refuses_to_overwrite_an_existing_file() {
+        let root = std::env::temp_dir().join(format!("luno-edit-clash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("Unsorted");
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("dl-99.m4a");
+        std::fs::write(&old, b"ID3fake").unwrap();
+        let occupied = dir.join("Taken.m4a");
+        std::fs::write(&occupied, b"ID3fake").unwrap();
+        let state = AppState::new(4);
+        state.set_scan_roots(vec![root.clone()]);
+        let id = TrackId::new("metadata:test-clash:0").unwrap();
+        state.track_paths.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), old.clone());
+
+        let envelope = CommandEnvelope {
+            version: CONTRACT_VERSION,
+            request_id: "edit-2".into(),
+            command: Command::EditTrackMetadata { track_id: id, artist: String::new(), title: "Taken".into() },
+        };
+        assert!(state.dispatch(envelope).is_err(), "collision must be rejected");
+        assert!(old.is_file(), "source file must be untouched on collision");
+        assert_eq!(std::fs::read(&occupied).unwrap(), b"ID3fake");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// RED repro (2026-08-25): the recurring "searched a song, clicked it,
     /// and it disappeared / no more matches" report. A click that races a
     /// rescan carries ids minted from the PREVIOUS snapshot. Duplicate stems
@@ -4963,6 +5027,7 @@ impl AppState {
             Command::DeletePlaylist { playlist_id } => self.delete_playlist(&playlist_id),
             Command::AddTracksToPlaylist { track_ids, playlist_id } => self.add_tracks_to_playlist(&track_ids, &playlist_id),
             Command::DeleteTracks { track_ids } => self.delete_tracks(&track_ids),
+            Command::EditTrackMetadata { track_id, artist, title } => self.edit_track_metadata(track_id, &artist, &title),
             Command::StartDownload { job_id, destination, helper, source } => self.start_download(job_id, PathBuf::from(destination), PathBuf::from(helper), source),
             Command::RetryDownload { job_id } => {
                 let (destination, helper, source) = self.download_requests.lock().unwrap_or_else(|e| e.into_inner()).get(&job_id.0).cloned().ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "download request not found".into(), retryable: false })?;
@@ -5435,6 +5500,82 @@ impl AppState {
         }
         let generation = self.schedule_mutation_scan()?;
         Ok(serde_json::json!({ "deleted": paths.len(), "generation": generation }))
+    }
+
+    /// Rename a library file so its filename metadata matches the user-edited
+    /// artist/title. The scanner derives identity from `Artist - Title.ext`, so
+    /// this is the only durable way to correct a mis-named download.
+    fn edit_track_metadata(
+        &self,
+        track_id: TrackId,
+        artist: &str,
+        title: &str,
+    ) -> Result<Value, ContractError> {
+        let title = sanitize_track_stem(title);
+        if title.is_empty() {
+            return Err(ContractError::invalid("title cannot be empty"));
+        }
+        let artist = sanitize_track_stem(artist);
+        let path = self
+            .track_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&track_id)
+            .cloned()
+            .ok_or_else(|| ContractError {
+                code: ErrorCode::NotFound,
+                message: "track is not available locally".into(),
+                retryable: false,
+            })?;
+        let path = validate_library_path(self, &path, true)?;
+        let parent = path.parent().ok_or_else(|| ContractError::invalid("track file has no parent directory"))?;
+        let stem = if artist.is_empty() { title.clone() } else { format!("{artist} - {title}") };
+        let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+        let new_name = if extension.is_empty() { stem.clone() } else { format!("{stem}.{extension}") };
+        let new_path = parent.join(&new_name);
+        if new_path.as_os_str().is_empty() || new_path.to_string_lossy().chars().any(char::is_control) {
+            return Err(ContractError::invalid("new track name is unsafe"));
+        }
+        // A case-only rename resolves to the same file on macOS' default
+        // case-insensitive filesystem, so it must not be rejected as a collision.
+        let case_only = new_path.to_string_lossy().to_lowercase() == path.to_string_lossy().to_lowercase();
+        if new_path != path {
+            if new_path.exists() && !case_only {
+                return Err(ContractError::invalid("a file with that name already exists"));
+            }
+            std::fs::rename(&path, &new_path).map_err(|error| ContractError {
+                code: ErrorCode::Internal,
+                message: format!("could not rename track: {error}"),
+                retryable: true,
+            })?;
+            let mut favorites = self.favorites.lock().unwrap_or_else(|e| e.into_inner());
+            if favorites.contains(&path) {
+                favorites.set(&path, false);
+                favorites.set(&new_path, true);
+            }
+            self.provider_metadata.lock().unwrap_or_else(|e| e.into_inner()).remove(&path);
+        }
+        // Optimistic snapshot so the row reflects the new name immediately; the
+        // follow-up scan swaps the filename-derived id and reconciles membership.
+        {
+            let mut library = self.library.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(track) = library.tracks.iter_mut().find(|track| track.id == track_id) {
+                track.title = title.clone();
+                track.artist = (!artist.is_empty()).then_some(artist.clone());
+            }
+            let generation = self.next_generation();
+            library.generation = generation;
+            let snapshot = library.clone();
+            drop(library);
+            self.publish(self.event(snapshot.generation, Event::LibrarySnapshot { snapshot }));
+        }
+        let generation = self.schedule_mutation_scan()?;
+        Ok(serde_json::json!({
+            "path": new_path.display().to_string(),
+            "title": title,
+            "artist": artist,
+            "generation": generation,
+        }))
     }
 
     fn validate_transfer_destination(&self, destination: &PathBuf) -> Result<(), ContractError> {
@@ -6577,6 +6718,20 @@ fn validate_library_path(state: &AppState, path: &Path, allow_file: bool) -> Res
     let candidate = candidate.map_err(|_| ContractError::invalid("path is unavailable"))?;
     if !candidate.starts_with(&root) || (!allow_file && !path.is_dir()) { return Err(ContractError::invalid("path is outside the configured library")); }
     Ok(candidate)
+}
+
+/// Sanitize a user-supplied artist/title component into a safe filename stem.
+/// Mirrors the frontend download sanitizer so an edited name and a downloaded
+/// name are treated identically by the scanner.
+fn sanitize_track_stem(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control() && !"<>:\"/\\|?*".contains(*character))
+        .collect::<String>()
+        .trim()
+        .trim_end_matches('.')
+        .trim()
+        .to_owned()
 }
 
 fn sanitize_download_error(error: &str) -> String {

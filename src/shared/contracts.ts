@@ -54,6 +54,7 @@ export type Command =
   | { type: "delete_playlist"; payload: { playlist_id: PlaylistId } }
   | { type: "add_tracks_to_playlist"; payload: { track_ids: TrackId[]; playlist_id: PlaylistId } }
   | { type: "delete_tracks"; payload: { track_ids: TrackId[] } }
+  | { type: "edit_track_metadata"; payload: { track_id: TrackId; artist: string; title: string } }
   | { type: "start_download"; payload: { job_id: JobId; destination: string; helper: string; source: string } }
   | { type: "retry_download"; payload: { job_id: JobId } }
   | { type: "bundle_helper_path" }
@@ -164,6 +165,7 @@ function isCommand(v: unknown): v is Command {
     if (v.type === "delete_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 1;
     if (v.type === "add_tracks_to_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.track_ids) && v.payload.track_ids.length > 0 && v.payload.track_ids.every(nonEmptyId) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 2;
     if (v.type === "delete_tracks") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.track_ids) && v.payload.track_ids.length > 0 && v.payload.track_ids.every(nonEmptyId) && Object.keys(v.payload).length === 1;
+    if (v.type === "edit_track_metadata") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && typeof v.payload.artist === "string" && typeof v.payload.title === "string" && v.payload.title.trim().length > 0 && Object.keys(v.payload).length === 3;
     if (v.type === "start_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && typeof v.payload.helper === "string" && v.payload.helper.trim().length > 0 && typeof v.payload.source === "string" && Object.keys(v.payload).length === 4;
     if (v.type === "retry_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && Object.keys(v.payload).length === 1;
     if (v.type === "load_settings") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.home === "string" && v.payload.home.trim().length > 0 && Object.keys(v.payload).length === 1;

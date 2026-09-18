@@ -92,6 +92,13 @@ pub enum Command {
     DeletePlaylist { playlist_id: PlaylistId },
     AddTracksToPlaylist { track_ids: Vec<TrackId>, playlist_id: PlaylistId },
     DeleteTracks { track_ids: Vec<TrackId> },
+    EditTrackMetadata {
+        track_id: TrackId,
+        #[serde(default)]
+        artist: String,
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        title: String,
+    },
     StartDownload {
         job_id: JobId,
         #[serde(deserialize_with = "super::types::non_empty_string")]

@@ -217,6 +217,19 @@ describe("typed IPC bridge and projection", () => {
     expect(downloadPayload.source).toBe("scsearch1:fixture query");
   });
 
+  it("sends the edit-track-metadata command with artist and title", async () => {
+    const calls: unknown[] = [];
+    const bridge = createBridge({
+      invoke: async <T>(_name: string, payload: unknown) => { calls.push(payload); return null as T; },
+      listen: async () => () => {},
+    });
+    await bridge.editTrackMetadata("track-1", "Rick Astley", "Never Gonna Give You Up");
+    expect(calls).toHaveLength(1);
+    const envelope = calls[0] as { command: { type: string; payload: Record<string, unknown> } };
+    expect(envelope.command.type).toBe("edit_track_metadata");
+    expect(envelope.command.payload).toEqual({ track_id: "track-1", artist: "Rick Astley", title: "Never Gonna Give You Up" });
+  });
+
   it("accepts only a valid library response for startup readiness", () => {
     const response = { version: 1, generation: 0, tracks: [], playlists: [] };
     expect(isValidLibraryResponse(response)).toBe(true);
