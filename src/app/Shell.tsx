@@ -15,6 +15,7 @@ import type { BackendProjection } from "../state/backend_projection";
 import { currentTrack } from "../state/backend_projection";
 import { useTrackArtwork } from "../state/track_artwork";
 import { bumpPlayCount, loadDownloadJournal, loadPlayCounts, madeForYouIds, popularTrackIds, recordDownloadCompletions, saveDownloadJournal, savePlayCounts, type DownloadEntry, type PlayCounts } from "../state/play_stats";
+import { downloadDisplayLabel, downloadFilename, type DownloadMetadata } from "../state/download_naming";
 import type { Bridge, MigrationStatus } from "./bridge";
 import { type Playlist, type Recommendation, type SearchResult, type SettingsInput, type Track } from "../shared/contracts";
 import { previewKey } from "../shared/contracts";
@@ -274,8 +275,9 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     }));
   };
   const [activeDownloadJob, setActiveDownloadJob] = useState<{ jobId: string } | null>(null);
+  const [activeDownloadLabel, setActiveDownloadLabel] = useState<string | null>(null);
   const activeDownloadJobRef = useRef<string | null>(null);
-  const downloadQueueRef = useRef<Array<{ id: string; source: string; destination: string }>>([]);
+  const downloadQueueRef = useRef<Array<{ id: string; source: string; destination: string } & DownloadMetadata>>([]);
   const downloadHelperPath = fixtureHelper ?? bundleHelperPath;
   // Destinations are concrete folders under the library root. The default is
   // `Unsorted` (created inside the root when missing); playlist folders that
@@ -295,37 +297,39 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const startNextDownload = () => {
     if (activeDownloadJobRef.current) return;
     const next = downloadQueueRef.current.shift();
-    if (!next) return;
+    if (!next) { setActiveDownloadLabel(null); return; }
     if (!next.destination || !downloadHelperPath) {
       setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured.");
       setActiveDownloadJob(null);
+      setActiveDownloadLabel(null);
       return;
     }
     const safeId = next.id.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24) || "item";
     const jobId = `dl-${Date.now()}-${safeId}`;
     const extension = fixtureDestination ? "mp3" : "m4a";
-    // The library scanner derives Artist/Title from the FILENAME ("Artist - Title.ext"),
-    // so name downloads after their metadata whenever we know it — otherwise
-    // every downloaded song shows up as "Unknown artist".
     const row = csvPreview.find((item) => item.id === next.id || item.source === next.source);
     const searchRow = downloadSources.find((item) => item.query === next.id || item.url === next.id);
-    const label = [row?.artist ?? searchRow?.artist ?? "", row?.title ?? searchRow?.title ?? ""].filter(Boolean).join(" - ")
-      .replace(/[\\/:*?"<>|]/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 96);
-    const filename = label ? `${label}.${extension}` : `${jobId}.${extension}`;
+    const metadata: DownloadMetadata = {
+      artist: next.artist ?? row?.artist ?? searchRow?.artist ?? null,
+      title: next.title ?? row?.title ?? searchRow?.title ?? null,
+    };
+    // The library scanner derives Artist/Title from the FILENAME
+    // ("Artist - Title.ext"); URL/queue downloads resolve metadata up front so
+    // they are not stuck with the opaque job id and "Unknown artist".
+    const filename = downloadFilename(metadata, extension, jobId);
     activeDownloadJobRef.current = jobId;
     setActiveDownloadJob({ jobId });
+    setActiveDownloadLabel(downloadDisplayLabel(metadata));
     // A rejected start must clear the active-job gate so the NEXT queued item
     // can run; otherwise the 15s fallback in the job-watch effect would
     // double-start (Busy) and the queue wedges silently — the "nothing
     // happened" symptom when a download could not start.
     const start = bridge?.startDownload(jobId, `${next.destination}/${filename}`, downloadHelperPath, next.source.replace(/\r|\n/g, " ").trim());
-    if (!start) { activeDownloadJobRef.current = null; setActiveDownloadJob(null); return; }
+    if (!start) { activeDownloadJobRef.current = null; setActiveDownloadJob(null); setActiveDownloadLabel(null); return; }
     start.then(() => setCommandError(null)).catch((error: unknown) => {
       activeDownloadJobRef.current = null;
       setActiveDownloadJob(null);
+      setActiveDownloadLabel(null);
       setCommandError(normalizeRuntimeCommandError(error));
       startNextDownload();
     });
@@ -337,6 +341,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       if (["succeeded", "failed", "cancelled"].includes(job.state)) {
         activeDownloadJobRef.current = null;
         setActiveDownloadJob(null);
+        setActiveDownloadLabel(null);
         startNextDownload();
       }
       return;
@@ -344,6 +349,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     const deadline = window.setTimeout(() => {
       activeDownloadJobRef.current = null;
       setActiveDownloadJob(null);
+      setActiveDownloadLabel(null);
       setCommandError("The download did not start. Check the download helper and try again.");
       startNextDownload();
     }, 15000);
@@ -780,7 +786,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     if (!libraryRootPath) { setCommandError("Create a library folder in Settings first."); return; }
     createPlaylist();
   };
-  const downloaderViewEl = <DownloaderView error={commandError} jobs={projection.jobs} destinations={downloadDestinations} defaultDestination={downloadBase ?? undefined} queue={queuedDownloadUrls} searching={downloadSearchLoading} searchResults={downloadSources.map((item) => ({ id: item.url || item.query || item.title, title: item.title, artist: item.artist ?? item.provider, duration: item.duration ?? undefined, thumbnailUrl: item.thumbnail_url ?? undefined, source: item.url || item.query }))} previewTracks={csvPreview} onSearch={(query, requested) => { if (!bridge) return; const trimmed = query.trim(); if (!trimmed) return; setDownloadSearchLoading(true); setDownloadSources([]); setCommandError(null); bridge.searchDownloader(trimmed, true, requested ?? 10).then((value) => setDownloadSources(value)).catch((error) => setCommandError(normalizeRuntimeCommandError(error))).finally(() => setDownloadSearchLoading(false)); }} onPreview={(value, kind) => { if (!bridge) return; if (kind === "csv") bridge.previewCsv(value).then((result) => { const rows = (result as { rows?: Array<{ id: string; title: string; artist?: string; url?: string }> }).rows ?? []; setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: row.url }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); else if (/^https?:\/\//i.test(value.trim())) { bridge.searchDownloader(value.trim(), false, 3).then((results) => { setCsvPreview(results.map((item) => ({ id: item.url ?? item.query, title: item.title, artist: item.artist ?? undefined, source: item.url ?? item.query }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); } else bridge.searchDownloader(value, false, 10).then((results) => { setCsvPreview(results.map((item) => ({ id: item.url ?? item.query, title: item.title, artist: item.artist ?? undefined, source: item.url ?? item.query }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onDownload={(ids, destination) => { if (!destination || !downloadHelperPath) { setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured."); return; } for (const id of ids) downloadQueueRef.current.push({ id, source: sourceForDownload(id).replace(/\r|\n/g, " ").trim(), destination }); startNextDownload(); }} onDirectUrl={(url, destination) => { if (!bridge || !downloadHelperPath) { setCommandError("Downloads are unavailable until the bundled download helper is configured."); return; } bridge.validateDirectUrl(url, destination).then(() => { downloadQueueRef.current.push({ id: url, source: url, destination }); startNextDownload(); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onQueueUrl={(url) => { if (!bridge) return; bridge.queueUrls([url]).then((result) => { const accepted = (result as { accepted?: string[] }).accepted ?? []; if (accepted.length) setQueuedDownloadUrls((current) => [...current, ...accepted]); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onDownloadQueue={(destination) => { if (!destination || !downloadHelperPath) { setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured."); return; } for (const url of queuedDownloadUrls) downloadQueueRef.current.push({ id: url, source: url, destination }); setQueuedDownloadUrls([]); startNextDownload(); }} onSync={(_, destination) => { if (!destination.startsWith("/")) { setCommandError("Sync requires the configured library folder, not a playlist label."); return; } runCommand(bridge?.syncMarkers(destination)); }} onCancel={(jobId) => runCommand(bridge?.cancelJob(jobId))} onRetry={(jobId) => { if (!downloadHelperPath) { setCommandError("Download retry is unavailable until the download helper is configured."); return; } runCommand(bridge?.retryDownload(jobId)); }} onCreateDestination={createDownloadDestination} />;
+  const downloaderViewEl = <DownloaderView error={commandError} jobs={projection.jobs} activeLabel={activeDownloadLabel} destinations={downloadDestinations} defaultDestination={downloadBase ?? undefined} queue={queuedDownloadUrls} searching={downloadSearchLoading} searchResults={downloadSources.map((item) => ({ id: item.url || item.query || item.title, title: item.title, artist: item.artist ?? item.provider, duration: item.duration ?? undefined, thumbnailUrl: item.thumbnail_url ?? undefined, source: item.url || item.query }))} previewTracks={csvPreview} onSearch={(query, requested) => { if (!bridge) return; const trimmed = query.trim(); if (!trimmed) return; setDownloadSearchLoading(true); setDownloadSources([]); setCommandError(null); bridge.searchDownloader(trimmed, true, requested ?? 10).then((value) => setDownloadSources(value)).catch((error) => setCommandError(normalizeRuntimeCommandError(error))).finally(() => setDownloadSearchLoading(false)); }} onPreview={(value, kind) => { if (!bridge) return; if (kind === "csv") bridge.previewCsv(value).then((result) => { const rows = (result as { rows?: Array<{ id: string; title: string; artist?: string; url?: string }> }).rows ?? []; setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: row.url }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); else if (/^https?:\/\//i.test(value.trim())) { bridge.searchDownloader(value.trim(), false, 3).then((results) => { setCsvPreview(results.map((item) => ({ id: item.url ?? item.query, title: item.title, artist: item.artist ?? undefined, source: item.url ?? item.query }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); } else bridge.searchDownloader(value, false, 10).then((results) => { setCsvPreview(results.map((item) => ({ id: item.url ?? item.query, title: item.title, artist: item.artist ?? undefined, source: item.url ?? item.query }))); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onDownload={(ids, destination) => { if (!destination || !downloadHelperPath) { setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured."); return; } for (const id of ids) downloadQueueRef.current.push({ id, source: sourceForDownload(id).replace(/\r|\n/g, " ").trim(), destination }); startNextDownload(); }} onDirectUrl={(url, destination) => { if (!bridge || !downloadHelperPath) { setCommandError("Downloads are unavailable until the bundled download helper is configured."); return; } bridge.validateDirectUrl(url, destination).then((result) => { const meta = (result ?? {}) as DownloadMetadata; downloadQueueRef.current.push({ id: url, source: url, destination, title: meta.title ?? null, artist: meta.artist ?? null }); startNextDownload(); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onQueueUrl={(url) => { if (!bridge) return; bridge.queueUrls([url]).then((result) => { const accepted = (result as { accepted?: string[] }).accepted ?? []; if (accepted.length) setQueuedDownloadUrls((current) => [...current, ...accepted]); }).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onDownloadQueue={(destination) => { if (!destination || !downloadHelperPath) { setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured."); return; } const urls = queuedDownloadUrls; setQueuedDownloadUrls([]); if (!bridge) return; if (urls.length) setCommandNotice(`Resolving ${urls.length} URL${urls.length === 1 ? "" : "s"}…`); const resolved = urls.reduce<Promise<void>>((chain, url) => chain.then(() => bridge.validateDirectUrl(url, destination).then((result) => { const meta = (result ?? {}) as DownloadMetadata; downloadQueueRef.current.push({ id: url, source: url, destination, title: meta.title ?? null, artist: meta.artist ?? null }); }).catch(() => { downloadQueueRef.current.push({ id: url, source: url, destination }); })), Promise.resolve()); void resolved.then(() => startNextDownload()); }} onSync={(_, destination) => { if (!destination.startsWith("/")) { setCommandError("Sync requires the configured library folder, not a playlist label."); return; } runCommand(bridge?.syncMarkers(destination)); }} onCancel={(jobId) => runCommand(bridge?.cancelJob(jobId))} onRetry={(jobId) => { if (!downloadHelperPath) { setCommandError("Download retry is unavailable until the download helper is configured."); return; } runCommand(bridge?.retryDownload(jobId)); }} onCreateDestination={createDownloadDestination} />;
   const errorLogViewEl = <ErrorLogView />;
   const settingsScreens: Record<SettingsNavLink, ReactNode> = { home: homeViewEl, recent: recentViewEl, discover: discoverViewEl, downloader: downloaderViewEl, error_log: errorLogViewEl };
   const songPageViewEl = <SongPageView track={seedTrack} nowPlaying={displayTrack} recommendations={songRecs.items} recommendationState={songRecs.state} recommendationError={songRecs.error} hasApiKey={discoveryKeyConfigured !== false} sessionActive={!!projection.preview?.active} discoverMode={projection.discover?.enabled === true} discoverHint={projection.discover?.enabled ? `Pre-loaded ${projection.discover.ready} of 5 recommendations.` : undefined} onToggleDiscoverMode={() => runCommand(projection.discover?.enabled ? bridge?.discoverDisable() : bridge?.discoverEnable(songRecs.items.slice(0, 50).map((item) => ({ artist: item.artist, title: item.title }))))} onRefreshRecommendations={() => setSongRecRefresh((value) => value + 1)} onPreviewRecommendation={(item) => runCommand(bridge?.previewTap(songRecs.items.slice(0, 50).map((candidate) => ({ artist: candidate.artist, title: candidate.title })), previewKey(item.artist, item.title)))} preview={projection.preview} saved={projection.saved} playlists={projection.library?.playlists ?? []} jobs={projection.jobs} backendAvailable={available} onSaveRecommendation={(item, playlistId) => { if (playlistId) runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), playlistId)); }} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} onLoadVideo={() => { if (track && available) void bridge?.videoStage(track.id); }} videoMode={videoMode} onVideoModeChange={(enabled) => { setVideoMode(enabled); runCommand(bridge?.setVideoMode(enabled)); }} />;

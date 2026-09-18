@@ -4080,6 +4080,22 @@ impl AppState {
     pub fn set_bundle_helper(&self, helper: Option<PathBuf>) {
         *self.bundle_helper.lock().unwrap_or_else(|e| e.into_inner()) = helper;
     }
+    /// Locate the bundled yt-dlp binary beside the download helper. Used for
+    /// best-effort metadata probes; absence is not fatal.
+    fn discover_ytdlp(&self) -> Result<PathBuf, String> {
+        let helper = self
+            .bundle_helper
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .ok_or_else(|| "bundled download helper is not configured".to_string())?;
+        let managed_dir = helper.parent().map(PathBuf::from);
+        crate::process::executables::discover(
+            crate::process::executables::ExecutableKind::YtDlp,
+            managed_dir.as_deref(),
+        )
+        .map_err(|error| error.to_string())
+    }
     /// Test/embedding seam: marks a track as the current playback position
     /// without opening the audio device. Mirrors the real play path so the
     /// Discover advance/handoff wiring is exercised identically.
@@ -4888,7 +4904,33 @@ impl AppState {
                     return Err(ContractError::invalid("destination must be an absolute path"));
                 }
                 validate_library_path(self, &destination, true)?;
-                Ok(serde_json::json!({ "url": url.trim(), "destination": destination.display().to_string() }))
+                // Best-effort metadata resolution so direct-URL/queue downloads
+                // can be named "Artist - Title" instead of the opaque job id.
+                // A probe failure degrades the filename, never the download.
+                let mut title = None;
+                let mut artist = None;
+                let mut thumbnail_url = None;
+                let mut duration_secs = None;
+                match self.discover_ytdlp() {
+                    Ok(ytdlp) => match crate::download::search::probe_media(&ytdlp, url.trim()) {
+                        Ok(probe) => {
+                            title = (!probe.title.is_empty()).then_some(probe.title);
+                            artist = probe.artist;
+                            thumbnail_url = probe.thumbnail_url;
+                            duration_secs = probe.duration;
+                        }
+                        Err(error) => eprintln!("[luno-downloader] URL metadata probe failed: {error}"),
+                    },
+                    Err(error) => eprintln!("[luno-downloader] URL metadata probe unavailable: {error}"),
+                }
+                Ok(serde_json::json!({
+                    "url": url.trim(),
+                    "destination": destination.display().to_string(),
+                    "title": title,
+                    "artist": artist,
+                    "thumbnail_url": thumbnail_url,
+                    "duration_secs": duration_secs,
+                }))
             }
             Command::PreviewCsv { csv } => {
                 let tracks = crate::download::csv::parse(csv.as_bytes())

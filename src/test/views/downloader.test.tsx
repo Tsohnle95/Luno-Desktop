@@ -52,6 +52,11 @@ describe("Gate 6 downloader view", () => {
     expect(html).toContain('role="status"');
   });
 
+  it("shows the resolved song name beside active progress", () => {
+    const html = renderToStaticMarkup(<DownloaderView jobs={{ "job-1": runningJob }} activeLabel="Rick Astley — Never Gonna Give You Up" />);
+    expect(html).toContain("Downloading — Rick Astley — Never Gonna Give You Up — 50%");
+  });
+
   it("renders an animated search indicator without the obsolete 30-second warning", () => {
     const html = renderToStaticMarkup(<DownloaderView searching={true} />);
     expect(html).toContain("luno-download-spinner");

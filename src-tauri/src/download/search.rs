@@ -150,6 +150,77 @@ fn video_renderer_result(value: &serde_json::Value) -> Option<SearchResult> {
     Some(SearchResult { provider: "youtube".into(), query: url.clone(), title, artist, duration, thumbnail_url, url: Some(url) })
 }
 
+/// Resolved metadata for one concrete media URL. Direct-URL and URL-queue
+/// downloads arrive without a search row, so the filename would otherwise fall
+/// back to the opaque job id and show up as "Unknown artist" (filename
+/// metadata is the only production metadata source).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaProbe {
+    pub title: String,
+    pub artist: Option<String>,
+    pub duration: Option<u64>,
+    pub thumbnail_url: Option<String>,
+}
+
+/// Resolve a single URL's metadata through yt-dlp (`--dump-single-json`).
+/// Callers treat this as best effort: a failure must never block the download,
+/// it only degrades the chosen filename.
+pub fn probe_media(ytdlp: &Path, url: &str) -> Result<MediaProbe, String> {
+    let mut command = Command::new(ytdlp);
+    command.args([
+        "--dump-single-json",
+        "--no-warnings",
+        "--no-playlist",
+        "--socket-timeout",
+        "15",
+        "--",
+        url,
+    ]);
+    let output = run_with_timeout(command, SEARCH_TIMEOUT)
+        .map_err(|error| format!("metadata probe failed: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "metadata probe exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("metadata probe returned malformed JSON: {error}"))?;
+    Ok(media_probe_from_json(&value))
+}
+
+fn media_probe_from_json(value: &serde_json::Value) -> MediaProbe {
+    let string_field = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
+    // YouTube music uploads expose `track`/`artist`; fall back to the video
+    // title and uploader/channel for everything else.
+    let title = string_field("track")
+        .or_else(|| string_field("title"))
+        .unwrap_or_default();
+    let artist = string_field("artist")
+        .or_else(|| string_field("creator"))
+        .or_else(|| string_field("uploader"))
+        .or_else(|| string_field("channel"));
+    let duration = value.get("duration").and_then(|v| v.as_u64());
+    let thumbnail_url = string_field("thumbnail").or_else(|| {
+        value
+            .get("thumbnails")
+            .and_then(|v| v.as_array())
+            .and_then(|list| list.last())
+            .and_then(|v| v.get("url"))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    });
+    MediaProbe { title, artist, duration, thumbnail_url }
+}
+
 /// Execute the yt-dlp search and parse JSON-per-line output. Each result is a
 /// single JSON object on its own line (`--dump-json` with `--flat-playlist`).
 fn run_ytdlp(helper: &Path, prefix: &str, query: &str, limit: usize) -> Result<Vec<serde_json::Value>, String> {
@@ -243,6 +314,29 @@ mod tests {
         assert_eq!(format_duration(59), "0:59");
         assert_eq!(format_duration(268), "4:28");
         assert_eq!(format_duration(3600), "60:00");
+    }
+
+    #[test]
+    fn media_probe_prefers_music_fields_and_falls_back_to_video_fields() {
+        let music: serde_json::Value = serde_json::from_str(
+            r#"{"track":"Never Gonna Give You Up","artist":"Rick Astley","title":"Rick Astley - Never Gonna Give You Up (Official Video)","duration":213,"thumbnail":"https://img.test/rick.jpg"}"#,
+        )
+        .unwrap();
+        let probe = media_probe_from_json(&music);
+        assert_eq!(probe.title, "Never Gonna Give You Up");
+        assert_eq!(probe.artist.as_deref(), Some("Rick Astley"));
+        assert_eq!(probe.duration, Some(213));
+        assert_eq!(probe.thumbnail_url.as_deref(), Some("https://img.test/rick.jpg"));
+
+        let video: serde_json::Value = serde_json::from_str(
+            r#"{"title":"Some Live Set","uploader":"Some Channel","thumbnails":[{"url":"https://img.test/a.jpg"},{"url":"https://img.test/b.jpg"}]}"#,
+        )
+        .unwrap();
+        let probe = media_probe_from_json(&video);
+        assert_eq!(probe.title, "Some Live Set");
+        assert_eq!(probe.artist.as_deref(), Some("Some Channel"));
+        assert_eq!(probe.duration, None);
+        assert_eq!(probe.thumbnail_url.as_deref(), Some("https://img.test/b.jpg"));
     }
 
     #[test]
