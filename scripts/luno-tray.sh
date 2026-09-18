@@ -1,56 +1,73 @@
 #!/bin/bash
-# Luno — detached development launcher (no Terminal window required).
+# Luno — one-click detached DEV launcher (no Terminal window required).
 #
-# Clicking the Dock icon (~/Applications/Luno Dev.app, built by
-# scripts/install-dock-icon.sh) fires `luno-tray.sh launch` in the
-# background. The first launch starts `npm run tauri dev` detached with
-# nohup; every later click only focuses the already-running app.
-# Rebuilds stay automatic through the dev server itself: frontend edits
-# hot-reload via Vite HMR and Rust edits trigger an incremental debug
-# rebuild, exactly as with ./dev.command — minus the terminal.
+# Clicking ~/Applications/Luno Dev.app runs `luno-tray.sh launch`. The first
+# click starts `npm run tauri dev` detached; it compiles the debug app and
+# opens the window. While it runs, frontend edits hot-reload (Vite HMR) and
+# Rust edits trigger an incremental debug rebuild automatically — no terminal
+# and no manual rebuild per change.
 #
-# NOTE: this launches the DEV build at
-# src-tauri/target/debug/luno-desktop. The Dock icon at
-# /Applications/Luno Desktop.app is a RELEASE bundle and never rebuilds;
-# reinstall it with `npx tauri build` + copy after release changes.
+# Force a clean rebuild: quit the app window, then click the icon again (or run
+# `scripts/luno-tray.sh restart`). `status`/`logs` are diagnostic helpers.
 #
-# Usage: scripts/luno-tray.sh launch|status|stop|logs [-f]
+# This is the DEV build (src-tauri/target/debug/luno-desktop), NOT the release
+# bundle at /Applications/Luno Desktop.app. Install a release copy with
+# `scripts/install-release-app.sh`.
+#
+# Usage: scripts/luno-tray.sh launch|restart|status|stop|logs [-f]
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-# A double-clicked launcher gets a minimal PATH: make sure the Rust
-# toolchain and local node binaries are findable (same as dev.command).
+# A double-clicked launcher gets a minimal PATH: make sure the Rust toolchain
+# and local node binaries are findable.
 export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:$REPO/node_modules/.bin:$PATH"
 
 RUNDIR="${TMPDIR:-/tmp}/luno-dev"
 PIDFILE="$RUNDIR/server.pid"
 LOGFILE="$RUNDIR/dev.log"
 LOCKDIR="$RUNDIR/launch.lock"
-VITE_URL="http://127.0.0.1:1420/"
-# The DEV binary `tauri dev` runs. Match on the full path so a running
-# release bundle (/Applications/Luno Desktop.app, same process name) is
-# never mistaken for the dev app.
-DEV_BINARY="$REPO/src-tauri/target/debug/luno-desktop"
-# First debug compile can take several minutes; the launcher runs
-# detached so this never blocks a click.
+VITE_URL="http://localhost:1420/"
+# `tauri dev` runs the DEV binary as the RELATIVE path
+# `target/debug/luno-desktop`, so match that suffix. Safe against the release
+# bundle (/Applications/Luno Desktop.app/... never contains target/debug).
+DEV_MATCH="target/debug/luno-desktop"
+# The installed release copy, if present. Dev and release share the
+# single-instance guard port (48713) and config, so the release app must be
+# quit before the dev app can start.
+RELEASE_BINARY="/Applications/Luno Desktop.app/Contents/MacOS/luno-desktop"
+# First debug compile can take several minutes; the launcher runs detached so
+# this never blocks a click.
 READY_TIMEOUT_SECS=600
 
 mkdir -p "$RUNDIR"
 
 alert() {
   # Failure surface without a terminal: a macOS dialog naming the log.
-  osascript -e "display dialog \"${1//$\"/\\\"}\nLog: $LOGFILE\" with title \"Luno\" buttons {\"OK\"} default button \"OK\"" >/dev/null 2>&1 || true
+  osascript -e "display dialog \"${1//\"/\\\"}\nLog: $LOGFILE\" with title \"Luno Dev\" buttons {\"OK\"} default button \"OK\"" >/dev/null 2>&1 || true
 }
 
 vite_up() { curl -sf -o /dev/null --max-time 2 "$VITE_URL" 2>/dev/null; }
 daemon_alive() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }
-app_running() { pgrep -f "$DEV_BINARY" >/dev/null 2>&1; }
+dev_pid() { pgrep -f "$DEV_MATCH" 2>/dev/null | head -n1; }
+app_running() { [ -n "$(dev_pid)" ]; }
+release_running() { pgrep -f "$RELEASE_BINARY" >/dev/null 2>&1; }
+
+quit_release_app() {
+  # Two installs cannot run at once (same instance port + shared config). The
+  # dev app would silently exit "another Luno instance is already running", so
+  # quit the release copy first when it is the one currently open.
+  release_running || return 0
+  osascript -e 'quit app "Luno Desktop"' >/dev/null 2>&1 || true
+  sleep 1
+  release_running && pkill -f "$RELEASE_BINARY" 2>/dev/null || true
+}
 
 focus_app() {
-  # Name-based activation is ambiguous: the release bundle shares the
-  # `luno-desktop` name. Target the dev PID directly.
+  # Name-based activation is ambiguous (release bundle shares the name), so
+  # target the dev PID. Needs Accessibility permission for System Events; if
+  # that is denied the window simply keeps its current stacking order.
   local pid
-  pid="$(pgrep -f "$DEV_BINARY" | head -n1)"
+  pid="$(dev_pid)"
   [ -n "$pid" ] || return 0
   osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $pid) to true" >/dev/null 2>&1 || true
 }
@@ -58,7 +75,7 @@ focus_app() {
 cmd_status() {
   if vite_up && daemon_alive; then
     echo "Luno dev server running (pid $(cat "$PIDFILE"), vite up)."
-    app_running && echo "App process running." || echo "App process not started yet (still compiling?)."
+    app_running && echo "Dev app running." || echo "Dev app not started yet (still compiling?)."
     return 0
   fi
   if daemon_alive; then
@@ -70,22 +87,26 @@ cmd_status() {
 }
 
 cmd_stop() {
-  if [ ! -f "$PIDFILE" ]; then echo "Luno dev server not running."; return 0; fi
-  pid="$(cat "$PIDFILE")"
+  local pid=""
+  [ -f "$PIDFILE" ] && pid="$(cat "$PIDFILE")"
   rm -f "$PIDFILE"
-  # The daemon was started with setsid, so killing its process group stops
-  # npm + vite + cargo together. Refuse to signal a recycled PID.
-  if kill -0 "$pid" 2>/dev/null && ps -o comm= -p "$pid" 2>/dev/null | grep -qE '^(npm|node|tauri|cargo)$'; then
-    kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
-    echo "Stopped Luno dev server (was pid $pid)."
-  else
-    echo "Luno dev server not running (stale pid file cleared)."
+  # Best-effort teardown: npm/cargo/vite may have reparented, so stop the dev
+  # app by path suffix and the launcher tree rather than assuming a process
+  # group. Leave a moment for the Vite/instance ports to free before relaunch.
+  pkill -f "$DEV_MATCH" 2>/dev/null || true
+  pkill -f "$REPO/node_modules/.bin/tauri" 2>/dev/null || true
+  pkill -f "$REPO/node_modules/.bin/vite" 2>/dev/null || true
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    pkill -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
   fi
+  sleep 1
+  echo "Stopped Luno dev server."
 }
 
 cmd_logs() {
   [ -f "$LOGFILE" ] || { echo "No log yet at $LOGFILE."; return 0; }
-  if [ "${1:-}" = "-f" ]; then exec tail -f "$LOGFILE"; else tail -n 100 "$LOGFILE"; fi
+  if [ "${1:-}" = "-f" ]; then exec tail -f "$LOGFILE"; else tail -n 120 "$LOGFILE"; fi
 }
 
 cmd_launch() {
@@ -93,34 +114,36 @@ cmd_launch() {
   if ! mkdir "$LOCKDIR" 2>/dev/null; then return 0; fi
   trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT
 
-  if vite_up && daemon_alive; then focus_app; return 0; fi
   if daemon_alive && ! vite_up; then return 0; fi  # boot in progress
-  rm -f "$PIDFILE"  # clear stale pid file, if any
-
-  if [ ! -x "$REPO/node_modules/.bin/tauri" ]; then
-    alert "Dependencies are not installed. Run npm ci in $REPO once, then click again."
-    echo "Missing node_modules/.bin/tauri; run npm ci first." >&2
-    return 1
+  if vite_up && daemon_alive; then
+    app_running && { focus_app; return 0; }
+    # Vite is up but the app is not (crashed/quit): fall through and wait,
+    # which lets `tauri dev` restart the app on its next watch pass.
+  else
+    if [ ! -x "$REPO/node_modules/.bin/tauri" ]; then
+      alert "Dependencies are not installed. Run npm ci in $REPO once, then click again."
+      echo "Missing node_modules/.bin/tauri; run npm ci first." >&2
+      return 1
+    fi
+    command -v cargo >/dev/null 2>&1 || {
+      alert "The Rust toolchain was not found on PATH. Install rustup stable, then click again."
+      echo "cargo not found." >&2
+      return 1
+    }
+    rm -f "$PIDFILE"
+    echo "Starting Luno dev server (log: $LOGFILE)…"
+    quit_release_app
+    cd "$REPO"
+    # `setsid` is Linux-only and absent on macOS; `nohup` alone detaches the
+    # server and survives the launcher exiting.
+    nohup npm run tauri dev >>"$LOGFILE" 2>&1 < /dev/null &
+    daemon_pid=$!
+    disown "$daemon_pid" 2>/dev/null || true
+    echo "$daemon_pid" > "$PIDFILE"
+    trap 'echo "Continuing in background; check with scripts/luno-tray.sh status."; rmdir "$LOCKDIR" 2>/dev/null || true; exit 0' INT
   fi
-  command -v cargo >/dev/null 2>&1 || {
-    alert "The Rust toolchain was not found on PATH. Install rustup stable, then click again."
-    echo "cargo not found." >&2
-    return 1
-  }
 
-  echo "Starting Luno dev server (log: $LOGFILE)…"
-  cd "$REPO"
-  # nohup detaches so closing callers (and Ctrl+C) cannot take the server
-  # down. `setsid` is Linux-only and is NOT available on macOS, so the old
-  # `setsid nohup …` line failed instantly and the dev build never started.
-  nohup npm run tauri dev >>"$LOGFILE" 2>&1 < /dev/null &
-  DAEMON_PID=$!
-  disown "$DAEMON_PID" 2>/dev/null || true
-  echo "$DAEMON_PID" > "$PIDFILE"
-
-  # Wait in the background-friendly foreground: AppleScript callers already
-  # detached us, terminal callers can Ctrl+C (the daemon survives).
-  trap 'echo "Continuing in background; check status with scripts/luno-tray.sh status."; rmdir "$LOCKDIR" 2>/dev/null || true; exit 0' INT
+  # Vite first (fail fast so a config error surfaces), then the debug app.
   waited=0
   while [ "$waited" -lt "$READY_TIMEOUT_SECS" ]; do
     vite_up && break
@@ -130,22 +153,29 @@ cmd_launch() {
   done
   vite_up || { alert "The dev server did not come up in time. See the log."; return 1; }
 
-  # Vite is up; the debug app follows once Rust finishes compiling.
+  # The debug app follows once Rust finishes compiling/restarting.
   waited=0
   while [ "$waited" -lt "$READY_TIMEOUT_SECS" ]; do
     app_running && break
-    daemon_alive || break  # crashed after vite came up; surfaced via log
+    daemon_alive || break  # crashed after vite came up; surfaced via the log
     sleep 2
     waited=$((waited + 2))
   done
   focus_app
-  echo "Luno is up."
+  echo "Luno dev build is up."
+}
+
+cmd_restart() {
+  cmd_stop
+  sleep 1
+  cmd_launch
 }
 
 case "${1:-launch}" in
-  launch) cmd_launch ;;
+  launch|start) cmd_launch ;;
+  restart|rebuild) cmd_restart ;;
   status) cmd_status ;;
   stop) cmd_stop ;;
   logs) cmd_logs "${2:-}" ;;
-  *) echo "Usage: $0 launch|status|stop|logs [-f]" >&2; exit 1 ;;
+  *) echo "Usage: $0 launch|restart|status|stop|logs [-f]" >&2; exit 1 ;;
 esac

@@ -38,7 +38,10 @@ npx tauri build
   "src-tauri/target/release/bundle/macos/Luno Desktop.app"
 ```
 
-The bundle verifier checks the managed binary manifest, third-party notices,
+The DMG bundler deletes the intermediate `.app` after packaging, so to install
+the release app into `/Applications` use `npx tauri build --bundles app` (or
+`scripts/install-release-app.sh`, which builds, quits the running copy,
+installs, verifies, and relaunches). The bundle verifier checks the managed binary manifest, third-party notices,
 executable bits, checksums, architectures, versions, and behavior with the
 developer PATH unavailable.
 
@@ -54,9 +57,16 @@ directory; `scripts/luno-tray.sh status|logs|stop` manages it).
 in the background, so a Dock icon click starts (or focuses) the app.
 Rebuilds stay automatic through the dev server's file watching (frontend
 hot-reload plus incremental Rust rebuilds); repeat clicks only focus the
-running app. The installed `.app` is a generated local artifact holding
-this machine's repository path — never commit it, and re-run the
-installer after moving the repository.
+running app, and `scripts/luno-tray.sh restart` forces a clean rebuild.
+Starting dev quits the installed release app first: both share the
+single-instance port (48713) and config, so they cannot run concurrently.
+The installed `.app` is a generated local artifact holding this machine's
+repository path — never commit it, and re-run the installer after moving the
+repository.
+
+The dev launcher runs the debug binary `src-tauri/target/debug/luno-desktop`;
+the Dock-pinned `/Applications/Luno Desktop.app` is a RELEASE bundle and never
+rebuilds — refresh it with `scripts/install-release-app.sh`.
 
 ## Known verification gaps (do not treat as passes)
 
