@@ -1,13 +1,18 @@
 #!/bin/bash
 # Luno — detached development launcher (no Terminal window required).
 #
-# Clicking the Dock icon (~/Applications/Luno.app, built by
+# Clicking the Dock icon (~/Applications/Luno Dev.app, built by
 # scripts/install-dock-icon.sh) fires `luno-tray.sh launch` in the
 # background. The first launch starts `npm run tauri dev` detached with
-# setsid/nohup; every later click only focuses the already-running app.
+# nohup; every later click only focuses the already-running app.
 # Rebuilds stay automatic through the dev server itself: frontend edits
 # hot-reload via Vite HMR and Rust edits trigger an incremental debug
 # rebuild, exactly as with ./dev.command — minus the terminal.
+#
+# NOTE: this launches the DEV build at
+# src-tauri/target/debug/luno-desktop. The Dock icon at
+# /Applications/Luno Desktop.app is a RELEASE bundle and never rebuilds;
+# reinstall it with `npx tauri build` + copy after release changes.
 #
 # Usage: scripts/luno-tray.sh launch|status|stop|logs [-f]
 set -euo pipefail
@@ -22,7 +27,10 @@ PIDFILE="$RUNDIR/server.pid"
 LOGFILE="$RUNDIR/dev.log"
 LOCKDIR="$RUNDIR/launch.lock"
 VITE_URL="http://127.0.0.1:1420/"
-APP_PROCESS="luno-desktop"
+# The DEV binary `tauri dev` runs. Match on the full path so a running
+# release bundle (/Applications/Luno Desktop.app, same process name) is
+# never mistaken for the dev app.
+DEV_BINARY="$REPO/src-tauri/target/debug/luno-desktop"
 # First debug compile can take several minutes; the launcher runs
 # detached so this never blocks a click.
 READY_TIMEOUT_SECS=600
@@ -36,10 +44,15 @@ alert() {
 
 vite_up() { curl -sf -o /dev/null --max-time 2 "$VITE_URL" 2>/dev/null; }
 daemon_alive() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }
-app_running() { pgrep -x "$APP_PROCESS" >/dev/null 2>&1; }
+app_running() { pgrep -f "$DEV_BINARY" >/dev/null 2>&1; }
 
 focus_app() {
-  osascript -e "tell application \"$APP_PROCESS\" to activate" >/dev/null 2>&1 || true
+  # Name-based activation is ambiguous: the release bundle shares the
+  # `luno-desktop` name. Target the dev PID directly.
+  local pid
+  pid="$(pgrep -f "$DEV_BINARY" | head -n1)"
+  [ -n "$pid" ] || return 0
+  osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $pid) to true" >/dev/null 2>&1 || true
 }
 
 cmd_status() {
@@ -97,10 +110,13 @@ cmd_launch() {
 
   echo "Starting Luno dev server (log: $LOGFILE)…"
   cd "$REPO"
-  # setsid detaches the whole tree so closing callers (and Ctrl+C on
-  # `npm run launch`) cannot take the server down with them.
-  setsid nohup npm run tauri dev >>"$LOGFILE" 2>&1 < /dev/null &
-  echo $! > "$PIDFILE"
+  # nohup detaches so closing callers (and Ctrl+C) cannot take the server
+  # down. `setsid` is Linux-only and is NOT available on macOS, so the old
+  # `setsid nohup …` line failed instantly and the dev build never started.
+  nohup npm run tauri dev >>"$LOGFILE" 2>&1 < /dev/null &
+  DAEMON_PID=$!
+  disown "$DAEMON_PID" 2>/dev/null || true
+  echo "$DAEMON_PID" > "$PIDFILE"
 
   # Wait in the background-friendly foreground: AppleScript callers already
   # detached us, terminal callers can Ctrl+C (the daemon survives).
