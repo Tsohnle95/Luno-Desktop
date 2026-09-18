@@ -58,6 +58,15 @@ envelope shapes (`docs/modules/contracts.md`).
 - Video element behavior is CSS-driven; fullscreen toggles must not call
   `window.setFullscreen()` (blacks out WKWebView over the hide
   transition).
+- Tauri's WKWebView implements no native `window.confirm`/`window.prompt`
+  (they returned false/undefined and silently dropped deletes and playlist
+  creation), so confirmations and name entry use the in-app
+  `ConfirmDialog`/`PlaylistDialog`. `.luno-dialog*` styles own the fixed
+  modal backdrop.
+- The track context menu is available from every track surface that shows a
+  real library track: library/recent rows, the queue, home cards, and the
+  footer now-playing track. Edit/delete are hidden for non-library
+  recommendation rows (they have no library file).
 
 ## Core flows
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import type { PlaybackSnapshot, Track } from "../shared/contracts";
 import { Artwork } from "./Artwork";
 import { RecommendationArtwork } from "./RecommendationArtwork";
@@ -20,6 +20,8 @@ export interface PlayerBarProps {
   onVolumeCommit?: (volume: number) => void;
   onFavoriteToggle?: (track: Track) => void;
   onOpenTrack?: (track: Track) => void;
+  /** Right-click on the now-playing track (opens the shared track menu). */
+  onTrackContextMenu?: (event: MouseEvent, track: Track) => void;
   backendAvailable?: boolean;
   /** Engine shuffle/repeat mirrors for the Spotify-style transport cluster. */
   shuffle?: boolean;
@@ -48,7 +50,7 @@ const clamp = (value: number, min: number, max: number) => Math.min(Math.max(min
  * the committed position until the backend catches up (no snap-back). The
  * volume slider mirrors the persisted volume value when idle.
  */
-export function PlayerBar({ track = null, playback = null, artwork = null, volume = 1, accent = "var(--luno-green)", onPlayPause, onNext, onPrevious, onSeek, onVolume, onVolumeCommit, onFavoriteToggle, onOpenTrack, backendAvailable = true, shuffle = false, repeat = "off", onToggleShuffle, onCycleRepeat, queueOpen = true, onToggleQueue }: PlayerBarProps) {
+export function PlayerBar({ track = null, playback = null, artwork = null, volume = 1, accent = "var(--luno-green)", onPlayPause, onNext, onPrevious, onSeek, onVolume, onVolumeCommit, onFavoriteToggle, onOpenTrack, onTrackContextMenu, backendAvailable = true, shuffle = false, repeat = "off", onToggleShuffle, onCycleRepeat, queueOpen = true, onToggleQueue }: PlayerBarProps) {
   const position = playback?.position_ms ?? 0;
   const duration = playback?.duration_ms ?? 0;
   const playing = playback?.status === "playing";
@@ -215,7 +217,7 @@ export function PlayerBar({ track = null, playback = null, artwork = null, volum
 
   return <div className="luno-player-bar" style={{ "--luno-player-accent": accent } as CSSProperties} aria-disabled={!backendAvailable}>
     <div className="luno-player-row">
-      <button className="luno-player-track" type="button" disabled={!backendAvailable || !track} onClick={() => track && onOpenTrack?.(track)}>
+      <button className="luno-player-track" type="button" disabled={!backendAvailable || !track} onClick={() => track && onOpenTrack?.(track)} onContextMenu={(event) => { if (track) onTrackContextMenu?.(event, track); }}>
         <Artwork src={artwork ?? track?.artwork_url} alt="" size={52} fallback={track ? <RecommendationArtwork artist={track.artist ?? ""} title={track.title} size={52} /> : undefined} />
         <span className="luno-player-copy"><strong title={track?.title ?? undefined}>{track?.title ?? "Nothing playing"}</strong><small>{track?.artist ?? ""}</small></span>
       </button>

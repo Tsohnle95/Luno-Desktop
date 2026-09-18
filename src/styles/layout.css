@@ -411,6 +411,45 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-context-menu button:disabled { opacity:.4; cursor:default; }
 .luno-context-menu button.is-danger { color:#ff8b8b; }
 .luno-context-menu hr { height:1px; margin:5px 4px; border:0; background:rgba(255,255,255,.1); }
+/* ---- In-app dialogs (confirm / create / edit) ----
+ * Tauri's WKWebView does not implement native window.confirm/prompt, so these
+ * are rendered in-app. They live inside the shell grid, so the backdrop must
+ * be fixed + full-viewport to read as a modal (z-index above the context menu). */
+.luno-dialog-backdrop {
+  position: fixed; inset: 0; z-index: 1500;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: rgba(0,0,0,.62);
+}
+.luno-dialog {
+  width: min(440px, 100%); max-height: calc(100vh - 48px); overflow: auto;
+  padding: 20px; border: 1px solid rgba(255,255,255,.12); border-radius: 12px;
+  background: #282828; color: var(--luno-text);
+  box-shadow: 0 24px 64px rgba(0,0,0,.6);
+}
+.luno-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.luno-dialog h2 { margin: 0; font-size: 18px; }
+.luno-dialog header > button {
+  border: 0; background: transparent; color: var(--luno-text-2);
+  font-size: 20px; line-height: 1; cursor: pointer;
+}
+.luno-dialog p { color: var(--luno-text-2); line-height: 1.5; }
+.luno-dialog label { display: block; margin: 12px 0; color: var(--luno-text-2); font-size: 13px; }
+.luno-dialog input:not([type="checkbox"]), .luno-dialog select {
+  display: block; width: 100%; margin-top: 6px; padding: 10px 12px;
+  color: var(--luno-text); background: var(--luno-bg-3);
+  border: 1px solid var(--luno-border); border-radius: var(--luno-radius);
+}
+.luno-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.luno-dialog footer button {
+  border: 0; border-radius: var(--luno-radius); padding: 10px 14px;
+  color: var(--luno-text); background: var(--luno-bg-3); font-weight: 700; cursor: pointer;
+}
+.luno-dialog footer button:last-child { background: var(--luno-green); color: var(--luno-bg); }
+.luno-dialog footer button.is-danger { background: var(--luno-red); color: #fff; }
+.luno-dialog footer button:disabled { opacity: .5; cursor: default; }
+.luno-dialog-error { color: #ff8b8b !important; }
+.luno-dialog-check { display: flex !important; align-items: center; gap: 8px; color: var(--luno-text) !important; }
+.luno-dialog-check input { width: auto; margin: 0; }
 .luno-scrubber-row { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; width: 100%; max-width: 72%; margin: 0 auto; }
 .luno-time { color: var(--luno-text-2); font-size: 11px; font-variant-numeric: tabular-nums; min-width: 36px; text-align: center; }
 .luno-scrubber-row input[type="range"] { width: 100%; accent-color: var(--luno-green); height: 4px; cursor: pointer; }

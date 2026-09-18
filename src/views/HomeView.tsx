@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type MouseEvent } from "react";
 import type { Playlist, Track } from "../shared/contracts";
 import { Artwork } from "../components/Artwork";
 import { IconMusicNote } from "../components/icons";
@@ -61,6 +61,8 @@ export interface HomeViewProps {
   popularPlaylists: PopularPlaylist[];
   recentlyDownloaded: Track[];
   onPlayTrack?: (track: Track, context: Track[]) => void;
+  /** Right-click on a track card (opens the shared track menu). */
+  onTrackContextMenu?: (event: MouseEvent, track: Track) => void;
   onOpenLibrary?: () => void;
   onOpenRecent?: () => void;
   onOpenDownloader?: () => void;
@@ -82,7 +84,7 @@ function greeting() {
  * Made for you → Favorites → Recently played → Most popular songs →
  * Most popular playlists → Recently downloaded.
  */
-export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, popularTracks, popularPlaylists, recentlyDownloaded, onPlayTrack, onOpenLibrary, onOpenRecent, onOpenDownloader, onOpenPlaylist, onArtwork, backendAvailable = true }: HomeViewProps) {
+export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, popularTracks, popularPlaylists, recentlyDownloaded, onPlayTrack, onTrackContextMenu, onOpenLibrary, onOpenRecent, onOpenDownloader, onOpenPlaylist, onArtwork, backendAvailable = true }: HomeViewProps) {
   // One lazy artwork pass for every card on the page, budgeted FAIRLY
   // across sections: previously the first 40 deduplicated ids (Made-for-you
   // order) consumed the whole budget, so Favorites / Recently played / Most
@@ -116,7 +118,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
 
 
   const trackCard = (list: Track[]) => (track: Track) => (
-    <button className="luno-card" type="button" key={track.id} onClick={() => playFrom(list)(track)} disabled={!backendAvailable}>
+    <button className="luno-card" type="button" key={track.id} onClick={() => playFrom(list)(track)} onContextMenu={(event) => onTrackContextMenu?.(event, track)} disabled={!backendAvailable}>
       <Artwork className="luno-card-artwork" src={artwork[track.id] ?? track.artwork_url} alt="" size="100%" fallback={<span className="luno-artwork-fallback"><IconMusicNote size={26} /></span>} />
       <span className="luno-card-copy"><strong title={track.title}>{track.title}</strong><small>{track.artist ?? "Unknown artist"}</small></span>
     </button>
@@ -153,7 +155,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
         ? <p className="luno-empty-note">Nothing yet — play something and it lands here.</p>
         : <div className="luno-card-row luno-scroll">{recentTracks.map((track, index) => (
           // History can legitimately contain a track twice — index keeps keys unique.
-          <button className="luno-card" type="button" key={`${track.id}-${index}`} onClick={() => playFrom(recentTracks)(track)} disabled={!backendAvailable}>
+          <button className="luno-card" type="button" key={`${track.id}-${index}`} onClick={() => playFrom(recentTracks)(track)} onContextMenu={(event) => onTrackContextMenu?.(event, track)} disabled={!backendAvailable}>
             <Artwork className="luno-card-artwork" src={artwork[track.id] ?? track.artwork_url} alt="" size="100%" fallback={<span className="luno-artwork-fallback"><IconMusicNote size={26} /></span>} />
             <span className="luno-card-copy"><strong title={track.title}>{track.title}</strong><small>{track.artist ?? "Unknown artist"}</small></span>
           </button>

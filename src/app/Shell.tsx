@@ -24,6 +24,8 @@ import { Queue } from "../components/Queue";
 import { PlayerBar } from "../components/PlayerBar";
 import { PlaylistPicker } from "../components/PlaylistPicker";
 import { EditTrackDialog } from "../components/EditTrackDialog";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { PlaylistDialog } from "../components/PlaylistDialogs";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
 import { IconChevronLeft, IconChevronRight, IconClose, IconDownload, IconHeart, IconHome, IconLibrary, IconMusicNote, IconSearch, IconUser } from "../components/icons";
@@ -127,11 +129,21 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [migrationStatus, setMigrationStatus] = useState<MigrationStatus | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; track?: Track; playlist?: Playlist } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; track?: Track; playlist?: Playlist; libraryTrack?: boolean } | null>(null);
   const [playlistPickerSelection, setPlaylistPickerSelection] = useState<{ tracks: Track[]; title: string } | null>(null);
   const [editTrack, setEditTrack] = useState<Track | null>(null);
   const [editTrackBusy, setEditTrackBusy] = useState(false);
   const [editTrackError, setEditTrackError] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [playlistCreateRequest, setPlaylistCreateRequest] = useState<{ tracks: Track[]; onCreated?: (name: string) => void } | null>(null);
+  const [playlistCreateBusy, setPlaylistCreateBusy] = useState(false);
+  const [playlistCreateError, setPlaylistCreateError] = useState<string | null>(null);
+  const askConfirm = (request: { title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }) => {
+    setConfirmError(null);
+    setConfirmDialog(request);
+  };
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
@@ -182,7 +194,10 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   };
   const openTrackMenu = (event: ReactMouseEvent, item: Track) => {
     event.preventDefault(); event.stopPropagation();
-    setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 350)), track: item });
+    // Recommendation/preview rows live outside the library; edit/delete only
+    // apply to real library files, so flag membership for the menu.
+    const libraryTrack = (projection.library?.tracks ?? []).some((track) => track.id === item.id);
+    setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 350)), track: item, libraryTrack });
   };
   const cleanPlaylistName = (value: string) => value.trim().replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").slice(0, 96);
   // Copying into a playlist folder is asynchronous (the scanner rebuilds
@@ -211,19 +226,29 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       })
       .catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
   };
-  const createPlaylist = (tracksToAdd: Track[] = []) => {
+  const createPlaylist = (tracksToAdd: Track[] = [], onCreated?: (name: string) => void) => {
     if (!bridge || !available) return;
-    const raw = window.prompt(tracksToAdd.length === 1 ? `Create a playlist for “${tracksToAdd[0].title}”:` : tracksToAdd.length > 1 ? `Create a playlist for these ${tracksToAdd.length} songs:` : "New playlist name:");
-    if (!raw) return;
-    const name = cleanPlaylistName(raw);
-    if (!name || name.toLowerCase() === "unsorted") { setCommandError("Choose a non-empty playlist name other than Unsorted."); return; }
+    // Tauri's webview has no native window.prompt; collect the name in-app.
+    setPlaylistCreateError(null);
+    setPlaylistCreateRequest({ tracks: tracksToAdd, onCreated });
+  };
+  const submitCreatePlaylist = (rawName: string) => {
+    if (!bridge) return;
+    const name = cleanPlaylistName(rawName);
+    if (!name || name.toLowerCase() === "unsorted") { setPlaylistCreateError("Choose a non-empty playlist name other than Unsorted."); return; }
+    const request = playlistCreateRequest;
+    setPlaylistCreateBusy(true);
+    setPlaylistCreateError(null);
     void bridge.createPlaylist(name)
       .then(() => {
+        setPlaylistCreateBusy(false);
+        setPlaylistCreateRequest(null);
         setCommandError(null);
-        if (tracksToAdd.length) addTracksToPlaylist(tracksToAdd, { id: `playlist:${name}`, name });
-        else setCommandNotice(`Created playlist “${name}”.`);
+        if (request?.tracks.length) addTracksToPlaylist(request.tracks, { id: `playlist:${name}`, name });
+        else if (!request?.onCreated) setCommandNotice(`Created playlist “${name}”.`);
+        request?.onCreated?.(name);
       })
-      .catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
+      .catch((error: unknown) => { setPlaylistCreateBusy(false); setPlaylistCreateError(normalizeRuntimeCommandError(error)); });
   };
   const playShuffled = (items: Track[]) => {
     const first = shuffledFirstTrack(items);
@@ -783,7 +808,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     handle.addEventListener("pointercancel", up);
   };
 
-  const homeViewEl = <HomeView allTracksCount={tracks.length} madeForYou={madeForYouTracks} favorites={tracks.filter((track) => track.favorite)} recentTracks={recentTracks} popularTracks={popularTracks} popularPlaylists={popularPlaylists} recentlyDownloaded={downloadedTracks} onPlayTrack={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onOpenLibrary={() => setLibraryHome(false)} onOpenRecent={() => navigate("recent")} onOpenDownloader={() => navigate("downloader")} onOpenPlaylist={(playlistId) => { setLibraryScope(playlistId); setLibraryHome(false); navigate("library"); }} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} backendAvailable={available} />;
+  const homeViewEl = <HomeView allTracksCount={tracks.length} madeForYou={madeForYouTracks} favorites={tracks.filter((track) => track.favorite)} recentTracks={recentTracks} popularTracks={popularTracks} popularPlaylists={popularPlaylists} recentlyDownloaded={downloadedTracks} onPlayTrack={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onTrackContextMenu={openTrackMenu} onOpenLibrary={() => setLibraryHome(false)} onOpenRecent={() => navigate("recent")} onOpenDownloader={() => navigate("downloader")} onOpenPlaylist={(playlistId) => { setLibraryScope(playlistId); setLibraryHome(false); navigate("library"); }} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} backendAvailable={available} />;
   const recentViewEl = <RecentView tracks={recentTracks} playback={projection.playback} backendAvailable={available} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onContextMenu={openTrackMenu} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />;
   const discoverViewEl = <DiscoverView seed={discoverSeed} artistMissingTitle={track && !track.artist ? track.title : null} recommendations={discover.items} session={projection.preview} saved={projection.saved} playlists={projection.library?.playlists ?? []} loading={discover.loading} error={discover.error} onRefresh={() => setDiscoverRefresh((value) => value + 1)} onTap={(key) => runCommand(bridge?.previewTap(discover.items.slice(0, 50).map((item) => ({ artist: item.artist, title: item.title })), key))} onNext={() => runCommand(bridge?.previewNext())} onPrevious={() => runCommand(bridge?.previewPrevious())} onCancel={() => runCommand(bridge?.previewCancel())} onSave={(key, playlistId) => runCommand(bridge?.saveRecommendation(key, playlistId))} />;
   const createDownloadDestination = () => {
@@ -804,7 +829,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
                       const target = playlists.find((playlist) => playlist.name.toLowerCase() !== "unsorted") ?? playlists[0];
                       if (!target) { setCommandError("Create a playlist before saving recommendations."); return; }
                       runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), target.id));
-                    }} preview={projection.preview} saved={projection.saved} playlists={projection.library?.playlists ?? []} jobs={projection.jobs} onCreatePlaylist={(item) => { if (!bridge || !available) return; const raw = window.prompt(`Create a playlist for “${item.title}”:`); if (!raw) return; const name = cleanPlaylistName(raw); if (!name || name.toLowerCase() === "unsorted") { setCommandError("Choose a non-empty playlist name other than Unsorted."); return; } void bridge.createPlaylist(name).then(() => bridge.saveRecommendation(previewKey(item.artist, item.title), `playlist:${name}`)).then(() => setCommandError(null)).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} onLoadVideo={() => { if (track && available) bridge?.videoStage(track.id).catch(() => undefined); }} videoMode={videoMode} onVideoModeChange={(enabled) => { setVideoMode(enabled); runCommand(bridge?.setVideoMode(enabled)); }} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
+                    }} preview={projection.preview} saved={projection.saved} playlists={projection.library?.playlists ?? []} jobs={projection.jobs} onCreatePlaylist={(item) => { if (!bridge || !available) return; createPlaylist([], (name) => runCommand(bridge.saveRecommendation(previewKey(item.artist, item.title), `playlist:${name}`))); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} onLoadVideo={() => { if (track && available) bridge?.videoStage(track.id).catch(() => undefined); }} videoMode={videoMode} onVideoModeChange={(enabled) => { setVideoMode(enabled); runCommand(bridge?.setVideoMode(enabled)); }} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
 
   const showSidebar = !sidebarCollapsed && route !== "settings";
   const narrowViewport = shellWidth > 0 && shellWidth < 1100;
@@ -866,7 +891,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
               ? "A background task hit an internal error and was recovered. If this repeats, restart the app."
               : commandError; const videoNotice = !connectedVideo && route === "song_page"; return (!available || displayCommandError || backendError || commandNotice || videoNotice) && <div className="luno-runtime-status" role="status">{!available && <span data-state="backend-unavailable">Backend unavailable; runtime commands are unavailable.</span>}{displayCommandError && <span data-state="command-rejected">{displayCommandError} <button type="button" onClick={() => setCommandError(null)} aria-label="Dismiss error" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{backendError && <span data-state="backend-error">{backendError} <button type="button" onClick={() => backendProjection?.clearErrors?.()} aria-label="Dismiss error" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{commandNotice && <span data-state="command-notice">{commandNotice} <button type="button" onClick={() => setCommandNotice(null)} aria-label="Dismiss notice" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{videoNotice && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}</div>; })()}<div className="luno-main-content luno-scroll">{content}</div></main>
         <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : displayQueueTracks} currentIndex={panelRecent ? null : projection.playback?.current_index} recent={panelRecent} backendAvailable={available} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => playQueueEntry(item, panelRecent ? recentTracks : displayQueueTracks)} onPlayNext={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.playNext([item.id])) : setCommandNotice("Only library tracks can be queued."))} onAddToQueue={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.addToQueue([item.id])) : setCommandNotice("Only library tracks can be queued."))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} onContextMenu={openTrackMenu} />}</aside>
-        <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={displayTrack} playback={projection.playback} artwork={audibleArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => runCommand(projection.playback?.status === "playing" ? bridge?.pause() : projection.playback?.status === "paused" ? bridge?.resume() : track && bridge?.playWithContext(track.id, queueTracks.map((item) => item.id)))} onNext={() => { if (!bridge || !available) return; runCommand(bridge.next()); }} onPrevious={() => { if (!bridge || !available) return; runCommand(bridge.previous()); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onSeek={(positionMs) => runCommand(bridge?.seek(positionMs))} onVolume={(value) => runCommand(bridge?.setVolume(value))} onVolumeCommit={(value) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }} onOpenTrack={() => navigate("song_page")} />}</footer>
+        <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={displayTrack} playback={projection.playback} artwork={audibleArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => runCommand(projection.playback?.status === "playing" ? bridge?.pause() : projection.playback?.status === "paused" ? bridge?.resume() : track && bridge?.playWithContext(track.id, queueTracks.map((item) => item.id)))} onNext={() => { if (!bridge || !available) return; runCommand(bridge.next()); }} onPrevious={() => { if (!bridge || !available) return; runCommand(bridge.previous()); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onSeek={(positionMs) => runCommand(bridge?.seek(positionMs))} onVolume={(value) => runCommand(bridge?.setVolume(value))} onVolumeCommit={(value) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }} onOpenTrack={() => navigate("song_page")} onTrackContextMenu={openTrackMenu} />}</footer>
     {route !== "settings" && <div className="luno-resize-handle" style={{ left: showSidebar ? 8 + sidebarWidth - 4 : 2 }} role="separator" aria-orientation="vertical" aria-label="Resize library panel width" onPointerDown={startPanelDrag("sidebar")} />}
     {route !== "settings" && !narrowViewport && <div className="luno-resize-handle" style={{ left: showQueue ? Math.max(0, shellWidth - 8 - queueWidth - 4) : Math.max(2, shellWidth - 6) }} role="separator" aria-orientation="vertical" aria-label="Resize queue panel width" onPointerDown={startPanelDrag("queue")} />}
     {contextMenu && <div className="luno-context-menu" role="menu" aria-label={contextMenu.track ? `${contextMenu.track.title} actions` : `${contextMenu.playlist?.name ?? "Playlist"} actions`} style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
@@ -878,9 +903,11 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <button role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setPlaylistPickerSelection({ tracks: [item], title: `Add “${item.title}” to playlist` }); setContextMenu(null); }}>Add to playlist…</button>
         <button role="menuitem" type="button" onClick={() => { createPlaylist([contextMenu.track!]); setContextMenu(null); }}>Add to new playlist…</button>
         <button role="menuitem" type="button" onClick={() => { runCommand(bridge?.toggleFavorite(contextMenu.track!.id)); setContextMenu(null); }}>{contextMenu.track.favorite ? "Remove from favorites" : "Add to favorites"}</button>
-        <button role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setEditTrackError(null); setEditTrack(item); setContextMenu(null); }}>Edit song info…</button>
-        <hr />
-        <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setContextMenu(null); if (window.confirm(`Permanently delete “${item.title}” from your library?`)) runCommand(bridge?.deleteTracks([item.id])); }}>Delete from library…</button>
+        {contextMenu.libraryTrack && <>
+          <button role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setEditTrackError(null); setEditTrack(item); setContextMenu(null); }}>Edit song info…</button>
+          <hr />
+          <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setContextMenu(null); askConfirm({ title: "Delete from library", message: `Permanently delete “${item.title}” from your library?`, confirmLabel: "Delete from library", danger: true, onConfirm: () => runCommand(bridge?.deleteTracks([item.id])) }); }}>Delete from library…</button>
+        </>}
       </> : contextMenu.playlist ? <>
         <button role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const items = playlistTracks(projection.library, contextMenu.playlist!); const first = items[0]; if (first) runCommand(bridge?.playWithContext(first.id, items.map((item) => item.id))); setContextMenu(null); }}>Play</button>
         <button role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { playShuffled(playlistTracks(projection.library, contextMenu.playlist!)); setContextMenu(null); }}>Shuffle and play</button>
@@ -888,12 +915,14 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <button role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const item = contextMenu.playlist!; setPlaylistPickerSelection({ tracks: playlistTracks(projection.library, item), title: `Add “${item.name}” songs to playlist` }); setContextMenu(null); }}>Add all to playlist…</button>
         <button role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { createPlaylist(playlistTracks(projection.library, contextMenu.playlist!)); setContextMenu(null); }}>Add all to new playlist…</button>
         <button role="menuitem" type="button" onClick={() => { createPlaylist(); setContextMenu(null); }}>Create new playlist…</button>
-        <button className="is-danger" role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); if (window.confirm(`Permanently delete every song in “${item.name}” but keep the playlist?`)) runCommand(bridge?.deleteTracks(item.ordered_track_ids)); }}>Empty playlist…</button>
-        <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); if (window.confirm(`Permanently delete the playlist “${item.name}” and all files inside it?`)) { if (libraryScope === item.id) { setLibraryScope("all"); setLibraryHome(false); } runCommand(bridge?.deletePlaylist(item.id)); } }}>Delete playlist…</button>
+        <button className="is-danger" role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); askConfirm({ title: "Empty playlist", message: `Permanently delete every song in “${item.name}” but keep the playlist?`, confirmLabel: "Empty playlist", danger: true, onConfirm: () => runCommand(bridge?.deleteTracks(item.ordered_track_ids)) }); }}>Empty playlist…</button>
+        <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); askConfirm({ title: "Delete playlist", message: `Permanently delete the playlist “${item.name}” and all files inside it?`, confirmLabel: "Delete playlist", danger: true, onConfirm: () => { if (libraryScope === item.id) { setLibraryScope("all"); setLibraryHome(false); } runCommand(bridge?.deletePlaylist(item.id)); } }); }}>Delete playlist…</button>
       </> : null}
     </div>}
     {playlistPickerSelection && <PlaylistPicker title={playlistPickerSelection.title} playlists={(projection.library?.playlists ?? []).filter((playlist) => playlist.name.toLowerCase() !== "unsorted")} onPick={(playlist) => { const items = playlistPickerSelection.tracks; setPlaylistPickerSelection(null); addTracksToPlaylist(items, playlist); }} onCreateNew={() => { const items = playlistPickerSelection.tracks; setPlaylistPickerSelection(null); createPlaylist(items); }} onDismiss={() => setPlaylistPickerSelection(null)} />}
     {editTrack && <EditTrackDialog track={editTrack} busy={editTrackBusy} error={editTrackError} onClose={() => { if (!editTrackBusy) { setEditTrack(null); setEditTrackError(null); } }} onSubmit={(value) => { if (!bridge || !available) return; setEditTrackBusy(true); setEditTrackError(null); void bridge.editTrackMetadata(editTrack.id, value.artist, value.title).then(() => { setEditTrackBusy(false); setEditTrack(null); setCommandNotice(`Updated “${[value.artist, value.title].filter(Boolean).join(" — ")}”.`); }).catch((error: unknown) => { setEditTrackBusy(false); setEditTrackError(normalizeRuntimeCommandError(error)); }); }} />}
+    {confirmDialog && <ConfirmDialog title={confirmDialog.title} message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} danger={confirmDialog.danger} busy={confirmBusy} error={confirmError} onClose={() => { if (!confirmBusy) { setConfirmDialog(null); setConfirmError(null); } }} onConfirm={() => { setConfirmBusy(true); setConfirmError(null); try { confirmDialog.onConfirm(); setConfirmBusy(false); setConfirmDialog(null); } catch (error) { setConfirmBusy(false); setConfirmError(normalizeRuntimeCommandError(error)); } }} />}
+    {playlistCreateRequest && <PlaylistDialog action="create" busy={playlistCreateBusy} error={playlistCreateError} onClose={() => { if (!playlistCreateBusy) { setPlaylistCreateRequest(null); setPlaylistCreateError(null); } }} onSubmit={(value) => submitCreatePlaylist(value.name ?? "")} />}
   </div>;
 }
 
