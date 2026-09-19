@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
-import { Artwork } from "./Artwork";
-import { RecommendationArtwork } from "./RecommendationArtwork";
+import { RecommendationArtworkImage } from "./RecommendationArtwork";
 import { IconVolume } from "./icons";
 
 export type VideoStageStatus = "not-checked" | "loading" | "ready" | "playing" | "paused" | "ended" | "unavailable" | "error" | "fallback";
@@ -289,7 +288,7 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
 
   return <div ref={stageRef} className={`luno-video-stage${fullscreenWanted ? " is-fullscreen" : ""}`} data-testid="video-stage" aria-label="Song video preview">
     <style>{stageChromeStyles}</style>
-    {showVideo ? <video ref={videoRef} src={src!} preload="auto" playsInline muted aria-label="Song video" onError={onVideoError} onSeeked={handleSeeked} onPause={handlePause} onPlay={handlePlay} onEnded={handleEnded} /> : <Artwork src={artworkUrl} alt={artworkAlt} size="100%" fallback={<RecommendationArtwork artist={artworkArtist ?? ""} title={artworkTitle ?? ""} size="100%" />} />}
+    {showVideo ? <video ref={videoRef} src={src!} preload="auto" playsInline muted aria-label="Song video" onError={onVideoError} onSeeked={handleSeeked} onPause={handlePause} onPlay={handlePlay} onEnded={handleEnded} /> : <RecommendationArtworkImage artworkUrl={artworkUrl} alt={artworkAlt} artist={artworkArtist ?? ""} title={artworkTitle ?? ""} size="100%" />}
     {status === "loading" && <div className="luno-video-loading" role="status">
       <DownloadRing progress={typeof videoProgress === "number" ? videoProgress : null} />
       {/* null is source resolution; 0 is a started download whose first byte

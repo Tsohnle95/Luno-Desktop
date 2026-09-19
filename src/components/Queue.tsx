@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef, useState, type MouseEvent, type UIEvent } from "react";
 import type { Track } from "../shared/contracts";
-import { Artwork } from "./Artwork";
-import { RecommendationArtwork } from "./RecommendationArtwork";
+import { RecommendationArtworkImage } from "./RecommendationArtwork";
 import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
 
 export interface QueueProps {
@@ -93,7 +92,7 @@ export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onF
       {current && !recent ? <>
         <h2 className="luno-queue-section">Now playing</h2>
         <div className="luno-queue-now-card" onContextMenu={(event) => onContextMenu?.(event, current)}>
-           <Artwork src={artwork[current.id] ?? current.artwork_url} alt="" size={56} fallback={<RecommendationArtwork artist={current.artist ?? ""} title={current.title} size={56} />} />
+           <RecommendationArtworkImage artist={current.artist ?? ""} title={current.title} artworkUrl={artwork[current.id] ?? current.artwork_url} alt="" size={56} />
           <span className="luno-queue-copy"><strong>{current.title}</strong><small>{current.artist ?? "Unknown artist"}</small></span>
           {current.favorite && <span className="luno-queue-favorite" aria-label="Favorite">★</span>}
         </div>
@@ -114,7 +113,7 @@ export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onF
           onContextMenu={(event) => onContextMenu?.(event, track)}
           onClick={() => onPlay?.(track, index)}
           onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onPlay?.(track, index); } }}>
-           <Artwork src={artwork[track.id] ?? track.artwork_url} alt="" size={40} fallback={<RecommendationArtwork artist={track.artist ?? ""} title={track.title} size={40} />} />
+           <RecommendationArtworkImage artist={track.artist ?? ""} title={track.title} artworkUrl={artwork[track.id] ?? track.artwork_url} alt="" size={40} />
           <span className="luno-queue-copy"><strong title={track.title}>{track.title}</strong><small>{track.artist ?? "Unknown artist"}</small></span>
           {track.favorite && <span className="luno-queue-favorite" aria-label="Favorite">★</span>}
           {!recent && <span className="luno-queue-actions">

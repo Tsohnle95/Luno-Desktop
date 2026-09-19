@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export const RECOMMENDATION_ART_DESIGN_COUNT = 75;
 
@@ -16,14 +16,14 @@ const palettes: Palette[] = [
   { start: "#082F49", end: "#0369A1", accent: "#BAE6FD", secondary: "#A7F3D0" },
   { start: "#312E81", end: "#7C3AED", accent: "#E9D5FF", secondary: "#FDE047" },
   { start: "#3F0D12", end: "#8F2D56", accent: "#FFC857", secondary: "#B8F2E6" },
-  { start: "#1C1917", end: "#57534E", accent: "#F5F5F4", secondary: "#F59E0B" },
+  { start: "#3B0A45", end: "#9D174D", accent: "#F0ABFC", secondary: "#FDE68A" },
   { start: "#052E16", end: "#166534", accent: "#BBF7D0", secondary: "#FDE68A" },
   { start: "#450A0A", end: "#BE123C", accent: "#FDA4AF", secondary: "#FDE68A" },
   { start: "#0C4A6E", end: "#155E75", accent: "#67E8F9", secondary: "#F0ABFC" },
   { start: "#1E1B4B", end: "#3730A3", accent: "#C4B5FD", secondary: "#F9A8D4" },
   { start: "#422006", end: "#92400E", accent: "#FDE68A", secondary: "#FCA5A5" },
   { start: "#134E4A", end: "#115E59", accent: "#5EEAD4", secondary: "#FCD34D" },
-  { start: "#171717", end: "#404040", accent: "#E5E5E5", secondary: "#FB7185" },
+  { start: "#0E3B43", end: "#0F766E", accent: "#67E8F9", secondary: "#FDBA74" },
   { start: "#172554", end: "#0369A1", accent: "#BAE6FD", secondary: "#F0FDFA" },
   { start: "#581C87", end: "#9333EA", accent: "#F5D0FE", secondary: "#FDE68A" },
   { start: "#431407", end: "#EA580C", accent: "#FED7AA", secondary: "#BFDBFE" },
@@ -37,24 +37,24 @@ const palettes: Palette[] = [
   { start: "#172554", end: "#1D4ED8", accent: "#93C5FD", secondary: "#F9A8D4" },
   { start: "#4A044E", end: "#BE185D", accent: "#F9A8D4", secondary: "#FDE68A" },
   { start: "#042F2E", end: "#0D9488", accent: "#99F6E4", secondary: "#FCA5A5" },
-  { start: "#1C1917", end: "#78716C", accent: "#E7E5E4", secondary: "#FBBF24" },
+  { start: "#3B0764", end: "#A21CAF", accent: "#F5D0FE", secondary: "#86EFAC" },
   { start: "#3F0D12", end: "#9F1239", accent: "#FDA4AF", secondary: "#BAE6FD" },
   { start: "#0C4A6E", end: "#0284C7", accent: "#BAE6FD", secondary: "#F5D0FE" },
   { start: "#312E81", end: "#4F46E5", accent: "#C4B5FD", secondary: "#FDE68A" },
   { start: "#431407", end: "#C2410C", accent: "#FED7AA", secondary: "#A7F3D0" },
   { start: "#064E3B", end: "#047857", accent: "#6EE7B7", secondary: "#FDE68A" },
-  { start: "#18181B", end: "#52525B", accent: "#D4D4D8", secondary: "#FDA4AF" },
+  { start: "#083344", end: "#155E75", accent: "#67E8F9", secondary: "#F0ABFC" },
   { start: "#1E1B4B", end: "#6D28D9", accent: "#DDD6FE", secondary: "#FBCFE8" },
   { start: "#500724", end: "#BE185D", accent: "#FBCFE8", secondary: "#BFDBFE" },
   { start: "#083344", end: "#0E7490", accent: "#67E8F9", secondary: "#FDE68A" },
   { start: "#365314", end: "#65A30D", accent: "#D9F99D", secondary: "#FDBA74" },
   { start: "#422006", end: "#D97706", accent: "#FDE68A", secondary: "#BFDBFE" },
-  { start: "#0F172A", end: "#334155", accent: "#CBD5E1", secondary: "#F0ABFC" },
+  { start: "#1E1B4B", end: "#6D28D9", accent: "#A7F3D0", secondary: "#FDA4AF" },
   { start: "#581C87", end: "#A21CAF", accent: "#F5D0FE", secondary: "#99F6E4" },
   { start: "#052E16", end: "#166534", accent: "#BBF7D0", secondary: "#FCA5A5" },
   { start: "#450A0A", end: "#991B1B", accent: "#FECACA", secondary: "#FDE68A" },
   { start: "#164E63", end: "#0369A1", accent: "#BAE6FD", secondary: "#F5D0FE" },
-  { start: "#27272A", end: "#71717A", accent: "#F4F4F5", secondary: "#A7F3D0" },
+  { start: "#164E63", end: "#0E7490", accent: "#BAE6FD", secondary: "#F9A8D4" },
   { start: "#1E3A8A", end: "#2563EB", accent: "#BFDBFE", secondary: "#FDE68A" },
   { start: "#701A75", end: "#C026D3", accent: "#F5D0FE", secondary: "#FDE68A" },
   { start: "#3F6212", end: "#4D7C0F", accent: "#BEF264", secondary: "#FDBA74" },
@@ -63,7 +63,7 @@ const palettes: Palette[] = [
   { start: "#172554", end: "#3730A3", accent: "#C7D2FE", secondary: "#FDA4AF" },
   { start: "#4C0519", end: "#9D174D", accent: "#FBCFE8", secondary: "#FDE68A" },
   { start: "#022C22", end: "#047857", accent: "#A7F3D0", secondary: "#BFDBFE" },
-  { start: "#292524", end: "#57534E", accent: "#E7E5E4", secondary: "#93C5FD" },
+  { start: "#451A03", end: "#C2410C", accent: "#FED7AA", secondary: "#A7F3D0" },
   { start: "#1E1B4B", end: "#4338CA", accent: "#C4B5FD", secondary: "#FDE68A" },
   { start: "#431407", end: "#9A3412", accent: "#FED7AA", secondary: "#A7F3D0" },
   { start: "#082F49", end: "#075985", accent: "#BAE6FD", secondary: "#FCA5A5" },
@@ -75,7 +75,7 @@ const palettes: Palette[] = [
   { start: "#164E63", end: "#0F766E", accent: "#99F6E4", secondary: "#FCA5A5" },
   { start: "#365314", end: "#4D7C0F", accent: "#D9F99D", secondary: "#BFDBFE" },
   { start: "#7C2D12", end: "#C2410C", accent: "#FED7AA", secondary: "#FDE68A" },
-  { start: "#1E293B", end: "#475569", accent: "#E2E8F0", secondary: "#F9A8D4" },
+  { start: "#0F3D3E", end: "#0D9488", accent: "#99F6E4", secondary: "#FDE68A" },
   { start: "#500724", end: "#9D174D", accent: "#FBCFE8", secondary: "#A7F3D0" },
   { start: "#064E3B", end: "#0F766E", accent: "#99F6E4", secondary: "#FDE68A" },
   { start: "#450A0A", end: "#B91C1C", accent: "#FECACA", secondary: "#BFDBFE" },
@@ -110,12 +110,23 @@ export function recommendationArtworkDesignIndex(artist: string, title: string):
 
 const LASTFM_PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f";
 
+function artworkHost(url: string): string {
+  try {
+    // Recommendation providers return absolute URLs. The base keeps this
+    // helper harmless for a relative local artwork path.
+    return new URL(url, "https://luno.invalid").hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 export function isPlaceholderArtwork(url: string | null | undefined): boolean {
-  if (!url) return true;
-  const lower = url.toLowerCase();
+  if (!url || !url.trim()) return true;
+  const lower = url.trim().toLowerCase();
   if (lower.includes(LASTFM_PLACEHOLDER)) return true;
-  const isLastFmHost = lower.includes("last.fm") || lower.includes("lastfm.freetls.fastly.net");
-  if (isLastFmHost && (lower.includes("/default") || lower.includes("noimage") || lower.includes("no_image"))) return true;
+  const host = artworkHost(lower);
+  const isLastFmHost = host === "last.fm" || host.endsWith(".last.fm") || host === "lastfm.freetls.fastly.net";
+  if (isLastFmHost && /(?:^|[\/_-])(default|noimage|no_image|placeholder)(?:[\/_\.-]|$)/.test(lower)) return true;
   return false;
 }
 
@@ -203,10 +214,9 @@ function renderOverlay(kind: number, index: number, palette: Palette) {
     default:
       return (
         <>
-          <span style={{ ...common, width: 0, height: 0, borderLeft: "22px solid transparent", borderBottom: `22px solid ${accent}`, left: 4, top: 4, opacity: 0.92 }} />
-          <span style={{ ...common, width: 0, height: 0, borderRight: "18px solid transparent", borderTop: `18px solid ${secondary}`, right: 6, bottom: 6, opacity: 0.9 }} />
-          <span style={{ ...common, width: "28%", height: "2px", background: "rgba(255,255,255,0.55)", left: "36%", top: "50%" }} />
-          <span style={{ ...common, width: "2px", height: "28%", background: "rgba(255,255,255,0.55)", left: "50%", top: "36%" }} />
+          <span style={{ ...common, width: "48%", height: "64%", borderRadius: "48% 52% 42% 58%", background: accent, left: "8%", top: "18%", opacity: 0.9, transform: "rotate(-18deg)" }} />
+          <span style={{ ...common, width: "48%", height: "54%", borderRadius: "40% 60% 55% 45%", background: secondary, right: "8%", bottom: "12%", opacity: 0.85, transform: "rotate(20deg)" }} />
+          <span style={{ ...common, width: "18%", height: "18%", borderRadius: "50%", background: "rgba(255,255,255,0.5)", left: "41%", top: "42%" }} />
         </>
       );
   }
@@ -223,6 +233,7 @@ export interface RecommendationArtworkImageProps {
 
 export function RecommendationArtworkImage({ artist, title, artworkUrl, size = 48, alt, className }: RecommendationArtworkImageProps) {
   const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [artworkUrl]);
   const usable = artworkUrl && !isPlaceholderArtwork(artworkUrl) && !failed;
   const dim = typeof size === "number" ? `${size}px` : size;
   if (usable) {

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DownloadJob, Playlist, PreviewSnapshot, SaveState, Track } from "../shared/contracts";
 import { Recommendations, type Recommendation, type RecommendationState } from "../components/Recommendations";
 import { VideoStage, type VideoStageProps } from "../components/VideoStage";
-import { RecommendationArtwork } from "../components/RecommendationArtwork";
+import { isPlaceholderArtwork, RecommendationArtwork } from "../components/RecommendationArtwork";
 
 /** Pill toggle for song-page video mode (exported for direct testing). */
 export function VideoModePill({ enabled, onToggle }: { enabled: boolean; onToggle?: () => void }) {
@@ -99,10 +99,12 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
   // Favorites toggle lives in the footer PlayerBar; the song page keeps only
   // title/artist here (see onFavoriteToggle prop retained for API compat).
   void onFavoriteToggle;
+  const backdropArtwork = displayedTrack?.artwork_url;
+  const hasBackdropArtwork = !!backdropArtwork && !isPlaceholderArtwork(backdropArtwork);
   return <div ref={pageRef} className="luno-song-page" data-testid="song-page">
     <style>{songPageStyles}</style>
-    <div className="luno-song-page-backdrop" aria-hidden="true" style={displayedTrack?.artwork_url ? { backgroundImage: `url(${displayedTrack.artwork_url})` } : undefined}>
-      {!displayedTrack?.artwork_url && displayedTrack && <RecommendationArtwork artist={displayedTrack.artist ?? ""} title={displayedTrack.title} size="100%" />}
+    <div className="luno-song-page-backdrop" aria-hidden="true" style={hasBackdropArtwork ? { backgroundImage: `url(${backdropArtwork})` } : undefined}>
+      {!hasBackdropArtwork && displayedTrack && <RecommendationArtwork artist={displayedTrack.artist ?? ""} title={displayedTrack.title} size="100%" />}
     </div>
     {onVideoModeChange && backendAvailable && null}
     <div className="luno-song-page-scroll">
