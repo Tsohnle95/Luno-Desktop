@@ -446,6 +446,9 @@ fn download_ladder(
         // exact/approximate file sizes needed for the combined denominator.
         "--print", "before_dl:download-plan:%(requested_formats)j",
         "--no-simulate",
+        // `--print` implies quiet; opt back into the downloader's progress
+        // hook so the byte template is emitted alongside the plan line.
+        "--progress",
         // Stable machine-readable byte progress on stdout. Formatted
         // percentages are presentation strings and cannot be aggregated when
         // yt-dlp downloads separate video and audio items.
@@ -979,10 +982,12 @@ case " $* " in
     ;;
   *)
     output=''
+    argv="$*"
     while [ "$#" -gt 0 ]; do
       if [ "$1" = '-o' ]; then shift; output="$1"; fi
       shift
     done
+    printf '%s\n' "$argv" > "$output.args"
     printf 'download-plan:[{"format_id":"137","filesize":1000},{"format_id":"140","filesize":200}]\n'
     printf 'download-bytes:video-a\t137\tavc1\tnone\t0\t1000\t1000\n'
     printf 'download-bytes:video-a\t137\tavc1\tnone\t250\t1000\t1000\n'
@@ -1211,6 +1216,7 @@ esac
         fs::create_dir_all(&root).unwrap();
         let helper = fake_video_helper(&root);
         let mut stager = VideoStage::at(root.join("store"), None).unwrap();
+        let destination = stager.external_destination(Slot::Current, "video-a").unwrap();
         let progress = Arc::new(VideoProgress::new());
         let outcome = stage_track(
             &helper,
@@ -1223,6 +1229,8 @@ esac
         ).unwrap();
         assert!(matches!(outcome, VideoOutcome::Staged { needs_upgrade: true, .. }));
         assert!(progress.started.load(Ordering::Acquire));
+        let argv = fs::read_to_string(format!("{}.args", destination.display())).expect("fake downloader argv");
+        assert!(argv.split_whitespace().any(|argument| argument == "--progress"), "yt-dlp --print must opt back into progress output: {argv:?}");
         // The complete marker is written only after the quick file is adopted
         // into the current slot, never when the helper merely exits.
         assert_eq!(progress.percent.load(Ordering::Acquire), 100);
