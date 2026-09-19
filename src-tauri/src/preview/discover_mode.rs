@@ -32,6 +32,7 @@ pub struct DiscoverMode {
     physical_index: usize,
     recommendations: Vec<TrackId>,
     assets: HashMap<TrackId, PathBuf>,
+    failed: Vec<TrackId>,
     queued: Vec<TrackId>,
     cursor: usize,
     discover: bool,
@@ -57,6 +58,7 @@ impl DiscoverMode {
             physical_index,
             recommendations,
             assets: HashMap::new(),
+            failed: Vec::new(),
             queued: Vec::new(),
             cursor: 0,
             discover: false,
@@ -77,6 +79,10 @@ impl DiscoverMode {
     pub fn recommendations(&self) -> &[TrackId] {
         &self.recommendations
     }
+    pub fn preparation_window(&self) -> &[TrackId] {
+        let end = self.cursor.saturating_add(ROLLING_WINDOW).min(self.recommendations.len());
+        &self.recommendations[self.cursor.min(end)..end]
+    }
     pub fn ready_count(&self) -> usize {
         self.assets.len()
     }
@@ -85,6 +91,8 @@ impl DiscoverMode {
         keys.sort_by(|left, right| left.0.cmp(&right.0));
         keys
     }
+    pub fn failed_keys(&self) -> Vec<TrackId> { self.failed.clone() }
+    pub fn is_failed(&self, id: &TrackId) -> bool { self.failed.contains(id) }
     pub fn queued_assets(&self) -> &[TrackId] {
         &self.queued
     }
@@ -105,6 +113,7 @@ impl DiscoverMode {
             return DiscoverAction::Noop;
         }
         self.assets.insert(asset.id.clone(), asset.path);
+        self.failed.retain(|failed| failed != &asset.id);
         let in_window = self
             .recommendations
             .iter()
@@ -112,9 +121,34 @@ impl DiscoverMode {
             .is_some_and(|position| position < self.cursor.saturating_add(ROLLING_WINDOW));
         if self.active && self.discover && in_window && !self.queued.contains(&asset.id) {
             self.queued.push(asset.id.clone());
+            self.sort_queued();
             return self.queue_action();
         }
         DiscoverAction::Noop
+    }
+
+    /// A terminal preparation failure stays visible to the UI but leaves the
+    /// transport projection so Next/Previous cannot park on an unplayable id.
+    pub fn failed_asset(&mut self, generation: u64, id: &TrackId) -> DiscoverAction {
+        if generation != self.generation || !self.recommendations.contains(id) {
+            return DiscoverAction::Noop;
+        }
+        self.assets.remove(id);
+        if !self.failed.contains(id) { self.failed.push(id.clone()); }
+        self.queued.retain(|queued| queued != id);
+        self.queue_action()
+    }
+
+    pub fn retry_asset(&mut self, id: &TrackId) -> DiscoverAction {
+        if !self.active || !self.discover || !self.recommendations.contains(id) {
+            return DiscoverAction::Noop;
+        }
+        self.failed.retain(|failed| failed != id);
+        if !self.queued.contains(id) {
+            self.queued.push(id.clone());
+            self.sort_queued();
+        }
+        self.queue_action()
     }
 
     /// Enables Discover and projects the rolling window in order. It does not
@@ -226,10 +260,22 @@ impl DiscoverMode {
             .skip(self.cursor)
             .take(ROLLING_WINDOW)
         {
-            if !self.queued.contains(id) {
+            if !self.failed.contains(id) && !self.queued.contains(id) {
                 self.queued.push(id.clone());
             }
         }
+        self.sort_queued();
+    }
+    fn sort_queued(&mut self) {
+        let positions: HashMap<TrackId, usize> = self
+            .recommendations
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, id)| (id, index))
+            .collect();
+        self.queued
+            .sort_by_key(|id| positions.get(id).copied().unwrap_or(usize::MAX));
     }
     fn queue_action(&self) -> DiscoverAction {
         DiscoverAction::QueueChanged {
@@ -269,6 +315,26 @@ mod tests {
         assert!(mode.note_failure(1, &id("r0")), "first failure is surfaced");
         assert!(!mode.note_failure(1, &id("r1")), "a second failure is not");
         assert!(!mode.note_failure(2, &id("r0")), "stale generation is ignored");
+    }
+
+    #[test]
+    fn failed_asset_leaves_projection_and_can_be_retried_after_ready() {
+        let failed = id("r0");
+        let mut mode = DiscoverMode::new(4, vec![id("seed"), id("next")], 0, vec![failed.clone(), id("r1")]).unwrap();
+        let _ = mode.enable();
+        assert!(mode.projected_queue().contains(&failed));
+        let action = mode.failed_asset(4, &failed);
+        assert!(matches!(action, DiscoverAction::QueueChanged { .. }));
+        assert!(mode.is_failed(&failed));
+        assert!(!mode.projected_queue().contains(&failed));
+        let _ = mode.retry_asset(&failed);
+        assert_eq!(
+            mode.projected_queue(),
+            vec![id("seed"), failed.clone(), id("r1"), id("next")],
+            "retry must restore recommendation order"
+        );
+        let _ = mode.ready_asset(4, ReadyAsset { id: failed.clone(), path: PathBuf::from("/tmp/r0.aac") });
+        assert!(!mode.is_failed(&failed));
     }
 
     #[test]

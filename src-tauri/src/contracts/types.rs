@@ -278,6 +278,9 @@ pub struct DiscoverSnapshot {
     /// is additive so older clients can continue using the aggregate counts.
     #[serde(default)]
     pub prepared: Vec<String>,
+    /// Stable keys whose latest preparation attempt reached a terminal error.
+    #[serde(default)]
+    pub unavailable: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

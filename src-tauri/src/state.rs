@@ -23,7 +23,7 @@ use crate::library::scanner::{OsFileSystem, ScanOutcome};
 use crate::preview::assets::PreviewAssetStore;
 use crate::preview::discover_mode::{DiscoverAction, DiscoverMode, ReadyAsset};
 use crate::preview::save::{remux_and_promote, PlaylistDestination};
-use crate::preview::session::{PreviewSession, SessionAction};
+use crate::preview::session::{Handoff, PreviewSession, SessionAction};
 use crate::runtime::preview_worker::{prepare_preview_with_progress, PreviewCompletion};
 #[cfg(target_os = "macos")]
 use crate::playback::{
@@ -1815,7 +1815,6 @@ pub struct AppState {
     discover_seeds: Arc<Mutex<Vec<PreviewSeed>>>,
     discover_tasks: Arc<Mutex<Vec<String>>>,
     discover_completions: Arc<Mutex<Option<std::sync::mpsc::Sender<PreviewCompletion>>>>,
-    discover_deferred: Arc<Mutex<Vec<PathBuf>>>,
     save_in_flight: Arc<Mutex<std::collections::HashSet<TrackId>>>,
     pending_download_saves: Arc<Mutex<BTreeMap<String, (TrackId, PlaylistId, PathBuf)>>>,
     roots: Arc<Mutex<Vec<PathBuf>>>,
@@ -2040,7 +2039,6 @@ impl AppState {
             discover_seeds: Arc::new(Mutex::new(Vec::new())),
             discover_tasks: Arc::new(Mutex::new(Vec::new())),
             discover_completions: Arc::new(Mutex::new(None)),
-            discover_deferred: Arc::new(Mutex::new(Vec::new())),
             save_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
             pending_download_saves: Arc::new(Mutex::new(BTreeMap::new())),
             roots: Arc::new(Mutex::new(Vec::new())),
@@ -2927,17 +2925,14 @@ impl AppState {
         self.video_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         *self.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.to_vec();
-        self.purge_discover_deferred();
         self.preview_cancelled.store(false, Ordering::Release);
-        // Publish the session-begin snapshot before any worker can complete,
-        // so the response is the deterministic entry state; preparation and
-        // subsequent transitions arrive as preview_snapshot events.
-        self.publish_preview_snapshot(generation);
-        let value = self.preview_snapshot_value()?;
         self.spawn_preview_driver(generation);
+        // Adopt cached files before publishing the entry snapshot. A ready
+        // row must never flash back to "Finding a playable source" merely
+        // because the user left and re-entered focused playback.
         self.adopt_existing_preview_window(generation);
         self.ensure_window_prepared(generation);
-        Ok(value)
+        self.preview_snapshot_value()
     }
 
     /// Stages the first recommendation window without entering discover mode,
@@ -2954,15 +2949,33 @@ impl AppState {
             }
             (playback.queue().to_vec(), playback.current_index().unwrap_or(0))
         };
-        let active_prefetch = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active() && session.is_prefetch());
-        if self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active()) && !active_prefetch {
+        let (had_session, active_session, active_prefetch, same_recommendations) = self
+            .preview_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|session| (
+                true,
+                session.is_active(),
+                session.is_active() && session.is_prefetch(),
+                session.recommendations() == ids.as_slice(),
+            ))
+            .unwrap_or((false, false, false, false));
+        if active_session && !active_prefetch {
             return self.preview_snapshot_value();
         }
-        if active_prefetch {
-            self.cancel_preview_tasks();
-            let _ = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).cleanup_session(None);
+        // React can re-issue prefetch when the route changes while the audible
+        // seed stays the same. The existing session already owns those assets;
+        // restarting it used to delete the completed files and begin again.
+        if active_prefetch && same_recommendations {
+            return self.preview_snapshot_value();
         }
         self.cancel_preview_tasks();
+        if had_session && !same_recommendations {
+            // A genuinely different seed replaces the bounded temporary
+            // cache. Mode changes for the same seed keep completed files.
+            let _ = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).cleanup_session(None);
+        }
         let generation = self.next_generation().0;
         let session = PreviewSession::start_prefetch(generation, queue, index, ids)
             .ok_or_else(|| ContractError::invalid("preview prefetch could not start"))?;
@@ -2971,12 +2984,10 @@ impl AppState {
         self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         *self.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.to_vec();
         self.preview_cancelled.store(false, Ordering::Release);
-        self.publish_preview_snapshot(generation);
-        let value = self.preview_snapshot_value()?;
         self.spawn_preview_driver(generation);
         self.adopt_existing_preview_window(generation);
         self.ensure_window_prepared(generation);
-        Ok(value)
+        self.preview_snapshot_value()
     }
 
     fn preview_step(&self, forward: bool) -> Result<Value, ContractError> {
@@ -3054,6 +3065,7 @@ impl AppState {
                 if !current { break; }
                 match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(PreviewCompletion::Prepared { key, path }) => {
+                        state.finish_preview_task(generation, &key);
                         let action = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.prepared_asset(generation, TrackId(key.clone()), path)).unwrap_or(SessionAction::Ended);
                         state.publish_preview_snapshot(generation);
                         state.handle_session_action(action, generation);
@@ -3067,6 +3079,7 @@ impl AppState {
                         state.publish_preview_snapshot(generation);
                     }
                     Ok(PreviewCompletion::Failed { key, error }) => {
+                        state.finish_preview_task(generation, &key);
                         eprintln!("[luno-preview] preparation failed for {key}: {error}");
                         let id = TrackId::new(key.clone()).unwrap_or_else(|_| TrackId(key.clone()));
                         let action = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &id)).unwrap_or(SessionAction::Ended);
@@ -3089,6 +3102,11 @@ impl AppState {
             self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).retain(|task| task != &format!("preview-driver-{generation}"));
             self.publish_preview_snapshot(generation);
         }
+    }
+
+    fn finish_preview_task(&self, generation: u64, key: &str) {
+        let task_key = format!("preview-{generation}-{key}");
+        self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).retain(|task| task != &task_key);
     }
 
     fn handle_session_action(&self, action: SessionAction, generation: u64) {
@@ -3370,19 +3388,21 @@ fn prepare_one(
     let (Some(helper), Some(ffmpeg)) = (helper, ffmpeg) else { return failed("preview toolchain is unavailable".into()); };
     let source = if crate::download::workflows::validate_http_url(query).is_ok() || query.starts_with("ytsearch") || query.starts_with("scsearch") {
         query.to_owned()
-    } else if helper.file_name().and_then(|name| name.to_str()) == Some("luno-download-helper") {
-        crate::download::search::search_youtube_web(query, 1)
-            .ok()
-            .and_then(|results| results.into_iter().next())
-            .and_then(|result| result.url)
-            .unwrap_or_else(|| format!("ytsearch1:{query}"))
     } else {
-        query.to_owned()
+        // Give the managed helper an explicit provider query. The previous
+        // best-effort web scrape could return a transient/blocked URL, adding
+        // a second network failure surface before yt-dlp even resolved the
+        // recommendation.
+        format!("ytsearch1:{query}")
     };
     let store = store.lock().unwrap_or_else(|e| e.into_inner());
     match prepare_preview_with_progress(&store, &key.0, store_generation, &source, helper, ffmpeg, task_token, progress) {
         Ok(path) => PreviewCompletion::Prepared { key: key.0.clone(), path },
-        Err(error) => failed(format!("{error:?}")),
+        Err(crate::preview::assets::AssetError::Failed(message)) => failed(message),
+        Err(crate::preview::assets::AssetError::Timeout) => failed("recommendation preparation timed out".into()),
+        Err(crate::preview::assets::AssetError::Cancelled) => failed("recommendation preparation was cancelled".into()),
+        Err(crate::preview::assets::AssetError::StaleGeneration) => failed("recommendation session changed before preparation completed".into()),
+        Err(error) => failed(format!("recommendation preparation failed: {error:?}")),
     }
 }
 
@@ -3606,6 +3626,35 @@ impl AppState {
         self.discover_snapshot_value()
     }
 
+    fn discover_select(&self, key: &TrackId) -> Result<Value, ContractError> {
+        let (queue, index) = {
+            let mut discover = self.discover.lock().unwrap_or_else(|e| e.into_inner());
+            let mode = discover.as_mut().filter(|mode| mode.is_active()).ok_or_else(|| ContractError {
+                code: ErrorCode::NotFound,
+                message: "no active discover session".into(),
+                retryable: false,
+            })?;
+            if !mode.recommendations().contains(key) {
+                return Err(ContractError::invalid("selected recommendation is outside the discover session"));
+            }
+            let _ = mode.retry_asset(key);
+            let queue = mode.projected_queue();
+            let index = queue.iter().position(|id| id == key).ok_or_else(|| ContractError {
+                code: ErrorCode::NotFound,
+                message: "selected recommendation is unavailable".into(),
+                retryable: true,
+            })?;
+            (queue, index)
+        };
+        self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
+        self.publish_queue_snapshot();
+        #[cfg(target_os = "macos")]
+        {
+            let _ = self.start_current_track()?;
+        }
+        self.discover_snapshot_value()
+    }
+
     /// Rolling window + handoff on natural playback movement. Called whenever
     /// a track starts through the player.
     fn discover_track_started(&self, track_id: &TrackId) {
@@ -3675,7 +3724,6 @@ impl AppState {
             self.apply_discover_action(action);
         }
         self.cancel_discover_tasks();
-        self.discover_end_files();
         self.publish_discover_snapshot(generation);
     }
 
@@ -3764,6 +3812,7 @@ impl AppState {
                 }
                 match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(PreviewCompletion::Prepared { key, path }) => {
+                        state.finish_discover_task(generation, &key);
                         let action = discover.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|mode| {
                             mode.ready_asset(
                                 generation,
@@ -3797,15 +3846,28 @@ impl AppState {
                         // is published by the focused preview driver.
                     }
                     Ok(PreviewCompletion::Failed { key, error }) => {
+                        state.finish_discover_task(generation, &key);
                         eprintln!("[luno-discover] preparation failed for {key}: {error}");
                         let id = TrackId::new(key.clone()).unwrap_or_else(|_| TrackId(key.clone()));
-                        let first = discover
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .as_mut()
-                            .map(|mode| mode.note_failure(generation, &id))
-                            .unwrap_or(false);
+                        let failed_was_current = state.playback.lock().unwrap_or_else(|e| e.into_inner()).current() == Some(&id);
+                        let first = {
+                            let mut mode = discover.lock().unwrap_or_else(|e| e.into_inner());
+                            mode.as_mut().map(|mode| {
+                                let first = mode.note_failure(generation, &id);
+                                let _ = mode.failed_asset(generation, &id);
+                                first
+                            }).unwrap_or(false)
+                        };
+                        // Remove the failed id from the transport projection,
+                        // preserve the audible identity when possible, and
+                        // continue preparing the rest of the rolling window.
+                        state.discover_sync_queue();
+                        state.discover_refill(generation);
                         state.publish_discover_snapshot(generation);
+                        #[cfg(target_os = "macos")]
+                        if failed_was_current {
+                            let _ = state.start_current_track();
+                        }
                         // Discover is user-initiated and otherwise silent (the
                         // transport simply parks when nothing stages); report
                         // the first failure once so the dead-end is explicable.
@@ -3837,9 +3899,21 @@ impl AppState {
             let mut discover = self.discover.lock().unwrap_or_else(|e| e.into_inner());
             let Some(mode) = discover.as_mut() else { return };
             let projected = mode.projected();
-            let live = self.playback.lock().unwrap_or_else(|e| e.into_inner()).queue().to_vec();
+            let playback = self.playback.lock().unwrap_or_else(|e| e.into_inner());
+            let live = playback.queue().to_vec();
+            let live_index = playback.current_index();
+            let live_current = playback.current().cloned();
+            drop(playback);
             if projected.0 != live {
-                let index = projected.1;
+                // Readiness and rolling-window changes may rebuild the queue
+                // while playback is inside the recommendation block. Preserve
+                // the selected identity; falling back to the original physical
+                // index reset every Next/Previous transition to the seed.
+                let index = live_current
+                    .as_ref()
+                    .and_then(|current| projected.0.iter().position(|id| id == current))
+                    .or_else(|| live_index.map(|index| index.min(projected.0.len().saturating_sub(1))))
+                    .unwrap_or(projected.1);
                 self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(projected.0, index);
                 true
             } else {
@@ -3860,7 +3934,7 @@ impl AppState {
             .lock()
             .unwrap()
             .as_ref()
-            .map(|mode| mode.recommendations().to_vec())
+            .map(|mode| mode.preparation_window().to_vec())
             .unwrap_or_default();
         if ids.is_empty() {
             return;
@@ -3880,6 +3954,9 @@ impl AppState {
             let Some(mode) = discover.as_mut() else { return };
             for id in &ids {
                 if mode.path_for(id).is_some() {
+                    continue;
+                }
+                if mode.is_failed(id) {
                     continue;
                 }
                 if let Some((_, path)) = staged.iter().find(|(staged_id, _)| staged_id == id) {
@@ -3969,6 +4046,11 @@ impl AppState {
         }
     }
 
+    fn finish_discover_task(&self, generation: u64, key: &str) {
+        let task_key = format!("discover-{generation}-{key}");
+        self.discover_tasks.lock().unwrap_or_else(|e| e.into_inner()).retain(|task| task != &task_key);
+    }
+
     fn cancel_discover_tasks(&self) {
         let keys: Vec<String> = self.discover_tasks.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
         for key in keys {
@@ -3980,46 +4062,6 @@ impl AppState {
         *self.discover_completions.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
-    /// Deletes the session's staged preview files except the currently
-    /// playing one, which is deferred until the next track starts.
-    fn discover_end_files(&self) {
-        let ids: Vec<TrackId> = self
-            .discover
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|mode| mode.recommendations().to_vec())
-            .unwrap_or_default();
-        let playing = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned();
-        let mut deferred = Vec::new();
-        {
-            let store = self.preview_store.lock().unwrap_or_else(|e| e.into_inner());
-            for id in ids {
-                let Ok(path) = store.ready_path(&id.0) else { continue };
-                if !path.is_file() {
-                    continue;
-                }
-                if Some(&id) == playing.as_ref() {
-                    deferred.push(path);
-                } else {
-                    let _ = std::fs::remove_file(&path);
-                }
-            }
-        }
-        if !deferred.is_empty() {
-            *self.discover_deferred.lock().unwrap_or_else(|e| e.into_inner()) = deferred;
-        }
-    }
-
-    /// Deletes preview files whose playback ended before cleanup; called at
-    /// the start of every playback action and preview session.
-    fn purge_discover_deferred(&self) {
-        let deferred: Vec<PathBuf> = std::mem::take(&mut *self.discover_deferred.lock().unwrap_or_else(|e| e.into_inner()));
-        for path in deferred {
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-
     fn discover_snapshot(&self) -> Option<DiscoverSnapshot> {
         self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|mode| DiscoverSnapshot {
             generation: mode.generation(),
@@ -4028,6 +4070,7 @@ impl AppState {
             ready: mode.ready_count(),
             queued: mode.queued_assets().len(),
             prepared: mode.prepared_keys().into_iter().map(|id| id.0).collect(),
+            unavailable: mode.failed_keys().into_iter().map(|id| id.0).collect(),
         })
     }
 
@@ -4259,7 +4302,6 @@ impl AppState {
     /// without opening the audio device. Mirrors the real play path so the
     /// Discover advance/handoff wiring is exercised identically.
     pub fn set_playing(&self, track_id: TrackId, context: Vec<TrackId>) {
-        self.purge_discover_deferred();
         self.playback.lock().unwrap_or_else(|e| e.into_inner()).play_with_context(track_id.clone(), context);
         self.playback.lock().unwrap_or_else(|e| e.into_inner()).record_started(track_id.clone(), false);
         self.discover_track_started(&track_id);
@@ -5054,6 +5096,7 @@ impl AppState {
             Command::DiscoverEnable { seeds } => self.discover_enable(&seeds),
             Command::DiscoverDisable => self.discover_disable(),
             Command::DiscoverAdvance => self.discover_advance(),
+            Command::DiscoverSelect { key } => self.discover_select(&key),
             Command::Save { key, playlist_id } => self.save_preview(&key, &playlist_id),
             Command::ValidateDirectUrl { url, destination } => {
                 crate::download::workflows::validate_http_url(&url)
@@ -6062,8 +6105,16 @@ fn promotion_error(error: PromotionError) -> ContractError {
             (effective, healed_context, path)
         };
         eprintln!("[luno-play] resolved -> {} queue_len={}", path.display(), context.len());
+        // A library selection is an explicit ownership transfer. End either
+        // temporary presentation before replacing the queue so stale workers
+        // cannot keep publishing against the new physical context.
+        if self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active()) {
+            let _ = self.leave_preview_for_library();
+        }
+        if self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|mode| mode.is_active()) {
+            self.end_discover(false);
+        }
         self.tasks.cancel_key("preview-heartbeat");
-        self.purge_discover_deferred();
         self.playback.lock().unwrap_or_else(|e| e.into_inner()).play_with_context(track_id.clone(), context);
         // NOTE: video mode is NOT kicked here on purpose — `start_selected_track`
         // kicks it once the track actually starts playing (and auto-advance funnels
@@ -6275,7 +6326,6 @@ fn promotion_error(error: PromotionError) -> ContractError {
             });
         };
         self.tasks.cancel_key("preview-heartbeat");
-        self.purge_discover_deferred();
         let ack = self.playback_snapshot(
             *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()),
             Duration::ZERO,
@@ -6300,23 +6350,35 @@ fn promotion_error(error: PromotionError) -> ContractError {
     }
 
     #[cfg(target_os = "macos")]
-    fn leave_preview_for_library(&self) {
+    fn leave_preview_for_library(&self) -> Option<Handoff> {
         let generation = self.next_generation().0;
-        if let Some(session) = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            session.invalidate(generation);
-        }
+        let handoff = self
+            .preview_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .filter(|session| session.is_active())
+            .map(|session| session.invalidate(generation));
         self.cancel_preview_tasks();
-        let _ = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).cleanup_session(None);
+        // Completed recommendation files belong to the active seed, not to
+        // the focused presentation mode. Keep them available for replay,
+        // discovery handoff, and Save; a new seed or shutdown owns cleanup.
         if let Ok(mut backend) = self.audio.lock() { let _ = backend.stop(); }
         self.publish_preview_snapshot(generation);
+        handoff
     }
 
     #[cfg(target_os = "macos")]
     fn next_track(&self) -> Result<Value, ContractError> {
-        if self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active())
+        let handoff = if self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active())
             && !self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|mode| mode.is_active())
         {
-            self.leave_preview_for_library();
+            self.leave_preview_for_library()
+        } else { None };
+        if let Some(handoff) = handoff {
+            if let Some(index) = handoff.index {
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(handoff.queue, index);
+            }
         }
         let advanced = self.playback.lock().unwrap_or_else(|e| e.into_inner()).next().cloned();
         if advanced.is_some() {
@@ -6336,16 +6398,23 @@ fn promotion_error(error: PromotionError) -> ContractError {
 
     #[cfg(target_os = "macos")]
     fn previous_track(&self) -> Result<Value, ContractError> {
-        if self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active())
+        let handoff = if self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active())
             && !self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|mode| mode.is_active())
         {
-            self.leave_preview_for_library();
+            self.leave_preview_for_library()
+        } else { None };
+        if let Some(handoff) = handoff {
+            if let Some(index) = handoff.index {
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(handoff.queue, index);
+            }
         }
         let went_back = self.playback.lock().unwrap_or_else(|e| e.into_inner()).previous().cloned();
         if went_back.is_some() {
             self.start_current_track()
         } else {
-            Ok(Value::Null)
+            // At the start of the physical queue, Previous restores/restarts
+            // the seed. Leaving a preview must never stop output silently.
+            self.start_current_track()
         }
     }
 

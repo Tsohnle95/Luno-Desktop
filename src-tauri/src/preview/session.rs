@@ -106,11 +106,14 @@ impl PreviewSession {
         if self.active && generation == self.generation && self.in_window(&id) { self.progress.insert(id, percent.min(100)); }
     }
     pub fn physical_queue(&self) -> &[TrackId] { &self.physical_queue }
+    pub fn physical_index(&self) -> usize { self.physical_index }
+    pub fn recommendations(&self) -> &[TrackId] { &self.recommendations }
 
     /// Accepts a completed asset.  A stale completion is ignored and cannot
     /// resurrect a session after handoff or shutdown.
     pub fn prepared_asset(&mut self, generation: u64, id: TrackId, path: PathBuf) -> SessionAction {
         if !self.active || generation != self.generation || !self.in_window(&id) { return SessionAction::Ended; }
+        self.failed.retain(|failed| failed != &id);
         self.paths.insert(id.clone(), path);
         self.progress.insert(id.clone(), 100);
         if self.current.is_none() && self.auto_play {

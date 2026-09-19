@@ -51,6 +51,14 @@ What it does not own: library snapshots and track identity
 
 - Skips walk the existing shuffled order — `Next`/`Previous` never
   rebuild or re-shuffle. Toggling shuffle off restores true playlist order.
+- Focused recommendation playback captures the physical queue. A global
+  Previous/Next exits that presentation atomically, restores the captured
+  index, and then applies the requested physical movement without deleting
+  prepared recommendation audio.
+- Discover owns a temporary recommendation projection while enabled. Pending
+  rows are valid transport targets, projection changes preserve the current
+  track by identity, and Previous/Next walk both directions within that
+  projection. Disabling restores the exact captured physical queue and index.
 - The backend `PlaybackSnapshot.current_index` is authoritative; the frontend
   never re-derives it from `track_started` (duplicate ids made first-occurrence
   `indexOf` regress the queue panel).

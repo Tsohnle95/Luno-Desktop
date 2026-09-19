@@ -65,8 +65,10 @@ docs), release packaging (`docs/release/desktop.md`).
   stops delivery.
 - Download jobs may publish an explicit `finalizing` phase after helper
   transfer reaches its handoff and before validation/promotion completes.
-  Discover snapshots may include the stable keys in `prepared`; both fields
-  are additive for clients that still read the older snapshot shape.
+  Discover snapshots may include stable keys in `prepared` and `unavailable`;
+  these fields are additive for clients that still read older snapshot shapes.
+  `discover_select` selects or retries one recommendation inside the active
+  Discover projection without transferring ownership to focused preview.
 - Transfer manifests are metadata-only: no local paths, secrets, audio
   bytes, queue state, favorites, or history. Imports are additive —
   consumers never delete existing library content. A track without

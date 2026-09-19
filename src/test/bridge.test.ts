@@ -73,7 +73,20 @@ describe("typed IPC bridge and projection", () => {
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover_enable", payload: { seeds: [{ artist: "Artist", title: "Track" }] } } })).toBe(true);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover_disable" } })).toBe(true);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover_advance" } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover_select", payload: { key: "Artist-Track" } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover_select", payload: { key: "" } } })).toBe(false);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "discover_enable", payload: { seeds: "x" } } })).toBe(false);
+  });
+
+  it("selects a recommendation without leaving discover mode", async () => {
+    const calls: unknown[] = [];
+    const snapshot = { generation: 2, enabled: true, window: ["Artist-Track"], ready: 1, queued: 1, prepared: ["Artist-Track"], unavailable: [] };
+    const bridge = createBridge({
+      invoke: async <T>(_name: string, payload: unknown) => { calls.push(payload); return snapshot as T; },
+      listen: async () => () => {},
+    });
+    await expect(bridge.discoverSelect("Artist-Track")).resolves.toMatchObject({ enabled: true });
+    expect((calls[0] as { command: { type: string; payload: { key: string } } }).command).toEqual({ type: "discover_select", payload: { key: "Artist-Track" } });
   });
 
   it("validates save command envelopes", () => {

@@ -935,6 +935,12 @@ fn discover_mode_enables_adopts_advances_and_restores() {
     wait_until(5, "disable", || {
         discover_snapshots(&state).iter().any(|snapshot| !snapshot.enabled)
     }, || format!("{:#?}", discover_snapshots(&state)));
+    for key in recs {
+        assert!(
+            preview_store_root("discover-lifecycle").join(format!("{key}.aac")).is_file(),
+            "disabling discovery must retain the active seed's prepared assets"
+        );
+    }
     state.cleanup_previews();
 }
 
@@ -974,6 +980,41 @@ fn discover_handoff_adopts_ready_assets_without_downloading_again() {
     state.cleanup_previews();
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn focused_previous_preserves_cached_asset_for_replay() {
+    let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
+    let state = isolated_preview_state("focused-previous-cache", 16);
+    state.set_preview_toolchain(Some(helper.clone()), Some(ffmpeg));
+    let previous = TrackId("previous".into());
+    let seed = TrackId("seed".into());
+    state.set_playing(seed.clone(), vec![previous, seed]);
+    let seeds = vec![preview_seed("Artist0", "Track0")];
+    state.dispatch(command("prefetch", Command::PreviewPrefetch { seeds: seeds.clone() })).expect("prefetch starts");
+    wait_until(5, "prefetch ready", || {
+        preview_snapshots(&state).iter().any(|snapshot| snapshot.prepared.contains(&"Artist0-Track0".to_string()))
+    }, || format!("{:#?}", preview_snapshots(&state)));
+    let calls_path = helper.with_extension("calls");
+    let calls_before = fs::read_to_string(&calls_path).unwrap().trim().parse::<u32>().unwrap();
+
+    let first: crate::contracts::types::PreviewSnapshot = serde_json::from_value(
+        state.dispatch(command("tap-ready", Command::PreviewTap { seeds: seeds.clone(), key: "Artist0-Track0".into() })).expect("ready tap"),
+    ).unwrap();
+    assert!(first.prepared.contains(&"Artist0-Track0".to_string()), "ready tap must adopt before responding: {first:?}");
+
+    // The fixture physical ids have no library paths, so playback start may
+    // reject after the ownership transition. The cache invariant is the point:
+    // Previous must not delete the already published recommendation file.
+    let _ = state.dispatch(command("physical-previous", Command::Previous));
+    let second: crate::contracts::types::PreviewSnapshot = serde_json::from_value(
+        state.dispatch(command("tap-ready-again", Command::PreviewTap { seeds, key: "Artist0-Track0".into() })).expect("cached replay tap"),
+    ).unwrap();
+    assert!(second.prepared.contains(&"Artist0-Track0".to_string()), "cached replay must be immediately ready: {second:?}");
+    let calls_after = fs::read_to_string(&calls_path).unwrap().trim().parse::<u32>().unwrap();
+    assert_eq!(calls_after, calls_before, "Previous followed by replay must not invoke the helper again");
+    state.cleanup_previews();
+}
+
 #[test]
 fn discover_mode_next_walks_recommendations_not_the_physical_library() {
     let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
@@ -1004,6 +1045,64 @@ fn discover_mode_next_walks_recommendations_not_the_physical_library() {
     state.cleanup_previews();
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn discover_window_growth_preserves_current_and_supports_both_directions() {
+    let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
+    let state = isolated_preview_state("discover-index-preserved", 16);
+    state.set_preview_toolchain(Some(helper), Some(ffmpeg));
+    let seed = TrackId("seed".into());
+    let next = TrackId("next".into());
+    state.set_playing(seed.clone(), vec![seed.clone(), next]);
+    let seeds: Vec<_> = (0..7).map(|n| preview_seed(&format!("Artist{n}"), &format!("Track{n}"))).collect();
+    state.dispatch(command("enable-index", Command::DiscoverEnable { seeds })).expect("enable");
+    let rec0 = TrackId("Artist0-Track0".into());
+    state.dispatch(command("select-index", Command::DiscoverSelect { key: rec0.clone() })).expect("discover selection");
+    wait_until(5, "selected recommendation start and window growth", || {
+        playback_snapshots(&state).last().is_some_and(|snapshot| {
+            snapshot.current_index.is_some_and(|index| snapshot.queue.get(index as usize) == Some(&rec0))
+                && snapshot.queue.iter().any(|id| id.0 == "Artist5-Track5")
+        })
+    }, || format!("{:#?}", playback_snapshots(&state)));
+    let expanded = playback_snapshots(&state).into_iter().last().unwrap();
+    assert_eq!(expanded.queue[expanded.current_index.unwrap() as usize], rec0, "rolling-window growth must retain the current recommendation");
+    assert!(expanded.queue.iter().any(|id| id.0 == "Artist5-Track5"), "advance should append the next rolling item");
+
+    let next_snapshot: PlaybackSnapshot = serde_json::from_value(state.dispatch(command("discover-next-live", Command::Next)).expect("next works")).unwrap();
+    assert_eq!(next_snapshot.queue[next_snapshot.current_index.unwrap() as usize].0, "Artist1-Track1");
+    let previous_snapshot: PlaybackSnapshot = serde_json::from_value(state.dispatch(command("discover-previous-live", Command::Previous)).expect("previous works")).unwrap();
+    assert_eq!(previous_snapshot.queue[previous_snapshot.current_index.unwrap() as usize].0, "Artist0-Track0");
+    let _ = state.dispatch(command("disable-index", Command::DiscoverDisable));
+    state.cleanup_previews();
+}
+
+#[test]
+fn discover_failure_is_terminal_and_pipeline_continues() {
+    let (toolchain, helper, ffmpeg) = fixture_preview_toolchain();
+    fs::write(&helper, "#!/bin/sh\ncount=\"$0.calls\"\nn=0\nif [ -f \"$count\" ]; then n=$(cat \"$count\"); fi\nn=$((n + 1))\necho \"$n\" > \"$count\"\nif [ \"$n\" -eq 1 ]; then echo 'provider rejected first candidate' >&2; exit 7; fi\nprintf 'ID3synthetic preview audio source bytes' > \"$1\"\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = fs::metadata(&helper).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&helper, permissions).unwrap();
+    let state = isolated_preview_state("discover-failure-continues", 16);
+    state.set_preview_toolchain(Some(helper), Some(ffmpeg));
+    let seed = TrackId("seed".into());
+    state.set_playing(seed.clone(), vec![seed]);
+    state.dispatch(command("enable-failure", Command::DiscoverEnable {
+        seeds: vec![preview_seed("Artist0", "Track0"), preview_seed("Artist1", "Track1")],
+    })).expect("enable");
+    wait_until(5, "failure then continuation", || {
+        discover_snapshots(&state).iter().any(|snapshot| {
+            snapshot.unavailable.contains(&"Artist0-Track0".to_string())
+                && snapshot.prepared.contains(&"Artist1-Track1".to_string())
+        })
+    }, || format!("{:#?}", discover_snapshots(&state)));
+    let latest = discover_snapshots(&state).into_iter().last().unwrap();
+    assert!(!latest.enabled || !latest.window.is_empty());
+    drop(toolchain);
+    state.cleanup_previews();
+}
+
 #[test]
 fn discover_mode_handoff_ends_without_restoring_when_the_queue_is_replaced() {
     let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
@@ -1016,6 +1115,9 @@ fn discover_mode_handoff_ends_without_restoring_when_the_queue_is_replaced() {
             seeds: vec![preview_seed("Artist0", "Track0")],
         }))
         .expect("enable must start the session");
+    wait_until(5, "handoff asset preparation", || {
+        discover_snapshots(&state).iter().any(|snapshot| snapshot.prepared.contains(&"Artist0-Track0".to_string()))
+    }, || format!("{:#?}", discover_snapshots(&state)));
 
     // The user replaces the queue wholesale mid-session.
     let user_track = TrackId("user-track".into());
@@ -1028,10 +1130,11 @@ fn discover_mode_handoff_ends_without_restoring_when_the_queue_is_replaced() {
     let queue = playback_snapshots(&state).into_iter().last().expect("queue snapshot").queue;
     assert_eq!(queue, vec![user_track], "a user-replaced queue must be left alone");
 
-    // Staged preview files were deleted (nothing is playing from the block).
-    wait_until(5, "cleanup", || {
-        !preview_store_root("discover-handoff").join("Artist0-Track0.aac").exists()
-    }, || format!("staged file survived teardown: {:#?}", std::fs::read_dir(preview_store_root("discover-handoff")).map(|entries| entries.collect::<Vec<_>>())));
+    // Ending queue ownership keeps the active seed's prepared asset available
+    // for a later tap or Save.
+    wait_until(5, "retained staged asset", || {
+        preview_store_root("discover-handoff").join("Artist0-Track0.aac").is_file()
+    }, || format!("staged file missing after handoff: {:#?}", std::fs::read_dir(preview_store_root("discover-handoff")).map(|entries| entries.collect::<Vec<_>>())));
     state.cleanup_previews();
 }
 

@@ -116,9 +116,18 @@ impl PreviewAssetStore {
         let started = Instant::now();
         loop {
             if cancel.load(Ordering::Acquire) { return Err(AssetError::Cancelled); }
-            if generation != self.generation { return Err(AssetError::StaleGeneration); }
+            if generation != self.generation {
+                cancel.store(true, Ordering::Release);
+                return Err(AssetError::StaleGeneration);
+            }
             let remaining = limit.saturating_sub(started.elapsed());
-            if remaining.is_zero() { return Err(AssetError::Timeout); }
+            if remaining.is_zero() {
+                // The deadline owns the child-process cancellation bridge.
+                // Returning without setting it orphaned yt-dlp/ffmpeg while
+                // the UI remained stuck in an indeterminate phase.
+                cancel.store(true, Ordering::Release);
+                return Err(AssetError::Timeout);
+            }
             match rx.recv_timeout(remaining.min(Duration::from_millis(25))) {
                 Ok(Ok(value)) => return Ok(value), Ok(Err(error)) => return Err(AssetError::Failed(error)), Err(mpsc::RecvTimeoutError::Timeout) => continue, Err(_) => return Err(AssetError::Failed("preview worker stopped".into()))
             }

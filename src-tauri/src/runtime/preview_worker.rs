@@ -124,37 +124,49 @@ fn fetch_source(helper: &Path, query: &str, output: &Path, cancel: &AtomicBool, 
         .map_err(|_| "preview download helper could not start".to_string())?;
     let stdout = child.stdout.take().ok_or_else(|| "preview download helper output unreadable".to_string())?;
     let stderr = child.stderr.take().ok_or_else(|| "preview download helper error output unreadable".to_string())?;
-    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(bool, String)>();
     let progress_tx_stderr = progress_tx.clone();
     let stdout_reader = thread::spawn(move || {
         for line in BufReader::new(stdout).lines().flatten() {
-            let _ = progress_tx.send(line);
+            let _ = progress_tx.send((false, line));
         }
     });
     let stderr_reader = thread::spawn(move || {
         for line in BufReader::new(stderr).lines().flatten() {
-            let _ = progress_tx_stderr.send(line);
+            let _ = progress_tx_stderr.send((true, line));
         }
     });
+    let mut errors = Vec::new();
+    let mut handle_line = |is_error: bool, line: String| {
+        if let Some(percent) = parse_download_percent(&line) {
+            progress(percent);
+        } else if is_error && !line.trim().is_empty() {
+            if errors.len() >= 6 { errors.remove(0); }
+            errors.push(line.trim().chars().take(240).collect::<String>());
+        }
+    };
     loop {
         if is_cancelled(cancel) {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
             return Err("cancelled".into());
         }
-        while let Ok(line) = progress_rx.try_recv() {
-            if let Some(percent) = parse_download_percent(&line) { progress(percent); }
+        while let Ok((is_error, line)) = progress_rx.try_recv() {
+            handle_line(is_error, line);
         }
         match child.try_wait().map_err(|_| "preview download helper failed".to_string())? {
             Some(status) => {
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
-                while let Ok(line) = progress_rx.try_recv() {
-                    if let Some(percent) = parse_download_percent(&line) { progress(percent); }
+                while let Ok((is_error, line)) = progress_rx.try_recv() {
+                    handle_line(is_error, line);
                 }
                 if !status.success() {
                     let _ = fs::remove_file(output);
-                    return Err("preview download helper failed".into());
+                    let detail = if errors.is_empty() { "no diagnostic output".to_string() } else { errors.join(" | ") };
+                    return Err(format!("preview helper exited with {status}: {detail}"));
                 }
                 if !output.is_file() {
                     return Err("preview download helper produced no output".into());
@@ -238,6 +250,25 @@ mod tests {
         let captured = values.clone();
         fetch_source(&helper, "fixture", &output, &cancel, Arc::new(move |percent| captured.lock().unwrap().push(percent))).unwrap();
         assert_eq!(*values.lock().unwrap(), vec![25, 75]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn helper_failure_includes_bounded_diagnostic_output() {
+        let root = std::env::temp_dir().join(format!("luno-preview-error-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        fs::write(&helper, "#!/bin/sh\necho 'provider said: requested format is unavailable' >&2\nexit 7\n").unwrap();
+        let mut permissions = fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper, permissions).unwrap();
+        let output = root.join("source.m4a");
+        let cancel = AtomicBool::new(false);
+        let error = fetch_source(&helper, "ytsearch1:fixture", &output, &cancel, Arc::new(|_| {})).expect_err("helper must fail");
+        assert!(error.contains("exit status: 7"), "status missing: {error}");
+        assert!(error.contains("requested format is unavailable"), "stderr missing: {error}");
+        assert!(!output.exists());
         let _ = fs::remove_dir_all(root);
     }
 

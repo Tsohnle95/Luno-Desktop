@@ -69,6 +69,10 @@ What it does not own: library snapshots and promotion targets
 - Discovery metadata is validated before preview/download work; preview
   assets stay temporary and hidden from the library until an explicit
   save promotes them.
+- Prepared recommendation files belong to the active recommendation seed,
+  independently of whether focused preview or Discover currently presents
+  them. Previous/Next, a mode handoff, and disabling Discover retain valid
+  files; a different seed or app cleanup replaces the bounded cache.
 - Preview preparation/playback failures surface only through the preview
   snapshot's per-row `unavailable` state; the retrying prefetch pipeline does
   not publish global error events (which stacked an undismissable banner).
@@ -78,6 +82,12 @@ What it does not own: library snapshots and promotion targets
   publishes the stable keys whose assets are ready, takes ownership from an
   active preview/prefetch session rather than racing it, and adopts an
   already published asset before starting another helper.
+- Each presentation mode has one active serialized preparation driver. A
+  terminal success or failure releases its in-flight key, failed rows leave
+  the transport projection, and explicit selection retries them. Worker
+  deadlines cancel the helper/encoder child; provider failures include a
+  bounded diagnostic tail instead of an opaque helper error. Plain metadata
+  queries go directly to the managed helper as `ytsearch1:` sources.
 - Preview percentages are raw yt-dlp media-transfer percentages. Helper
   startup and source resolution remain indeterminate because no byte total
   exists yet; fast preview files may complete between progress samples and
@@ -104,8 +114,9 @@ What it does not own: library snapshots and promotion targets
 ```text
 search_downloader → results → start_download → helper spawn → staged output
 → signature validation → atomic promote → coalesced rescan → job succeeded
-discover → validated recommendations → preview_tap → session → preview_next/
-previous/cancel → save → remux_and_promote → library
+discover → validated recommendations → shared temporary assets → focused tap
+or Discover projection → select/next/previous → explicit save →
+remux_and_promote or durable download → chosen playlist → library
 ```
 
 ## Tests

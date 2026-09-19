@@ -68,6 +68,9 @@ pub enum Command {
     },
     DiscoverDisable,
     DiscoverAdvance,
+    DiscoverSelect {
+        key: TrackId,
+    },
     Save {
         key: TrackId,
         playlist_id: PlaylistId,
@@ -246,6 +249,7 @@ mod tests {
             r#"{"type":"discover_enable","payload":{"seeds":[{"artist":"Artist","title":"Track"}]}}"#,
             r#"{"type":"discover_disable"}"#,
             r#"{"type":"discover_advance"}"#,
+            r#"{"type":"discover_select","payload":{"key":"Artist-Track"}}"#,
             r#"{"type":"save","payload":{"key":"Artist-Track","playlist_id":"playlist-a"}}"#,
         ] {
             let json = format!(r#"{{"version":1,"request_id":"test-1","command":{command}}}"#);
