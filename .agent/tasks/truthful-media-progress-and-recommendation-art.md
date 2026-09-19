@@ -1,6 +1,6 @@
 # Task: Make media progress truthful and recommendation artwork reliable
 
-Status: REVIEWED
+Status: ACTIVE
 
 ## Goal
 
@@ -47,11 +47,11 @@ Show byte-transfer progress only while bytes are actually downloading, keep sour
 
 | Phase | Scope | Status | Validation | Commit |
 |---|---|---|---|---|
-| 1 | Audit exact yt-dlp/helper output timing, write reviewed plan, identify every placeholder-art consumer | complete | source/doc trace and plan review | pending |
-| 2 | Implement truthful video byte progress and phase presentation | pending | focused Rust parser/runtime tests and VideoStage tests; live probe | pending |
-| 3 | Implement truthful recommendation preview byte progress | pending | preview worker tests and recommendation component tests; managed-helper probe | pending |
-| 4 | Normalize provider placeholder artwork and remove gray/star-like generated designs across playback surfaces | pending | exhaustive artwork/component tests and rendered markup inspection | pending |
-| 5 | Integrate, update durable docs, run cumulative and canonical validation, review all diffs | pending | `npm run verify`; `cargo test --manifest-path src-tauri/Cargo.toml`; `npm run build` | pending |
+| 1 | Audit exact yt-dlp/helper output timing, write reviewed plan, identify every placeholder-art consumer | complete | source/doc trace and plan review | `7b83a632` |
+| 2 | Implement truthful video byte progress and phase presentation | complete | 10 runtime tests, 19 VideoStage tests, live plan + 27 byte-event probe | `1208b33a`, `5b9529d0`, `7b6fcf92`, `63981c3b` |
+| 3 | Implement truthful recommendation preview byte progress | complete | preview worker/session/helper tests and live bundled preview | `0f344ffe` |
+| 4 | Normalize provider placeholder artwork and remove gray/star-like generated designs across playback surfaces | complete | 62 focused frontend tests including exhaustive artwork policy | `315335bb` |
+| 5 | Integrate, update durable docs, run cumulative and canonical validation, review all diffs | active | `npm run verify`; `cargo test --manifest-path src-tauri/Cargo.toml`; `npm run build` | pending |
 
 ## Validation plan
 
@@ -69,8 +69,6 @@ Show byte-transfer progress only while bytes are actually downloading, keep sour
 
 ## Open risks / blockers
 
-- yt-dlp may omit an exact total for fragmented formats. The implementation must remain indeterminate or use its explicit estimated total without inventing a denominator.
-- A video plus audio merge reports multiple transfer items. Aggregation must avoid claiming whole-artifact completion after only the first item.
 - Live provider timing varies; the probe validates event ordering and semantic truth, not a fixed performance threshold.
 
 ## Completion

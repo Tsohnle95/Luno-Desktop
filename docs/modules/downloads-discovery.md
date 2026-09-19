@@ -92,10 +92,15 @@ What it does not own: library snapshots and promotion targets
   deadlines cancel the helper/encoder child; provider failures include a
   bounded diagnostic tail instead of an opaque helper error. Plain metadata
   queries go directly to the managed helper as `ytsearch1:` sources.
-- Preview percentages are raw yt-dlp media-transfer percentages. Helper
-  startup and source resolution remain indeterminate because no byte total
-  exists yet; fast preview files may complete between progress samples and
-  jump directly to 100%. Only atomic publication makes an item playable.
+- Preview percentages are computed from yt-dlp's machine-readable downloaded
+  and exact/estimated total bytes. Helper startup, source resolution, zero-byte
+  samples, and unknown totals remain indeterminate; transfer values stay
+  monotonic and below 100. Only atomic publication reports 100 and makes an
+  item playable.
+- Last.fm placeholder URLs are treated as missing artwork. Recommendation
+  rows and every playback projection use the same deterministic generated
+  Luno artwork; the generated palette set excludes the retired neutral gray
+  and white cross/star treatment.
 - Serialized preview preparation has admission priority over speculative
   successor-video staging. The audible track's quick video may stage while
   the audio window is pending; successor-video work resumes after that window

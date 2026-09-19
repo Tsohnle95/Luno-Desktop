@@ -82,8 +82,11 @@ What it does not own: library snapshots and track identity
 - Current and successor downloads use the H.264 quick tier (≤240p). The
   current file publishes immediately, then a cancellable H.264 high-tier
   replacement (≤720p) swaps in place and republishes the video revision.
-- `null` progress means source lookup; 0–100 means the yt-dlp transfer has
-  started. The UI renders 0% as determinate instead of calling it search.
+- `null` progress covers source lookup, extractor setup, and transfers whose
+  byte total is still unknown. Numeric progress is computed from yt-dlp's
+  downloaded bytes over the selected video-plus-audio format plan; it stays
+  monotonic, remains below 100 while the child/merge is active, and reaches
+  100 only after the quick playable artifact is adopted.
 - Pause never gates staging: videos stage and publish `Ready` while
   paused; resume runs a catch-up pipeline pass when current video is
   unresolved. Dead `Loading` slots (no live worker) restage.
