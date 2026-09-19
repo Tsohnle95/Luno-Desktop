@@ -813,6 +813,165 @@ mod tests {
     }
 
     #[test]
+    fn recommendation_video_plan_covers_the_temporary_window_after_audible_item() {
+        let audible = TrackId::new("library-track").unwrap();
+        let recommendations = (0..VIDEO_PREFETCH_DEPTH)
+            .map(|index| TrackId::new(format!("recommendation-{index}")).unwrap())
+            .collect::<Vec<_>>();
+        let plan = recommendation_video_plan(Some(audible.clone()), &recommendations);
+        assert_eq!(plan.first(), Some(&audible));
+        assert_eq!(&plan[1..], recommendations.as_slice());
+
+        // A recommendation that is also the audible identity must not be
+        // staged twice when a mode handoff races the prefetch pass.
+        let deduped = recommendation_video_plan(Some(recommendations[0].clone()), &recommendations);
+        assert_eq!(deduped.len(), VIDEO_PREFETCH_DEPTH);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recommendation_video_prefetch_is_adopted_without_a_second_download() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("luno-recommendation-video-reuse-{}", std::process::id()));
+        let video_root = root.join("videos");
+        let library_root = root.join("library");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(library_root.join("Unsorted")).unwrap();
+        let helper = root.join("video-helper");
+        std::fs::write(
+            &helper,
+            "#!/bin/sh\nif [ \"$1\" = \"--dump-json\" ]; then\n  printf '%s\\n' '{\"id\":\"rec-video\",\"title\":\"RecSong official video\",\"uploader\":\"RecArtist\",\"webpage_url\":\"https://www.youtube.com/watch?v=rec-video\"}'\n  exit 0\nfi\noutput=\"\"\nprevious=\"\"\nfor argument in \"$@\"; do\n  if [ \"$previous\" = \"output\" ]; then output=\"$argument\"; fi\n  if [ \"$argument\" = \"-o\" ]; then previous=\"output\"; else previous=\"\"; fi\ndone\nprintf 'synthetic mp4' > \"$output\"\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&helper, permissions).unwrap();
+
+        let state = AppState::with_preview_store(
+            PreviewAssetStore::at(root.join("previews")).unwrap(),
+            12,
+        );
+        state.set_video_runtime(video_root.clone(), Some(helper), None);
+        let audio = library_root.join("Unsorted/Artist - Song.wav");
+        write_wav_fixture(&audio);
+        let library = state.replace_library(
+            Generation(1),
+            BTreeMap::from([(String::from("Unsorted"), vec![audio])]),
+        );
+        let audible = library.tracks[0].id.clone();
+        state.set_playing(audible.clone(), vec![audible.clone()]);
+
+        // Keep the audible item out of the helper path so this test isolates
+        // recommendation scheduling and handoff reuse.
+        let stager = crate::video::staging::VideoStage::at(&video_root, None).unwrap();
+        stager.record_index("artistsong", "current-video");
+        std::fs::write(
+            stager.external_destination(crate::video::staging::Slot::Current, "current-video").unwrap(),
+            b"synthetic current mp4",
+        )
+        .unwrap();
+
+        let seed = PreviewSeed { artist: "RecArtist".into(), title: "RecSong".into() };
+        let recommendation = AppState::preview_ids(std::slice::from_ref(&seed)).unwrap().remove(0);
+        *state.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = vec![seed];
+        *state.preview_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+            PreviewSession::start_prefetch(7, vec![audible.clone()], 0, vec![recommendation.clone()]).unwrap(),
+        );
+
+        state.kick_video_pipeline();
+        let stager = state.video_stager.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap();
+        let next = stager.external_destination(crate::video::staging::Slot::Next, "rec-video").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while (!next.is_file() || stager.index_lookup("recartistrecsong", crate::video::staging::Slot::Next).is_none())
+            && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(next.is_file(), "recommendation video prefetch did not publish its Next asset");
+        assert!(stager.index_lookup("recartistrecsong", crate::video::staging::Slot::Next).is_some());
+
+        // The click path must promote the prefetched Next file through the
+        // indexed stage fast path. A missing index or file would invoke the
+        // helper again and leave the recommendation loading.
+        state.video_stage_track(recommendation.clone()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let ready = state.video_current.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|video| {
+                video.track_id.as_ref() == Some(&recommendation)
+                    && matches!(video.status, crate::contracts::events::VideoStatus::Ready)
+            });
+            if ready { break; }
+            assert!(std::time::Instant::now() < deadline, "prepared recommendation did not adopt its video");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(stager.external_destination(crate::video::staging::Slot::Current, "rec-video").unwrap().is_file());
+        assert!(!next.is_file(), "adoption must move the prefetched Next asset into Current");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_video_upgrade_runs_before_speculative_recommendation_download() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("luno-recommendation-video-priority-{}", std::process::id()));
+        let video_root = root.join("videos");
+        let library_root = root.join("library");
+        let log = root.join("helper.log");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(library_root.join("Unsorted")).unwrap();
+        let helper = root.join("video-helper");
+        std::fs::write(
+            &helper,
+            format!(
+                "#!/bin/sh\nlog={};\nif [ \"$1\" = \"--dump-json\" ]; then\n  case \"$*\" in\n    *Artist*Song*) id=current-video; title=\"Song official video\"; artist=Artist ;;\n    *) id=rec-video; title=\"RecSong official video\"; artist=RecArtist ;;\n  esac\n  printf '{{\"id\":\"%s\",\"title\":\"%s\",\"uploader\":\"%s\",\"webpage_url\":\"https://www.youtube.com/watch?v=%s\"}}\\n' \"$id\" \"$title\" \"$artist\" \"$id\"\n  exit 0\nfi\noutput=\"\"\nprevious=\"\"\nfor argument in \"$@\"; do\n  if [ \"$previous\" = \"output\" ]; then output=\"$argument\"; fi\n  if [ \"$argument\" = \"-o\" ]; then previous=output; else previous=\"\"; fi\ndone\nprintf 'download:%s\\n' \"$output\" >> \"$log\"\nprintf 'synthetic mp4' > \"$output\"\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&helper, permissions).unwrap();
+
+        let state = AppState::with_preview_store(
+            PreviewAssetStore::at(root.join("previews")).unwrap(),
+            12,
+        );
+        state.set_video_runtime(video_root.clone(), Some(helper), None);
+        let audio = library_root.join("Unsorted/Artist - Song.wav");
+        write_wav_fixture(&audio);
+        let library = state.replace_library(
+            Generation(1),
+            BTreeMap::from([(String::from("Unsorted"), vec![audio])]),
+        );
+        let audible = library.tracks[0].id.clone();
+        state.set_playing(audible.clone(), vec![audible.clone()]);
+        let seed = PreviewSeed { artist: "RecArtist".into(), title: "RecSong".into() };
+        let recommendation = AppState::preview_ids(std::slice::from_ref(&seed)).unwrap().remove(0);
+        *state.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = vec![seed];
+        *state.preview_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+            PreviewSession::start_prefetch(7, vec![audible.clone()], 0, vec![recommendation]).unwrap(),
+        );
+        *state.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = true;
+
+        state.kick_video_pipeline();
+        let rec_next = {
+            let stager = state.video_stager.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap();
+            stager.external_destination(crate::video::staging::Slot::Next, "rec-video").unwrap()
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
+        while (!rec_next.is_file() || !log.is_file()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(rec_next.is_file(), "recommendation download did not complete");
+        let entries = std::fs::read_to_string(&log).unwrap_or_default();
+        let upgrade = entries.find(".upgrading-current-current-video.mp4").expect("current high upgrade must run");
+        let successor = entries.find("next-rec-video.mp4").expect("recommendation quick download must run");
+        assert!(upgrade < successor, "successor video began before current upgrade: {entries}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn video_stages_a_recommendation_from_session_metadata() {
         let state = AppState::new(8);
         let video_root = std::env::temp_dir().join(format!("luno-video-recommendation-{}", std::process::id()));
@@ -1970,7 +2129,7 @@ pub struct AppState {
     playback_stall: Arc<Mutex<Option<(std::time::Duration, u32)>>>,
     /// Song-page video mode (persisted in `.luno_config.json`). When true the
     /// backend auto-stages the playing track's music video and sequentially
-    /// pre-downloads the next three queue videos so each handoff is instant.
+    /// pre-downloads the next five queue videos so each handoff is instant.
     video_mode_enabled: Arc<Mutex<bool>>,
     /// Serializes video-mode prefetch passes: one loop at a time.
     video_prefetch_running: Arc<Mutex<bool>>,
@@ -1990,6 +2149,11 @@ pub struct AppState {
     /// (the small quick-tier pull) is deliberately NOT gated by it. Acquire
     /// via polling `try_lock` with cancellation checkpoints, never `.lock()`.
     video_heavy_work: Arc<Mutex<()>>,
+    /// Set while the audible track has published its quick tier and is waiting
+    /// for its high-quality replacement. Speculative successor downloads yield
+    /// before taking `video_heavy_work`, so a five-item recommendation window
+    /// cannot delay the current track's upgrade.
+    video_upgrade_waiting: Arc<AtomicBool>,
     /// Runtime home captured at load time so backend-side setting changes can
     /// persist immediately without an extra IPC round-trip.
     settings_home: Arc<Mutex<Option<PathBuf>>>,
@@ -2009,6 +2173,14 @@ type ScanWork = Arc<dyn Fn(&[PathBuf], CancellationToken) -> ScanOutcome + Send 
 struct ScanState {
     active: bool,
     pending: Option<ScanWork>,
+}
+
+struct VideoUpgradeWaitGuard(Arc<AtomicBool>);
+
+impl Drop for VideoUpgradeWaitGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// Whether a FINISHING staging worker may publish its result into the shared
@@ -2101,6 +2273,23 @@ pub fn audible_video_plan(
     if let Some(audible) = audible { plan.push(audible); }
     if let Some(index) = current_index {
         plan.extend(queue.iter().skip(index.saturating_add(1)).take(depth).cloned());
+    }
+    plan
+}
+
+/// Video plan for an initial recommendation prefetch window. The audible
+/// library item remains first so its quick stage and quality upgrade retain
+/// admission priority; recommendation ids follow in their temporary-window
+/// order even though they are outside the physical playback queue.
+pub fn recommendation_video_plan(audible: Option<TrackId>, recommendations: &[TrackId]) -> Vec<TrackId> {
+    let mut plan = Vec::with_capacity(recommendations.len() + usize::from(audible.is_some()));
+    if let Some(audible) = audible {
+        plan.push(audible);
+    }
+    for recommendation in recommendations {
+        if !plan.contains(recommendation) {
+            plan.push(recommendation.clone());
+        }
     }
     plan
 }
@@ -2222,6 +2411,7 @@ impl AppState {
             video_download_progress: Arc::new(crate::video::runtime::VideoProgress::new()),
             video_prefetch_cancel: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))),
             video_heavy_work: Arc::new(Mutex::new(())),
+            video_upgrade_waiting: Arc::new(AtomicBool::new(false)),
             settings_home: Arc::new(Mutex::new(None)),
             media_keys_enabled: Arc::new(AtomicBool::new(true)),
             #[cfg(target_os = "macos")]
@@ -2543,6 +2733,12 @@ impl AppState {
                 // Clones for the background upgrade BEFORE the move below.
                 let upgrade_source = source_url.clone();
                 let upgrade_path = staged_path.clone();
+                if needs_upgrade {
+                    // Advertise the upgrade before publishing Ready. The
+                    // successor worker can observe the Ready transition and
+                    // must still yield its heavy slot to this upgrade.
+                    state.video_upgrade_waiting.store(true, Ordering::Release);
+                }
                 *state.video_current.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::contracts::events::VideoState {
                     track_id: Some(worker_track_id.clone()),
                     source_url,
@@ -2569,7 +2765,9 @@ impl AppState {
                     let upgrade_cancel = Arc::clone(&cancel);
                     let upgrade_track = worker_track_id.clone();
                     let upgrade_generation = generation;
-                    let _ = std::thread::Builder::new().name("luno-video-upgrade".into()).spawn(move || {
+                    let upgrade_waiting = Arc::clone(&state.video_upgrade_waiting);
+                    let upgrade_spawned = std::thread::Builder::new().name("luno-video-upgrade".into()).spawn(move || {
+                        let _upgrade_wait_guard = VideoUpgradeWaitGuard(upgrade_waiting);
                         // Let the webview open the quick file before the
                         // replacement competes for bandwidth.
                         for _ in 0..4 {
@@ -2660,7 +2858,10 @@ impl AppState {
                             drop(current);
                             upgrade_state.publish_video_state();
                         }
-                    }).ok();
+                    });
+                    if upgrade_spawned.is_err() {
+                        state.video_upgrade_waiting.store(false, Ordering::Release);
+                    }
                 }
             }
         });
@@ -2757,23 +2958,31 @@ impl AppState {
     /// Video-mode core: stage the audible track, then sequentially prepare
     /// quick-tier video for the next [`VIDEO_PREFETCH_DEPTH`] tracks from the
     /// authoritative context. Focused preview uses physical successors;
-    /// Discover uses its projected recommendation queue.
+    /// Discover uses its projected recommendation queue. An explicit initial
+    /// recommendation preparation pass also runs while song-page video mode
+    /// is disabled: its temporary five-item assets are part of preparation,
+    /// rather than ordinary physical-queue video mode.
     pub fn kick_video_pipeline(&self) {
-        if !self.video_mode_enabled() { return; }
-        let preview_pending = {
+        let preview_recommendations = {
+            let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
+            session
+                .as_ref()
+                .filter(|session| session.is_active() && session.is_prefetch())
+                .map(|session| session.window().to_vec())
+        };
+        if !self.video_mode_enabled() && preview_recommendations.is_none() { return; }
+        let preview_pending = preview_recommendations.as_ref().is_some_and(|recommendations| {
             let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
             session.as_ref().is_some_and(|session| {
-                session.is_active()
-                    && session.window().iter().any(|key| {
-                        !session.is_prepared(key) && !session.unavailable().contains(key)
-                    })
+                recommendations.iter().any(|key| {
+                    !session.is_prepared(key) && !session.unavailable().contains(key)
+                })
             })
-        };
+        });
         if preview_pending {
-            // Recommendation audio has priority over SPECULATIVE successor
-            // videos. The audible/current video must still stage: cancelling
-            // it here meant every song waited for five recommendation audio
-            // downloads before video could even begin.
+            // A fresh recommendation window supersedes any older successor
+            // pass, while the new pass below starts the audible item and the
+            // temporary recommendation videos together.
             self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         }
         let helper = match self.video_helper.lock().unwrap_or_else(|e| e.into_inner()).clone() {
@@ -2815,17 +3024,14 @@ impl AppState {
                 .map(|track| (track.title.clone(), track.artist.clone()))
                 .or_else(|| self.seed_for(&track_id.0).map(|seed| (seed.title, Some(seed.artist))))
         };
-        let plan = audible_video_plan(&queue, current, audible, focused_preview, VIDEO_PREFETCH_DEPTH);
-        let mut plans: Vec<(TrackId, String, Option<String>)> = plan
+        let plan = preview_recommendations
+            .as_deref()
+            .map(|recommendations| recommendation_video_plan(audible.clone(), recommendations))
+            .unwrap_or_else(|| audible_video_plan(&queue, current, audible, focused_preview, VIDEO_PREFETCH_DEPTH));
+        let plans: Vec<(TrackId, String, Option<String>)> = plan
             .into_iter()
             .filter_map(|id| resolve(&id).map(|(title, artist)| (id, title, artist)))
             .collect();
-        if preview_pending {
-            // Keep only the audible/current item until the serialized audio
-            // window settles; the final preview completion re-kicks the full
-            // five-successor video pass.
-            plans.truncate(1);
-        }
 
         let state = self.clone();
         let cancel_error_path = Arc::clone(&cancel);
@@ -2891,6 +3097,15 @@ impl AppState {
                                 || state.video_mode_changed_since(&cancel)
                             {
                                 break None;
+                            }
+                            // The current track's high-tier replacement has
+                            // already published its quick file and is waiting
+                            // for this same heavy-work mutex. Keep successors
+                            // out until that upgrade either completes or is
+                            // cancelled by a track switch.
+                            if state.video_upgrade_waiting.load(Ordering::Acquire) {
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                                continue;
                             }
                             match state.video_heavy_work.try_lock() {
                                 Ok(guard) => break Some(guard),
@@ -3087,6 +3302,11 @@ impl AppState {
         self.spawn_preview_driver(generation);
         self.adopt_existing_preview_window(generation);
         self.ensure_window_prepared(generation);
+        // Audio preparation is serialized by the preview driver, while the
+        // video pass can fetch the same five-item window independently. This
+        // starts both facets together so a recommendation can be fully ready
+        // before the user taps it.
+        self.kick_video_pipeline();
         self.preview_snapshot_value()
     }
 
@@ -3170,7 +3390,14 @@ impl AppState {
                         state.publish_preview_snapshot(generation);
                         state.handle_session_action(action, generation);
                         state.ensure_window_prepared(generation);
-                        state.kick_video_pipeline();
+                        // The initial prefetch pass already owns the whole
+                        // recommendation window. Re-kicking it after every
+                        // serialized audio completion would cancel whichever
+                        // successor video is downloading and restart it from
+                        // the first item. Focused sessions still re-kick so a
+                        // tapped item can stage its audible overlay.
+                        let prefetch_active = session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_active() && s.is_prefetch());
+                        if !prefetch_active { state.kick_video_pipeline(); }
                     }
                     Ok(PreviewCompletion::Progress { key, percent }) => {
                         if let Some(session) = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
@@ -3192,7 +3419,8 @@ impl AppState {
                         state.publish_preview_snapshot(generation);
                         state.handle_session_action(action, generation);
                         state.ensure_window_prepared(generation);
-                        state.kick_video_pipeline();
+                        let prefetch_active = session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_active() && s.is_prefetch());
+                        if !prefetch_active { state.kick_video_pipeline(); }
                     }
                     Err(_) => {}
                 }
