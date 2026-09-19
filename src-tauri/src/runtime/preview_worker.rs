@@ -103,10 +103,40 @@ fn temp_output(extension: &str) -> PathBuf {
     std::env::temp_dir().join(format!("luno-preview-{}-{}.{}", std::process::id(), stamp, extension))
 }
 
-fn parse_download_percent(line: &str) -> Option<u8> {
-    let value = line.split_once("LUNO_PROGRESS=")?.1;
-    let percent = value.trim().trim_end_matches('%').trim().parse::<f32>().ok()?;
-    Some(percent.clamp(0.0, 100.0).round() as u8)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MediaProgress {
+    downloaded_bytes: u64,
+    total_bytes: u64,
+}
+
+/// Parses the preview helper's byte protocol. yt-dlp emits progress lines only
+/// for a transfer, but checking the status here also prevents a future helper
+/// change from turning lookup or post-processing output into a number.
+fn parse_media_progress(line: &str) -> Option<MediaProgress> {
+    let remainder = line.split_once("LUNO_BYTES=")?.1;
+    let (downloaded_value, remainder) = remainder.split_once(';')?;
+    let fields = remainder.split(';').collect::<Vec<_>>();
+    let field = |name: &str| fields.iter().find_map(|field| field.strip_prefix(name).map(str::trim));
+    if field("LUNO_STATUS=")? != "downloading" {
+        return None;
+    }
+    let downloaded_bytes = downloaded_value.trim().parse::<u64>().ok()?;
+    if downloaded_bytes == 0 {
+        return None;
+    }
+    let total_bytes = field("LUNO_TOTAL=")
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .or_else(|| field("LUNO_ESTIMATE=").and_then(|value| value.parse::<u64>().ok()).filter(|value| *value > 0))?;
+    Some(MediaProgress { downloaded_bytes, total_bytes })
+}
+
+/// Converts known media bytes into a UI percentage. A transfer can reach its
+/// byte total before yt-dlp has finished post-processing and the preview has
+/// been published, so 100 is deliberately reserved for `prepared_asset`.
+fn media_percent(progress: MediaProgress) -> Option<u8> {
+    let ratio = (u128::from(progress.downloaded_bytes) * 100) / u128::from(progress.total_bytes);
+    Some(ratio.min(99) as u8).filter(|percent| *percent > 0)
 }
 
 /// Runs the download helper against the preview query with the same process
@@ -137,9 +167,19 @@ fn fetch_source(helper: &Path, query: &str, output: &Path, cancel: &AtomicBool, 
         }
     });
     let mut errors = Vec::new();
+    let mut last_percent = 0u8;
     let mut handle_line = |is_error: bool, line: String| {
-        if let Some(percent) = parse_download_percent(&line) {
-            progress(percent);
+        if let Some(media_progress) = parse_media_progress(&line) {
+            if let Some(percent) = media_percent(media_progress) {
+                // yt-dlp can print a fresh transfer stage after a stream has
+                // completed. Keep visible progress monotonic and never let a
+                // transfer line claim publication complete.
+                let percent = percent.max(last_percent);
+                if percent > last_percent {
+                    last_percent = percent;
+                    progress(percent);
+                }
+            }
         } else if is_error && !line.trim().is_empty() {
             if errors.len() >= 6 { errors.remove(0); }
             errors.push(line.trim().chars().take(240).collect::<String>());
@@ -228,10 +268,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_padded_ytdlp_download_percentages() {
-        assert_eq!(parse_download_percent("LUNO_PROGRESS= 25.0%"), Some(25));
-        assert_eq!(parse_download_percent("download:LUNO_PROGRESS= 42.6%"), Some(43));
-        assert_eq!(parse_download_percent("[download] 25.0%"), None);
+    fn parses_machine_readable_media_bytes_and_estimates() {
+        assert_eq!(
+            parse_media_progress("download:LUNO_BYTES=250;LUNO_TOTAL=1000;LUNO_ESTIMATE=NA;LUNO_STATUS=downloading"),
+            Some(MediaProgress { downloaded_bytes: 250, total_bytes: 1000 }),
+        );
+        assert_eq!(
+            parse_media_progress("download:LUNO_BYTES=250;LUNO_TOTAL=NA;LUNO_ESTIMATE=1000;LUNO_STATUS=downloading"),
+            Some(MediaProgress { downloaded_bytes: 250, total_bytes: 1000 }),
+        );
+        assert_eq!(parse_media_progress("download:LUNO_BYTES=250;LUNO_TOTAL=1000;LUNO_ESTIMATE=NA;LUNO_STATUS=finished"), None);
+        assert_eq!(parse_media_progress("download:LUNO_BYTES=0;LUNO_TOTAL=1000;LUNO_ESTIMATE=NA;LUNO_STATUS=downloading"), None);
+        assert_eq!(parse_media_progress("LUNO_PROGRESS= 42.0%"), None);
+    }
+
+    #[test]
+    fn media_percent_never_claims_publication_complete() {
+        assert_eq!(media_percent(MediaProgress { downloaded_bytes: 250, total_bytes: 1000 }), Some(25));
+        assert_eq!(media_percent(MediaProgress { downloaded_bytes: 1000, total_bytes: 1000 }), Some(99));
+        assert_eq!(media_percent(MediaProgress { downloaded_bytes: 2, total_bytes: 1000 }), None);
     }
 
     #[test]
@@ -240,7 +295,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let helper = root.join("helper");
-        fs::write(&helper, "#!/bin/sh\nprintf 'LUNO_PROGRESS= 25.0%%\\nLUNO_PROGRESS= 75.0%%\\n'\nprintf 'ID3preview bytes' > \"$1\"\n").unwrap();
+        fs::write(&helper, "#!/bin/sh\nprintf 'resolving source\\nLUNO_BYTES=0;LUNO_TOTAL=1000;LUNO_ESTIMATE=NA;LUNO_STATUS=downloading\\nLUNO_BYTES=250;LUNO_TOTAL=1000;LUNO_ESTIMATE=NA;LUNO_STATUS=downloading\\nLUNO_BYTES=750;LUNO_TOTAL=1000;LUNO_ESTIMATE=NA;LUNO_STATUS=downloading\\nLUNO_BYTES=1000;LUNO_TOTAL=1000;LUNO_ESTIMATE=NA;LUNO_STATUS=finished\\n'\nprintf 'ID3preview bytes' > \"$1\"\n").unwrap();
         let mut permissions = fs::metadata(&helper).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&helper, permissions).unwrap();
@@ -250,6 +305,44 @@ mod tests {
         let captured = values.clone();
         fetch_source(&helper, "fixture", &output, &cancel, Arc::new(move |percent| captured.lock().unwrap().push(percent))).unwrap();
         assert_eq!(*values.lock().unwrap(), vec![25, 75]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn helper_startup_and_unknown_totals_stay_indeterminate() {
+        let root = std::env::temp_dir().join(format!("luno-preview-indeterminate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        fs::write(&helper, "#!/bin/sh\nprintf 'source lookup\\nLUNO_BYTES=100;LUNO_TOTAL=NA;LUNO_ESTIMATE=NA;LUNO_STATUS=downloading\\nLUNO_BYTES=0;LUNO_TOTAL=1000;LUNO_ESTIMATE=NA;LUNO_STATUS=downloading\\n'\nprintf 'ID3preview bytes' > \"$1\"\n").unwrap();
+        let mut permissions = fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper, permissions).unwrap();
+        let output = root.join("source.m4a");
+        let cancel = AtomicBool::new(false);
+        let values = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = values.clone();
+        fetch_source(&helper, "fixture", &output, &cancel, Arc::new(move |percent| captured.lock().unwrap().push(percent))).unwrap();
+        assert!(values.lock().unwrap().is_empty(), "lookup and unknown/zero-byte stages must remain indeterminate");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn transfer_progress_is_monotonic_across_stage_resets() {
+        let root = std::env::temp_dir().join(format!("luno-preview-monotonic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        fs::write(&helper, "#!/bin/sh\nprintf 'LUNO_BYTES=200;LUNO_TOTAL=1000;LUNO_ESTIMATE=NA;LUNO_STATUS=downloading\\nLUNO_BYTES=900;LUNO_TOTAL=1000;LUNO_ESTIMATE=NA;LUNO_STATUS=downloading\\nLUNO_BYTES=100;LUNO_TOTAL=1000;LUNO_ESTIMATE=NA;LUNO_STATUS=downloading\\nLUNO_BYTES=1000;LUNO_TOTAL=1000;LUNO_ESTIMATE=NA;LUNO_STATUS=finished\\n'\nprintf 'ID3preview bytes' > \"$1\"\n").unwrap();
+        let mut permissions = fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper, permissions).unwrap();
+        let output = root.join("source.m4a");
+        let cancel = AtomicBool::new(false);
+        let values = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = values.clone();
+        fetch_source(&helper, "fixture", &output, &cancel, Arc::new(move |percent| captured.lock().unwrap().push(percent))).unwrap();
+        assert_eq!(*values.lock().unwrap(), vec![20, 90], "a later transfer stage must not reset or complete the visible progress");
         let _ = fs::remove_dir_all(root);
     }
 

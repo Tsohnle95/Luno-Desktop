@@ -26,7 +26,18 @@ fi
 # truncated --ffmpeg-location plus a phantom source URL — yt-dlp then ran
 # without ffmpeg and every preview/download postprocessing step failed with
 # exit 1 ("preview download helper failed", 2026-09-09).
-set -- --no-playlist --newline --progress-delta 0.25 --progress-template 'download:LUNO_PROGRESS=%(progress._percent_str)s' -f 'bestaudio/best'
+set -- --no-playlist --newline --progress-delta 0.25
+if [ "${LUNO_PREVIEW:-0}" = "1" ]; then
+  # Preview progress is parsed from machine-readable byte counters. The
+  # status field keeps source lookup and post-processing indeterminate, while
+  # total_bytes_estimate covers fragmented media without inventing a total.
+  set -- "$@" --progress-template 'download:LUNO_BYTES=%(progress.downloaded_bytes)s;LUNO_TOTAL=%(progress.total_bytes)s;LUNO_ESTIMATE=%(progress.total_bytes_estimate)s;LUNO_STATUS=%(progress.status)s'
+else
+  # Production download jobs retain their existing percentage contract; the
+  # coordinator reserves the final slice for validation and promotion.
+  set -- "$@" --progress-template 'download:LUNO_PROGRESS=%(progress._percent_str)s'
+fi
+set -- "$@" -f 'bestaudio/best'
 if [ "${LUNO_PREVIEW:-0}" != "1" ]; then
   set -- "$@" -x --audio-format m4a --audio-quality 0 --embed-thumbnail --embed-metadata --convert-thumbnails jpg --ppa 'ExtractAudio+ffmpeg_o:-ar 44100 -ac 2 -af loudnorm=I=-14:LRA=11:TP=-1.5'
 fi

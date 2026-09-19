@@ -128,6 +128,10 @@ impl PreviewSession {
     pub fn failed_asset(&mut self, generation: u64, id: &TrackId) -> SessionAction {
         if !self.active || generation != self.generation { return SessionAction::Ended; }
         if !self.failed.contains(id) { self.failed.push(id.clone()); }
+        // A retry starts in helper/source resolution, which is indeterminate
+        // until a fresh byte report arrives. Do not reuse a failed attempt's
+        // last numeric value for that new preparation.
+        self.progress.remove(id);
         if self.current.is_none() && self.recommendations.get(self.window_start) == Some(id) {
             self.active = false;
             return SessionAction::Ended;
@@ -184,4 +188,22 @@ impl PreviewSession {
     }
 
     fn in_window(&self, id: &TrackId) -> bool { self.window().iter().any(|candidate| candidate == id) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_retry_clears_stale_numeric_progress() {
+        let physical = vec![TrackId::new("library-track").unwrap()];
+        let recommendation = TrackId::new("recommendation").unwrap();
+        let mut session = PreviewSession::start_prefetch(7, physical, 0, vec![recommendation.clone()]).unwrap();
+
+        session.set_progress(7, recommendation.clone(), 42);
+        assert_eq!(session.progress(), vec![(recommendation.clone(), 42)]);
+
+        session.failed_asset(7, &recommendation);
+        assert!(session.progress().is_empty(), "a retry must return to indeterminate preparation");
+    }
 }

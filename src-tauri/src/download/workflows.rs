@@ -223,4 +223,56 @@ mod helper_quoting_tests {
         assert!(!argv.iter().any(|arg| arg.contains("Desktop.app") && *arg != *dir), "no phantom split-path URL may reach yt-dlp: {argv:?}");
         let _ = std::fs::remove_dir_all(&sandbox);
     }
+
+    #[test]
+    fn helper_preview_uses_machine_readable_byte_progress() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let shipped = manifest_dir.join("resources").join("bin").join("luno-download-helper");
+        assert!(shipped.is_file(), "shipped helper script must exist: {}", shipped.display());
+
+        let sandbox = std::env::temp_dir().join(format!("luno preview progress probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sandbox);
+        std::fs::create_dir_all(&sandbox).unwrap();
+        for name in ["ffmpeg", "yt-dlp", "luno-download-helper"] {
+            let path = sandbox.join(name);
+            if name == "luno-download-helper" {
+                std::fs::copy(&shipped, &path).unwrap();
+            } else if name == "yt-dlp" {
+                std::fs::write(
+                    &path,
+                    "#!/bin/sh\nLOG=\"${YTDLP_ARG_LOG:?}\"\nOUT=\"\"\nPREV=\"\"\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> \"$LOG\"; if [ \"$PREV\" = \"-o\" ]; then OUT=\"$a\"; fi; PREV=\"$a\"; done\nFILE=$(printf '%s' \"$OUT\" | sed 's/%(ext)s/m4a/')\nprintf 'ID3fake-bytes' > \"$FILE\"\nexit 0\n",
+                )
+                .unwrap();
+            } else {
+                std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            }
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions).unwrap();
+        }
+
+        let log = sandbox.join("argv.log");
+        let target = sandbox.join("out.m4a");
+        let status = std::process::Command::new(sandbox.join("luno-download-helper"))
+            .arg(&target)
+            .env("LUNO_DOWNLOAD_SOURCE", "ytsearch1:preview probe")
+            .env("LUNO_PREVIEW", "1")
+            .env("YTDLP_ARG_LOG", &log)
+            .status()
+            .expect("helper must run");
+        assert!(status.success(), "helper must succeed in preview mode");
+
+        let argv: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
+        let template = argv
+            .windows(2)
+            .find(|pair| pair[0] == "--progress-template")
+            .map(|pair| pair[1].as_str())
+            .expect("preview helper must pass a progress template");
+        assert!(template.contains("LUNO_BYTES=%(progress.downloaded_bytes)s"), "byte counter missing: {template}");
+        assert!(template.contains("LUNO_TOTAL=%(progress.total_bytes)s"), "exact total missing: {template}");
+        assert!(template.contains("LUNO_ESTIMATE=%(progress.total_bytes_estimate)s"), "estimated total missing: {template}");
+        assert!(template.contains("LUNO_STATUS=%(progress.status)s"), "status missing: {template}");
+        assert!(!template.contains("LUNO_PROGRESS="), "preview must not use formatted percentage output: {template}");
+        let _ = std::fs::remove_dir_all(&sandbox);
+    }
 }
