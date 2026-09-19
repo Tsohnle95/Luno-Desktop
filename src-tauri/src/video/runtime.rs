@@ -158,7 +158,7 @@ fn find_sources_cancellable(helper: &Path, artist: Option<&str>, title: &str, ca
     })
 }
 
-/// Download the best ≤720p H.264 video for `url`. WKWebView plays H.264/AAC
+/// Download the best compatible H.264 video up to 1080p for `url`. WKWebView plays H.264/AAC
 /// natively (VP9/AV1 do not), and YouTube frequently serves ONLY segmented
 /// HLS streams here — so codec preference matters more than container
 /// filtering, and ffmpeg (via --ffmpeg-location) merges video+audio.
@@ -385,25 +385,18 @@ impl ProgressAccumulator {
 }
 
 /// High-quality ladder for BACKGROUND work (next-track prefetch and the
-/// current-track quality UPGRADE pass): same H.264-first codec preferences
-/// capped at 720p. The former ≤1080p ceiling produced single staged files of
-/// 118–197 MB; at 720p they land roughly 3–5× smaller while WKWebView still
-/// hardware-decodes them, so one song switch can no longer saturate disk,
-/// network, and CPU for minutes. ensure_playable_audio transcodes non-AAC
-/// sound afterwards, so audio stays compatible.
-pub const FORMAT_LADDER_HIGH: &str = "bv*[vcodec^=avc1][height<=720]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=720]+ba/bv*[vcodec^=avc1][height<=720]/b[ext=mp4][vcodec^=avc1][height<=720]";
+/// current-track quality UPGRADE pass): H.264-first codec preferences capped
+/// at 1080p. `ensure_playable_audio` transcodes non-AAC sound afterwards, so
+/// every successful fallback still produces an audio stream WKWebView can
+/// play.
+pub const FORMAT_LADDER_HIGH: &str = "bv*[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=1080]+ba/bv*[vcodec^=avc1][height<=1080]/b[ext=mp4][vcodec^=avc1][height<=1080]";
 
-/// Quick-tier ladder for INTERACTIVE current-track staging: same codec
-/// preferences capped at 480p, so the file is a fraction of the size and the
-/// picture appears seconds after the search instead of after a full-quality
-/// pull. A background pass then replaces it with the ≤720p version
-/// (`upgrade_staged_video`). WKWebView plays 480p H.264/AAC natively.
-/// Quick-tier ladder for INTERACTIVE current-track staging: same codec
-/// preferences capped at **240p**. This is the first playable tier, optimized
-/// for time to first frame; a background pass
-/// then replaces it with the ≤720p version (`upgrade_staged_video`).
-/// WKWebView plays 240p H.264/AAC natively.
-pub const FORMAT_LADDER_QUICK: &str = "bv*[vcodec^=avc1][height<=240]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=240]+ba/bv*[vcodec^=avc1][height<=240]/b[ext=mp4][vcodec^=avc1][height<=240]";
+/// Quick-tier ladder for INTERACTIVE current-track staging: the same
+/// H.264/AAC preferences capped at 480p. This is materially smaller and
+/// faster to pull than the final tier while remaining viewable in the video
+/// stage. A background pass then replaces it with the ≤1080p version
+/// (`upgrade_staged_video`).
+pub const FORMAT_LADDER_QUICK: &str = "bv*[vcodec^=avc1][height<=480]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=480]+ba/bv*[vcodec^=avc1][height<=480]/b[ext=mp4][vcodec^=avc1][height<=480]";
 
 /// Single download implementation behind both tiers. `ladder` selects the
 /// yt-dlp `-f` chain; `progress` (when given) receives live byte-derived percentages.
@@ -746,7 +739,7 @@ pub enum VideoOutcome {
         source_url: String,
         staged_path: PathBuf,
         /// True when the file was just downloaded through the QUICK (≤480p)
-        /// ladder: a background pass should replace it with the high ≤720p
+        /// ladder: a background pass should replace it with the high ≤1080p
         /// version. Cached/promoted files are already full quality.
         needs_upgrade: bool,
     },
@@ -838,7 +831,7 @@ pub fn stage_track(
         eprintln!("[luno-video] candidate {} (cached: {cached})", source.id);
         // TWO-TIER STAGING (2026-08-24): interactive current-track downloads
         // use the QUICK ≤480p ladder so the picture appears in seconds; the
-        // worker then upgrades the file to ≤720p in the background.
+        // worker then upgrades the file to ≤1080p in the background.
         // Cached/promoted candidates are already full quality.
         let needs_upgrade = !cached;
         if !cached {
@@ -896,7 +889,7 @@ pub fn stage_track(
     Ok(VideoOutcome::Unavailable(last_error))
 }
 
-/// Replace a quick-tier staged file with its high-quality (≤720p) version IN PLACE.
+/// Replace a quick-tier staged file with its high-quality (≤1080p) version IN PLACE.
 /// Downloads to a hidden temp file NEXT TO the staged MP4 (so startup sweeps
 /// keep working), verifies playable audio, then atomically renames over it —
 /// a webview already streaming the old file keeps its open handle and simply
@@ -1172,18 +1165,24 @@ esac
     }
 
     #[test]
-    fn quick_ladder_caps_height_below_high_ladder() {
-        // The quick tier must never accidentally equal the high tier: its cap
-        // is what makes first-frame latency small, and the high tier's 720p
-        // cap is what keeps background prefetch/upgrades from pulling
-        // 100 MB+ single files (the 2026-08-25 switch-song freeze).
-        assert!(FORMAT_LADDER_QUICK.contains("height<=240"));
-        assert!(!FORMAT_LADDER_QUICK.contains("height<=360"));
-        assert!(!FORMAT_LADDER_QUICK.contains("height<=480"));
-        assert!(FORMAT_LADDER_HIGH.contains("height<=720"));
-        assert!(!FORMAT_LADDER_HIGH.contains("height<=1080"));
-        assert!(!FORMAT_LADDER_QUICK.contains("vp09"));
-        assert!(!FORMAT_LADDER_HIGH.contains("vp09"));
+    fn quality_ladders_keep_h264_aac_preference_and_fallback_order() {
+        fn assert_ladder(ladder: &str, height: &str) {
+            let branches: Vec<_> = ladder.split('/').collect();
+            assert_eq!(branches.len(), 4, "the four compatible fallback branches must stay intact");
+            for branch in &branches {
+                assert!(branch.contains("vcodec^=avc1"), "branch must stay H.264-only: {branch}");
+                assert!(branch.contains(height), "branch must keep its height ceiling: {branch}");
+                assert!(!branch.contains("vp09"), "branch must not select VP9: {branch}");
+            }
+            assert!(branches[0].contains("+ba[acodec^=mp4a]"), "AAC should be preferred when available");
+            assert!(branches[1].contains("+ba"), "a non-AAC audio fallback must remain");
+            assert!(!branches[2].contains("+ba"), "the video-only fallback must remain");
+            assert!(branches[3].starts_with("b[ext=mp4]"), "the muxed MP4 fallback must remain");
+        }
+
+        assert_ladder(FORMAT_LADDER_QUICK, "height<=480");
+        assert_ladder(FORMAT_LADDER_HIGH, "height<=1080");
+        assert_ne!(FORMAT_LADDER_QUICK, FORMAT_LADDER_HIGH);
     }
 
     #[cfg(unix)]
@@ -1231,9 +1230,35 @@ esac
         assert!(progress.started.load(Ordering::Acquire));
         let argv = fs::read_to_string(format!("{}.args", destination.display())).expect("fake downloader argv");
         assert!(argv.split_whitespace().any(|argument| argument == "--progress"), "yt-dlp --print must opt back into progress output: {argv:?}");
+        let selected_format = argv.split_whitespace().collect::<Vec<_>>().windows(2)
+            .find(|pair| pair[0] == "-f").map(|pair| pair[1]);
+        assert_eq!(selected_format, Some(FORMAT_LADDER_QUICK), "interactive staging must select the viewable quick tier");
         // The complete marker is written only after the quick file is adopted
         // into the current slot, never when the helper merely exits.
         assert_eq!(progress.percent.load(Ordering::Acquire), 100);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upgrade_selects_high_ladder_and_replaces_the_staged_file() {
+        let root = std::env::temp_dir().join(format!("luno-video-upgrade-quality-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let helper = fake_video_helper(&root);
+        let stager = VideoStage::at(root.join("store"), None).unwrap();
+        let destination = stager.external_destination(Slot::Current, "video-a").unwrap();
+        fs::write(&destination, b"quick tier bytes").unwrap();
+
+        upgrade_staged_video(&helper, None, &destination, &Arc::new(AtomicBool::new(false))).expect("high-tier upgrade");
+
+        let temporary = destination.with_file_name(format!(".upgrading-{}", destination.file_name().unwrap().to_string_lossy()));
+        let argv = fs::read_to_string(format!("{}.args", temporary.display())).expect("upgrade downloader argv");
+        let selected_format = argv.split_whitespace().collect::<Vec<_>>().windows(2)
+            .find(|pair| pair[0] == "-f").map(|pair| pair[1]);
+        assert_eq!(selected_format, Some(FORMAT_LADDER_HIGH), "the replacement must request the final quality tier");
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "fake mp4 bytes");
+        assert!(!temporary.is_file(), "the temporary MP4 must be atomically renamed into place");
         let _ = fs::remove_dir_all(&root);
     }
 }
