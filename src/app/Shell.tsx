@@ -92,6 +92,11 @@ export function videoSurfaceActive(available: boolean, connected: boolean, mode:
   return available && connected && mode && hasTrack;
 }
 
+/** Shell class suffix used by CSS fullscreen to collapse app chrome and grid tracks. */
+export function videoFullscreenClass(fullscreen: boolean): string {
+  return fullscreen ? " video-fullscreen" : "";
+}
+
 interface SidebarEntry { key: string; label: string; subtitle: string; scope: LibraryScope; kind: "all" | "favorites" | "unsorted" | "playlist" | "album"; artId?: string }
 
 const songs = (count: number) => `${count} ${count === 1 ? "song" : "songs"}`;
@@ -128,6 +133,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
   const [libraryQuery, setLibraryQuery] = useState("");
   const [videoMode, setVideoMode] = useState(false);
+  const [videoFullscreen, setVideoFullscreen] = useState(false);
   const [libraryScope, setLibraryScope] = useState<LibraryScope>("all");
   // The Home dashboard is the default landing view; opening any library scope
   // (or typing a search) swaps in the full LibraryView list.
@@ -673,6 +679,12 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // gate required a playable source, so `loading` was immediately converted
   // to `not-checked` and VideoStage had no chance to render its progress ring.
   const videoModeActive = videoSurfaceActive(available, connectedVideo, videoMode, !!displayTrack);
+  useEffect(() => {
+    // Route changes, track changes, and turning video mode off unmount the
+    // stage. Clear the shell state at the same boundary so app chrome cannot
+    // remain collapsed after the stage that owned fullscreen is gone.
+    if (route !== "song_page" || !videoModeActive || !displayTrack) setVideoFullscreen(false);
+  }, [route, videoModeActive, displayTrack?.id]);
   // TRANSPORT AUTHORITY: the <video> follows the AUDIO status directly —
   // pausing the song pauses the picture in the same render, even if a
   // video_state event were delayed or lost. Deriving this from
@@ -693,7 +705,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // Mode OFF means artwork, never a spinner — the backend may still finish a
   // superseded download in the background, but the stage must not show it.
   const downloadProgress = videoModeActive && currentVideo?.status === "loading" ? currentVideo.download_progress ?? null : null;
-  const video = displayTrack ? { src: videoModeActive ? videoSrc : null, status: videoModeActive ? videoStatus : "not-checked", positionMs: audioPositionMs, downloadProgress, playing: videoModeActive && audioPlaying, artworkUrl: audibleArtwork, volume: settings.volume ?? 1, onVolume: (value: number) => runCommand(bridge?.setVolume(value)), onVolumeCommit: (value: number) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }, onResize: (size: { width: number; height: number }) => { if (videoModeActive) runCommand(bridge?.videoResize(size.width, size.height)); }, onSeek: (positionMs: number) => { if (videoModeActive) runCommand(bridge?.videoSeek(positionMs)); }, onPause: (positionMs: number) => { if (videoModeActive) { runCommand(bridge?.videoPause()); runCommand(bridge?.videoSeek(positionMs)); } }, onResume: (positionMs: number) => { if (videoModeActive) { runCommand(bridge?.videoSeek(positionMs)); runCommand(bridge?.videoPlay()); } }, onEnded: () => { if (videoModeActive) runCommand(bridge?.videoPause()); }, onError: () => { if (videoModeActive || videoSrc) setVideoFailedFor(videoSrc); }, onFullscreenChange: (fullscreen: boolean) => { if (!available) return; /* CSS-driven only: window.setFullscreen() blacks out the whole window over the CSS hide-transition and can stay black on exit in WKWebView. */ if (videoModeActive) runCommand(bridge?.videoFullscreen(fullscreen)); } } : undefined;
+  const video = displayTrack ? { src: videoModeActive ? videoSrc : null, status: videoModeActive ? videoStatus : "not-checked", positionMs: audioPositionMs, downloadProgress, playing: videoModeActive && audioPlaying, artworkUrl: audibleArtwork, volume: settings.volume ?? 1, onVolume: (value: number) => runCommand(bridge?.setVolume(value)), onVolumeCommit: (value: number) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }, onResize: (size: { width: number; height: number }) => { if (videoModeActive) runCommand(bridge?.videoResize(size.width, size.height)); }, onSeek: (positionMs: number) => { if (videoModeActive) runCommand(bridge?.videoSeek(positionMs)); }, onPause: (positionMs: number) => { if (videoModeActive) { runCommand(bridge?.videoPause()); runCommand(bridge?.videoSeek(positionMs)); } }, onResume: (positionMs: number) => { if (videoModeActive) { runCommand(bridge?.videoSeek(positionMs)); runCommand(bridge?.videoPlay()); } }, onEnded: () => { if (videoModeActive) runCommand(bridge?.videoPause()); }, onError: () => { if (videoModeActive || videoSrc) setVideoFailedFor(videoSrc); }, onFullscreenChange: (fullscreen: boolean) => { setVideoFullscreen(fullscreen); if (!available) return; /* CSS-driven only: window.setFullscreen() blacks out the whole window over the CSS hide-transition and can stay black on exit in WKWebView. */ if (videoModeActive) runCommand(bridge?.videoFullscreen(fullscreen)); } } : undefined;
   const recentHistory = projection.recentHistory ?? [];
   const recentKey = recentHistory.join("\u0000");
   const recentTracks = useMemo(() => {
@@ -890,7 +902,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const showQueue = queueOpen && route !== "settings" && !narrowViewport;
   const focusMode = route === "settings";
 
-  return <div ref={shellRef} className={`luno-shell${queueOpen ? "" : " no-queue"}${sidebarCollapsed ? " no-sidebar" : ""}${focusMode ? " focus-mode" : ""}`} style={{ gridTemplateColumns: `${showSidebar ? sidebarWidth : 0}px minmax(0, 1fr) ${showQueue ? queueWidth : 0}px` }} data-route={route} data-backend-state={available ? "available" : "unavailable"} data-video-state={connectedVideo ? "connected" : "unconnected"} data-migration-state={migrationStatus?.status ?? "unknown"}>
+  return <div ref={shellRef} className={`luno-shell${queueOpen ? "" : " no-queue"}${sidebarCollapsed ? " no-sidebar" : ""}${focusMode ? " focus-mode" : ""}${videoFullscreenClass(videoFullscreen)}`} style={{ gridTemplateColumns: `${showSidebar ? sidebarWidth : 0}px minmax(0, 1fr) ${showQueue ? queueWidth : 0}px` }} data-route={route} data-backend-state={available ? "available" : "unavailable"} data-video-state={connectedVideo ? "connected" : "unconnected"} data-video-fullscreen={videoFullscreen ? "true" : "false"} data-migration-state={migrationStatus?.status ?? "unknown"}>
     <header className="luno-topbar" data-tauri-drag-region onPointerDown={startWindowDrag}>
 
       <div className="luno-history">

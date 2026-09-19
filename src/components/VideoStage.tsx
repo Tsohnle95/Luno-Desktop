@@ -157,6 +157,8 @@ const stageChromeStyles = `
 @keyframes luno-video-spin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
 .luno-video-progress-pct { position:absolute; font-size:13px; font-weight:700; color:#fff; font-variant-numeric:tabular-nums; }
 .luno-video-loading-caption { padding:6px 10px; border-radius:6px; background:rgba(0,0,0,.55); color:var(--luno-text-2,#a7a7a7); font-size:12px; text-align:center; }
+.luno-video-stage.is-fullscreen { position:fixed; inset:0; z-index:1000; width:100vw; height:100vh; border-radius:0; background:#000; visibility:visible; }
+.luno-video-stage.is-fullscreen video { object-fit:contain; }
 `;
 
 /** Presentation-only video surface. The supplied audio position remains authoritative. */
@@ -183,6 +185,14 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
   const [volumeDraft, setVolumeDraft] = useState(volume);
   useEffect(() => setVolumeDraft(volume), [volume]);
   const showVideo = Boolean(src) && !fallbackStatuses.has(status);
+  useEffect(() => {
+    // Turning video mode off removes the playable surface. Exit CSS
+    // fullscreen with it so a fixed artwork stage cannot outlive its owner.
+    if (!showVideo && fullscreenWanted) {
+      setFullscreenWanted(false);
+      onFullscreenChange?.(false);
+    }
+  }, [showVideo, fullscreenWanted, onFullscreenChange]);
   // Fullscreen is CSS-driven: the stage expands to fill the entire app
   // window (video + hover controls only) — WKWebView cannot do native
   // element fullscreen, and OS-level window fullscreen was overkill.
@@ -297,7 +307,6 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
     </div>}
     {status === "unavailable" && <p className="luno-video-status" role="status">Video unavailable. Showing artwork.</p>}
     {(status === "error" || status === "fallback") && <p className="luno-video-status" role="alert">Video preview failed. Showing artwork.</p>}
-    {onFullscreenChange && <style>{`.luno-video-stage.is-fullscreen { position:fixed; inset:0; z-index:1000; width:100vw; height:100vh; border-radius:0; background:#000; visibility:visible; } .luno-video-stage.is-fullscreen video { object-fit:contain; } .luno-shell:has(.luno-video-stage.is-fullscreen) > *:not(main), .luno-shell:has(.luno-video-stage.is-fullscreen) main > .luno-main-content { visibility:hidden; } .luno-shell:has(.luno-video-stage.is-fullscreen) footer, .luno-shell:has(.luno-video-stage.is-fullscreen) aside { visibility:hidden; }`}</style>}
     {hoverControls}
   </div>;
 }

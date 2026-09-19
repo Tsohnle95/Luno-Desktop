@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PlayerBar } from "../../components/PlayerBar";
 import { Queue, queueVirtualWindow } from "../../components/Queue";
-import { Shell } from "../../app/Shell";
+import { Shell, videoFullscreenClass } from "../../app/Shell";
 import type { BackendProjection } from "../../state/backend_projection";
 
 const projectionTrack = { id: "t1", path: null, title: "Aurora", artist: "Gate Six", album: "Chaos 93", duration_ms: 3000, artwork_url: null, favorite: false, provider: null };
@@ -12,6 +12,14 @@ const projection = {
 };
 
 describe("Gate 6 player bar", () => {
+  it("uses an explicit shell state class for app fullscreen", () => {
+    expect(videoFullscreenClass(false)).toBe("");
+    expect(videoFullscreenClass(true)).toBe(" video-fullscreen");
+    const html = renderToStaticMarkup(<Shell backendProjection={projection} backendAvailable={false} />);
+    expect(html).toContain('data-video-fullscreen="false"');
+    expect(html).not.toContain("window.setFullscreen");
+  });
+
   it("keeps a multi-thousand-song queue bounded to a visible DOM window", () => {
     const tracks = Array.from({ length: 5000 }, (_, index) => ({ ...projectionTrack, id: `track-${index}`, title: `Track ${index}` }));
     const html = renderToStaticMarkup(<Queue tracks={tracks} currentIndex={0} />);

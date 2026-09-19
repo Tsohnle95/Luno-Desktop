@@ -30,6 +30,33 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-shell.focus-mode { grid-template-columns: minmax(0, 0fr) minmax(var(--luno-content-min), 1fr) minmax(0, 0fr); gap: 0; padding-right: 0; }
 .luno-shell.focus-mode .luno-main { border-radius: 0; }
 
+/* Video fullscreen is app-owned CSS state. Collapse the shell itself before
+ * the fixed stage is painted so the topbar, side panels, footer, and their
+ * grid reservations cannot remain visible around the viewport edges. The
+ * stage stays nested in the song page for its existing lifecycle, but its
+ * fixed position makes it cover the complete app viewport. */
+.luno-shell.video-fullscreen {
+  display: block;
+  width: 100%; height: 100%; min-width: 0;
+  padding: 0; overflow: hidden;
+  background: #000;
+}
+.luno-shell.video-fullscreen > .luno-topbar,
+.luno-shell.video-fullscreen > .luno-sidebar,
+.luno-shell.video-fullscreen > .luno-queue,
+.luno-shell.video-fullscreen > .luno-player,
+.luno-shell.video-fullscreen > .luno-resize-handle { display: none; }
+.luno-shell.video-fullscreen > .luno-main {
+  display: block;
+  width: 100%; height: 100%;
+  border-radius: 0;
+  overflow: hidden;
+}
+.luno-shell.video-fullscreen .luno-main-content {
+  width: 100%; height: 100%;
+  overflow: hidden;
+}
+
 /* ---- Top bar ---- */
 .luno-topbar {
   position: relative;

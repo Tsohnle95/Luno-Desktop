@@ -84,6 +84,27 @@ describe("Video stage end-of-media hold", () => {
   });
 });
 
+describe("Video stage fullscreen containment", () => {
+  it("keeps fullscreen CSS app-owned and leaves the stage controls in the DOM", () => {
+    const html = renderToStaticMarkup(<VideoStage src="clip.mp4" status="playing" onFullscreenChange={() => undefined} />);
+    expect(html).toContain('data-testid="video-stage"');
+    expect(html).toContain('data-testid="video-hover-controls"');
+    expect(html).toContain('aria-label="Enter fullscreen"');
+    expect(html).not.toContain(":has(");
+    expect(html).not.toContain("window.setFullscreen");
+  });
+
+  it("collapses the shell chrome and grid before the fixed stage fills the viewport", () => {
+    const html = renderToStaticMarkup(<VideoStage src="clip.mp4" status="playing" onFullscreenChange={() => undefined} />);
+    expect(html).toContain(".luno-video-stage.is-fullscreen");
+    expect(html).toContain("position:fixed");
+    expect(html).toContain("inset:0");
+    expect(html).toContain("width:100vw");
+    expect(html).toContain("height:100vh");
+    expect(html).not.toContain(":has(.luno-video-stage.is-fullscreen)");
+  });
+});
+
 describe("Video transport sync planner", () => {
   const base = { endedHoldAtMs: null as number | null, positionMs: 0 };
 
