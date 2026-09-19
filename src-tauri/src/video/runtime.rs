@@ -6,11 +6,12 @@
 use crate::video::source::{lookup, VideoCandidate, VideoSource};
 use crate::video::staging::{Slot, StageError, VideoStage};
 use serde_json::json;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -164,33 +165,171 @@ fn find_sources_cancellable(helper: &Path, artist: Option<&str>, title: &str, ca
 ///
 /// Audio prefers AAC (`acodec^=mp4a`): YouTube's plain `ba` best-audio is
 pub struct VideoProgress {
-    /// Latest yt-dlp percentage (0–100), clamped.
+    /// Latest byte-derived percentage (0–100), clamped.
     pub percent: AtomicU8,
-    /// Set as soon as the downloader process starts; 0% is a truthful
-    /// determinate transfer state before the first byte-progress line.
+    /// Set only after a byte sample with a non-zero downloaded count and a
+    /// known total has arrived. Process spawn and extractor setup do not make
+    /// a determinate 0% state.
     pub started: AtomicBool,
+    samples: Mutex<ProgressAccumulator>,
 }
 
 impl VideoProgress {
     pub fn new() -> Self {
-        Self { percent: AtomicU8::new(0), started: AtomicBool::new(false) }
+        Self {
+            percent: AtomicU8::new(0),
+            started: AtomicBool::new(false),
+            samples: Mutex::new(ProgressAccumulator::default()),
+        }
+    }
+
+    fn reset(&self) {
+        self.percent.store(0, Ordering::Release);
+        self.started.store(false, Ordering::Release);
+        if let Ok(mut samples) = self.samples.lock() {
+            *samples = ProgressAccumulator::default();
+        }
+    }
+
+    fn record(&self, sample: DownloadProgressSample) {
+        let Ok(mut samples) = self.samples.lock() else { return };
+        let Some(percent) = samples.record(sample) else { return };
+        self.percent.store(percent, Ordering::Release);
+        self.started.store(true, Ordering::Release);
+    }
+
+    fn complete(&self) {
+        // 100 is emitted only after the quick file has passed playable-audio
+        // checks and `VideoStage::adopt` has published it into its slot.
+        self.percent.store(100, Ordering::Release);
+        self.started.store(true, Ordering::Release);
     }
 }
 
-fn extract_percent(line: &str) -> Option<u8> {
-    // yt-dlp prints lines like "[download]  42.3% of ~150.00MiB at ...";
-    // tolerate both fixed and unknown-total variants by taking what we get.
-    let idx = line.find("%")?;
-    let prefix = &line[..idx];
-    let start = prefix
-        .char_indices()
-        .rev()
-        .find(|(_, c)| !(c.is_ascii_digit() || *c == '.'))
-        .map(|(i, _)| i + 1)
-        .unwrap_or(0);
-    let number: f32 = prefix[start..].trim().parse().ok()?;
-    if !(0.0..=100.0).contains(&number) { return None; }
-    Some(number.round() as u8)
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DownloadProgressSample {
+    /// The video id + selected format identify separate video/audio items.
+    /// None is retained for older/helper output that cannot identify a stream.
+    stream_key: Option<String>,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    /// A combined format has one transfer item; a video-only or audio-only
+    /// format is one half of the explicit `bv+ba` ladder.
+    expected_streams: usize,
+}
+
+#[derive(Debug, Default)]
+struct ProgressAccumulator {
+    streams: HashMap<String, StreamProgress>,
+    expected_streams: usize,
+    last_percent: u8,
+    anonymous_stream: u64,
+}
+
+#[derive(Debug, Default)]
+struct StreamProgress {
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+}
+
+fn parse_bytes(value: &str) -> Option<u64> {
+    match value.trim() {
+        "" | "NA" | "None" | "none" | "null" | "N/A" | "-" => None,
+        value => value.parse().ok(),
+    }
+}
+
+/// Parse the machine-readable line emitted by `--progress-template`.
+///
+/// The template deliberately carries downloaded and total byte counts rather
+/// than yt-dlp's formatted percent string. A total-byte estimate is accepted
+/// when an exact total is unavailable; an unknown denominator remains
+/// indeterminate.
+fn parse_download_progress(line: &str) -> Option<DownloadProgressSample> {
+    let mut fields = line.strip_prefix("download-bytes:")?.split('\t');
+    let video_id = fields.next().and_then(|value| parse_stream_key(value));
+    let format_id = fields.next().and_then(|value| parse_stream_key(value));
+    let video_codec = fields.next().and_then(|value| parse_stream_key(value));
+    let audio_codec = fields.next().and_then(|value| parse_stream_key(value));
+    let downloaded_bytes = parse_bytes(fields.next()?)?;
+    let total_bytes = parse_bytes(fields.next()?).or_else(|| parse_bytes(fields.next().unwrap_or_default()));
+    let expected_streams = if is_missing_codec(video_codec.as_deref()) || is_missing_codec(audio_codec.as_deref()) { 2 } else { 1 };
+    let stream_key = match (video_id, format_id) {
+        (Some(video_id), Some(format_id)) => Some(format!("{video_id}:{format_id}")),
+        (Some(video_id), None) => Some(video_id),
+        (None, Some(format_id)) => Some(format_id),
+        (None, None) => None,
+    };
+    Some(DownloadProgressSample { stream_key, downloaded_bytes, total_bytes, expected_streams })
+}
+
+fn parse_stream_key(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || matches!(value, "NA" | "None" | "none" | "null" | "N/A" | "-") {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn is_missing_codec(codec: Option<&str>) -> bool {
+    codec.is_none() || codec.is_some_and(|value| value.eq_ignore_ascii_case("none"))
+}
+
+impl ProgressAccumulator {
+    fn record(&mut self, sample: DownloadProgressSample) -> Option<u8> {
+        self.expected_streams = self.expected_streams.max(sample.expected_streams);
+        let base_key = sample.stream_key.unwrap_or_else(|| "anonymous".into());
+        let mut key = base_key.clone();
+        let mut replace_stream = false;
+        if let Some(previous) = self.streams.get(&key) {
+            if sample.downloaded_bytes < previous.downloaded_bytes {
+                // A reset with the same key means another transfer item (or a
+                // retry after a changed denominator). Keep the first item in
+                // the aggregate instead of letting the displayed ratio jump
+                // backwards or count a reset as negative bytes.
+                if sample.total_bytes != previous.total_bytes {
+                    self.anonymous_stream = self.anonymous_stream.saturating_add(1);
+                    key = format!("{base_key}#{}", self.anonymous_stream);
+                    replace_stream = true;
+                } else {
+                    return self.reported_percent();
+                }
+            }
+        }
+        let stream = self.streams.entry(key).or_default();
+        if replace_stream {
+            stream.downloaded_bytes = 0;
+            stream.total_bytes = None;
+        }
+        stream.downloaded_bytes = stream.downloaded_bytes.max(sample.downloaded_bytes);
+        stream.total_bytes = match (stream.total_bytes, sample.total_bytes) {
+            (Some(previous), Some(current)) => Some(previous.max(current)),
+            (None, current) => current,
+            (current, None) => current,
+        };
+        self.reported_percent()
+    }
+
+    fn reported_percent(&mut self) -> Option<u8> {
+        // The first video item can finish before yt-dlp announces the audio
+        // item. Wait for every expected item before deriving a whole-artifact
+        // ratio; otherwise a video-only 100% would masquerade as completion.
+        if self.streams.len() < self.expected_streams { return None; }
+        let total_bytes = self.streams.values().try_fold(0u64, |sum, stream| {
+            Some(sum.checked_add(stream.total_bytes?)?)
+        })?;
+        if total_bytes == 0 { return None; }
+        let downloaded_bytes = self.streams.values().fold(0u64, |sum, stream| sum.saturating_add(stream.downloaded_bytes));
+        if downloaded_bytes == 0 { return None; }
+        let ratio = ((downloaded_bytes as u128 * 100) / total_bytes as u128).min(100) as u8;
+        // A stream can report 100% before yt-dlp starts the second selected
+        // item. Keep 100 reserved for successful publication; the state pump
+        // never shows a false completed transfer while the child is running.
+        let percent = ratio.min(99).max(self.last_percent);
+        self.last_percent = percent;
+        Some(percent)
+    }
 }
 
 /// High-quality ladder for BACKGROUND work (next-track prefetch and the
@@ -215,7 +354,7 @@ pub const FORMAT_LADDER_HIGH: &str = "bv*[vcodec^=avc1][height<=720]+ba[acodec^=
 pub const FORMAT_LADDER_QUICK: &str = "bv*[vcodec^=avc1][height<=240]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=240]+ba/bv*[vcodec^=avc1][height<=240]/b[ext=mp4][vcodec^=avc1][height<=240]";
 
 /// Single download implementation behind both tiers. `ladder` selects the
-/// yt-dlp `-f` chain; `progress` (when given) receives live percentages.
+/// yt-dlp `-f` chain; `progress` (when given) receives live byte-derived percentages.
 ///
 /// NOTE: yt-dlp writes its progress lines to STDOUT (--newline), not stderr —
 /// the first progress implementation read stderr and could never see a
@@ -249,56 +388,56 @@ fn download_ladder(
         // Parallel DASH fragment pulls — cuts long-video download times hard
         // (single-stream YouTube throttling was the 50s+ wait on a 15-min film).
         "--concurrent-fragments", "8",
-        // Stable machine-readable progress on stdout. Parsing yt-dlp's
-        // human layout was brittle across releases and terminal modes.
-        "--progress-template", "download:%(progress._percent_str)s",
+        // Stable machine-readable byte progress on stdout. Formatted
+        // percentages are presentation strings and cannot be aggregated when
+        // yt-dlp downloads separate video and audio items.
+        "--progress-template", "download-bytes:%(info.id)s\t%(format_id)s\t%(info.vcodec)s\t%(info.acodec)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes)s\t%(progress.total_bytes_estimate)s",
         "--merge-output-format", "mp4",
         "-o",
     ]);
     command.arg(destination);
     if let Some(dir) = ffmpeg_dir { command.arg("--ffmpeg-location").arg(dir); }
     command.arg(url);
-    if let Some(reporter) = progress {
-        reporter.percent.store(0, Ordering::Release);
-        reporter.started.store(true, Ordering::Release);
-    }
     let mut child = command.spawn().map_err(|error| format!("video downloader could not start: {error}"))?;
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
-    let reporter = Arc::clone(progress.unwrap_or(&Arc::new(VideoProgress::new())));
+    let reporter = progress.cloned();
     // STDERR is ALWAYS drained by a reader thread — an unread pipe fills its
     // fixed OS buffer, the child blocks on write and never exits.
-    let stderr_reader = std::thread::spawn(move || {
+    let mut stderr_reader = Some(std::thread::spawn(move || {
         let mut collected = String::new();
         if let Some(pipe) = stderr.as_mut() {
             use std::io::BufRead;
             for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
                 collected.push_str(&line);
                 collected.push('\n');
-                if let Some(percent) = extract_percent(&line) {
-                    reporter.percent.store(percent, Ordering::Release);
-                    reporter.started.store(true, Ordering::Release);
+                if let Some(reporter) = &reporter {
+                    if let Some(sample) = parse_download_progress(&line) {
+                        reporter.record(sample);
+                    }
                 }
             }
         }
         collected
-    });
-    // Progress lines flow on STDOUT; ERROR lines on stderr. The join handle
-    // is dropped here — the loop below only needs the stderr reader's result.
-    if report_progress {
-        let progress_reader = Arc::clone(progress.unwrap_or(&Arc::new(VideoProgress::new())));
-        std::thread::spawn(move || {
+    }));
+    // Progress lines flow on STDOUT; ERROR lines on stderr. Both readers are
+    // joined before a successful return so the final byte sample cannot race
+    // the staging worker's publication.
+    let mut progress_reader = if report_progress {
+        let progress_reader = progress.cloned().expect("progress is present when reporting is enabled");
+        Some(std::thread::spawn(move || {
             if let Some(stdout) = stdout.as_mut() {
                 use std::io::BufRead;
                 for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
-                    if let Some(percent) = extract_percent(&line) {
-                        progress_reader.percent.store(percent, Ordering::Release);
-                        progress_reader.started.store(true, Ordering::Release);
+                    if let Some(sample) = parse_download_progress(&line) {
+                        progress_reader.record(sample);
                     }
                 }
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
     // Overall wall-clock budget: a wedged download must fail the candidate
     // (and fall through to the next one) instead of staging forever.
     let started = std::time::Instant::now();
@@ -306,18 +445,23 @@ fn download_ladder(
         if cancel.load(Ordering::Acquire) {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = progress_reader.take().and_then(|reader| reader.join().ok());
+            let _ = stderr_reader.take().and_then(|reader| reader.join().ok());
             let _ = fs::remove_file(destination);
             return Err("cancelled".into());
         }
         if started.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = progress_reader.take().and_then(|reader| reader.join().ok());
+            let _ = stderr_reader.take().and_then(|reader| reader.join().ok());
             let _ = fs::remove_file(destination);
             return Err(format!("video download timed out after {}s", timeout.as_secs()));
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                let reason = stderr_reader.join().unwrap_or_default();
+                let _ = progress_reader.take().and_then(|reader| reader.join().ok());
+                let reason = stderr_reader.take().and_then(|reader| reader.join().ok()).unwrap_or_default();
                 if !status.success() {
                     let _ = fs::remove_file(destination);
                     let detail = reason.lines().rev().find(|line| line.contains("ERROR")).unwrap_or("video download failed");
@@ -560,6 +704,12 @@ pub fn stage_track(
     progress: Option<&Arc<VideoProgress>>,
 ) -> Result<VideoOutcome, StageError> {
     if cancel.load(Ordering::Acquire) { return Ok(VideoOutcome::Unavailable("cancelled".into())); }
+    if let Some(reporter) = progress {
+        // One progress accumulator spans the candidate ladder. Resetting per
+        // candidate would make the visible ratio jump backwards after a
+        // refused source; only a new user staging request starts at zero.
+        reporter.reset();
+    }
     // Fast path: an earlier attempt already mapped this track to a YouTube id
     // and downloaded it. Skip the (multi-second) search entirely.
     if let Some(track_key) = track_index_key(artist, title) {
@@ -568,6 +718,9 @@ pub fn stage_track(
             let slot_generation = stager.begin_generation();
             return match stager.adopt(Slot::Current, slot_generation, &cached_path) {
                 Ok(staged) => {
+                    if let Some(reporter) = progress {
+                        reporter.complete();
+                    }
                     eprintln!("[luno-video] staged -> {}", staged.path.clone().unwrap_or_else(|| cached_path.clone()).display());
                     Ok(VideoOutcome::Staged {
                         source_url: crate::video::source::canonical_url(&id),
@@ -626,7 +779,6 @@ pub fn stage_track(
         if !cached {
             let result = match progress {
                 Some(reporter) => {
-                    reporter.percent.store(0, Ordering::Release);
                     download_ladder(helper, ffmpeg_dir, &source.url, &destination, cancel, FORMAT_LADDER_QUICK, Some(reporter), remaining.min(INTERACTIVE_CANDIDATE_BUDGET))
                 }
                 None => download_ladder(helper, ffmpeg_dir, &source.url, &destination, cancel, FORMAT_LADDER_QUICK, None, remaining.min(INTERACTIVE_CANDIDATE_BUDGET)),
@@ -649,6 +801,9 @@ pub fn stage_track(
         }
         return match stager.adopt(Slot::Current, slot_generation, &destination) {
             Ok(staged) => {
+                if let Some(reporter) = progress {
+                    reporter.complete();
+                }
                 // Record the tier with the id: "quick" when the HD upgrade is
                 // still pending (so an interrupted upgrade re-runs on the
                 // next play instead of 480p becoming permanent), "high" for
@@ -766,7 +921,8 @@ case " $* " in
       if [ "$1" = '-o' ]; then shift; output="$1"; fi
       shift
     done
-    printf 'download: 0.0%%\n'
+    printf 'download-bytes:video-a\t137\tavc1\tnone\t0\t1000\t1000\n'
+    printf 'download-bytes:video-a\t137\tavc1\tnone\t250\t1000\t1000\n'
     printf 'fake mp4 bytes' > "$output"
     ;;
 esac
@@ -778,14 +934,61 @@ esac
     }
 
     #[test]
-    fn extract_percent_parses_ytdlp_progress_lines() {
-        assert_eq!(extract_percent("[download]  42.3% of ~150.00MiB at 2.10MiB/s"), Some(42));
-        assert_eq!(extract_percent("[download]   0.0% of 12.34MiB"), Some(0));
-        assert_eq!(extract_percent("[download] 100% of 12.34MiB"), Some(100));
-        assert_eq!(extract_percent("download: 67.8%"), Some(68));
-        assert_eq!(extract_percent("[download] Destination: already downloaded"), None);
-        assert_eq!(extract_percent("no numbers here %"), None);
-        assert_eq!(extract_percent("[download] 150.0% of x"), None);
+    fn parses_machine_readable_byte_progress_and_estimated_totals() {
+        assert_eq!(
+            parse_download_progress("download-bytes:video-a\t137\tavc1\tnone\t250\t1000\t1000"),
+            Some(DownloadProgressSample {
+                stream_key: Some("video-a:137".into()),
+                downloaded_bytes: 250,
+                total_bytes: Some(1000),
+                expected_streams: 2,
+            })
+        );
+        assert_eq!(
+            parse_download_progress("download-bytes:video-a\t140\tnone\tmp4a.40.2\t250\tNA\t500"),
+            Some(DownloadProgressSample {
+                stream_key: Some("video-a:140".into()),
+                downloaded_bytes: 250,
+                total_bytes: Some(500),
+                expected_streams: 2,
+            })
+        );
+        assert_eq!(parse_download_progress("download-bytes:video-a\t137\tavc1\tavc1\t0\tNA\tNA"), Some(DownloadProgressSample {
+            stream_key: Some("video-a:137".into()),
+            downloaded_bytes: 0,
+            total_bytes: None,
+            expected_streams: 1,
+        }));
+        assert_eq!(parse_download_progress("[download] 42.3% of 1000 bytes"), None);
+    }
+
+    #[test]
+    fn byte_progress_is_indeterminate_until_bytes_exist_and_monotonic_across_streams() {
+        let mut progress = ProgressAccumulator::default();
+        assert_eq!(progress.record(DownloadProgressSample { stream_key: Some("video:137".into()), downloaded_bytes: 0, total_bytes: Some(1000), expected_streams: 1 }), None);
+        assert_eq!(progress.record(DownloadProgressSample { stream_key: Some("video:137".into()), downloaded_bytes: 250, total_bytes: Some(1000), expected_streams: 1 }), Some(25));
+        assert_eq!(progress.record(DownloadProgressSample { stream_key: Some("video:137".into()), downloaded_bytes: 1000, total_bytes: Some(1000), expected_streams: 1 }), Some(99));
+
+        let live = VideoProgress::new();
+        live.record(DownloadProgressSample { stream_key: Some("video:137".into()), downloaded_bytes: 0, total_bytes: Some(1000), expected_streams: 1 });
+        assert!(!live.started.load(Ordering::Acquire));
+        live.record(DownloadProgressSample { stream_key: Some("video:137".into()), downloaded_bytes: 250, total_bytes: Some(1000), expected_streams: 1 });
+        assert!(live.started.load(Ordering::Acquire));
+        assert_eq!(live.percent.load(Ordering::Acquire), 25);
+
+        let mut streams = ProgressAccumulator::default();
+        // A video-only item finishing cannot claim near-completion while the
+        // separately selected audio item has not appeared yet.
+        assert_eq!(streams.record(DownloadProgressSample { stream_key: Some("video:137".into()), downloaded_bytes: 1000, total_bytes: Some(1000), expected_streams: 2 }), None);
+        assert_eq!(streams.record(DownloadProgressSample { stream_key: Some("video:140".into()), downloaded_bytes: 0, total_bytes: Some(200), expected_streams: 2 }), Some(83));
+        assert_eq!(streams.record(DownloadProgressSample { stream_key: Some("video:140".into()), downloaded_bytes: 200, total_bytes: Some(200), expected_streams: 2 }), Some(99));
+    }
+
+    #[test]
+    fn unknown_total_stays_indeterminate() {
+        let mut progress = ProgressAccumulator::default();
+        assert_eq!(progress.record(DownloadProgressSample { stream_key: Some("video:137".into()), downloaded_bytes: 250, total_bytes: None, expected_streams: 1 }), None);
+        assert_eq!(progress.last_percent, 0);
     }
 
     #[test]
@@ -909,7 +1112,7 @@ esac
 
     #[cfg(unix)]
     #[test]
-    fn current_download_marks_zero_percent_when_the_process_starts() {
+    fn current_download_does_not_fabricate_zero_before_byte_sample() {
         let root = std::env::temp_dir().join(format!("luno-current-progress-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -927,7 +1130,9 @@ esac
         ).unwrap();
         assert!(matches!(outcome, VideoOutcome::Staged { needs_upgrade: true, .. }));
         assert!(progress.started.load(Ordering::Acquire));
-        assert_eq!(progress.percent.load(Ordering::Acquire), 0);
+        // The complete marker is written only after the quick file is adopted
+        // into the current slot, never when the helper merely exits.
+        assert_eq!(progress.percent.load(Ordering::Acquire), 100);
         let _ = fs::remove_dir_all(&root);
     }
 }

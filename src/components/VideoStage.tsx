@@ -291,9 +291,9 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
     {showVideo ? <video ref={videoRef} src={src!} preload="auto" playsInline muted aria-label="Song video" onError={onVideoError} onSeeked={handleSeeked} onPause={handlePause} onPlay={handlePlay} onEnded={handleEnded} /> : <RecommendationArtworkImage artworkUrl={artworkUrl} alt={artworkAlt} artist={artworkArtist ?? ""} title={artworkTitle ?? ""} size="100%" />}
     {status === "loading" && <div className="luno-video-loading" role="status">
       <DownloadRing progress={typeof videoProgress === "number" ? videoProgress : null} />
-      {/* null is source resolution; 0 is a started download whose first byte
-       * total has not arrived yet. Keep those phases visually distinct. */}
-      <span className="luno-video-loading-caption">{typeof videoProgress === "number" ? `Downloading video… ${Math.round(videoProgress)}%` : "Searching for video…"}</span>
+      {/* null covers lookup, extractor setup, and unknown-total transfers;
+       * only a byte-derived percentage is determinate. */}
+      <span className="luno-video-loading-caption">{typeof videoProgress === "number" ? `Downloading video… ${Math.round(videoProgress)}%` : "Preparing video…"}</span>
     </div>}
     {status === "unavailable" && <p className="luno-video-status" role="status">Video unavailable. Showing artwork.</p>}
     {(status === "error" || status === "fallback") && <p className="luno-video-status" role="alert">Video preview failed. Showing artwork.</p>}

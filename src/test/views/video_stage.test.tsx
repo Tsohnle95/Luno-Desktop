@@ -22,10 +22,10 @@ describe("Video stage download-progress ring", () => {
     // .is-determinate inside its :not() selector for the spin animation.
     expect(html).toContain('<span class="luno-video-progress" style=');
     expect(html).not.toContain('class="luno-video-progress is-determinate"');
-    expect(html).toContain("Searching for video…");
+    expect(html).toContain("Preparing video…");
   });
 
-  it("shows determinate download state as soon as yt-dlp starts at 0%", () => {
+  it("renders a supplied zero ratio as determinate", () => {
     const html = renderToStaticMarkup(<VideoStage status="loading" downloadProgress={0} />);
     expect(html).toContain("is-determinate is-starting");
     expect(html).toContain(">0%</b>");
