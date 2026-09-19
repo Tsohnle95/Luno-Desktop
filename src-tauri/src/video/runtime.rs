@@ -391,12 +391,15 @@ impl ProgressAccumulator {
 /// play.
 pub const FORMAT_LADDER_HIGH: &str = "bv*[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=1080]+ba/bv*[vcodec^=avc1][height<=1080]/b[ext=mp4][vcodec^=avc1][height<=1080]";
 
-/// Quick-tier ladder for INTERACTIVE current-track staging: the same
-/// H.264/AAC preferences capped at 480p. This is materially smaller and
-/// faster to pull than the final tier while remaining viewable in the video
-/// stage. A background pass then replaces it with the ≤1080p version
+/// Quick-tier ladder for INTERACTIVE current-track staging: prefer a
+/// progressive H.264/AAC MP4 up to 480p before pulling separate streams.
+/// Many long sources expose a much smaller progressive 360p MP4; when they
+/// expose only DASH, the smaller separate 360p branch gets the first frame on
+/// screen before the potentially huge separate 480p branch. The full set of
+/// separate H.264/AAC, audio, video-only, and muxed MP4 fallbacks remains.
+/// A background pass then replaces it with the ≤1080p version
 /// (`upgrade_staged_video`).
-pub const FORMAT_LADDER_QUICK: &str = "bv*[vcodec^=avc1][height<=480]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=480]+ba/bv*[vcodec^=avc1][height<=480]/b[ext=mp4][vcodec^=avc1][height<=480]";
+pub const FORMAT_LADDER_QUICK: &str = "b[ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=480]/bv*[vcodec^=avc1][height<=360]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=360]+ba/bv*[vcodec^=avc1][height<=360]/bv*[vcodec^=avc1][height<=480]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=480]+ba/bv*[vcodec^=avc1][height<=480]/b[ext=mp4][vcodec^=avc1][height<=480]";
 
 /// Single download implementation behind both tiers. `ladder` selects the
 /// yt-dlp `-f` chain; `progress` (when given) receives live byte-derived percentages.
@@ -1166,22 +1169,40 @@ esac
 
     #[test]
     fn quality_ladders_keep_h264_aac_preference_and_fallback_order() {
-        fn assert_ladder(ladder: &str, height: &str) {
-            let branches: Vec<_> = ladder.split('/').collect();
-            assert_eq!(branches.len(), 4, "the four compatible fallback branches must stay intact");
-            for branch in &branches {
+        fn assert_h264_height(branches: &[&str], height: &str) {
+            for branch in branches {
                 assert!(branch.contains("vcodec^=avc1"), "branch must stay H.264-only: {branch}");
                 assert!(branch.contains(height), "branch must keep its height ceiling: {branch}");
                 assert!(!branch.contains("vp09"), "branch must not select VP9: {branch}");
             }
+        }
+
+        fn assert_high_ladder(ladder: &str) {
+            let branches: Vec<_> = ladder.split('/').collect();
+            assert_eq!(branches.len(), 4, "the four compatible fallback branches must stay intact");
+            assert_h264_height(&branches, "height<=1080");
             assert!(branches[0].contains("+ba[acodec^=mp4a]"), "AAC should be preferred when available");
             assert!(branches[1].contains("+ba"), "a non-AAC audio fallback must remain");
             assert!(!branches[2].contains("+ba"), "the video-only fallback must remain");
             assert!(branches[3].starts_with("b[ext=mp4]"), "the muxed MP4 fallback must remain");
         }
 
-        assert_ladder(FORMAT_LADDER_QUICK, "height<=480");
-        assert_ladder(FORMAT_LADDER_HIGH, "height<=1080");
+        let quick: Vec<_> = FORMAT_LADDER_QUICK.split('/').collect();
+        assert_eq!(quick.len(), 8, "quick keeps progressive, smaller split, target split, and muxed fallbacks");
+        assert_h264_height(&quick[..1], "height<=480");
+        assert_h264_height(&quick[1..4], "height<=360");
+        assert_h264_height(&quick[4..], "height<=480");
+        assert!(quick[0].starts_with("b[ext=mp4]"), "quick should prefer a progressive MP4");
+        assert!(quick[0].contains("acodec^=mp4a"), "progressive quick video should prefer AAC");
+        assert!(quick[1].contains("+ba[acodec^=mp4a]"), "a smaller separate AAC branch should precede separate 480p");
+        assert!(quick[2].contains("+ba"), "the smaller non-AAC audio fallback must remain");
+        assert!(!quick[3].contains("+ba"), "the smaller video-only fallback must remain");
+        assert!(quick[4].contains("+ba[acodec^=mp4a]"), "separate 480p AAC should remain as a fallback");
+        assert!(quick[5].contains("+ba"), "separate 480p non-AAC audio must remain");
+        assert!(!quick[6].contains("+ba"), "separate 480p video-only must remain");
+        assert!(quick[7].starts_with("b[ext=mp4]"), "the muxed MP4 fallback must remain");
+
+        assert_high_ladder(FORMAT_LADDER_HIGH);
         assert_ne!(FORMAT_LADDER_QUICK, FORMAT_LADDER_HIGH);
     }
 
