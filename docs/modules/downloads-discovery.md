@@ -73,6 +73,10 @@ What it does not own: library snapshots and promotion targets
   independently of whether focused preview or Discover currently presents
   them. Previous/Next, a mode handoff, and disabling Discover retain valid
   files; a different seed or app cleanup replaces the bounded cache.
+- Outside Discover mode, each audible library seed owns an automatic five-item
+  preparation window. Enabling Discover invalidates that prefetch session;
+  disabling it rebuilds the window even when the library seed did not change.
+  A focused tap requests the selected item plus its next five successors.
 - Preview preparation/playback failures surface only through the preview
   snapshot's per-row `unavailable` state; the retrying prefetch pipeline does
   not publish global error events (which stacked an undismissable banner).

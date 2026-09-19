@@ -54,7 +54,8 @@ What it does not own: library snapshots and track identity
 - Focused recommendation playback captures the physical queue. A global
   Previous/Next exits that presentation atomically, restores the captured
   index, and then applies the requested physical movement without deleting
-  prepared recommendation audio.
+  prepared recommendation audio. Natural completion follows physical Next as
+  well; focused preview never gains recommendation autoplay semantics.
 - Discover owns a temporary recommendation projection while enabled. Pending
   rows are valid transport targets, projection changes preserve the current
   track by identity, and Previous/Next walk both directions within that

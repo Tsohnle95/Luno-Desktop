@@ -3254,10 +3254,11 @@ impl AppState {
                     let status = *heartbeat_worker.playback_status.lock().unwrap_or_else(|e| e.into_inner());
                     let due = heartbeat_worker.clock.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|clock| clock.completion_due(position, true, position));
                     if due && heartbeat_worker.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut().is_some_and(|clock| clock.dispatch_completion()) {
-                        // Natural end of the preview file: step to the next
-                        // prepared recommendation (or restore the library when
-                        // the window is exhausted) so autoplay keeps working.
-                        let _ = heartbeat_worker.preview_step(true);
+                        // Focused preview is one audible overlay. Natural
+                        // completion follows the same physical Next policy as
+                        // the global transport; only Discover mode autoplays
+                        // recommendation successors.
+                        let _ = heartbeat_worker.next_track();
                         break;
                     }
                     let snapshot = heartbeat_worker.playback_snapshot(status, position, duration);

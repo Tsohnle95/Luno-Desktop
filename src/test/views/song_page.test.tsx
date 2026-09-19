@@ -4,6 +4,7 @@ import { Recommendations, recommendationPreviewState, type Recommendation } from
 import { VideoStage } from "../../components/VideoStage";
 import { DiscoverView } from "../../views/DiscoverView";
 import { SongPageView, VideoModePill } from "../../views/SongPageView";
+import { recommendationArtworkDesignIndex } from "../../components/RecommendationArtwork";
 
 const track: Track = { id: "seed", path: null, title: "Seed", artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null };
 const recommendation: Recommendation = { id: "rec", title: "Similar", artist: "Other" };
@@ -103,6 +104,14 @@ describe("Audible recommendation identity", () => {
     expect(html).toContain("Similar");
     expect(html).toContain("rec.png");
     expect(html).not.toContain(">Seed</h1>");
+  });
+
+  it("uses the same custom fallback design in the backdrop and giant media stage", () => {
+    const missingArtwork: Track = { ...recommendationTrack, artwork_url: null };
+    const html = renderToStaticMarkup(<SongPageView track={track} nowPlaying={missingArtwork} backendAvailable />);
+    const design = recommendationArtworkDesignIndex("Other", "Similar");
+    expect(html.match(new RegExp(`data-design="${design}"`, "g"))).toHaveLength(2);
+    expect(html).not.toContain("luno-artwork-fallback");
   });
 });
 

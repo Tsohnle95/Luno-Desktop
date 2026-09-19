@@ -77,6 +77,12 @@ export function currentVideoForTrack(projection: Pick<BackendProjection, "playba
   return video?.track_id === trackId ? video : null;
 }
 
+/** Focused preview replaces only the audible/current row; successors stay in the physical queue. */
+export function focusedQueueProjection(queue: Track[], currentIndex: number | null | undefined, previewTrack: Track | null): Track[] {
+  if (!previewTrack || currentIndex == null) return queue;
+  return queue.map((item, index) => index === currentIndex ? previewTrack : item);
+}
+
 export function videoCommandsEnabled(available: boolean, connected: boolean, source: string | null, status: VideoStageStatus | undefined): boolean {
   return available && connected && !!source && !!status && !["not-checked", "loading", "unavailable", "error", "fallback"].includes(status);
 }
@@ -445,7 +451,11 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     if (projection.discover?.enabled) return;
     if (!bridge || !available || songRecs.state !== "ready" || songRecs.items.length === 0 || !discoverSeed) return;
     const seedKey = `${discoverSeed.artist}\u0000${discoverSeed.title}`;
-    if (autoDiscoveryKey.current === seedKey) return;
+    // The key alone is insufficient: enabling Discover invalidates the
+    // prefetch session. When Discover is disabled for the same song, rebuild
+    // the five-item temporary window instead of assuming the old session is
+    // still alive.
+    if (autoDiscoveryKey.current === seedKey && projection.preview?.active) return;
     const seeds = songRecs.items.slice(0, 50).map((item) => ({ artist: item.artist, title: item.title }));
     // Restart the temporary queue for each song. The backend keeps the
     // library queue intact and stages the first five recommendations.
@@ -466,7 +476,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     };
     attempt();
     return () => { cancelled = true; if (retry) clearTimeout(retry); };
-  }, [route, bridge, available, songRecs, discoverSeed?.artist, discoverSeed?.title, projection.discover?.enabled]);
+  }, [route, bridge, available, songRecs, discoverSeed?.artist, discoverSeed?.title, projection.discover?.enabled, projection.preview?.active]);
   const previewItem = projection.preview?.active && projection.preview.current
     ? [...songRecs.items, ...discover.items].find((item) => previewKey(item.artist, item.title) === projection.preview?.current)
     : undefined;
@@ -547,30 +557,11 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     queueVersion.current = { queue: [...playbackQueue], tracks: out, byId: tracksByIdForQueue, recs: recommendationTracks };
     return out;
   }, [playbackQueue, tracksByIdForQueue, recommendationTracks]);
-  const displayQueueTracks = previewDisplayTrack && projection.playback?.current_index != null
-    ? queueTracks.map((item, index) => index === projection.playback?.current_index ? previewDisplayTrack : item)
-    : queueTracks;
-  // Focused preview audio is intentionally kept outside the durable playback
-  // queue. Project its active recommendation window into the queue panel so
-  // Next Up follows the audible session instead of the library seed.
-  const previewQueueTracks = useMemo(() => {
-    if (!projection.preview?.active || !projection.preview.current) return null;
-    const rows = projection.preview.window.map((id) => recommendationTracks.get(id) ?? {
-      id,
-      path: null,
-      title: "Unavailable recommendation",
-      artist: null,
-      album: null,
-      duration_ms: null,
-      artwork_url: null,
-      favorite: false,
-      provider: null,
-    });
-    return rows.length > 0 ? rows : null;
-  }, [projection.preview, recommendationTracks]);
-  const previewQueueIndex = previewQueueTracks?.findIndex((item) => item.id === projection.preview?.current) ?? -1;
-  const panelQueueTracks = previewQueueTracks ?? displayQueueTracks;
-  const panelQueueIndex = previewQueueTracks ? (previewQueueIndex >= 0 ? previewQueueIndex : null) : projection.playback?.current_index;
+  // Focused preview is an audible overlay over the captured physical queue.
+  // Only Discover changes the backend queue; focused recommendations replace
+  // the visible current row while Next Up stays in the physical context.
+  const panelQueueTracks = focusedQueueProjection(queueTracks, projection.playback?.current_index, previewDisplayTrack);
+  const panelQueueIndex = projection.playback?.current_index;
   const currentVideo = displayTrack ? currentVideoForTrack(projection, displayTrack.id) : null;
   // A queue row can be a temporary recommendation key (discover mode injects
   // them). Playing one must open/advance the preview session, not hand an
@@ -958,7 +949,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <main className="luno-main" data-slot="main" aria-disabled={!available}>{(() => { const backendError = projection.errors.length ? projection.errors[projection.errors.length - 1].message : null; const displayCommandError = commandError && (commandError.includes("PoisonError") || commandError.includes("poison recovered") || commandError.includes("command worker failed"))
               ? "A background task hit an internal error and was recovered. If this repeats, restart the app."
               : commandError; const videoNotice = !connectedVideo && route === "song_page"; return (!available || displayCommandError || backendError || commandNotice || videoNotice) && <div className="luno-runtime-status" role="status">{!available && <span data-state="backend-unavailable">Backend unavailable; runtime commands are unavailable.</span>}{displayCommandError && <span data-state="command-rejected">{displayCommandError} <button type="button" onClick={() => setCommandError(null)} aria-label="Dismiss error" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{backendError && <span data-state="backend-error">{backendError} <button type="button" onClick={() => backendProjection?.clearErrors?.()} aria-label="Dismiss error" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{commandNotice && <span data-state="command-notice">{commandNotice} <button type="button" onClick={() => setCommandNotice(null)} aria-label="Dismiss notice" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{videoNotice && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}</div>; })()}<div className="luno-main-content luno-scroll">{content}</div></main>
-        <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : panelQueueTracks} currentIndex={panelRecent ? null : panelQueueIndex} recent={panelRecent} backendAvailable={available} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={previewQueueTracks ? "Recommended for this song" : nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => playQueueEntry(item, panelRecent ? recentTracks : panelQueueTracks)} onPlayNext={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.playNext([item.id])) : setCommandNotice("Only library tracks can be queued."))} onAddToQueue={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.addToQueue([item.id])) : setCommandNotice("Only library tracks can be queued."))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} onContextMenu={openTrackMenu} />}</aside>
+        <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : panelQueueTracks} currentIndex={panelRecent ? null : panelQueueIndex} recent={panelRecent} backendAvailable={available} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => playQueueEntry(item, panelRecent ? recentTracks : panelQueueTracks)} onPlayNext={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.playNext([item.id])) : setCommandNotice("Only library tracks can be queued."))} onAddToQueue={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.addToQueue([item.id])) : setCommandNotice("Only library tracks can be queued."))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} onContextMenu={openTrackMenu} />}</aside>
         <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={displayTrack} playback={projection.playback} artwork={audibleArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => runCommand(projection.playback?.status === "playing" ? bridge?.pause() : projection.playback?.status === "paused" ? bridge?.resume() : track && bridge?.playWithContext(track.id, queueTracks.map((item) => item.id)))} onNext={() => { if (!bridge || !available) return; runCommand(bridge.next()); }} onPrevious={() => { if (!bridge || !available) return; runCommand(bridge.previous()); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onSeek={(positionMs) => runCommand(bridge?.seek(positionMs))} onVolume={(value) => runCommand(bridge?.setVolume(value))} onVolumeCommit={(value) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }} onOpenTrack={() => navigate("song_page")} onTrackContextMenu={openTrackMenu} />}</footer>
     {route !== "settings" && <div className="luno-resize-handle" style={{ left: showSidebar ? 8 + sidebarWidth - 4 : 2 }} role="separator" aria-orientation="vertical" aria-label="Resize library panel width" onPointerDown={startPanelDrag("sidebar")} />}
     {route !== "settings" && !narrowViewport && <div className="luno-resize-handle" style={{ left: showQueue ? Math.max(0, shellWidth - 8 - queueWidth - 4) : Math.max(2, shellWidth - 6) }} role="separator" aria-orientation="vertical" aria-label="Resize queue panel width" onPointerDown={startPanelDrag("queue")} />}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DownloadJob, Playlist, PreviewSnapshot, SaveState, Track } from "../shared/contracts";
 import { Recommendations, type Recommendation, type RecommendationState } from "../components/Recommendations";
 import { VideoStage, type VideoStageProps } from "../components/VideoStage";
+import { RecommendationArtwork } from "../components/RecommendationArtwork";
 
 /** Pill toggle for song-page video mode (exported for direct testing). */
 export function VideoModePill({ enabled, onToggle }: { enabled: boolean; onToggle?: () => void }) {
@@ -100,7 +101,9 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
   void onFavoriteToggle;
   return <div ref={pageRef} className="luno-song-page" data-testid="song-page">
     <style>{songPageStyles}</style>
-    <div className="luno-song-page-backdrop" aria-hidden="true" style={displayedTrack?.artwork_url ? { backgroundImage: `url(${displayedTrack.artwork_url})` } : undefined} />
+    <div className="luno-song-page-backdrop" aria-hidden="true" style={displayedTrack?.artwork_url ? { backgroundImage: `url(${displayedTrack.artwork_url})` } : undefined}>
+      {!displayedTrack?.artwork_url && displayedTrack && <RecommendationArtwork artist={displayedTrack.artist ?? ""} title={displayedTrack.title} size="100%" />}
+    </div>
     {onVideoModeChange && backendAvailable && null}
     <div className="luno-song-page-scroll">
       <main className="luno-song-page-content">
@@ -118,7 +121,8 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
 
 const songPageStyles = `
 .luno-song-page { position:relative; min-height:100%; overflow:hidden; background:rgba(18,18,18,.78); }
-.luno-song-page-backdrop { position:absolute; inset:-8%; background-position:center; background-size:cover; filter:blur(42px); opacity:.22; transform:scale(1.08); }
+.luno-song-page-backdrop { position:absolute; inset:-8%; background-position:center; background-size:cover; filter:blur(42px); opacity:.22; transform:scale(1.08); overflow:hidden; }
+.luno-song-page-backdrop .luno-rec-art { width:100% !important; height:100% !important; border-radius:0 !important; }
 .luno-video-mode-pill { display:flex; align-items:center; gap:8px; width:100%; border:0; border-radius:999px; padding:4px 4px 4px 4px; background:rgba(255,255,255,.09); cursor:pointer; }
 .luno-video-mode-pill .luno-video-mode-knob { position:relative; left:auto; display:inline-block; width:30px; height:16px; border-radius:999px; background:rgba(255,255,255,.25); transition:background .15s ease; }
 .luno-video-mode-pill .luno-video-mode-knob::after { content:""; position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:999px; background:#fff; transition:left .15s ease; }

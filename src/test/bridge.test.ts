@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { backendCommandArgs, createBridge, isValidLibraryResponse, parseMigrationStatus, tauriTransport } from "../app/bridge";
 import { createBackendProjection, mergeVideoSnapshot } from "../state/backend_projection";
-import { currentVideoForTrack, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled, videoSurfaceActive } from "../app/Shell";
+import { currentVideoForTrack, focusedQueueProjection, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled, videoSurfaceActive } from "../app/Shell";
 import type { BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope } from "../shared/contracts";
 import type { SaveState } from "../shared/contracts";
 import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot, isDiscoverSnapshot, isSearchResults } from "../shared/contracts";
+import type { Track } from "../shared/contracts";
 
 const nativeInvoke = vi.hoisted(() => vi.fn());
 // convertFileSrc mirrors Tauri's injected macOS runtime implementation
@@ -19,6 +20,14 @@ vi.mock("@tauri-apps/api/core", () => ({
 const event = (event: Event, generation = 1): EventEnvelope => ({ version: 1, event_id: `event-${generation}`, generation, job_id: null, session_id: null, event });
 
 describe("typed IPC bridge and projection", () => {
+  it("keeps physical successors visible during a focused recommendation", () => {
+    const physical = ["a", "b", "c"].map((id): Track => ({ id, path: null, title: id, artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null }));
+    const preview: Track = { ...physical[1], id: "rec", title: "Recommendation" };
+    const projected = focusedQueueProjection(physical, 1, preview);
+    expect(projected.map((item) => item.id)).toEqual(["a", "rec", "c"]);
+    expect(projected[2]).toBe(physical[2]);
+  });
+
   it("passes Gate 5 fixture roots to the native command without changing no-arg calls", async () => {
     nativeInvoke.mockResolvedValue({});
 

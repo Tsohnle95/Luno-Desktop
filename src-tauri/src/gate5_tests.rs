@@ -306,6 +306,29 @@ fn ref_preview_session_and_discover_mode_cover_windows_handoff_and_intervention(
 }
 
 #[test]
+fn focused_tap_requests_the_tapped_item_and_five_successors() {
+    let recs: Vec<_> = (0..12).map(|n| id(&format!("rec-{n}"))).collect();
+    let session = PreviewSession::start(
+        9,
+        vec![id("seed"), id("physical-next")],
+        0,
+        recs.clone(),
+        &recs[3],
+    )
+    .unwrap();
+    assert_eq!(session.window(), &recs[3..9]);
+
+    let initial = PreviewSession::start_prefetch(
+        10,
+        vec![id("seed"), id("physical-next")],
+        0,
+        recs.clone(),
+    )
+    .unwrap();
+    assert_eq!(initial.window(), &recs[..AHEAD_WINDOW]);
+}
+
+#[test]
 fn ref_preview_save_requires_destination_validates_duplicate_and_promotes_once() {
     let root = fixture("save");
     let staged = root.join("staged.mp3");
