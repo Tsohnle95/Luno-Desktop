@@ -826,6 +826,10 @@ mod tests {
         // staged twice when a mode handoff races the prefetch pass.
         let deduped = recommendation_video_plan(Some(recommendations[0].clone()), &recommendations);
         assert_eq!(deduped.len(), VIDEO_PREFETCH_DEPTH);
+
+        // Preparing recommendations while song-page video mode is disabled
+        // must not pull the unrelated audible library track as a side effect.
+        assert_eq!(recommendation_video_plan(None, &recommendations), recommendations);
     }
 
     #[cfg(unix)]
@@ -2752,8 +2756,8 @@ impl AppState {
                 });
                 state.publish_video_state();
                 // BACKGROUND QUALITY UPGRADE (two-tier staging): the file was
-                // just pulled through the QUICK ≤240p ladder for a fast first
-                // frame. Replace it with the full ≤720p version out of band,
+                // just pulled through the viewable QUICK ladder for a fast
+                // first frame. Replace it with the full ≤1080p version out of band,
                 // then republish with revision 2 so the webview hot-swaps onto
                 // the upgraded bytes. The shared cancel flag is swapped by the
                 // NEXT stage request, so skipping tracks aborts the upgrade at
@@ -2963,6 +2967,7 @@ impl AppState {
     /// is disabled: its temporary five-item assets are part of preparation,
     /// rather than ordinary physical-queue video mode.
     pub fn kick_video_pipeline(&self) {
+        let video_mode_enabled = self.video_mode_enabled();
         let preview_recommendations = {
             let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
             session
@@ -2970,7 +2975,7 @@ impl AppState {
                 .filter(|session| session.is_active() && session.is_prefetch())
                 .map(|session| session.window().to_vec())
         };
-        if !self.video_mode_enabled() && preview_recommendations.is_none() { return; }
+        if !video_mode_enabled && preview_recommendations.is_none() { return; }
         let preview_pending = preview_recommendations.as_ref().is_some_and(|recommendations| {
             let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
             session.as_ref().is_some_and(|session| {
@@ -3026,7 +3031,11 @@ impl AppState {
         };
         let plan = preview_recommendations
             .as_deref()
-            .map(|recommendations| recommendation_video_plan(audible.clone(), recommendations))
+            // Recommendation preparation owns its five temporary videos even
+            // with song-page video mode off. The audible library track remains
+            // governed by that setting and must not be downloaded as a side
+            // effect of preparing recommendations.
+            .map(|recommendations| recommendation_video_plan(if video_mode_enabled { audible.clone() } else { None }, recommendations))
             .unwrap_or_else(|| audible_video_plan(&queue, current, audible, focused_preview, VIDEO_PREFETCH_DEPTH));
         let plans: Vec<(TrackId, String, Option<String>)> = plan
             .into_iter()

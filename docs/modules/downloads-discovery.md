@@ -101,10 +101,10 @@ What it does not own: library snapshots and promotion targets
   rows and every playback projection use the same deterministic generated
   Luno artwork; the generated palette set excludes the retired neutral gray
   and white cross/star treatment.
-- Serialized preview preparation has admission priority over speculative
-  successor-video staging. The audible track's quick video may stage while
-  the audio window is pending; successor-video work resumes after that window
-  settles.
+- Serialized preview audio and bounded quick-video preparation start together
+  for the same five recommendation items. They publish independently, while
+  the audible track's quick and final-quality video retains admission priority
+  over speculative recommendation video work.
 - URL and URL-queue downloads resolve title/artist through a best-effort
   yt-dlp metadata probe (`validate_direct_url` → `probe_media`) and name the
   output `Artist - Title.m4a`, because the scanner derives metadata from the

@@ -1,6 +1,6 @@
 # Task: Deliver viewable video tiers, true app fullscreen, and dual recommendation prefetch
 
-Status: REVIEWED
+Status: ACTIVE
 
 ## Goal
 
@@ -46,11 +46,11 @@ Make current and recommended songs arrive with useful video quality on time: pub
 
 | Phase | Scope | Status | Validation | Commit |
 |---|---|---|---|---|
-| 1 | Audit quality ladders, upgrade lock ordering, fullscreen selectors, and recommendation preparation handoff | complete | source/doc trace and adversarial plan review | pending |
-| 2 | Raise quick/final quality and guarantee current 1080p upgrade priority | pending | ladder/unit tests plus live selected-format probe | pending |
-| 3 | Make fullscreen cover the whole app with hover-only controls | pending | component/CSS tests and rendered/browser inspection | pending |
-| 4 | Couple each recommendation audio preparation with quick-video prefetch without coupling failure | pending | state/session integration tests covering initial five and click reuse | pending |
-| 5 | Integrate, update docs, run live/cumulative validation and canonical gates, review diff | pending | `npm run verify`; `cargo test --manifest-path src-tauri/Cargo.toml`; `npm run build` | pending |
+| 1 | Audit quality ladders, upgrade lock ordering, fullscreen selectors, and recommendation preparation handoff | complete | source/doc trace and adversarial plan review | `3711d13b` |
+| 2 | Raise quick/final quality and guarantee current 1080p upgrade priority | complete | 11 runtime tests, state priority test, live selected-format probes | `1b669e04`, `4029b4ac`, `ef2f7a92` |
+| 3 | Make fullscreen cover the whole app with hover-only controls | complete | 30 focused component tests and production build | `8494a0a5` |
+| 4 | Couple each recommendation audio preparation with quick-video prefetch without coupling failure | complete | 51 state tests including window planning and click reuse | `ef2f7a92` |
+| 5 | Integrate, update docs, run live/cumulative validation and canonical gates, review diff | active | `npm run verify`; `cargo test --manifest-path src-tauri/Cargo.toml`; `npm run build` | pending |
 
 ## Validation plan
 
@@ -68,9 +68,9 @@ Make current and recommended songs arrive with useful video quality on time: pub
 
 ## Open risks / blockers
 
-- Some sources do not offer H.264 at 1080p; the final ladder must choose the best compatible lower resolution.
-- Five audio plus five video preparations can create network and task pressure. Scheduling must remain bounded and prioritize current playback.
-- CSS `:has()` behavior in WKWebView needs direct inspection; a React-owned shell class is the fallback if selector containment is unreliable.
+- Some sources do not offer H.264 at 1080p; the final ladder chooses the best compatible lower resolution.
+- Very long sources remain intrinsically large: the reported 79-minute video is about 386 MiB at the selected quick 360p tier and 2.37 GiB at 1080p. Priority and format ordering reduce avoidable delay but cannot remove transfer time.
+- Direct WKWebView fullscreen appearance remains a final platform check; automated tests verify the explicit shell state and chrome-collapse CSS.
 
 ## Completion
 

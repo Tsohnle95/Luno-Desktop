@@ -79,9 +79,18 @@ What it does not own: library snapshots and track identity
   sequential yt-dlp queries, and stops after three strict candidates.
 - Prefetch plans the audible item plus exactly five authoritative successors:
   physical successors for focused preview, projected successors for Discover.
-- Current and successor downloads use the H.264 quick tier (≤240p). The
-  current file publishes immediately, then a cancellable H.264 high-tier
-  replacement (≤720p) swaps in place and republishes the video revision.
+- Current and successor downloads use a viewable H.264 quick tier: a
+  progressive MP4 up to 480p when available, otherwise smaller 360p split
+  streams before the 480p fallback. The current file publishes immediately,
+  then a prioritized cancellable H.264 replacement up to 1080p swaps in place
+  and republishes the video revision before speculative successor work resumes.
+- Initial recommendation preparation owns quick-video assets for the same five
+  temporary items as its audio window. Video and audio failures remain
+  independent, and selecting an item adopts its prefetched video instead of
+  downloading it again.
+- App fullscreen is owned by an explicit shell state that collapses all grid
+  chrome and lets the fixed video stage cover the complete viewport; Escape
+  exits and controls appear through the existing hover layer.
 - `null` progress covers source lookup, extractor setup, and transfers whose
   byte total is still unknown. Numeric progress is computed from yt-dlp's
   downloaded bytes over the selected video-plus-audio format plan; it stays

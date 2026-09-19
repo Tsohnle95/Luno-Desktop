@@ -24,17 +24,18 @@ pub struct VideoStage { root: PathBuf, library_root: Option<PathBuf>, generation
 /// YouTube search BEFORE the cache could be checked (the filename needs the
 /// id), so a cached video still sat behind minutes of network work.
 ///
-/// Entries carry a QUALITY TIER: `"high"` (final ≤720p bytes — also how every
-/// pre-tier legacy entry reads) or `"quick"` (the ≤240p first pass whose HD
+/// Entries carry a QUALITY TIER: `"high"` (final ≤1080p bytes — also how every
+/// pre-tier legacy entry reads) or `"quick"` (the viewable ≤480p first pass whose HD
 /// upgrade was interrupted before it could replace the file — app restart,
 /// track switch cancelling the upgrade, …). Adoption paths use the tier to
 /// decide `needs_upgrade`, so an interrupted quick pass is RE-UPGRADED on the
-/// next play instead of being served 480p forever.
+/// next play instead of being served the quick tier forever.
 const INDEX_FILE: &str = "index.json";
 
-/// Final-quality tier marker (≤720p ladder or legacy full-ladder bytes).
+/// Final-quality tier marker (≤1080p ladder or legacy full-ladder bytes).
 pub const INDEX_TIER_HIGH: &str = "high";
-/// Fast first-pass tier (≤240p) pending its background quality upgrade.
+/// Fast first-pass tier (progressive ≤480p or smaller 360p split fallback)
+/// pending its background quality upgrade.
 pub const INDEX_TIER_QUICK: &str = "quick";
 
 fn index_entry(value: &serde_json::Value) -> Option<(String, &'static str)> {
@@ -113,7 +114,7 @@ impl VideoStage {
     }
     /// Record an id with an explicit quality tier ("quick" = its HD upgrade is
     /// still pending; the upgrade pass must flip it back to "high" on success
-    /// or every later play re-adopts 480p as final).
+    /// or every later play re-adopts the quick tier as final).
     pub fn record_index_tier(&self, track_key: &str, video_id: &str, tier: &str) {
         let _guard = index_lock();
         let mut entries = self.load_index();
