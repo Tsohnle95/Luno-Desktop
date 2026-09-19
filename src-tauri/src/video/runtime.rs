@@ -198,6 +198,12 @@ impl VideoProgress {
         self.started.store(true, Ordering::Release);
     }
 
+    fn record_plan(&self, planned_streams: Vec<PlannedStream>) {
+        if let Ok(mut samples) = self.samples.lock() {
+            samples.record_plan(planned_streams);
+        }
+    }
+
     fn complete(&self) {
         // 100 is emitted only after the quick file has passed playable-audio
         // checks and `VideoStage::adopt` has published it into its slot.
@@ -211,10 +217,8 @@ struct DownloadProgressSample {
     /// The video id + selected format identify separate video/audio items.
     /// None is retained for older/helper output that cannot identify a stream.
     stream_key: Option<String>,
-    format_id: Option<String>,
     downloaded_bytes: u64,
     total_bytes: Option<u64>,
-    planned_streams: Vec<PlannedStream>,
     /// A combined format has one transfer item; a video-only or audio-only
     /// format is one half of the explicit `bv+ba` ladder.
     expected_streams: usize,
@@ -237,7 +241,6 @@ struct ProgressAccumulator {
 
 #[derive(Debug, Default)]
 struct StreamProgress {
-    format_id: Option<String>,
     downloaded_bytes: u64,
     total_bytes: Option<u64>,
 }
@@ -260,6 +263,10 @@ fn parse_planned_streams(value: &str) -> Vec<PlannedStream> {
     }).collect()
 }
 
+fn parse_download_plan(line: &str) -> Option<Vec<PlannedStream>> {
+    Some(parse_planned_streams(line.strip_prefix("download-plan:")?))
+}
+
 /// Parse the machine-readable line emitted by `--progress-template`.
 ///
 /// The template deliberately carries downloaded and total byte counts rather
@@ -276,21 +283,14 @@ fn parse_download_progress(line: &str) -> Option<DownloadProgressSample> {
     let exact_total = fields.next()?;
     let estimated_total = fields.next().unwrap_or_default();
     let total_bytes = parse_bytes(exact_total).or_else(|| parse_bytes(estimated_total));
-    let requested_downloads = fields.next().unwrap_or_default();
-    let requested_formats = fields.next().unwrap_or_default();
-    let planned_streams = {
-        let requested_downloads = parse_planned_streams(requested_downloads);
-        if requested_downloads.is_empty() { parse_planned_streams(requested_formats) } else { requested_downloads }
-    };
-    let expected_streams = planned_streams.len().max(if is_missing_codec(video_codec.as_deref()) || is_missing_codec(audio_codec.as_deref()) { 2 } else { 1 });
+    let expected_streams = if is_missing_codec(video_codec.as_deref()) || is_missing_codec(audio_codec.as_deref()) { 2 } else { 1 };
     let stream_key = match (video_id, format_id) {
         (Some(video_id), Some(format_id)) => Some(format!("{video_id}:{format_id}")),
-        (Some(video_id), None) => Some(video_id),
+        (Some(video_id), None) => Some(format!("{video_id}:{}:{}", video_codec.as_deref().unwrap_or("NA"), audio_codec.as_deref().unwrap_or("NA"))),
         (None, Some(format_id)) => Some(format_id),
-        (None, None) => None,
+        (None, None) => Some(format!("{}:{}", video_codec.as_deref().unwrap_or("NA"), audio_codec.as_deref().unwrap_or("NA"))),
     };
-    let format_id = stream_key.as_deref().and_then(|key| key.rsplit(':').next()).map(str::to_owned);
-    Some(DownloadProgressSample { stream_key, format_id, downloaded_bytes, total_bytes, planned_streams, expected_streams })
+    Some(DownloadProgressSample { stream_key, downloaded_bytes, total_bytes, expected_streams })
 }
 
 fn parse_stream_key(value: &str) -> Option<String> {
@@ -307,14 +307,19 @@ fn is_missing_codec(codec: Option<&str>) -> bool {
 }
 
 impl ProgressAccumulator {
-    fn record(&mut self, sample: DownloadProgressSample) -> Option<u8> {
-        for planned in &sample.planned_streams {
-            self.planned_sizes.entry(planned.format_id.clone()).and_modify(|known| {
-                if known.is_none() || planned.total_bytes.is_some_and(|size| known.is_some_and(|previous| size > previous)) {
-                    *known = planned.total_bytes;
+    fn record_plan(&mut self, planned_streams: Vec<PlannedStream>) {
+        self.expected_streams = self.expected_streams.max(planned_streams.len());
+        for planned in planned_streams {
+            let PlannedStream { format_id, total_bytes } = planned;
+            self.planned_sizes.entry(format_id).and_modify(|known| {
+                if known.is_none() || total_bytes.is_some_and(|size| known.is_some_and(|previous| size > previous)) {
+                    *known = total_bytes;
                 }
-            }).or_insert(planned.total_bytes);
+            }).or_insert(total_bytes);
         }
+    }
+
+    fn record(&mut self, sample: DownloadProgressSample) -> Option<u8> {
         self.expected_streams = self.expected_streams.max(sample.expected_streams);
         let base_key = sample.stream_key.unwrap_or_else(|| "anonymous".into());
         let mut key = base_key.clone();
@@ -339,7 +344,6 @@ impl ProgressAccumulator {
             stream.downloaded_bytes = 0;
             stream.total_bytes = None;
         }
-        stream.format_id = sample.format_id;
         stream.downloaded_bytes = stream.downloaded_bytes.max(sample.downloaded_bytes);
         stream.total_bytes = match (stream.total_bytes, sample.total_bytes) {
             (Some(previous), Some(current)) => Some(previous.max(current)),
@@ -436,10 +440,16 @@ fn download_ladder(
         // Parallel DASH fragment pulls — cuts long-video download times hard
         // (single-stream YouTube throttling was the 50s+ wait on a 15-min film).
         "--concurrent-fragments", "8",
+        // Print the selected format plan before downloader progress. The
+        // progress template receives a per-format info dict and exposes
+        // requested_formats as NA, while before_dl still has the selected
+        // exact/approximate file sizes needed for the combined denominator.
+        "--print", "before_dl:download-plan:%(requested_formats)j",
+        "--no-simulate",
         // Stable machine-readable byte progress on stdout. Formatted
         // percentages are presentation strings and cannot be aggregated when
         // yt-dlp downloads separate video and audio items.
-        "--progress-template", "download-bytes:%(info.id)s\t%(format_id)s\t%(info.vcodec)s\t%(info.acodec)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes)s\t%(progress.total_bytes_estimate)s\t%(info.requested_downloads)j\t%(info.requested_formats)j",
+        "--progress-template", "download-bytes:%(info.id)s\t%(format_id)s\t%(info.vcodec)s\t%(info.acodec)s\t%(progress.downloaded_bytes)s\t%(progress.total_bytes)s\t%(progress.total_bytes_estimate)s",
         "--merge-output-format", "mp4",
         "-o",
     ]);
@@ -460,7 +470,9 @@ fn download_ladder(
                 collected.push_str(&line);
                 collected.push('\n');
                 if let Some(reporter) = &reporter {
-                    if let Some(sample) = parse_download_progress(&line) {
+                    if let Some(plan) = parse_download_plan(&line) {
+                        reporter.record_plan(plan);
+                    } else if let Some(sample) = parse_download_progress(&line) {
                         reporter.record(sample);
                     }
                 }
@@ -477,7 +489,9 @@ fn download_ladder(
             if let Some(stdout) = stdout.as_mut() {
                 use std::io::BufRead;
                 for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
-                    if let Some(sample) = parse_download_progress(&line) {
+                    if let Some(plan) = parse_download_plan(&line) {
+                        progress_reader.record_plan(plan);
+                    } else if let Some(sample) = parse_download_progress(&line) {
                         progress_reader.record(sample);
                     }
                 }
@@ -969,8 +983,9 @@ case " $* " in
       if [ "$1" = '-o' ]; then shift; output="$1"; fi
       shift
     done
-    printf 'download-bytes:video-a\t137\tavc1\tnone\t0\t1000\t1000\tNA\t[{"format_id":"137","filesize":1000},{"format_id":"140","filesize":200}]\n'
-    printf 'download-bytes:video-a\t137\tavc1\tnone\t250\t1000\t1000\tNA\t[{"format_id":"137","filesize":1000},{"format_id":"140","filesize":200}]\n'
+    printf 'download-plan:[{"format_id":"137","filesize":1000},{"format_id":"140","filesize":200}]\n'
+    printf 'download-bytes:video-a\t137\tavc1\tnone\t0\t1000\t1000\n'
+    printf 'download-bytes:video-a\t137\tavc1\tnone\t250\t1000\t1000\n'
     printf 'fake mp4 bytes' > "$output"
     ;;
 esac
@@ -984,41 +999,36 @@ esac
     #[test]
     fn parses_machine_readable_byte_progress_and_estimated_totals() {
         assert_eq!(
-            parse_download_progress("download-bytes:video-a\t137\tavc1\tnone\t250\t1000\t1000\tNA\t[{\"format_id\":\"137\",\"filesize\":1000},{\"format_id\":\"140\",\"filesize_approx\":200}]"),
+            parse_download_progress("download-bytes:video-a\t137\tavc1\tnone\t250\t1000\t1000"),
             Some(DownloadProgressSample {
                 stream_key: Some("video-a:137".into()),
-                format_id: Some("137".into()),
                 downloaded_bytes: 250,
                 total_bytes: Some(1000),
-                planned_streams: vec![
-                    PlannedStream { format_id: "137".into(), total_bytes: Some(1000) },
-                    PlannedStream { format_id: "140".into(), total_bytes: Some(200) },
-                ],
                 expected_streams: 2,
             })
         );
         assert_eq!(
-            parse_download_progress("download-bytes:video-a\t140\tnone\tmp4a.40.2\t250\tNA\t500\tNA\t[{\"format_id\":\"137\",\"filesize\":1000},{\"format_id\":\"140\",\"filesize_approx\":200}]"),
+            parse_download_progress("download-bytes:video-a\t140\tnone\tmp4a.40.2\t250\tNA\t500"),
             Some(DownloadProgressSample {
                 stream_key: Some("video-a:140".into()),
-                format_id: Some("140".into()),
                 downloaded_bytes: 250,
                 total_bytes: Some(500),
-                planned_streams: vec![
-                    PlannedStream { format_id: "137".into(), total_bytes: Some(1000) },
-                    PlannedStream { format_id: "140".into(), total_bytes: Some(200) },
-                ],
                 expected_streams: 2,
             })
         );
-        assert_eq!(parse_download_progress("download-bytes:video-a\t137\tavc1\tavc1\t0\tNA\tNA\tNA\t[{\"format_id\":\"137\",\"filesize\":1000}]"), Some(DownloadProgressSample {
+        assert_eq!(parse_download_progress("download-bytes:video-a\t137\tavc1\tavc1\t0\tNA\tNA"), Some(DownloadProgressSample {
             stream_key: Some("video-a:137".into()),
-            format_id: Some("137".into()),
             downloaded_bytes: 0,
             total_bytes: None,
-            planned_streams: vec![PlannedStream { format_id: "137".into(), total_bytes: Some(1000) }],
             expected_streams: 1,
         }));
+        assert_eq!(parse_download_plan("download-plan:[{\"format_id\":\"137\",\"filesize\":1000},{\"format_id\":\"140\",\"filesize_approx\":200}]"), Some(vec![
+            PlannedStream { format_id: "137".into(), total_bytes: Some(1000) },
+            PlannedStream { format_id: "140".into(), total_bytes: Some(200) },
+        ]));
+        let video = parse_download_progress("download-bytes:video-a\tNA\tavc1\tnone\t10\t1000\t1000").unwrap();
+        let audio = parse_download_progress("download-bytes:video-a\tNA\tnone\tmp4a.40.2\t10\t200\t200").unwrap();
+        assert_ne!(video.stream_key, audio.stream_key);
         assert_eq!(parse_download_progress("[download] 42.3% of 1000 bytes"), None);
     }
 
@@ -1051,12 +1061,11 @@ esac
             PlannedStream { format_id: "140".into(), total_bytes: Some(200) },
         ];
         let mut progress = ProgressAccumulator::default();
+        progress.record_plan(plan.clone());
         let sample = |format_id: &str, downloaded_bytes: u64| DownloadProgressSample {
             stream_key: Some(format!("video:{format_id}")),
-            format_id: Some(format_id.into()),
             downloaded_bytes,
             total_bytes: Some(if format_id == "137" { 1000 } else { 200 }),
-            planned_streams: plan.clone(),
             expected_streams: 2,
         };
         assert_eq!(progress.record(sample("137", 250)), Some(20));
