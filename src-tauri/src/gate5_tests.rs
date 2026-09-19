@@ -477,6 +477,24 @@ fn ref_video_lookup_offers_relaxed_fallbacks_after_strict_matches() {
     );
 }
 
+#[test]
+fn video_lookup_stops_after_three_strict_candidates() {
+    let calls = std::cell::Cell::new(0usize);
+    let results = lookup(Some("Artist"), "Song", |_query| {
+        calls.set(calls.get() + 1);
+        (0..3)
+            .map(|index| VideoCandidate {
+                id: format!("strict-{index}"),
+                title: "Artist - Song".into(),
+                artist: Some("Artist".into()),
+                url: String::new(),
+            })
+            .collect()
+    });
+    assert_eq!(results.len(), 3);
+    assert_eq!(calls.get(), 1, "fallback search forms must not start once staging has enough candidates");
+}
+
 #[derive(Default)]
 struct FakeDecoder {
     starts: Vec<Duration>,

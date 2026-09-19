@@ -291,11 +291,10 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
     <style>{stageChromeStyles}</style>
     {showVideo ? <video ref={videoRef} src={src!} preload="auto" playsInline muted aria-label="Song video" onError={onVideoError} onSeeked={handleSeeked} onPause={handlePause} onPlay={handlePlay} onEnded={handleEnded} /> : <Artwork src={artworkUrl} alt={artworkAlt} size="100%" fallback={<RecommendationArtwork artist={artworkArtist ?? ""} title={artworkTitle ?? ""} size="100%" />} />}
     {status === "loading" && <div className="luno-video-loading" role="status">
-      <DownloadRing progress={typeof videoProgress === "number" && videoProgress > 0 ? videoProgress : null} />
-      {/* 0/null means yt-dlp is still resolving the video (no byte total
-       *  exists yet), so the ring spins with a "searching" label. A real
-       *  percentage only appears once bytes are flowing. */}
-      <span className="luno-video-loading-caption">{typeof videoProgress === "number" && videoProgress > 0 ? `Downloading video… ${Math.round(videoProgress)}%` : "Searching for video…"}</span>
+      <DownloadRing progress={typeof videoProgress === "number" ? videoProgress : null} />
+      {/* null is source resolution; 0 is a started download whose first byte
+       * total has not arrived yet. Keep those phases visually distinct. */}
+      <span className="luno-video-loading-caption">{typeof videoProgress === "number" ? `Downloading video… ${Math.round(videoProgress)}%` : "Searching for video…"}</span>
     </div>}
     {status === "unavailable" && <p className="luno-video-status" role="status">Video unavailable. Showing artwork.</p>}
     {(status === "error" || status === "fallback") && <p className="luno-video-status" role="alert">Video preview failed. Showing artwork.</p>}

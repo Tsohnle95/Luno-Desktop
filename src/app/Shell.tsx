@@ -598,13 +598,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const saveLastfmKey = (key: string) => {
     runCommand(bridge?.saveDiscoveryKey(key).then((status) => setDiscoveryKeyConfigured(status.configured)));
   };
-  const previewActive = projection.preview?.active === true;
   // Stage the song video when its page opens (worker runs on the backend).
   useEffect(() => {
-    // A focused recommendation preview owns the output; the library track's
-    // video must not be staged underneath it (the backend already gates
-    // speculative staging, and the visible stage shows recommendation art).
-    if (previewActive) return;
     // Stage the song video when its page opens. The command RESPONSE carries
     // the authoritative video state — absorb it so the page never depends
     // solely on a pushed event (a lost video_state event used to strand the
@@ -617,15 +612,15 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       backendProjection?.applyVideoSnapshot?.(snapshot as NonNullable<BackendProjection["video"]>);
     };
     const request = () => {
-      if (cancelled || !track || !available || !bridge) return;
-      bridge.videoStage(track.id)
+      if (cancelled || !displayTrack || !available || !bridge) return;
+      bridge.videoStage(displayTrack.id)
         .then(absorb)
         .catch(() => undefined);
     };
     request();
     const tick = () => {
       if (cancelled) return;
-      const id = track?.id;
+      const id = displayTrack?.id;
       if (!id) return;
       // Keep re-requesting until THIS track holds a RESOLVED video state.
       // Busy collisions are silent on the backend (by design — publishing
@@ -643,7 +638,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     };
     timer = setTimeout(tick, 2000);
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [route, track?.id, available, bridge, previewActive]);
+  }, [route, displayTrack?.id, available, bridge]);
   useEffect(() => {
     // Only fetch while a Discover surface is visible (route or settings-rail
     // embed) — otherwise every track change fires an unseen network request.
@@ -888,7 +883,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
                       const target = playlists.find((playlist) => playlist.name.toLowerCase() !== "unsorted") ?? playlists[0];
                       if (!target) { setCommandError("Create a playlist before saving recommendations."); return; }
                       runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), target.id));
-                    }} preview={recommendationPreview} saved={projection.saved} playlists={projection.library?.playlists ?? []} jobs={projection.jobs} onCreatePlaylist={(item) => { if (!bridge || !available) return; createPlaylist([], (name) => runCommand(bridge.saveRecommendation(previewKey(item.artist, item.title), `playlist:${name}`))); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} onLoadVideo={() => { if (track && available) bridge?.videoStage(track.id).catch(() => undefined); }} videoMode={videoMode} onVideoModeChange={(enabled) => { setVideoMode(enabled); runCommand(bridge?.setVideoMode(enabled)); }} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
+                      }} preview={recommendationPreview} saved={projection.saved} playlists={projection.library?.playlists ?? []} jobs={projection.jobs} onCreatePlaylist={(item) => { if (!bridge || !available) return; createPlaylist([], (name) => runCommand(bridge.saveRecommendation(previewKey(item.artist, item.title), `playlist:${name}`))); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} onLoadVideo={() => { if (displayTrack && available) bridge?.videoStage(displayTrack.id).catch(() => undefined); }} videoMode={videoMode} onVideoModeChange={(enabled) => { setVideoMode(enabled); runCommand(bridge?.setVideoMode(enabled)); }} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
 
   const showSidebar = !sidebarCollapsed && route !== "settings";
   const narrowViewport = shellWidth > 0 && shellWidth < 1100;

@@ -97,8 +97,9 @@ What it does not own: library snapshots and promotion targets
   exists yet; fast preview files may complete between progress samples and
   jump directly to 100%. Only atomic publication makes an item playable.
 - Serialized preview preparation has admission priority over speculative
-  video staging; pending preview work cancels/gates video helpers, and video
-  staging resumes after the preview window settles.
+  successor-video staging. The audible track's quick video may stage while
+  the audio window is pending; successor-video work resumes after that window
+  settles.
 - URL and URL-queue downloads resolve title/artist through a best-effort
   yt-dlp metadata probe (`validate_direct_url` → `probe_media`) and name the
   output `Artist - Title.m4a`, because the scanner derives metadata from the

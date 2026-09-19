@@ -57,6 +57,9 @@ envelope shapes (`docs/modules/contracts.md`).
   its successors remain the captured physical context. Discover queue rows
   resolve recommendation keys and keep placeholder slots for unresolvable ids
   so row indices stay aligned with the backend queue.
+- Video staging requests use that same audible identity, including focused
+  recommendation keys. Missing recommendation artwork renders the same
+  deterministic custom design in the backdrop and media stage.
 - Recommendation rows select through `discover_select` while Discover is
   enabled and through focused preview otherwise. Their Add to playlist action
   remains available while audio is pending or unavailable; the backend reuses

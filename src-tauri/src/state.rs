@@ -769,6 +769,10 @@ mod tests {
 
         state.video_stage_track(id.clone()).expect("pressure must defer, not error");
         assert_eq!(state.tasks.active_count(), before, "staging must not spawn under pressure");
+        assert!(!state.video_current.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|video| {
+            video.track_id.as_ref() == Some(&id)
+                && matches!(video.status, crate::contracts::events::VideoStatus::Loading)
+        }), "pressure rejection must not publish Loading without a worker");
         // Drains cleanly once dummies finish.
         std::thread::sleep(std::time::Duration::from_millis(1700));
         let _ = std::fs::remove_dir_all(&video_root);
@@ -780,13 +784,13 @@ mod tests {
     #[test]
     fn prefetch_plan_covers_current_plus_depth_successors() {
         let id = |n: &str| TrackId::new(format!("metadata:t{n}:0")).unwrap();
-        let queue: Vec<TrackId> = (0..6).map(|n| id(&n.to_string())).collect();
+        let queue: Vec<TrackId> = (0..10).map(|n| id(&n.to_string())).collect();
         // Current mid-queue: current first, then exactly depth successors.
         let plan = prefetch_plan(&queue, Some(2), VIDEO_PREFETCH_DEPTH);
         assert_eq!(plan.len(), 1 + VIDEO_PREFETCH_DEPTH);
         assert_eq!(plan[0], queue[2]);
         assert_eq!(plan[1], queue[3]);
-        assert_eq!(plan[3], queue[5]);
+        assert_eq!(plan[VIDEO_PREFETCH_DEPTH], queue[2 + VIDEO_PREFETCH_DEPTH]);
         // No current index: first `depth` entries.
         let plan = prefetch_plan(&queue, None, VIDEO_PREFETCH_DEPTH);
         assert_eq!(plan.len(), VIDEO_PREFETCH_DEPTH);
@@ -795,16 +799,70 @@ mod tests {
         let short = vec![id("x")];
         let plan = prefetch_plan(&short, Some(0), VIDEO_PREFETCH_DEPTH);
         assert_eq!(plan, short);
+
+        let recommendation = id("focused-rec");
+        let focused = audible_video_plan(
+            &queue,
+            Some(2),
+            Some(recommendation.clone()),
+            true,
+            VIDEO_PREFETCH_DEPTH,
+        );
+        assert_eq!(focused[0], recommendation);
+        assert_eq!(&focused[1..], &queue[3..3 + VIDEO_PREFETCH_DEPTH]);
     }
 
     #[test]
-    fn pending_preview_work_cancels_and_gates_speculative_video() {
-        let state = AppState::new(1);
-        let library_track = TrackId::new("library-track").unwrap();
+    fn video_stages_a_recommendation_from_session_metadata() {
+        let state = AppState::new(8);
+        let video_root = std::env::temp_dir().join(format!("luno-video-recommendation-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&video_root);
+        state.set_video_runtime(video_root.clone(), Some(PathBuf::from("/nonexistent/yt-dlp")), None);
+        let stager = crate::video::staging::VideoStage::at(&video_root, None).expect("stager");
+        stager.record_index("artistsong", "abc123");
+        let cached = stager.external_destination(crate::video::staging::Slot::Current, "abc123").unwrap();
+        std::fs::write(&cached, b"fake mp4 bytes").unwrap();
+        let seed = PreviewSeed { artist: "Artist".into(), title: "Song".into() };
+        let id = AppState::preview_ids(std::slice::from_ref(&seed)).unwrap().remove(0);
+        *state.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = vec![seed];
+
+        state.video_stage_track(id.clone()).expect("recommendation video request");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let ready = state.video_current.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|video| {
+                video.track_id.as_ref() == Some(&id)
+                    && matches!(video.status, crate::contracts::events::VideoStatus::Ready)
+            });
+            if ready { break; }
+            assert!(std::time::Instant::now() < deadline, "recommendation video did not stage");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let _ = std::fs::remove_dir_all(&video_root);
+    }
+
+    #[test]
+    fn pending_preview_work_still_allows_the_audible_video() {
+        let state = AppState::new(8);
+        let video_root = std::env::temp_dir().join(format!("luno-video-preview-priority-{}", std::process::id()));
+        let music_root = std::env::temp_dir().join(format!("luno-video-preview-priority-lib-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&video_root);
+        let _ = std::fs::remove_dir_all(&music_root);
+        state.set_video_runtime(video_root.clone(), Some(PathBuf::from("/nonexistent/yt-dlp")), None);
+        let stager = crate::video::staging::VideoStage::at(&video_root, None).expect("stager");
+        stager.record_index("artistsong", "abc123");
+        let cached = stager.external_destination(crate::video::staging::Slot::Current, "abc123").unwrap();
+        std::fs::write(&cached, b"fake mp4 bytes").unwrap();
+        let playlist = music_root.join("Unsorted");
+        std::fs::create_dir_all(&playlist).unwrap();
+        let path = playlist.join("Artist - Song.wav");
+        write_wav_fixture(&path);
+        let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), vec![path])]));
+        let library_track = snapshot.tracks[0].id.clone();
+        state.set_playing(library_track.clone(), vec![library_track.clone()]);
         let recommendation = TrackId::new("recommendation-track").unwrap();
         let session = PreviewSession::start_prefetch(
             7,
-            vec![library_track],
+            vec![library_track.clone()],
             0,
             vec![recommendation],
         )
@@ -814,9 +872,18 @@ mod tests {
 
         state.kick_video_pipeline();
 
-        assert!(state.video_cancel.lock().unwrap_or_else(|e| e.into_inner()).load(Ordering::Acquire));
-        assert!(state.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).load(Ordering::Acquire));
-        assert!(!*state.video_prefetch_running.lock().unwrap_or_else(|e| e.into_inner()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let ready = state.video_current.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|video| {
+                video.track_id.as_ref() == Some(&library_track)
+                    && matches!(video.status, crate::contracts::events::VideoStatus::Ready)
+            });
+            if ready { break; }
+            assert!(std::time::Instant::now() < deadline, "pending recommendation audio blocked the audible video");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let _ = std::fs::remove_dir_all(&video_root);
+        let _ = std::fs::remove_dir_all(&music_root);
     }
 
     #[test]
@@ -1214,8 +1281,11 @@ mod tests {
 
         let result = state.dispatch(command("video-e2e", Command::VideoStage { track_id: track_id.clone() }));
         eprintln!("[e2e] dispatch acknowledged: {result:?}");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
         let mut final_status = String::from("timeout");
+        let mut quick_ready = false;
+        let mut high_ready = false;
+        let mut staged_path: Option<PathBuf> = None;
         while std::time::Instant::now() < deadline {
             // Drain so each event prints once (otherwise the growing pending
             // queue re-prints the same envelope every poll and hides progress).
@@ -1224,15 +1294,38 @@ mod tests {
                 if let crate::contracts::events::Event::VideoState { state: video } = &envelope.event {
                     eprintln!("[e2e] video event: status={:?} progress={:?} staged={:?} gen={}", video.status, video.download_progress, video.staged_path, video.generation.0);
                     final_status = format!("{:?}", video.status);
+                    if matches!(video.status, crate::contracts::events::VideoStatus::Ready | crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Paused) {
+                        quick_ready = true;
+                        staged_path = video.staged_path.as_ref().map(PathBuf::from);
+                        high_ready |= video.revision.is_some_and(|revision| revision >= 2);
+                    }
                 }
             }
-            if final_status.contains("Ready") || final_status.contains("Unavailable") { break; }
+            if high_ready || final_status.contains("Unavailable") { break; }
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
         eprintln!("[e2e] FINAL STATUS: {final_status}");
         let entries: Vec<_> = std::fs::read_dir(&video_root).map(|rd| rd.flatten().map(|e| e.path()).collect::<Vec<_>>()).unwrap_or_default();
         eprintln!("[e2e] staged files: {entries:?}");
-        assert!(final_status == "Ready" || final_status == "Unavailable", "pipeline never settled (stuck loading)");
+        assert!(quick_ready, "pipeline never published the quick tier: {final_status}");
+        assert!(high_ready, "pipeline never published the high-tier replacement: {final_status}");
+        let staged_path = staged_path.expect("ready video path");
+        let stream = crate::video::stream::response_for(
+            &video_root,
+            "GET",
+            &staged_path.to_string_lossy(),
+            Some("bytes=0-1023"),
+        );
+        assert_eq!(stream.status(), 206);
+        assert!(!stream.body().is_empty());
+
+        let probe = std::process::Command::new(bin.join("ffprobe"))
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0"])
+            .arg(&staged_path)
+            .output()
+            .expect("ffprobe staged video");
+        assert!(probe.status.success());
+        assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "h264");
     }
 
     #[test]
@@ -1961,20 +2054,19 @@ pub fn heal_track_id(candidates: &std::collections::BTreeMap<TrackId, PathBuf>, 
     None
 }
 
-/// How many UPCOMING queue tracks get their videos pre-downloaded (the
-/// current track is always included on top of this). Three covers typical
-/// near-term skips without re-creating the unbounded-download freeze.
-pub const VIDEO_PREFETCH_DEPTH: usize = 3;
+/// How many UPCOMING context tracks get a quick-tier video pre-download (the
+/// audible track is always included on top of this).
+pub const VIDEO_PREFETCH_DEPTH: usize = 5;
 
 /// Task-registry pressure at which video staging DEFERS instead of spawning
 /// (registry cap is 32; keeping slots free guarantees playback-load,
 /// heartbeat, scan and discovery tasks never starve behind media work).
 pub const VIDEO_STAGE_PRESSURE_LIMIT: usize = 24;
 
-/// How long a stage worker may wait for the staging store before giving up
-/// (the Loading placeholder stays and the next kick/poll retries). Generous:
-/// prefetch downloads of long videos legitimately hold the store for minutes.
-pub const VIDEO_STAGE_WAIT_CAP_SECS: u64 = 300;
+/// How long a current-track worker may wait for the staging store. Speculative
+/// work is cancellable and uses cloned store handles, so a longer wait means a
+/// broken owner; the worker settles its Loading slot instead of orphaning it.
+pub const VIDEO_STAGE_WAIT_CAP_SECS: u64 = 15;
 
 /// Pure plan builder for one pipeline pass: the CURRENT track first (its
 /// staging publishes UI events), then up to `depth` upcoming queue ids in
@@ -1988,6 +2080,27 @@ pub fn prefetch_plan(queue: &[TrackId], current_index: Option<usize>, depth: usi
             plan.extend(queue.iter().skip(index + 1).take(depth).cloned());
         }
         None => plan.extend(queue.iter().take(depth).cloned()),
+    }
+    plan
+}
+
+/// Video plan for the audible identity and its authoritative successors.
+/// Focused preview keeps a recommendation outside the physical queue, so its
+/// first entry is the audible overlay followed by physical successors.
+pub fn audible_video_plan(
+    queue: &[TrackId],
+    current_index: Option<usize>,
+    audible: Option<TrackId>,
+    focused_preview: bool,
+    depth: usize,
+) -> Vec<TrackId> {
+    if !focused_preview {
+        return prefetch_plan(queue, current_index, depth);
+    }
+    let mut plan = Vec::new();
+    if let Some(audible) = audible { plan.push(audible); }
+    if let Some(index) = current_index {
+        plan.extend(queue.iter().skip(index.saturating_add(1)).take(depth).cloned());
     }
     plan
 }
@@ -2163,6 +2276,35 @@ impl AppState {
         }
     }
 
+    /// Resolve this worker's Loading promise when it cannot continue. The
+    /// identity check prevents an old cancellation from overwriting a newer
+    /// track's slot.
+    fn settle_video_loading(&self, track_id: &TrackId, generation: u64) {
+        let changed = {
+            let mut current = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
+            let owns_loading = current.as_ref().is_some_and(|video| {
+                video.track_id.as_ref() == Some(track_id)
+                    && video.generation.0 == generation
+                    && matches!(video.status, crate::contracts::events::VideoStatus::Loading)
+            });
+            if owns_loading {
+                *current = Some(crate::contracts::events::VideoState {
+                    track_id: Some(track_id.clone()),
+                    source_url: None,
+                    staged_path: None,
+                    status: crate::contracts::events::VideoStatus::Unavailable,
+                    position_ms: 0,
+                    download_progress: None,
+                    revision: None,
+                    fullscreen: false,
+                    generation: Generation(generation),
+                });
+            }
+            owns_loading
+        };
+        if changed { self.publish_video_state(); }
+    }
+
     fn video_snapshot_json(&self) -> Value {
         match self.video_current.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             Some(video) => crate::video::runtime::video_state_json(&video),
@@ -2192,88 +2334,31 @@ impl AppState {
             message: "video search is unavailable until the download helper is configured".into(),
             retryable: false,
         })?;
-        // A staging worker holds this lock for the whole download; never pile
-        // blocked dispatches behind it. But the spinner must appear
-        // IMMEDIATELY, so claim the UI right away — WITHOUT minting a new
-        // generation. Minting fresh generations here made later real worker
-        // results (carrying older generations — e.g. Unavailable for a track
-        // with no video) get DROPPED by the frontend staleness filter:
-        // permanent spinners on tracks that have no videos. Reusing the
-        // slot's CURRENT generation keeps the event stream monotonic, and the
-        // ownership guard lets the busy worker's own completion win over this
-        // placeholder.
-        // PRESSURE + STORE-BUSY GATE: spawning a stage worker while the
-        // runtime is saturated or another download holds the store used to
-        // pile blocked threads into the task registry (the song-page poll
-        // fires every 2 s while Loading) until the registry cap starved
-        // playback-load/heartbeat — the "shuffle-skip makes the whole app
-        // lag / Busy" report. Busy here means: keep/reuse the Loading
-        // placeholder and let the next kick or 2 s poll retry; never queue.
+        // Pressure rejection happens BEFORE publishing Loading. A Loading
+        // state is a promise that an inflight worker owns it; returning a
+        // placeholder without a worker is how the permanent spinner formed.
         if self.tasks.active_count() >= VIDEO_STAGE_PRESSURE_LIMIT {
-            let mut current = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
-            match current.as_ref() {
-                Some(v) if v.track_id.as_ref() == Some(&track_id)
-                    && matches!(v.status, crate::contracts::events::VideoStatus::Loading | crate::contracts::events::VideoStatus::Ready | crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Paused) => {}
-                _ => {
-                    let generation = current.as_ref().map(|v| v.generation).unwrap_or(Generation(0));
-                    *current = Some(crate::contracts::events::VideoState {
-                        track_id: Some(track_id.clone()),
-                        source_url: None,
-                        staged_path: None,
-                        status: crate::contracts::events::VideoStatus::Loading,
-                        position_ms: 0,
-                        download_progress: None,
-                        revision: None,
-                        fullscreen: false,
-                        generation,
-                    });
-                    drop(current);
-                    self.publish_video_state();
-                }
+            let corpse_generation = self.video_current.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|video| {
+                let corpse = video.track_id.as_ref() == Some(&track_id)
+                    && matches!(video.status, crate::contracts::events::VideoStatus::Loading)
+                    && !self.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).contains(&track_id);
+                corpse.then_some(video.generation.0)
+            });
+            if let Some(generation) = corpse_generation {
+                self.settle_video_loading(&track_id, generation);
             }
             eprintln!("[luno-video] runtime pressure high ({} tasks); deferring stage for {track_id:?}", self.tasks.active_count());
             return Ok(self.video_snapshot_json());
         }
-        let _stager_ready = match self.video_stager.try_lock() {
-            Ok(guard) => guard.is_some(),
-            Err(_) => {
-                let mut current = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
-                match current.as_ref() {
-                    // Already pending for THIS track: nothing to publish.
-                    Some(v) if v.track_id.as_ref() == Some(&track_id) && matches!(v.status, crate::contracts::events::VideoStatus::Loading) => {
-                        drop(current);
-                        return Ok(self.video_snapshot_json());
-                    }
-                    // Claim the slot by REUSING its live generation.
-                    Some(v) => {
-                        let generation = v.generation;
-                        *current = Some(crate::contracts::events::VideoState {
-                            track_id: Some(track_id.clone()),
-                            source_url: None,
-                            staged_path: None,
-                            status: crate::contracts::events::VideoStatus::Loading,
-                            position_ms: 0,
-                            download_progress: None,
-                            revision: None,
-                            fullscreen: false,
-                            generation,
-                        });
-                        drop(current);
-                        self.publish_video_state();
-                        eprintln!("[luno-video] store busy; queued spinner for {track_id:?}");
-                        return Ok(self.video_snapshot_json());
-                    }
-                    // Empty slot: no generations at stake — take the normal path.
-                    None => false,
-                }
-            }
-        };
         let (artist, title) = {
             let snapshot = self.library();
             let track = snapshot.tracks.iter().find(|track| track.id == track_id);
             match track {
                 Some(track) => (track.artist.clone(), track.title.clone()),
-                None => return Err(ContractError { code: ErrorCode::NotFound, message: "track not found in library".into(), retryable: false }),
+                None => match self.seed_for(&track_id.0) {
+                    Some(seed) => (Some(seed.artist), seed.title),
+                    None => return Err(ContractError { code: ErrorCode::NotFound, message: "track metadata is unavailable".into(), retryable: false }),
+                },
             }
         };
         eprintln!("[luno-video] stage request {track_id:?} artist={artist:?} title={title:?}");
@@ -2371,6 +2456,7 @@ impl AppState {
             let mut stager_guard = loop {
                 if cancel.load(Ordering::Acquire) || state.is_closing() {
                     state.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).remove(&worker_track_id);
+                    state.settle_video_loading(&worker_track_id, generation);
                     return;
                 }
                 match state.video_stager.try_lock() {
@@ -2378,7 +2464,8 @@ impl AppState {
                     Err(_) => {
                         if std::time::Instant::now() >= deadline {
                             state.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).remove(&worker_track_id);
-                            eprintln!("[luno-video] store busy past {VIDEO_STAGE_WAIT_CAP_SECS}s cap; deferring {worker_track_id:?}");
+                            state.settle_video_loading(&worker_track_id, generation);
+                            eprintln!("[luno-video] store busy past {VIDEO_STAGE_WAIT_CAP_SECS}s cap; settled {worker_track_id:?}");
                             return;
                         }
                         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -2469,8 +2556,8 @@ impl AppState {
                 });
                 state.publish_video_state();
                 // BACKGROUND QUALITY UPGRADE (two-tier staging): the file was
-                // just pulled through the QUICK ≤480p ladder for a fast first
-                // frame. Replace it with the full ≤1080p version out of band,
+                // just pulled through the QUICK ≤240p ladder for a fast first
+                // frame. Replace it with the full ≤720p version out of band,
                 // then republish with revision 2 so the webview hot-swaps onto
                 // the upgraded bytes. The shared cancel flag is swapped by the
                 // NEXT stage request, so skipping tracks aborts the upgrade at
@@ -2483,8 +2570,9 @@ impl AppState {
                     let upgrade_track = worker_track_id.clone();
                     let upgrade_generation = generation;
                     let _ = std::thread::Builder::new().name("luno-video-upgrade".into()).spawn(move || {
-                        // Give playback a beat before competing for bandwidth.
-                        for _ in 0..40 {
+                        // Let the webview open the quick file before the
+                        // replacement competes for bandwidth.
+                        for _ in 0..4 {
                             if upgrade_cancel.load(Ordering::Acquire) || upgrade_state.is_closing() { return; }
                             std::thread::sleep(std::time::Duration::from_millis(250));
                         }
@@ -2666,16 +2754,10 @@ impl AppState {
             })
     }
 
-    /// Video-mode core: stage the CURRENT track (if not already staged) and
-    /// then sequentially pre-download the next [`VIDEO_PREFETCH_DEPTH`] queue
-    /// tracks' videos. Safe to call repeatedly — it no-ops while a run is
-    /// already active.
-    ///
-    /// Depth was five tracks at ≤1080p; a single switch then queued hundreds
-    /// of megabytes of downloads behind playback (the 2026-08-25 "switch
-    /// song, window freezes ~20 s" report pulled 350 MB in three minutes).
-    /// Three at the ≤720p HIGH ladder keeps every near-term queue handoff
-    /// instant while bounding the background footprint.
+    /// Video-mode core: stage the audible track, then sequentially prepare
+    /// quick-tier video for the next [`VIDEO_PREFETCH_DEPTH`] tracks from the
+    /// authoritative context. Focused preview uses physical successors;
+    /// Discover uses its projected recommendation queue.
     pub fn kick_video_pipeline(&self) {
         if !self.video_mode_enabled() { return; }
         let preview_pending = {
@@ -2688,12 +2770,11 @@ impl AppState {
             })
         };
         if preview_pending {
-            // Recommendation audio is interactive; video staging is
-            // speculative. Do not let either video worker compete with the
-            // preview helper while its serialized window still has work.
-            self.video_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
+            // Recommendation audio has priority over SPECULATIVE successor
+            // videos. The audible/current video must still stage: cancelling
+            // it here meant every song waited for five recommendation audio
+            // downloads before video could even begin.
             self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
-            return;
         }
         let helper = match self.video_helper.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             Some(helper) => helper,
@@ -2708,22 +2789,43 @@ impl AppState {
         *self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()) = Arc::clone(&cancel);
         *self.video_prefetch_running.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
-        let current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current_index();
-        let queue = self.playback.lock().unwrap_or_else(|e| e.into_inner()).queue().to_vec();
+        let (current, queue) = {
+            let playback = self.playback.lock().unwrap_or_else(|e| e.into_inner());
+            (playback.current_index(), playback.queue().to_vec())
+        };
+        let audible = self.current_track.lock().unwrap_or_else(|e| e.into_inner()).clone()
+            .or_else(|| current.and_then(|index| queue.get(index).cloned()));
+        let focused_preview = self
+            .preview_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|session| session.is_active() && !session.is_prefetch())
+            && !self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|mode| mode.is_active());
         // Track the CURRENT id so speculative prefetch can yield the staging
         // lock to it (below): otherwise a prefetch download can win the lock
         // and the current video spins with no progress until the prefetch ends.
-        let current_id = current.and_then(|index| queue.get(index).cloned());
+        let current_id = audible.clone();
         let library = self.library();
         let resolve = |track_id: &TrackId| -> Option<(String, Option<String>)> {
-            library.tracks.iter().find(|track| track.id == *track_id).map(|track| (track.title.clone(), track.artist.clone()))
+            library
+                .tracks
+                .iter()
+                .find(|track| track.id == *track_id)
+                .map(|track| (track.title.clone(), track.artist.clone()))
+                .or_else(|| self.seed_for(&track_id.0).map(|seed| (seed.title, Some(seed.artist))))
         };
-        // Current first (its staging publishes UI state), then the next three.
-        let plan = prefetch_plan(&queue, current, VIDEO_PREFETCH_DEPTH);
-        let plans: Vec<(TrackId, String, Option<String>)> = plan
+        let plan = audible_video_plan(&queue, current, audible, focused_preview, VIDEO_PREFETCH_DEPTH);
+        let mut plans: Vec<(TrackId, String, Option<String>)> = plan
             .into_iter()
             .filter_map(|id| resolve(&id).map(|(title, artist)| (id, title, artist)))
             .collect();
+        if preview_pending {
+            // Keep only the audible/current item until the serialized audio
+            // window settles; the final preview completion re-kicks the full
+            // five-successor video pass.
+            plans.truncate(1);
+        }
 
         let state = self.clone();
         let cancel_error_path = Arc::clone(&cancel);
@@ -2741,7 +2843,7 @@ impl AppState {
                 }
                 // CURRENT slot work must go through the same machinery as a
                 // manual request so the UI sees Loading → Ready events.
-                let is_current = state.playback.lock().unwrap_or_else(|e| e.into_inner()).current() == Some(&track_id);
+                let is_current = current_id.as_ref() == Some(&track_id);
                 if is_current {
                     let _ = state.video_stage_track(track_id.clone());
                 } else {
@@ -2922,7 +3024,6 @@ impl AppState {
         let session = PreviewSession::start(generation, queue, index, ids, &tapped)
             .ok_or_else(|| ContractError::invalid("preview session could not start"))?;
         *self.preview_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
-        self.video_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         *self.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.to_vec();
         self.preview_cancelled.store(false, Ordering::Release);
@@ -2980,7 +3081,6 @@ impl AppState {
         let session = PreviewSession::start_prefetch(generation, queue, index, ids)
             .ok_or_else(|| ContractError::invalid("preview prefetch could not start"))?;
         *self.preview_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
-        self.video_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         *self.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.to_vec();
         self.preview_cancelled.store(false, Ordering::Release);

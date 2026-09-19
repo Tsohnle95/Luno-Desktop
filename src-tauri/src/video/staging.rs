@@ -25,7 +25,7 @@ pub struct VideoStage { root: PathBuf, library_root: Option<PathBuf>, generation
 /// id), so a cached video still sat behind minutes of network work.
 ///
 /// Entries carry a QUALITY TIER: `"high"` (final ≤720p bytes — also how every
-/// pre-tier legacy entry reads) or `"quick"` (the ≤480p first pass whose HD
+/// pre-tier legacy entry reads) or `"quick"` (the ≤240p first pass whose HD
 /// upgrade was interrupted before it could replace the file — app restart,
 /// track switch cancelling the upgrade, …). Adoption paths use the tier to
 /// decide `needs_upgrade`, so an interrupted quick pass is RE-UPGRADED on the
@@ -34,7 +34,7 @@ const INDEX_FILE: &str = "index.json";
 
 /// Final-quality tier marker (≤720p ladder or legacy full-ladder bytes).
 pub const INDEX_TIER_HIGH: &str = "high";
-/// Fast first-pass tier (≤480p) pending its background quality upgrade.
+/// Fast first-pass tier (≤240p) pending its background quality upgrade.
 pub const INDEX_TIER_QUICK: &str = "quick";
 
 fn index_entry(value: &serde_json::Value) -> Option<(String, &'static str)> {

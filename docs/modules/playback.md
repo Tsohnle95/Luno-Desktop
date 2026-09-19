@@ -71,11 +71,19 @@ What it does not own: library snapshots and track identity
 - Staging requests collapse: repeated requests for one track dedupe to a
   single cancellable waiter; a finishing worker publishes only into an
   empty slot, its own placeholder, or a slot nothing newer claimed.
-- Under registry pressure staging defers instead of spawning, so
-  playback-load/heartbeat always have slots.
-- Video source fallback forms run sequentially: concurrent PyInstaller
-  yt-dlp startups contend with interactive recommendation preview work.
-- Prefetch plans current + exactly `VIDEO_PREFETCH_DEPTH` successors.
+- A `Loading` video state always has a live inflight worker. Registry pressure
+  defers before publishing, and cancellation/store-wait exits settle their
+  owned slot, so playback-load/heartbeat stay available without orphaned
+  spinners.
+- Video source lookup uses the fast public results path first, falls back to
+  sequential yt-dlp queries, and stops after three strict candidates.
+- Prefetch plans the audible item plus exactly five authoritative successors:
+  physical successors for focused preview, projected successors for Discover.
+- Current and successor downloads use the H.264 quick tier (≤240p). The
+  current file publishes immediately, then a cancellable H.264 high-tier
+  replacement (≤720p) swaps in place and republishes the video revision.
+- `null` progress means source lookup; 0–100 means the yt-dlp transfer has
+  started. The UI renders 0% as determinate instead of calling it search.
 - Pause never gates staging: videos stage and publish `Ready` while
   paused; resume runs a catch-up pipeline pass when current video is
   unresolved. Dead `Loading` slots (no live worker) restage.

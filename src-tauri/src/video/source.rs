@@ -20,6 +20,9 @@ pub struct VideoSource {
 }
 
 pub const MAX_RESULTS: usize = 10;
+/// Staging tries at most three candidates, so three strict matches are enough
+/// to stop launching heavyweight fallback searches.
+pub const READY_RESULTS: usize = 3;
 
 pub fn query_forms(artist: Option<&str>, title: &str) -> Vec<String> {
     let title = title.trim();
@@ -32,7 +35,8 @@ pub fn query_forms(artist: Option<&str>, title: &str) -> Vec<String> {
     forms
 }
 
-/// Search each fallback form until ten relevant, ID-unique results exist.
+/// Search fallback forms until three strict, ID-unique results exist. If a
+/// form cannot supply them, retain relevant relaxed candidates and continue.
 /// The callback is deliberately provider-neutral and may perform blocking work.
 ///
 /// Admission is two-tier so one refused upload cannot dead-end staging
@@ -67,7 +71,7 @@ where
             };
             if overlap == wanted_title.len() {
                 strict.push(source);
-                if strict.len() == MAX_RESULTS { return strict; }
+                if strict.len() == READY_RESULTS { return strict; }
             } else {
                 relaxed.push((overlap, source));
             }

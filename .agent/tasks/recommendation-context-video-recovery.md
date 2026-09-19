@@ -75,5 +75,5 @@ followed by a background high-tier replacement with truthful progress.
 | 1 | Reproduce artwork, focused queue, rolling audio, and video failures | complete |
 | 2 | Repair recommendation artwork and focused session ownership | complete |
 | 3 | Repair rolling five-item audio preparation | complete |
-| 4 | Repair progressive video staging and five-successor prefetch | pending |
+| 4 | Repair progressive video staging and five-successor prefetch | complete |
 | 5 | Live smoke, canonical gates, docs, cumulative review | pending |
