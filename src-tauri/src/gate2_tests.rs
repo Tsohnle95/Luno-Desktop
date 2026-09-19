@@ -1105,9 +1105,9 @@ fn discover_failure_is_terminal_and_pipeline_continues() {
 
 #[test]
 fn discover_mode_handoff_ends_without_restoring_when_the_queue_is_replaced() {
-    let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
     let state = isolated_preview_state("discover-handoff", 16);
-    state.set_preview_toolchain(Some(helper), Some(ffmpeg));
+    let staged = preview_store_root("discover-handoff").join("Artist0-Track0.aac");
+    fs::write(&staged, b"ID3already prepared recommendation").unwrap();
     let seed = TrackId("seed".into());
     state.set_playing(seed.clone(), vec![seed.clone(), TrackId("next".into())]);
     state
@@ -1115,9 +1115,12 @@ fn discover_mode_handoff_ends_without_restoring_when_the_queue_is_replaced() {
             seeds: vec![preview_seed("Artist0", "Track0")],
         }))
         .expect("enable must start the session");
-    wait_until(5, "handoff asset preparation", || {
-        discover_snapshots(&state).iter().any(|snapshot| snapshot.prepared.contains(&"Artist0-Track0".to_string()))
-    }, || format!("{:#?}", discover_snapshots(&state)));
+    assert!(
+        discover_snapshots(&state)
+            .iter()
+            .any(|snapshot| snapshot.prepared.contains(&"Artist0-Track0".to_string())),
+        "enable must adopt the prepared asset"
+    );
 
     // The user replaces the queue wholesale mid-session.
     let user_track = TrackId("user-track".into());
