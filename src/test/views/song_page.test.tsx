@@ -225,4 +225,32 @@ describe("Recommendation preview progress", () => {
     expect(html).toContain("Queued for temporary preview");
     expect(html.match(/<span class="luno-video-progress/g)).toHaveLength(1);
   });
+
+  it("keeps playlist saving available while preview is pending or failed", () => {
+    const pending = renderToStaticMarkup(
+      <Recommendations
+        seed={track}
+        items={[first]}
+        state="ready"
+        backendAvailable
+        playlists={[{ id: "playlist:test", name: "Test", path: "/tmp/test", url: null, ordered_track_ids: [] }]}
+        preview={{ generation: 1, active: true, current: null, window: [firstKey], prepared: [], unavailable: [], cancelled: false, progress: [] }}
+        onSave={() => undefined}
+      />
+    );
+    expect(pending).toContain("Add to playlist");
+    const failed = renderToStaticMarkup(
+      <Recommendations
+        seed={track}
+        items={[first]}
+        state="ready"
+        backendAvailable
+        playlists={[]}
+        preview={{ generation: 1, active: false, current: null, window: [firstKey], prepared: [], unavailable: [firstKey], cancelled: false, progress: [] }}
+        onSave={() => undefined}
+        onCreatePlaylist={() => undefined}
+      />
+    );
+    expect(failed).toContain("Add to playlist");
+  });
 });

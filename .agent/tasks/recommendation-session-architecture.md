@@ -76,8 +76,8 @@ changes.
 | 1 | Reproduce lifecycle, navigation, failure, and save regressions in backend tests | complete | targeted `gate2_tests` + state-machine tests | pending |
 | 2 | Consolidate asset/work ownership and repair navigation/projection invariants | complete | focused Rust integration tests | pending |
 | 3 | Make helper failures terminal, diagnostic, retryable, and able to continue | complete | preview-worker + failure-path tests | pending |
-| 4 | Align frontend status/actions and verify playlist picker/create/save flow | active | song-page/shell/bridge tests | pending |
-| 5 | Live/helper smoke, canonical gates, docs, cumulative review | pending | direct helper, `npm run verify`, Cargo, build | pending |
+| 4 | Align frontend status/actions and verify playlist picker/create/save flow | complete | song-page/shell/bridge tests | pending |
+| 5 | Live/helper smoke, canonical gates, docs, cumulative review | active | direct helper, `npm run verify`, Cargo, build | pending |
 
 ## Validation plan
 

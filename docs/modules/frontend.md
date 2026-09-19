@@ -47,13 +47,18 @@ envelope shapes (`docs/modules/contracts.md`).
 - UI mutations from backend events are scheduled via `.after(0, callback)`.
 - Virtual-list rows are 56 px with scroll-region clamping where the
   library list applies — preserve both when touching list rendering.
-- Discover/preview fetching is visibility-scoped: effects fire only while
-  a Discover surface is visible.
+- Song recommendations follow the audible library seed so the first temporary
+  window can prepare before the song page opens. Discover owns that work while
+  enabled; otherwise the prefetch effect is idempotent for the current seed.
 - The song page, player bar, queue, and video correlation follow the AUDIBLE
   track: during a focused preview or discover-mode recommendation the shell
   passes that recommendation as `nowPlaying` instead of the library track still
   behind it. Queue rows resolve recommendation keys and keep placeholder slots
   for unresolvable ids so row indices stay aligned with the backend queue.
+- Recommendation rows select through `discover_select` while Discover is
+  enabled and through focused preview otherwise. Their Add to playlist action
+  remains available while audio is pending or unavailable; the backend reuses
+  a prepared file or starts the durable playlist download path.
 - "Recently added" sorts by `Track.added_ms` (file mtime), not queue order.
 - Video element behavior is CSS-driven; fullscreen toggles must not call
   `window.setFullscreen()` (blacks out WKWebView over the hide
