@@ -42,12 +42,22 @@ pub fn playlist_url(input: &str) -> Option<String> {
     if input.is_empty() {
         return None;
     }
+    if !input.contains('/') && !input.contains('?') {
+        return valid_playlist_id(input).then(|| format!("https://www.youtube.com/playlist?list={input}"));
+    }
+    let lower = input.to_ascii_lowercase();
+    let scheme_end = lower.find("://")?;
+    if !matches!(&lower[..scheme_end], "http" | "https") { return None; }
+    let authority = &lower[scheme_end + 3..];
+    let host = authority.split(['/', '?', '#']).next()?.split('@').next_back()?.split(':').next()?;
+    if !matches!(host, "youtube.com" | "www.youtube.com" | "music.youtube.com" | "m.youtube.com") { return None; }
     let list = input
         .split(['?', '&'])
         .find_map(|part| part.strip_prefix("list="))
-        .or_else(|| (!input.contains("/") && !input.contains('?')).then_some(input))?;
-    (!list.is_empty()).then(|| format!("https://www.youtube.com/playlist?list={list}"))
+        .and_then(|value| value.split('#').next())?;
+    valid_playlist_id(list).then(|| format!("https://www.youtube.com/playlist?list={list}"))
 }
+fn valid_playlist_id(value: &str) -> bool { !value.is_empty() && value.len() <= 128 && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) }
 pub fn parse_title(title: &str) -> (String, String) {
     title
         .split_once(" - ")
@@ -89,7 +99,7 @@ pub fn plan(
             titles.insert(title_key);
             Some(SyncItem {
                 entry: entry.clone(),
-                destination: destination.join(format!("{safe}.mp3")),
+                destination: destination.join(format!("{safe}.m4a")),
             })
         })
         .collect()

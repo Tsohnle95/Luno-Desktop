@@ -391,6 +391,7 @@ fn downloader_markers_support_corruption_legacy_retry_and_sync_dedupe() {
         ],
     );
     assert_eq!(items.len(), 1);
+    assert_eq!(items[0].destination.extension().and_then(|value| value.to_str()), Some("m4a"));
     let token = CancellationToken::new();
     let result = sync_sequential(&destination, &items, &token, |item, _| {
         fs::write(&item.destination, b"ID3new").unwrap();
@@ -436,6 +437,17 @@ fn downloader_markers_support_corruption_legacy_retry_and_sync_dedupe() {
     );
     assert!(matches!(result.outcomes[0].1, ItemOutcome::Downloaded));
     assert!(Markers::load(&destination).successful.contains("valid"));
+}
+
+#[test]
+fn youtube_playlist_urls_are_canonical_and_reject_lookalike_hosts() {
+    use crate::download::sync::playlist_url;
+    assert_eq!(playlist_url("PL_abc-123"), Some("https://www.youtube.com/playlist?list=PL_abc-123".into()));
+    assert_eq!(playlist_url("https://music.youtube.com/playlist?list=PL_abc-123&feature=share"), Some("https://www.youtube.com/playlist?list=PL_abc-123".into()));
+    assert_eq!(playlist_url("https://www.youtube.com/watch?v=abc&list=PL_abc-123"), Some("https://www.youtube.com/playlist?list=PL_abc-123".into()));
+    assert_eq!(playlist_url("https://youtube.com.evil.test/playlist?list=PL_abc-123"), None);
+    assert_eq!(playlist_url("https://example.test/playlist?list=PL_abc-123"), None);
+    assert_eq!(playlist_url("https://www.youtube.com/playlist?list=bad%20id"), None);
 }
 
 #[test]

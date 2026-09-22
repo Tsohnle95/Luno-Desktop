@@ -109,6 +109,9 @@ describe("typed IPC bridge and projection", () => {
   it("validates playlist and track mutation envelopes", () => {
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "create_playlist", payload: { name: "Road trip" } } })).toBe(true);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "create_playlist", payload: { name: "" } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "set_playlist_url", payload: { playlist_id: "playlist:Road trip", url: "https://www.youtube.com/playlist?list=PL123" } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "set_playlist_url", payload: { playlist_id: "playlist:Road trip", url: null } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "set_playlist_url", payload: { playlist_id: "", url: null } } })).toBe(false);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "add_tracks_to_playlist", payload: { track_ids: ["track-1"], playlist_id: "playlist:Road trip" } } })).toBe(true);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "add_tracks_to_playlist", payload: { track_ids: [], playlist_id: "playlist:Road trip" } } })).toBe(false);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "delete_tracks", payload: { track_ids: ["track-1"] } } })).toBe(true);

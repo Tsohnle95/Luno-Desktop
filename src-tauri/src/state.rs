@@ -5121,6 +5121,9 @@ impl AppState {
         // window where play commands for rows still on screen resolved
         // against an EMPTY map and failed with "track is not available
         // locally" — the flaky search-click rejection.
+        let playlist_urls = self.scan_roots().first()
+            .and_then(|root| crate::library::mutations::PlaylistService::new(root).playlist_urls().ok())
+            .unwrap_or_default();
         let mut rebuilt = BTreeMap::<TrackId, PathBuf>::new();
         let mut paths = BTreeMap::<PathBuf, TrackId>::new();
         let mut seen_ids = std::collections::HashSet::<String>::new();
@@ -5202,7 +5205,7 @@ impl AppState {
                 id: playlist_id,
                 name: name.clone(),
                 path: directory.map(|dir| dir.display().to_string()),
-                url: None,
+                url: playlist_urls.get(&name).cloned(),
                 ordered_track_ids: ids,
             });
         }
@@ -5500,6 +5503,7 @@ impl AppState {
                 Ok(serde_json::json!({ "root": root.display().to_string() }))
             }
             Command::CreatePlaylist { name } => self.create_playlist(&name),
+            Command::SetPlaylistUrl { playlist_id, url } => self.set_playlist_url(&playlist_id, url.as_deref()),
             Command::DeletePlaylist { playlist_id } => self.delete_playlist(&playlist_id),
             Command::AddTracksToPlaylist { track_ids, playlist_id } => self.add_tracks_to_playlist(&track_ids, &playlist_id),
             Command::DeleteTracks { track_ids } => self.delete_tracks(&track_ids),
@@ -5946,6 +5950,19 @@ impl AppState {
         let service = crate::library::mutations::PlaylistService::new(self.playlist_mutation_root()?); let mut index = crate::library::index::LibraryIndex::default();
         let result = service.create(name, &mut index).map_err(playlist_mutation_error)?; let generation = self.schedule_mutation_scan()?;
         Ok(serde_json::json!({ "name": name.trim(), "path": result.value.display().to_string(), "generation": generation }))
+    }
+
+    fn set_playlist_url(&self, playlist_id: &PlaylistId, url: Option<&str>) -> Result<Value, ContractError> {
+        let name = self.playlist_name(playlist_id)?;
+        let normalized = match url.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(value) => Some(crate::download::sync::playlist_url(value).ok_or_else(|| ContractError::invalid("enter a valid YouTube playlist URL"))?),
+            None => None,
+        };
+        let service = crate::library::mutations::PlaylistService::new(self.playlist_mutation_root()?);
+        let mut index = crate::library::index::LibraryIndex::default();
+        service.set_url(&name, normalized.as_deref(), &mut index).map_err(playlist_mutation_error)?;
+        let generation = self.schedule_mutation_scan()?;
+        Ok(serde_json::json!({ "playlist_id": playlist_id, "url": normalized, "generation": generation }))
     }
 
     fn delete_playlist(&self, playlist_id: &PlaylistId) -> Result<Value, ContractError> {

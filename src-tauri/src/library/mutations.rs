@@ -60,6 +60,7 @@ impl PlaylistService {
         let mut urls = self.read_urls()?; match &value { Some(v) => { urls.insert(safe, v.clone()); }, None => { urls.remove(&safe); } }
         self.write_urls(&urls)?; Ok(self.result(value, index))
     }
+    pub fn playlist_urls(&self) -> Result<BTreeMap<String, String>, MutationError> { self.read_urls() }
     pub fn dump(&self, source: &str, destination: &str, index: &mut LibraryIndex) -> Result<MutationResult<CopyResult>, MutationError> {
         let source_path = self.playlist_path(source)?; let destination_path = self.playlist_path(destination)?;
         if source_path == destination_path { return Err(MutationError::Collision(destination.to_owned())); }

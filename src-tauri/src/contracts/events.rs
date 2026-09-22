@@ -92,6 +92,7 @@ pub enum Command {
         #[serde(deserialize_with = "super::types::non_empty_string")]
         name: String,
     },
+    SetPlaylistUrl { playlist_id: PlaylistId, url: Option<String> },
     DeletePlaylist { playlist_id: PlaylistId },
     AddTracksToPlaylist { track_ids: Vec<TrackId>, playlist_id: PlaylistId },
     DeleteTracks { track_ids: Vec<TrackId> },

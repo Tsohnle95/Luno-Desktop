@@ -607,6 +607,36 @@ fn playlist_crud_and_allowed_duplicate_persistence_keep_safeguards() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn playlist_url_command_persists_canonical_youtube_url_into_snapshots() {
+    let root = fixture_dir("playlist-url-command");
+    let playlist = root.join("Road trip");
+    fs::create_dir_all(&playlist).unwrap();
+    let track = playlist.join("Artist - Track.mp3");
+    fs::write(&track, b"ID3fixture").unwrap();
+    let state = AppState::new(4);
+    state.set_scan_roots(vec![root.clone()]);
+    state.replace_library(
+        crate::contracts::types::Generation(1),
+        BTreeMap::from([("Road trip".into(), vec![track.clone()])]),
+    );
+    let result = state.dispatch(command("set-playlist-url", Command::SetPlaylistUrl {
+        playlist_id: crate::contracts::types::PlaylistId("playlist:Road trip".into()),
+        url: Some("https://music.youtube.com/playlist?list=PL_fixture-1&feature=share".into()),
+    })).unwrap();
+    assert_eq!(result["url"], "https://www.youtube.com/playlist?list=PL_fixture-1");
+    let snapshot = state.replace_library(
+        crate::contracts::types::Generation(2),
+        BTreeMap::from([("Road trip".into(), vec![track])]),
+    );
+    assert_eq!(snapshot.playlists[0].url.as_deref(), Some("https://www.youtube.com/playlist?list=PL_fixture-1"));
+    assert!(state.dispatch(command("reject-playlist-url", Command::SetPlaylistUrl {
+        playlist_id: crate::contracts::types::PlaylistId("playlist:Road trip".into()),
+        url: Some("https://youtube.com.evil.test/playlist?list=PL_fixture-1".into()),
+    })).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn command(request_id: &str, command: Command) -> CommandEnvelope {
     CommandEnvelope {
         version: 1,
