@@ -713,6 +713,12 @@ fn playlist_sync_downloads_new_ids_once_and_persists_success_markers() {
     let downloaded = playlist.join("Fixture Track.m4a");
     assert!(downloaded.is_file(), "sync should download into the physical playlist");
     assert!(Markers::load(&playlist).successful.contains("fixture-video"));
+    let log = state.dispatch(CommandEnvelope { version: 1, request_id: "sync-log".into(), command: BackendCommand::PlaylistSyncLog {
+        playlist_id: crate::contracts::types::PlaylistId("playlist:Road trip".into()),
+    }}).unwrap();
+    assert_eq!(log["entries"][0]["title"], "Fixture Track");
+    assert_eq!(log["entries"][0]["status"], "downloaded");
+    assert!(log["entries"][0]["at_ms"].as_u64().unwrap() > 0);
     fs::remove_file(&downloaded).unwrap();
 
     let second = loop {
@@ -730,6 +736,23 @@ fn playlist_sync_downloads_new_ids_once_and_persists_success_markers() {
         thread::sleep(Duration::from_millis(10));
     }
     assert!(!downloaded.exists(), "a marker-recorded ID must not be redownloaded even if its local file was removed");
+    assert_eq!(crate::download::sync::read_log(&playlist).unwrap().len(), 1, "skipped IDs must not create false download history");
+}
+
+#[test]
+fn playlist_sync_log_keeps_song_name_date_and_failure_reason() {
+    let root = fixture("playlist-sync-log");
+    let entry = crate::download::sync::PlaylistEntry {
+        id: Some("failed-video".into()), title: "Artist - Missing song".into(), url: None,
+    };
+    crate::download::sync::append_log(&root, &entry, &crate::download::sync::ItemOutcome::Failed("provider refused this video".into())).unwrap();
+    let entries = crate::download::sync::read_log(&root).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].title, entry.title);
+    assert_eq!(entries[0].video_id, entry.id);
+    assert_eq!(entries[0].status, "failed");
+    assert_eq!(entries[0].reason.as_deref(), Some("provider refused this video"));
+    assert!(entries[0].at_ms > 0);
 }
 
 #[cfg(unix)]

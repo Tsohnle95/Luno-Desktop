@@ -5515,6 +5515,7 @@ impl AppState {
             Command::CreatePlaylist { name } => self.create_playlist(&name),
             Command::SetPlaylistUrl { playlist_id, url } => self.set_playlist_url(&playlist_id, url.as_deref()),
             Command::SyncPlaylist { playlist_id } => self.sync_playlist(&playlist_id),
+            Command::PlaylistSyncLog { playlist_id } => self.playlist_sync_log(&playlist_id),
             Command::DeletePlaylist { playlist_id } => self.delete_playlist(&playlist_id),
             Command::AddTracksToPlaylist { track_ids, playlist_id } => self.add_tracks_to_playlist(&track_ids, &playlist_id),
             Command::DeleteTracks { track_ids } => self.delete_tracks(&track_ids),
@@ -6006,25 +6007,44 @@ impl AppState {
         self.submit(spec, move |token| {
             let _active = active;
             state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(0.0));
-            let outcome = (|| -> Result<(usize, usize), String> {
+            let outcome = (|| -> Result<(usize, usize, Option<String>), String> {
                 let entries = crate::download::search::playlist_entries(&state.supervisor, &ytdlp, &url, &token)?;
                 let items = crate::download::sync::plan(&worker_root, &destination, &entries);
-                if items.is_empty() { return Ok((0, 0)); }
+                if items.is_empty() { return Ok((0, 0, None)); }
                 let total = items.len();
                 let mut started = 0usize;
                 let worker_home = worker_root.join(".luno-gate4-worker-home");
                 std::fs::create_dir_all(&worker_home).map_err(|error| format!("download worker home is unavailable: {error}"))?;
-                let result = crate::download::sync::sync_sequential(&destination, &items, &token, |item, item_token| {
+                let mut log_error = None;
+                let result = crate::download::sync::sync_sequential_observed(&destination, &items, &token, |item, item_token| {
                     let item_index = started;
                     started += 1;
                     let source = item.entry.url.as_deref().ok_or_else(|| "playlist entry has no download URL".to_string())?;
                     crate::download::workflows::run_download_helper(&helper, &item.destination, source, &worker_home, item_token, &|fraction| {
                         state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(((item_index as f32 + fraction) / total as f32).clamp(0.0, 0.99)));
                     })
+                }, |entry, item_outcome| {
+                    let safe_outcome = match item_outcome {
+                        crate::download::sync::ItemOutcome::Failed(reason) => crate::download::sync::ItemOutcome::Failed(sanitize_download_error(reason)),
+                        crate::download::sync::ItemOutcome::PermanentFailure(reason) => crate::download::sync::ItemOutcome::PermanentFailure(sanitize_download_error(reason)),
+                        other => other.clone(),
+                    };
+                    if let Err(error) = crate::download::sync::append_log(&destination, entry, &safe_outcome) {
+                        log_error.get_or_insert(error);
+                    }
                 });
                 let downloaded = result.outcomes.iter().filter(|(_, item)| matches!(item, crate::download::sync::ItemOutcome::Downloaded)).count();
+                if let Some(error) = log_error {
+                    if downloaded > 0 { let _ = state.scan_async(); }
+                    return Err(error);
+                }
                 let failed = result.outcomes.iter().filter(|(_, item)| matches!(item, crate::download::sync::ItemOutcome::Failed(_) | crate::download::sync::ItemOutcome::PermanentFailure(_) | crate::download::sync::ItemOutcome::TimedOut)).count();
-                if result.cancelled || token.is_cancelled() { Err("cancelled".into()) } else { Ok((downloaded, failed)) }
+                let first_failure = result.outcomes.iter().find_map(|(id, item)| match item {
+                    crate::download::sync::ItemOutcome::Failed(reason) | crate::download::sync::ItemOutcome::PermanentFailure(reason) => Some(format!("{}: {}", entries.iter().find(|entry| entry.id.as_deref() == Some(id)).map_or(id.as_str(), |entry| entry.title.as_str()), sanitize_download_error(reason))),
+                    crate::download::sync::ItemOutcome::TimedOut => Some(format!("{}: download timed out", entries.iter().find(|entry| entry.id.as_deref() == Some(id)).map_or(id.as_str(), |entry| entry.title.as_str()))),
+                    _ => None,
+                });
+                if result.cancelled || token.is_cancelled() { Err("cancelled".into()) } else { Ok((downloaded, failed, first_failure)) }
             })();
             match outcome {
                 Err(error) if token.is_cancelled() || error == "cancelled" => state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Cancelled, None),
@@ -6033,13 +6053,14 @@ impl AppState {
                     let mut envelope = state.event(generation, Event::Error { error: ContractError { code: ErrorCode::Unavailable, message: sanitize_download_error(&error), retryable: true } });
                     envelope.job_id = Some(worker_job.clone()); state.publish(envelope);
                 }
-                Ok((downloaded, failed)) if failed > 0 => {
+                Ok((downloaded, failed, first_failure)) if failed > 0 => {
                     if downloaded > 0 { let _ = state.scan_async(); }
                     state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Failed, None);
-                    let mut envelope = state.event(generation, Event::Error { error: ContractError { code: ErrorCode::Unavailable, message: format!("playlist sync downloaded {downloaded} and failed {failed}"), retryable: true } });
+                    let detail = first_failure.map(|reason| format!(". First failure: {reason}. Open the playlist Log for details")).unwrap_or_default();
+                    let mut envelope = state.event(generation, Event::Error { error: ContractError { code: ErrorCode::Unavailable, message: format!("playlist sync downloaded {downloaded} and failed {failed}{detail}"), retryable: true } });
                     envelope.job_id = Some(worker_job.clone()); state.publish(envelope);
                 }
-                Ok((downloaded, _)) => {
+                Ok((downloaded, _, _)) => {
                     if downloaded > 0 { let _ = state.scan_async(); }
                     state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Succeeded, Some(1.0));
                 }
@@ -6049,6 +6070,15 @@ impl AppState {
             SpawnError::ShuttingDown => ContractError { code: ErrorCode::ShuttingDown, message: "backend is shutting down".into(), retryable: false },
         })?;
         Ok(serde_json::json!({ "job_id": job_id, "playlist": name }))
+    }
+
+    fn playlist_sync_log(&self, playlist_id: &PlaylistId) -> Result<Value, ContractError> {
+        let name = self.playlist_name(playlist_id)?;
+        let root = self.playlist_mutation_root()?;
+        let destination = std::fs::canonicalize(root.join(name)).map_err(|_| ContractError { code: ErrorCode::NotFound, message: "playlist folder is unavailable".into(), retryable: false })?;
+        if !destination.starts_with(&root) { return Err(ContractError::invalid("playlist destination is unsafe")); }
+        let entries = crate::download::sync::read_log(&destination).map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+        Ok(serde_json::json!({ "entries": entries }))
     }
 
     fn publish_sync_job(&self, job_id: &JobId, generation: Generation, job_state: crate::contracts::types::JobState, progress: Option<f32>) {

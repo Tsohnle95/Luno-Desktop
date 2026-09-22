@@ -83,6 +83,33 @@ export function PlaylistDialog({ action, playlist, playlists = [], busy = false,
 
 export const PlaylistDialogs = PlaylistDialog;
 
+export interface PlaylistSyncLogEntry {
+  title: string;
+  video_id: string | null;
+  at_ms: number;
+  status: string;
+  reason: string | null;
+}
+
+export function PlaylistSyncLogDialog({ playlistName, entries, loading, error, onClose }: {
+  playlistName: string;
+  entries: PlaylistSyncLogEntry[];
+  loading: boolean;
+  error: string | null;
+  onClose: () => void;
+}) {
+  return <DialogFrame title={`Sync log · ${playlistName}`} error={error} onClose={onClose}>
+    {loading ? <p>Loading sync log…</p> : entries.length === 0 ? <p>No songs have been synced yet.</p> : <div className="luno-sync-log">
+      {entries.map((entry, index) => <div key={`${entry.at_ms}-${entry.video_id ?? index}-${index}`}>
+        <strong>{entry.title}</strong>
+        <span>{new Date(entry.at_ms).toLocaleString()} · {entry.status}</span>
+        {entry.reason && <small>{entry.reason}</small>}
+      </div>)}
+    </div>}
+    <footer><button type="button" onClick={onClose}>Close</button></footer>
+  </DialogFrame>;
+}
+
 export function PlaylistUrlDialog({ playlistName, initialUrl, busy = false, error = null, onClose, onSubmit }: {
   playlistName: string;
   initialUrl?: string | null;

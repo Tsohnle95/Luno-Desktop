@@ -25,7 +25,7 @@ import { PlayerBar } from "../components/PlayerBar";
 import { PlaylistPicker } from "../components/PlaylistPicker";
 import { EditTrackDialog } from "../components/EditTrackDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { PlaylistDialog, PlaylistUrlDialog } from "../components/PlaylistDialogs";
+import { PlaylistDialog, PlaylistUrlDialog, PlaylistSyncLogDialog, type PlaylistSyncLogEntry } from "../components/PlaylistDialogs";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
 import { IconChevronLeft, IconChevronRight, IconClose, IconDownload, IconHeart, IconHome, IconLibrary, IconMusicNote, IconSearch, IconUser } from "../components/icons";
@@ -161,6 +161,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [playlistUrlBusy, setPlaylistUrlBusy] = useState(false);
   const [playlistUrlError, setPlaylistUrlError] = useState<string | null>(null);
   const [activePlaylistSync, setActivePlaylistSync] = useState<{ jobId: string; name: string } | null>(null);
+  const [playlistSyncLog, setPlaylistSyncLog] = useState<{ name: string; entries: PlaylistSyncLogEntry[]; loading: boolean; error: string | null } | null>(null);
   const askConfirm = (request: { title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }) => {
     setConfirmError(null);
     setConfirmDialog(request);
@@ -186,6 +187,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   }, [commandError]);
   useEffect(() => {
     if (!commandNotice) return;
+    if (activePlaylistSync) return;
     // Success/partial notices are transient confirmations, not sticky state.
     const timer = window.setTimeout(() => setCommandNotice(null), 5000);
     return () => window.clearTimeout(timer);
@@ -296,14 +298,24 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const syncPlaylist = (playlist: Playlist) => {
     if (!bridge || !available || !playlist.url) return;
     setCommandError(null);
-    setCommandNotice(`Syncing “${playlist.name}”…`);
+    setCommandNotice(`Starting sync for “${playlist.name}”…`);
     void bridge.syncPlaylist(playlist.id)
       .then((value) => {
         const jobId = value && typeof value === "object" && "job_id" in value && typeof value.job_id === "string" ? value.job_id : null;
         if (!jobId) throw new Error("sync did not return a job id");
+        setCommandNotice(null);
         setActivePlaylistSync({ jobId, name: playlist.name });
       })
       .catch((error: unknown) => { setCommandNotice(null); setCommandError(normalizeRuntimeCommandError(error)); });
+  };
+  const openPlaylistSyncLog = (playlist: Playlist) => {
+    if (!bridge || !available) return;
+    setPlaylistSyncLog({ name: playlist.name, entries: [], loading: true, error: null });
+    void bridge.playlistSyncLog(playlist.id).then((value) => {
+      setPlaylistSyncLog((current) => current?.name === playlist.name ? { ...current, entries: value.entries, loading: false } : current);
+    }).catch((error: unknown) => {
+      setPlaylistSyncLog((current) => current?.name === playlist.name ? { ...current, loading: false, error: normalizeRuntimeCommandError(error) } : current);
+    });
   };
   const playShuffled = (items: Track[]) => {
     const first = shuffledFirstTrack(items);
@@ -993,7 +1005,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     </aside>
         <main className="luno-main" data-slot="main" aria-disabled={!available}>{(() => { const backendError = projection.errors.length ? projection.errors[projection.errors.length - 1].message : null; const displayCommandError = commandError && (commandError.includes("PoisonError") || commandError.includes("poison recovered") || commandError.includes("command worker failed"))
               ? "A background task hit an internal error and was recovered. If this repeats, restart the app."
-              : commandError; const videoNotice = !connectedVideo && route === "song_page"; return (!available || displayCommandError || backendError || commandNotice || videoNotice) && <div className="luno-runtime-status" role="status">{!available && <span data-state="backend-unavailable">Backend unavailable; runtime commands are unavailable.</span>}{displayCommandError && <span data-state="command-rejected">{displayCommandError} <button type="button" onClick={() => setCommandError(null)} aria-label="Dismiss error" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{backendError && <span data-state="backend-error">{backendError} <button type="button" onClick={() => backendProjection?.clearErrors?.()} aria-label="Dismiss error" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{commandNotice && <span data-state="command-notice">{commandNotice} <button type="button" onClick={() => setCommandNotice(null)} aria-label="Dismiss notice" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{videoNotice && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}</div>; })()}<div className="luno-main-content luno-scroll">{content}</div></main>
+              : commandError; const videoNotice = !connectedVideo && route === "song_page"; const syncJob = activePlaylistSync ? projection.jobs[activePlaylistSync.jobId] : null; return (!available || displayCommandError || backendError || commandNotice || activePlaylistSync || videoNotice) && <div className="luno-runtime-status" role="status">{!available && <span data-state="backend-unavailable">Backend unavailable; runtime commands are unavailable.</span>}{displayCommandError && <span data-state="command-rejected">{displayCommandError} <button type="button" onClick={() => setCommandError(null)} aria-label="Dismiss error" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{backendError && <span data-state="backend-error">{backendError} <button type="button" onClick={() => backendProjection?.clearErrors?.()} aria-label="Dismiss error" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{activePlaylistSync && <span data-state="playlist-sync">Syncing “{activePlaylistSync.name}”… {syncJob?.progress != null ? `${Math.round(syncJob.progress * 100)}%` : "Checking playlist"}</span>}{commandNotice && <span data-state="command-notice">{commandNotice} <button type="button" onClick={() => setCommandNotice(null)} aria-label="Dismiss notice" style={{ marginLeft: 8, background: "transparent", border: "1px solid currentColor", borderRadius: 4, padding: "2px 6px", cursor: "pointer" }}>Dismiss</button></span>}{videoNotice && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}</div>; })()}<div className="luno-main-content luno-scroll">{content}</div></main>
         <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : panelQueueTracks} currentIndex={panelRecent ? null : panelQueueIndex} recent={panelRecent} backendAvailable={available} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => playQueueEntry(item, panelRecent ? recentTracks : panelQueueTracks)} onPlayNext={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.playNext([item.id])) : setCommandNotice("Only library tracks can be queued."))} onAddToQueue={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.addToQueue([item.id])) : setCommandNotice("Only library tracks can be queued."))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} onContextMenu={openTrackMenu} />}</aside>
         <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={displayTrack} playback={projection.playback} artwork={audibleArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => runCommand(projection.playback?.status === "playing" ? bridge?.pause() : projection.playback?.status === "paused" ? bridge?.resume() : track && bridge?.playWithContext(track.id, queueTracks.map((item) => item.id)))} onNext={() => { if (!bridge || !available) return; runCommand(bridge.next()); }} onPrevious={() => { if (!bridge || !available) return; runCommand(bridge.previous()); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onSeek={(positionMs) => runCommand(bridge?.seek(positionMs))} onVolume={(value) => runCommand(bridge?.setVolume(value))} onVolumeCommit={(value) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }} onOpenTrack={() => navigate("song_page")} onTrackContextMenu={openTrackMenu} />}</footer>
     {route !== "settings" && <div className="luno-resize-handle" style={{ left: showSidebar ? 8 + sidebarWidth - 4 : 2 }} role="separator" aria-orientation="vertical" aria-label="Resize library panel width" onPointerDown={startPanelDrag("sidebar")} />}
@@ -1022,6 +1034,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <hr />
         <button role="menuitem" type="button" onClick={() => { setPlaylistUrlError(null); setPlaylistUrlRequest(contextMenu.playlist!); setContextMenu(null); }}>{contextMenu.playlist.url ? "Edit YouTube playlist link…" : "Add YouTube playlist link…"}</button>
         <button role="menuitem" type="button" disabled={!contextMenu.playlist.url || activePlaylistSync !== null} title={contextMenu.playlist.url ? undefined : "Add a YouTube playlist link first"} onClick={() => { syncPlaylist(contextMenu.playlist!); setContextMenu(null); }}>Sync playlist</button>
+        <button role="menuitem" type="button" onClick={() => { openPlaylistSyncLog(contextMenu.playlist!); setContextMenu(null); }}>Log</button>
         <hr />
         <button className="is-danger" role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); askConfirm({ title: "Empty playlist", message: `Permanently delete every song in “${item.name}” but keep the playlist?`, confirmLabel: "Empty playlist", danger: true, onConfirm: () => runCommand(bridge?.deleteTracks(item.ordered_track_ids)) }); }}>Empty playlist…</button>
         <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); askConfirm({ title: "Delete playlist", message: `Permanently delete the playlist “${item.name}” and all files inside it?`, confirmLabel: "Delete playlist", danger: true, onConfirm: () => { if (libraryScope === item.id) { setLibraryScope("all"); setLibraryHome(false); } runCommand(bridge?.deletePlaylist(item.id)); } }); }}>Delete playlist…</button>
@@ -1032,6 +1045,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     {confirmDialog && <ConfirmDialog title={confirmDialog.title} message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} danger={confirmDialog.danger} busy={confirmBusy} error={confirmError} onClose={() => { if (!confirmBusy) { setConfirmDialog(null); setConfirmError(null); } }} onConfirm={() => { setConfirmBusy(true); setConfirmError(null); try { confirmDialog.onConfirm(); setConfirmBusy(false); setConfirmDialog(null); } catch (error) { setConfirmBusy(false); setConfirmError(normalizeRuntimeCommandError(error)); } }} />}
     {playlistCreateRequest && <PlaylistDialog action="create" busy={playlistCreateBusy} error={playlistCreateError} onClose={() => { if (!playlistCreateBusy) { setPlaylistCreateRequest(null); setPlaylistCreateError(null); } }} onSubmit={(value) => submitCreatePlaylist(value.name ?? "")} />}
     {playlistUrlRequest && <PlaylistUrlDialog playlistName={playlistUrlRequest.name} initialUrl={playlistUrlRequest.url} busy={playlistUrlBusy} error={playlistUrlError} onClose={() => { if (!playlistUrlBusy) { setPlaylistUrlRequest(null); setPlaylistUrlError(null); } }} onSubmit={submitPlaylistUrl} />}
+    {playlistSyncLog && <PlaylistSyncLogDialog playlistName={playlistSyncLog.name} entries={playlistSyncLog.entries} loading={playlistSyncLog.loading} error={playlistSyncLog.error} onClose={() => setPlaylistSyncLog(null)} />}
   </div>;
 }
 

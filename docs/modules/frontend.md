@@ -78,10 +78,11 @@ envelope shapes (`docs/modules/contracts.md`).
   footer now-playing track. Edit/delete are hidden for non-library
   recommendation rows (they have no library file).
 - A physical playlist's context menu owns the YouTube link editor and
-  `Sync playlist` action. Sync stays disabled until a link is present; React
+  `Sync playlist` and `Log` actions. Sync stays disabled until a link is present; React
   sends only the playlist ID, then reflects backend-owned job success,
-  cancellation, and errors. It does not enumerate videos, choose destinations,
-  or decide which entries are new.
+  cancellation, and errors. Active sync progress remains visible until the job
+  ends. Log reads backend-owned dated song outcomes and failure reasons. React
+  does not enumerate videos, choose destinations, or decide which entries are new.
 
 ## Core flows
 

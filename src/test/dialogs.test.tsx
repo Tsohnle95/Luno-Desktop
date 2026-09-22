@@ -5,7 +5,7 @@ import { SettingsView } from "../views/SettingsView";
 import { EditTrackDialog } from "../components/EditTrackDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PlayerBar } from "../components/PlayerBar";
-import { PlaylistUrlDialog } from "../components/PlaylistDialogs";
+import { PlaylistUrlDialog, PlaylistSyncLogDialog } from "../components/PlaylistDialogs";
 
 describe("Gate 4 views", () => {
   it("renders downloader error, cancel, and retry controls", () => {
@@ -70,5 +70,20 @@ describe("YouTube playlist URL dialog", () => {
     expect(html).toContain("only songs Luno has not already seen");
     expect(html).toContain("Remove link");
     expect(html).toContain("PL123");
+  });
+});
+
+describe("Playlist sync log", () => {
+  it("shows dated song outcomes and a useful failure reason", () => {
+    const html = renderToStaticMarkup(<PlaylistSyncLogDialog playlistName="Road trip" loading={false} error={null} onClose={() => {}} entries={[
+      { title: "Artist - New song", video_id: "video-1", at_ms: 1_700_000_000_000, status: "downloaded", reason: null },
+      { title: "Artist - Unavailable song", video_id: "video-2", at_ms: 1_700_000_000_001, status: "failed", reason: "video unavailable" },
+    ]} />);
+    expect(html).toContain("Sync log · Road trip");
+    expect(html).toContain("Artist - New song");
+    expect(html).toContain("Artist - Unavailable song");
+    expect(html).toContain("video unavailable");
+    expect(html).toContain("downloaded");
+    expect(html).toContain("failed");
   });
 });

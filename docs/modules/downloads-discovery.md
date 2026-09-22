@@ -124,6 +124,10 @@ What it does not own: library snapshots and promotion targets
   marker is persisted before the sync advances. Sync and single downloads share
   one admission gate, publish normal `sync` job events, support process-group
   cancellation, and trigger a coalesced scan after new files arrive.
+  Each attempted video appends a dated title, outcome, and failure reason to
+  `.luno-sync-log.jsonl` in that playlist folder. The log is display history,
+  not a dedupe marker; `.downloaded_vids` remains the success source. A failed
+  job reports the first per-song error and directs users to the full log.
 - Missing or mismatched managed tools fail closed with degraded media
   behavior surfaced — never silent success, never an unreviewed download
   at build time.

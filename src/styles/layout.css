@@ -477,6 +477,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-dialog-error { color: #ff8b8b !important; }
 .luno-dialog-check { display: flex !important; align-items: center; gap: 8px; color: var(--luno-text) !important; }
 .luno-dialog-check input { width: auto; margin: 0; }
+.luno-sync-log { max-height: min(55vh, 440px); overflow: auto; margin-top: 14px; }
+.luno-sync-log > div { display: grid; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--luno-border); }
+.luno-sync-log strong { font-size: 13px; overflow-wrap: anywhere; }
+.luno-sync-log span, .luno-sync-log small { color: var(--luno-text-2); font-size: 12px; overflow-wrap: anywhere; }
+.luno-sync-log small { color: #ff9c9c; }
 .luno-scrubber-row { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; width: 100%; max-width: 72%; margin: 0 auto; }
 .luno-time { color: var(--luno-text-2); font-size: 11px; font-variant-numeric: tabular-nums; min-width: 36px; text-align: center; }
 .luno-scrubber-row input[type="range"] { width: 100%; accent-color: var(--luno-green); height: 4px; cursor: pointer; }

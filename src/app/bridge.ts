@@ -104,6 +104,7 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
       createPlaylist: (name: string) => send({ type: "create_playlist", payload: { name } }),
       setPlaylistUrl: (playlist_id: PlaylistId, url: string | null) => send({ type: "set_playlist_url", payload: { playlist_id, url } }),
       syncPlaylist: (playlist_id: PlaylistId) => send({ type: "sync_playlist", payload: { playlist_id } }),
+      playlistSyncLog: (playlist_id: PlaylistId) => send<{ entries: { title: string; video_id: string | null; at_ms: number; status: string; reason: string | null }[] }>({ type: "playlist_sync_log", payload: { playlist_id } }),
       deletePlaylist: (playlist_id: PlaylistId) => send({ type: "delete_playlist", payload: { playlist_id } }),
       addTracksToPlaylist: (track_ids: TrackId[], playlist_id: PlaylistId) => send({ type: "add_tracks_to_playlist", payload: { track_ids, playlist_id } }),
       deleteTracks: (track_ids: TrackId[]) => send({ type: "delete_tracks", payload: { track_ids } }),

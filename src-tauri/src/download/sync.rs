@@ -8,6 +8,53 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use serde::{Deserialize, Serialize};
+use std::io::{BufRead, BufReader, Write};
+use std::fs::OpenOptions;
+
+const SYNC_LOG: &str = ".luno-sync-log.jsonl";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncLogEntry {
+    pub title: String,
+    pub video_id: Option<String>,
+    pub at_ms: u64,
+    pub status: String,
+    pub reason: Option<String>,
+}
+
+pub fn read_log(folder: &Path) -> Result<Vec<SyncLogEntry>, String> {
+    let file = match fs::File::open(folder.join(SYNC_LOG)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("sync log could not be opened: {error}")),
+    };
+    let mut entries = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|error| format!("sync log could not be read: {error}"))?;
+        entries.push(serde_json::from_str(&line).map_err(|error| format!("sync log is malformed: {error}"))?);
+    }
+    entries.reverse();
+    Ok(entries)
+}
+
+pub fn append_log(folder: &Path, entry: &PlaylistEntry, outcome: &ItemOutcome) -> Result<(), String> {
+    let (status, reason) = match outcome {
+        ItemOutcome::Downloaded => ("downloaded", None),
+        ItemOutcome::Failed(reason) | ItemOutcome::PermanentFailure(reason) => ("failed", Some(reason.clone())),
+        ItemOutcome::TimedOut => ("failed", Some("download timed out".into())),
+        ItemOutcome::Cancelled => ("cancelled", None),
+        ItemOutcome::Matched => return Ok(()),
+    };
+    let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?.as_millis() as u64;
+    let row = SyncLogEntry { title: entry.title.clone(), video_id: entry.id.clone(), at_ms, status: status.into(), reason };
+    let mut file = OpenOptions::new().create(true).append(true).open(folder.join(SYNC_LOG))
+        .map_err(|error| format!("sync log could not be written: {error}"))?;
+    serde_json::to_writer(&mut file, &row).map_err(|error| format!("sync log could not be written: {error}"))?;
+    writeln!(file).map_err(|error| format!("sync log could not be written: {error}"))?;
+    file.sync_data().map_err(|error| format!("sync log could not be saved: {error}"))
+}
 
 pub const ITEM_TIMEOUT: Duration = Duration::from_secs(120);
 const AUDIO_EXTENSIONS: &[&str] = &["mp3", "m4a", "wav", "flac", "webm"];
@@ -109,10 +156,24 @@ pub fn sync_sequential<F>(
     folder: impl AsRef<Path>,
     items: &[SyncItem],
     token: &CancellationToken,
-    mut download: F,
+    download: F,
 ) -> SyncResult
 where
     F: FnMut(&SyncItem, &CancellationToken) -> Result<(), String>,
+{
+    sync_sequential_observed(folder, items, token, download, |_, _| {})
+}
+
+pub fn sync_sequential_observed<F, O>(
+    folder: impl AsRef<Path>,
+    items: &[SyncItem],
+    token: &CancellationToken,
+    mut download: F,
+    mut observe: O,
+) -> SyncResult
+where
+    F: FnMut(&SyncItem, &CancellationToken) -> Result<(), String>,
+    O: FnMut(&PlaylistEntry, &ItemOutcome),
 {
     let folder = folder.as_ref();
     let mut markers = Markers::load(folder);
@@ -122,11 +183,7 @@ where
             result.cancelled = true;
             break;
         }
-        let label = item
-            .entry
-            .id
-            .clone()
-            .unwrap_or_else(|| item.entry.title.clone());
+        let label = item.entry.id.clone().unwrap_or_else(|| item.entry.title.clone());
         if let Some(id) = item.entry.id.as_deref() {
             if markers.successful.contains(id) {
                 result.outcomes.push((label, ItemOutcome::Matched));
@@ -149,22 +206,16 @@ where
             }
             Ok(()) => {
                 if let Some(id) = item.entry.id.as_deref() {
-                    if let Err(error) = markers.record_success(folder, id) {
-                        return SyncResult {
-                            outcomes: vec![(
-                                label,
-                                ItemOutcome::Failed(format!(
-                                    "could not record success marker: {error}"
-                                )),
-                            )],
-                            cancelled: result.cancelled,
-                        };
+                    match markers.record_success(folder, id) {
+                        Ok(()) => ItemOutcome::Downloaded,
+                        Err(error) => ItemOutcome::Failed(format!("could not record success marker: {error}")),
                     }
+                } else {
+                    ItemOutcome::Downloaded
                 }
-                ItemOutcome::Downloaded
             }
             Err(_) if token.is_cancelled() => ItemOutcome::Cancelled,
-            Err(error) if started.elapsed() > ITEM_TIMEOUT => ItemOutcome::TimedOut,
+            Err(_) if started.elapsed() > ITEM_TIMEOUT => ItemOutcome::TimedOut,
             Err(error) if permanent_failure(&error) => {
                 if let Some(id) = item.entry.id.as_deref() {
                     let _ = markers.record_failure(folder, id, &error);
@@ -174,6 +225,7 @@ where
             Err(error) => ItemOutcome::Failed(error),
         };
         let cancelled = matches!(outcome, ItemOutcome::Cancelled);
+        observe(&item.entry, &outcome);
         result.outcomes.push((label, outcome));
         if cancelled {
             result.cancelled = true;
