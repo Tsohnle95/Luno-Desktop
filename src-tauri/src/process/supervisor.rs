@@ -56,7 +56,7 @@ impl Supervisor {
     pub fn shutdown(&self, deadline: Duration) -> bool { self.registry.shutdown(deadline) }
     pub fn run(&self, spec: ProcessSpec) -> Result<ProcessOutput, SuperviseError> {
         let (id, token) = self.registry.register()?;
-        let result = run_process(&spec, &token);
+        let result = run_process(&spec, &token, None);
         self.registry.unregister(id);
         if result.as_ref().map(|output| !output.status.success()).unwrap_or(true) {
             if let Some(path) = &spec.output_path { let _ = std::fs::remove_file(path); }
@@ -65,16 +65,22 @@ impl Supervisor {
     }
     pub fn run_admitted(&self, spec: ProcessSpec, tasks: &TaskRegistry) -> Result<ProcessOutput, SuperviseError> {
         let (id, token) = self.registry.register_checked(tasks.is_closing())?;
-        let result = run_process(&spec, &token);
+        let result = run_process(&spec, &token, None);
         self.registry.unregister(id);
         if result.as_ref().map(|output| !output.status.success()).unwrap_or(true) {
             if let Some(path) = &spec.output_path { let _ = std::fs::remove_file(path); }
         }
         result
     }
+    pub fn run_cancellable(&self, spec: ProcessSpec, external: &CancellationToken) -> Result<ProcessOutput, SuperviseError> {
+        let (id, token) = self.registry.register()?;
+        let result = run_process(&spec, &token, Some(external));
+        self.registry.unregister(id);
+        result
+    }
 }
 
-fn run_process(spec: &ProcessSpec, token: &CancellationToken) -> Result<ProcessOutput, SuperviseError> {
+fn run_process(spec: &ProcessSpec, token: &CancellationToken, external: Option<&CancellationToken>) -> Result<ProcessOutput, SuperviseError> {
     let mut command = Command::new(&spec.program); command.args(&spec.args).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)] unsafe { use std::os::unix::process::CommandExt; command.pre_exec(|| { if libc::setpgid(0, 0) != 0 { return Err(io::Error::last_os_error()); } Ok(()) }); }
     let mut child = command.spawn().map_err(SuperviseError::Spawn)?;
@@ -84,7 +90,7 @@ fn run_process(spec: &ProcessSpec, token: &CancellationToken) -> Result<ProcessO
     let start = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? { let (o, ot) = out.join().map_err(|_| SuperviseError::OutputThread)??; let (e, et) = err.join().map_err(|_| SuperviseError::OutputThread)??; return Ok(ProcessOutput { status, stdout:o, stderr:e, truncated_stdout:ot, truncated_stderr:et, reason: if status.success() { StopReason::Exited } else { StopReason::Failed } }); }
-        if token.is_cancelled() { terminate(&mut child, spec.kill_grace); let _ = out.join(); let _ = err.join(); return Err(SuperviseError::Cancelled); }
+        if token.is_cancelled() || external.is_some_and(CancellationToken::is_cancelled) { terminate(&mut child, spec.kill_grace); let _ = out.join(); let _ = err.join(); return Err(SuperviseError::Cancelled); }
         if start.elapsed() >= spec.deadline { terminate(&mut child, spec.kill_grace); let _ = out.join(); let _ = err.join(); return Err(SuperviseError::Timeout); }
         thread::sleep(Duration::from_millis(5));
     }

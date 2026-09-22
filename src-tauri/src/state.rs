@@ -2097,6 +2097,8 @@ pub struct AppState {
     delivery_failure: Arc<Mutex<Option<ContractError>>>,
     supervisor: Arc<Supervisor>,
     downloads: Arc<DownloadCoordinator>,
+    media_download_admission: Arc<Mutex<()>>,
+    playlist_sync_active: Arc<AtomicBool>,
     download_requests: Arc<Mutex<BTreeMap<String, (PathBuf, PathBuf, String)>>>,
     bundle_helper: Arc<Mutex<Option<PathBuf>>>,
     video_root: Arc<Mutex<Option<PathBuf>>>,
@@ -2185,6 +2187,12 @@ impl Drop for VideoUpgradeWaitGuard {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
+}
+
+struct PlaylistSyncGuard(Arc<AtomicBool>);
+
+impl Drop for PlaylistSyncGuard {
+    fn drop(&mut self) { self.0.store(false, Ordering::Release); }
 }
 
 /// Whether a FINISHING staging worker may publish its result into the shared
@@ -2370,6 +2378,8 @@ impl AppState {
             delivery_failure: Arc::new(Mutex::new(None)),
             supervisor: Arc::new(Supervisor::new(ProcessRegistry::new())),
             downloads: Arc::new(DownloadCoordinator::new()),
+            media_download_admission: Arc::new(Mutex::new(())),
+            playlist_sync_active: Arc::new(AtomicBool::new(false)),
             download_requests: Arc::new(Mutex::new(BTreeMap::new())),
             bundle_helper: Arc::new(Mutex::new(None)),
             video_root: Arc::new(Mutex::new(None)),
@@ -5504,6 +5514,7 @@ impl AppState {
             }
             Command::CreatePlaylist { name } => self.create_playlist(&name),
             Command::SetPlaylistUrl { playlist_id, url } => self.set_playlist_url(&playlist_id, url.as_deref()),
+            Command::SyncPlaylist { playlist_id } => self.sync_playlist(&playlist_id),
             Command::DeletePlaylist { playlist_id } => self.delete_playlist(&playlist_id),
             Command::AddTracksToPlaylist { track_ids, playlist_id } => self.add_tracks_to_playlist(&track_ids, &playlist_id),
             Command::DeleteTracks { track_ids } => self.delete_tracks(&track_ids),
@@ -5789,6 +5800,10 @@ impl AppState {
     }
 
     fn start_download(&self, job_id: JobId, destination: PathBuf, helper: PathBuf, source: String) -> Result<Value, ContractError> {
+        let _media_admission = self.media_download_admission.lock().unwrap_or_else(|e| e.into_inner());
+        if self.playlist_sync_active.load(Ordering::Acquire) {
+            return Err(ContractError { code: ErrorCode::Busy, message: "playlist sync is already running".into(), retryable: true });
+        }
         let root = self.scan_roots().first().cloned().ok_or_else(|| ContractError::invalid("no configured library root"))?;
         let root = std::fs::canonicalize(root).map_err(|_| ContractError { code: ErrorCode::NotFound, message: "configured library root is unavailable".into(), retryable: false })?;
         let parent = destination.parent().ok_or_else(|| ContractError::invalid("destination must name a file"))?;
@@ -5963,6 +5978,85 @@ impl AppState {
         service.set_url(&name, normalized.as_deref(), &mut index).map_err(playlist_mutation_error)?;
         let generation = self.schedule_mutation_scan()?;
         Ok(serde_json::json!({ "playlist_id": playlist_id, "url": normalized, "generation": generation }))
+    }
+
+    fn sync_playlist(&self, playlist_id: &PlaylistId) -> Result<Value, ContractError> {
+        let (name, url) = self.library.lock().unwrap_or_else(|e| e.into_inner()).playlists.iter()
+            .find(|playlist| &playlist.id == playlist_id)
+            .map(|playlist| (playlist.name.clone(), playlist.url.clone()))
+            .ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "playlist not found".into(), retryable: false })?;
+        let url = url.ok_or_else(|| ContractError::invalid("add a YouTube playlist URL before syncing"))?;
+        let root = self.playlist_mutation_root()?;
+        let destination = std::fs::canonicalize(root.join(&name)).map_err(|_| ContractError { code: ErrorCode::NotFound, message: "playlist folder is unavailable".into(), retryable: false })?;
+        if !destination.starts_with(&root) { return Err(ContractError::invalid("playlist destination is unsafe")); }
+        let helper = self.bundle_helper.lock().unwrap_or_else(|e| e.into_inner()).clone()
+            .ok_or_else(|| ContractError { code: ErrorCode::Unavailable, message: "bundled download helper is unavailable".into(), retryable: false })?;
+        let ytdlp = self.discover_ytdlp().map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: false })?;
+        let _admission = self.media_download_admission.lock().unwrap_or_else(|e| e.into_inner());
+        if self.downloads.is_busy() || self.playlist_sync_active.swap(true, Ordering::AcqRel) {
+            return Err(ContractError { code: ErrorCode::Busy, message: "another download is already running".into(), retryable: true });
+        }
+        let generation = self.next_generation();
+        let job_id = JobId(format!("sync-{}", generation.0));
+        let spec = self.generation(job_id.0.clone(), generation);
+        let state = self.clone();
+        let worker_job = job_id.clone();
+        let worker_root = root.clone();
+        let active = PlaylistSyncGuard(self.playlist_sync_active.clone());
+        self.submit(spec, move |token| {
+            let _active = active;
+            state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(0.0));
+            let outcome = (|| -> Result<(usize, usize), String> {
+                let entries = crate::download::search::playlist_entries(&state.supervisor, &ytdlp, &url, &token)?;
+                let items = crate::download::sync::plan(&worker_root, &destination, &entries);
+                if items.is_empty() { return Ok((0, 0)); }
+                let total = items.len();
+                let mut started = 0usize;
+                let worker_home = worker_root.join(".luno-gate4-worker-home");
+                std::fs::create_dir_all(&worker_home).map_err(|error| format!("download worker home is unavailable: {error}"))?;
+                let result = crate::download::sync::sync_sequential(&destination, &items, &token, |item, item_token| {
+                    let item_index = started;
+                    started += 1;
+                    let source = item.entry.url.as_deref().ok_or_else(|| "playlist entry has no download URL".to_string())?;
+                    crate::download::workflows::run_download_helper(&helper, &item.destination, source, &worker_home, item_token, &|fraction| {
+                        state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(((item_index as f32 + fraction) / total as f32).clamp(0.0, 0.99)));
+                    })
+                });
+                let downloaded = result.outcomes.iter().filter(|(_, item)| matches!(item, crate::download::sync::ItemOutcome::Downloaded)).count();
+                let failed = result.outcomes.iter().filter(|(_, item)| matches!(item, crate::download::sync::ItemOutcome::Failed(_) | crate::download::sync::ItemOutcome::PermanentFailure(_) | crate::download::sync::ItemOutcome::TimedOut)).count();
+                if result.cancelled || token.is_cancelled() { Err("cancelled".into()) } else { Ok((downloaded, failed)) }
+            })();
+            match outcome {
+                Err(error) if token.is_cancelled() || error == "cancelled" => state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Cancelled, None),
+                Err(error) => {
+                    state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Failed, None);
+                    let mut envelope = state.event(generation, Event::Error { error: ContractError { code: ErrorCode::Unavailable, message: sanitize_download_error(&error), retryable: true } });
+                    envelope.job_id = Some(worker_job.clone()); state.publish(envelope);
+                }
+                Ok((downloaded, failed)) if failed > 0 => {
+                    if downloaded > 0 { let _ = state.scan_async(); }
+                    state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Failed, None);
+                    let mut envelope = state.event(generation, Event::Error { error: ContractError { code: ErrorCode::Unavailable, message: format!("playlist sync downloaded {downloaded} and failed {failed}"), retryable: true } });
+                    envelope.job_id = Some(worker_job.clone()); state.publish(envelope);
+                }
+                Ok((downloaded, _)) => {
+                    if downloaded > 0 { let _ = state.scan_async(); }
+                    state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Succeeded, Some(1.0));
+                }
+            }
+        }).map_err(|error| match error {
+            SpawnError::AtCapacity => ContractError { code: ErrorCode::Busy, message: "task capacity is full".into(), retryable: true },
+            SpawnError::ShuttingDown => ContractError { code: ErrorCode::ShuttingDown, message: "backend is shutting down".into(), retryable: false },
+        })?;
+        Ok(serde_json::json!({ "job_id": job_id, "playlist": name }))
+    }
+
+    fn publish_sync_job(&self, job_id: &JobId, generation: Generation, job_state: crate::contracts::types::JobState, progress: Option<f32>) {
+        let mut envelope = self.event(generation, Event::JobUpdated { job: crate::contracts::types::DownloadJob {
+            id: job_id.clone(), kind: crate::contracts::types::DownloadKind::Sync, state: job_state,
+            track_id: None, progress, phase: None, generation,
+        }});
+        envelope.job_id = Some(job_id.clone()); self.publish(envelope);
     }
 
     fn delete_playlist(&self, playlist_id: &PlaylistId) -> Result<Value, ContractError> {

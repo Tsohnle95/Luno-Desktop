@@ -689,6 +689,100 @@ fn target_dispatch_runs_search_settings_and_fake_download_event_path() {
     assert!(state.events().iter().any(|envelope| matches!(&envelope.event, Event::JobUpdated { job } if job.id.0 == "target-job" && job.state == crate::contracts::types::JobState::Succeeded)));
 }
 
+#[cfg(unix)]
+#[test]
+fn playlist_sync_downloads_new_ids_once_and_persists_success_markers() {
+    let root = fixture("playlist-sync-command");
+    let playlist = root.join("Road trip");
+    fs::create_dir_all(&playlist).unwrap();
+    fs::write(root.join(".luno_playlist_urls.json"), br#"{"Road trip":"https://www.youtube.com/playlist?list=PL_fixture"}"#).unwrap();
+    let helper = fake_helper(&root);
+    let state = crate::state::AppState::new(8);
+    state.set_scan_roots(vec![root.0.clone()]);
+    state.set_bundle_helper(Some(helper));
+    state.replace_library(crate::contracts::types::Generation(1), std::collections::BTreeMap::from([("Road trip".into(), vec![])]));
+
+    let start = state.dispatch(CommandEnvelope { version: 1, request_id: "sync-1".into(), command: BackendCommand::SyncPlaylist {
+        playlist_id: crate::contracts::types::PlaylistId("playlist:Road trip".into()),
+    }}).unwrap();
+    let first_job = start["job_id"].as_str().unwrap().to_owned();
+    for _ in 0..400 {
+        if state.events().iter().any(|event| matches!(&event.event, Event::JobUpdated { job } if job.id.0 == first_job && job.state == crate::contracts::types::JobState::Succeeded)) { break; }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let downloaded = playlist.join("Fixture Track.m4a");
+    assert!(downloaded.is_file(), "sync should download into the physical playlist");
+    assert!(Markers::load(&playlist).successful.contains("fixture-video"));
+    fs::remove_file(&downloaded).unwrap();
+
+    let second = loop {
+        match state.dispatch(CommandEnvelope { version: 1, request_id: "sync-2".into(), command: BackendCommand::SyncPlaylist {
+            playlist_id: crate::contracts::types::PlaylistId("playlist:Road trip".into()),
+        }}) {
+            Ok(value) => break value,
+            Err(error) if error.code == crate::contracts::types::ErrorCode::Busy => thread::sleep(Duration::from_millis(5)),
+            Err(error) => panic!("second sync rejected: {error:?}"),
+        }
+    };
+    let second_job = second["job_id"].as_str().unwrap().to_owned();
+    for _ in 0..400 {
+        if state.events().iter().any(|event| matches!(&event.event, Event::JobUpdated { job } if job.id.0 == second_job && job.state == crate::contracts::types::JobState::Succeeded)) { break; }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!downloaded.exists(), "a marker-recorded ID must not be redownloaded even if its local file was removed");
+}
+
+#[cfg(unix)]
+#[test]
+fn playlist_sync_cancellation_kills_enumerator_and_releases_download_admission() {
+    let root = fixture("playlist-sync-cancel");
+    let playlist = root.join("Road trip");
+    fs::create_dir_all(&playlist).unwrap();
+    fs::write(root.join(".luno_playlist_urls.json"), br#"{"Road trip":"https://www.youtube.com/playlist?list=PL_fixture"}"#).unwrap();
+    let helper = fake_helper(&root);
+    let pid_file = root.join("enumerator.pid");
+    let ytdlp = root.join("yt-dlp");
+    fs::write(&ytdlp, format!("#!/bin/sh\nprintf '%s' \"$$\" > '{}'\nsleep 30\n", pid_file.display())).unwrap();
+    let mut permissions = fs::metadata(&ytdlp).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&ytdlp, permissions).unwrap();
+
+    let state = crate::state::AppState::new(8);
+    state.set_scan_roots(vec![root.0.clone()]);
+    state.set_bundle_helper(Some(helper.clone()));
+    state.replace_library(crate::contracts::types::Generation(1), std::collections::BTreeMap::from([("Road trip".into(), vec![])]));
+    let started = state.dispatch(CommandEnvelope { version: 1, request_id: "sync-cancel".into(), command: BackendCommand::SyncPlaylist {
+        playlist_id: crate::contracts::types::PlaylistId("playlist:Road trip".into()),
+    }}).unwrap();
+    let job_id = started["job_id"].as_str().unwrap().to_owned();
+    for _ in 0..200 {
+        if pid_file.is_file() { break; }
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(pid_file.is_file(), "playlist enumerator should have started");
+
+    let blocked = state.dispatch(CommandEnvelope { version: 1, request_id: "blocked-download".into(), command: BackendCommand::StartDownload {
+        job_id: JobId("blocked-download".into()), destination: root.join("blocked.m4a").to_string_lossy().into_owned(),
+        helper: helper.to_string_lossy().into_owned(), source: String::new(),
+    }}).unwrap_err();
+    assert_eq!(blocked.code, crate::contracts::types::ErrorCode::Busy);
+    state.dispatch(CommandEnvelope { version: 1, request_id: "cancel-sync".into(), command: BackendCommand::CancelJob { job_id: JobId(job_id.clone()) }}).unwrap();
+    for _ in 0..200 {
+        if state.events().iter().any(|event| matches!(&event.event, Event::JobUpdated { job } if job.id.0 == job_id && job.state == crate::contracts::types::JobState::Cancelled)) { break; }
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(state.events().iter().any(|event| matches!(&event.event, Event::JobUpdated { job } if job.id.0 == job_id && job.state == crate::contracts::types::JobState::Cancelled)));
+    let pid: i32 = fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "cancelled enumerator process should no longer exist");
+
+    let destination = root.join("after-cancel.m4a");
+    let accepted = state.dispatch(CommandEnvelope { version: 1, request_id: "after-cancel".into(), command: BackendCommand::StartDownload {
+        job_id: JobId("after-cancel".into()), destination: destination.to_string_lossy().into_owned(),
+        helper: helper.to_string_lossy().into_owned(), source: String::new(),
+    }});
+    assert!(accepted.is_ok(), "playlist sync must release shared download admission after cancellation: {accepted:?}");
+}
+
 #[test]
 fn target_dispatch_validates_direct_csv_queue_and_existing_root() {
     let root = fixture("target-policy-dispatch");

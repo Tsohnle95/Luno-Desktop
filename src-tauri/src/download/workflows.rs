@@ -123,6 +123,10 @@ fn run_download_helper_attempt(helper: &Path, temporary: &Path, source: &str, wo
     command.arg(temporary).env("HOME", worker_home).stdout(Stdio::piped()).stderr(Stdio::piped());
     if !source.is_empty() { command.arg(source).env("LUNO_DOWNLOAD_SOURCE", source); }
     if let Some(format) = format { command.env("LUNO_DOWNLOAD_FORMAT", format); }
+    #[cfg(unix)] unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(|| { if libc::setpgid(0, 0) != 0 { return Err(std::io::Error::last_os_error()); } Ok(()) });
+    }
     let mut child = command.spawn().map_err(|error| format!("download helper could not start: {error}"))?;
     let stdout = child.stdout.take().ok_or_else(|| "download helper output was unavailable".to_string())?;
     let stderr = child.stderr.take().ok_or_else(|| "download helper error output was unavailable".to_string())?;
@@ -140,8 +144,7 @@ fn run_download_helper_attempt(helper: &Path, temporary: &Path, source: &str, wo
     };
     let status = loop {
         if token.is_cancelled() {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_helper(&mut child);
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
             return Err("cancelled".into());
@@ -158,6 +161,19 @@ fn run_download_helper_attempt(helper: &Path, temporary: &Path, source: &str, wo
     if status.success() { progress(0.97); Ok(()) }
     else if errors.is_empty() { Err(format!("download helper exited with {status}")) }
     else { Err(errors.join(" | ")) }
+}
+
+fn terminate_helper(child: &mut std::process::Child) {
+    #[cfg(unix)] unsafe { let _ = libc::kill(-(child.id() as i32), libc::SIGTERM); }
+    #[cfg(not(unix))] let _ = child.kill();
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_millis(250) {
+        if child.try_wait().ok().flatten().is_some() { return; }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    #[cfg(unix)] unsafe { let _ = libc::kill(-(child.id() as i32), libc::SIGKILL); }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(test)]

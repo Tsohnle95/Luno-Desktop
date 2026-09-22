@@ -93,6 +93,7 @@ pub enum Command {
         name: String,
     },
     SetPlaylistUrl { playlist_id: PlaylistId, url: Option<String> },
+    SyncPlaylist { playlist_id: PlaylistId },
     DeletePlaylist { playlist_id: PlaylistId },
     AddTracksToPlaylist { track_ids: Vec<TrackId>, playlist_id: PlaylistId },
     DeleteTracks { track_ids: Vec<TrackId> },

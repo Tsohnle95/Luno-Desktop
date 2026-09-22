@@ -7,12 +7,16 @@
 //! and tests can inject fakes.
 
 use crate::contracts::types::SearchResult;
+use crate::download::sync::PlaylistEntry;
+use crate::process::supervisor::{ProcessSpec, SuperviseError, Supervisor};
+use crate::runtime::task_registry::CancellationToken;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
 const WEB_SEARCH_TIMEOUT: Duration = Duration::from_secs(7);
+const PLAYLIST_TIMEOUT: Duration = Duration::from_secs(60);
 /// SoundCloud yields fewer relevant hits than YouTube; keep its cap modest.
 const SC_LIMIT: usize = 5;
 
@@ -190,6 +194,43 @@ pub fn probe_media(ytdlp: &Path, url: &str) -> Result<MediaProbe, String> {
     Ok(media_probe_from_json(&value))
 }
 
+/// Resolve the stable IDs, titles and watch URLs for an entire YouTube
+/// playlist without downloading media. The child is polled so cancelling the
+/// owning sync task also kills enumeration instead of leaving yt-dlp detached.
+pub fn playlist_entries(supervisor: &Supervisor, ytdlp: &Path, url: &str, token: &CancellationToken) -> Result<Vec<PlaylistEntry>, String> {
+    let mut spec = ProcessSpec::new(ytdlp, vec![
+        "--dump-json".into(), "--flat-playlist".into(), "--no-warnings".into(),
+        "--socket-timeout".into(), "15".into(), "--".into(), url.into(),
+    ], PLAYLIST_TIMEOUT);
+    spec.output_limit = 8 * 1024 * 1024;
+    let output = supervisor.run_cancellable(spec, token).map_err(|error| match error {
+        SuperviseError::Cancelled => "cancelled".into(),
+        SuperviseError::Timeout => "playlist lookup timed out".into(),
+        SuperviseError::Spawn(error) | SuperviseError::Io(error) => format!("playlist lookup could not start: {error}"),
+        SuperviseError::OutputThread => "playlist lookup output was unavailable".into(),
+    })?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("playlist lookup exited {}: {}", output.status, detail.trim().chars().take(800).collect::<String>()));
+    }
+    let entries = parse_playlist_entries(&String::from_utf8_lossy(&output.stdout));
+    if entries.is_empty() { Err("playlist contains no downloadable videos".into()) } else { Ok(entries) }
+}
+
+fn parse_playlist_entries(output: &str) -> Vec<PlaylistEntry> {
+    output.lines().filter_map(|line| {
+        let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+        let id = value.get("id")?.as_str()?.trim();
+        let title = value.get("title")?.as_str()?.trim();
+        if id.is_empty() || title.is_empty() { return None; }
+        let url = value.get("webpage_url").and_then(|value| value.as_str())
+            .or_else(|| value.get("url").and_then(|value| value.as_str()).filter(|url| url.starts_with("http://") || url.starts_with("https://")))
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={id}"));
+        Some(PlaylistEntry { id: Some(id.to_owned()), title: title.to_owned(), url: Some(url) })
+    }).collect()
+}
+
 fn media_probe_from_json(value: &serde_json::Value) -> MediaProbe {
     let string_field = |key: &str| {
         value
@@ -347,6 +388,21 @@ mod tests {
         assert_eq!(results[0].title, "Hello {World}");
         assert_eq!(results[0].artist.as_deref(), Some("Eminem"));
         assert_eq!(results[0].url.as_deref(), Some("https://www.youtube.com/watch?v=abc123"));
+    }
+
+    #[test]
+    fn parses_flat_playlist_entries_into_stable_watch_urls() {
+        let output = concat!(
+            "{\"id\":\"video-1\",\"title\":\"Artist - First\",\"url\":\"video-1\"}\n",
+            "{\"id\":\"video-2\",\"title\":\"Second\",\"webpage_url\":\"https://www.youtube.com/watch?v=video-2\"}\n",
+            "{\"id\":\"\",\"title\":\"Unavailable\"}\n",
+            "not-json\n",
+        );
+        let entries = parse_playlist_entries(output);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id.as_deref(), Some("video-1"));
+        assert_eq!(entries[0].url.as_deref(), Some("https://www.youtube.com/watch?v=video-1"));
+        assert_eq!(entries[1].url.as_deref(), Some("https://www.youtube.com/watch?v=video-2"));
     }
 
     #[test]
