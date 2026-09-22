@@ -37,9 +37,15 @@ else
   # coordinator reserves the final slice for validation and promotion.
   set -- "$@" --progress-template 'download:LUNO_PROGRESS=%(progress._percent_str)s'
 fi
-set -- "$@" -f 'bestaudio/best'
+# The coordinator can retry a YouTube 403 through its token-free HLS audio
+# rendition. Keep the normal provider-neutral selector as the first attempt.
+FORMAT_SELECTOR="${LUNO_DOWNLOAD_FORMAT:-bestaudio/best}"
+set -- "$@" -f "$FORMAT_SELECTOR"
 if [ "${LUNO_PREVIEW:-0}" != "1" ]; then
-  set -- "$@" -x --audio-format m4a --audio-quality 0 --embed-thumbnail --embed-metadata --convert-thumbnails jpg --ppa 'ExtractAudio+ffmpeg_o:-ar 44100 -ac 2 -af loudnorm=I=-14:LRA=11:TP=-1.5'
+  # Force AAC encoding even when the HLS input already contains AAC. yt-dlp
+  # otherwise chooses stream-copy, which cannot be combined with the loudness
+  # filter and fails during post-processing.
+  set -- "$@" -x --audio-format m4a --audio-quality 0 --embed-thumbnail --embed-metadata --convert-thumbnails jpg --ppa 'ExtractAudio+ffmpeg_o:-c:a aac -ar 44100 -ac 2 -af loudnorm=I=-14:LRA=11:TP=-1.5'
 fi
 if [ -x "$HERE/ffmpeg" ]; then
   set -- "$@" --ffmpeg-location "$HERE"

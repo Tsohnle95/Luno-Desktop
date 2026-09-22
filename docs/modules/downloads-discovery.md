@@ -66,6 +66,10 @@ What it does not own: library snapshots and promotion targets
   containing spaces (e.g. `/Applications/Luno Desktop.app/…`) survive as a
   single `--ffmpeg-location` value; a split flag once starved yt-dlp of
   ffmpeg, failing every preview/download postprocess step (2026-09-09).
+- A direct-media HTTP 403 gets one automatic retry through YouTube's HLS audio
+  rendition, which avoids the selectively enforced GVS proof-of-origin token.
+  Other failures remain terminal, and the normal provider-neutral quality
+  selector remains the first attempt.
 - Discovery metadata is validated before preview/download work; preview
   assets stay temporary and hidden from the library until an explicit
   save promotes them.

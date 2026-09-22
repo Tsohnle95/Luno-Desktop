@@ -101,9 +101,28 @@ pub fn parse_download_progress(line: &str) -> Option<f32> {
 /// represents extraction, validation, and atomic promotion. The coordinator
 /// publishes 100% only after the final audio file is safely in place.
 pub fn run_download_helper(helper: &Path, temporary: &Path, source: &str, worker_home: &Path, token: &CancellationToken, progress: &dyn Fn(f32)) -> Result<(), String> {
+    let first = run_download_helper_attempt(helper, temporary, source, worker_home, token, progress, None);
+    if let Err(error) = &first {
+        if !token.is_cancelled() && error.to_ascii_lowercase().contains("http error 403") {
+            return run_download_helper_attempt(
+                helper,
+                temporary,
+                source,
+                worker_home,
+                token,
+                progress,
+                Some("bestaudio[protocol^=m3u8]/bestaudio/best"),
+            ).map_err(|fallback| format!("direct audio was forbidden; HLS fallback failed: {fallback}"));
+        }
+    }
+    first
+}
+
+fn run_download_helper_attempt(helper: &Path, temporary: &Path, source: &str, worker_home: &Path, token: &CancellationToken, progress: &dyn Fn(f32), format: Option<&str>) -> Result<(), String> {
     let mut command = Command::new(helper);
     command.arg(temporary).env("HOME", worker_home).stdout(Stdio::piped()).stderr(Stdio::piped());
     if !source.is_empty() { command.arg(source).env("LUNO_DOWNLOAD_SOURCE", source); }
+    if let Some(format) = format { command.env("LUNO_DOWNLOAD_FORMAT", format); }
     let mut child = command.spawn().map_err(|error| format!("download helper could not start: {error}"))?;
     let stdout = child.stdout.take().ok_or_else(|| "download helper output was unavailable".to_string())?;
     let stderr = child.stderr.take().ok_or_else(|| "download helper error output was unavailable".to_string())?;
@@ -221,6 +240,39 @@ mod helper_quoting_tests {
         assert_eq!(dir, &sandbox.to_string_lossy(), "--ffmpeg-location value must be the intact dir: {argv:?}");
         assert_eq!(argv.last().map(String::as_str), Some("ytsearch1:spaceboy probe"), "final arg must be the real query: {argv:?}");
         assert!(!argv.iter().any(|arg| arg.contains("Desktop.app") && *arg != *dir), "no phantom split-path URL may reach yt-dlp: {argv:?}");
+        let format = argv.windows(2)
+            .find(|pair| pair[0] == "-f")
+            .map(|pair| pair[1].as_str());
+        assert_eq!(format, Some("bestaudio/best"), "normal downloads must retain the provider-neutral quality selector: {argv:?}");
+        let postprocessor_args = argv.windows(2)
+            .find(|pair| pair[0] == "--ppa")
+            .map(|pair| pair[1].as_str());
+        assert!(postprocessor_args.is_some_and(|args| args.contains("-c:a aac")), "HLS AAC must be re-encoded so loudness normalization is not combined with an invalid stream-copy: {argv:?}");
+        let _ = std::fs::remove_dir_all(&sandbox);
+    }
+
+    #[test]
+    fn download_retries_http_403_with_hls_audio() {
+        use super::run_download_helper;
+        use crate::runtime::task_registry::CancellationToken;
+
+        let sandbox = std::env::temp_dir().join(format!("luno 403 retry probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sandbox);
+        std::fs::create_dir_all(&sandbox).unwrap();
+        let helper = sandbox.join("helper");
+        let attempts = sandbox.join("attempts");
+        std::fs::write(
+            &helper,
+            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"${LUNO_DOWNLOAD_FORMAT:-default}\" >> \"$HOME/attempts\"\nif [ \"${LUNO_DOWNLOAD_FORMAT:-}\" = 'bestaudio[protocol^=m3u8]/bestaudio/best' ]; then printf 'ID3fallback' > \"$1\"; exit 0; fi\necho 'ERROR: unable to download video data: HTTP Error 403: Forbidden' >&2\nexit 1\n",
+        ).unwrap();
+        let mut permissions = std::fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&helper, permissions).unwrap();
+        let output = sandbox.join("out.m4a");
+        let result = run_download_helper(&helper, &output, "https://example.test/video", &sandbox, &CancellationToken::new(), &|_| {});
+        assert_eq!(result, Ok(()));
+        assert_eq!(std::fs::read_to_string(&attempts).unwrap(), "default\nbestaudio[protocol^=m3u8]/bestaudio/best\n");
+        assert!(output.is_file());
         let _ = std::fs::remove_dir_all(&sandbox);
     }
 
