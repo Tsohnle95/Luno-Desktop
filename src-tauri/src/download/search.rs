@@ -227,7 +227,12 @@ fn parse_playlist_entries(output: &str) -> Vec<PlaylistEntry> {
             .or_else(|| value.get("url").and_then(|value| value.as_str()).filter(|url| url.starts_with("http://") || url.starts_with("https://")))
             .map(str::to_owned)
             .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={id}"));
-        Some(PlaylistEntry { id: Some(id.to_owned()), title: title.to_owned(), url: Some(url) })
+        let channel = value.get("channel").and_then(|value| value.as_str())
+            .or_else(|| value.get("uploader").and_then(|value| value.as_str()))
+            .or_else(|| value.get("playlist_uploader").and_then(|value| value.as_str()))
+            .map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);
+        let duration_secs = value.get("duration").and_then(|value| value.as_u64());
+        Some(PlaylistEntry { id: Some(id.to_owned()), title: title.to_owned(), channel, duration_secs, url: Some(url) })
     }).collect()
 }
 
@@ -393,7 +398,7 @@ mod tests {
     #[test]
     fn parses_flat_playlist_entries_into_stable_watch_urls() {
         let output = concat!(
-            "{\"id\":\"video-1\",\"title\":\"Artist - First\",\"url\":\"video-1\"}\n",
+            "{\"id\":\"video-1\",\"title\":\"Artist - First\",\"url\":\"video-1\",\"channel\":\"Artist - Topic\",\"duration\":292,\"availability\":\"NA\"}\n",
             "{\"id\":\"video-2\",\"title\":\"Second\",\"webpage_url\":\"https://www.youtube.com/watch?v=video-2\"}\n",
             "{\"id\":\"\",\"title\":\"Unavailable\"}\n",
             "not-json\n",
@@ -402,6 +407,8 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].id.as_deref(), Some("video-1"));
         assert_eq!(entries[0].url.as_deref(), Some("https://www.youtube.com/watch?v=video-1"));
+        assert_eq!(entries[0].channel.as_deref(), Some("Artist - Topic"));
+        assert_eq!(entries[0].duration_secs, Some(292));
         assert_eq!(entries[1].url.as_deref(), Some("https://www.youtube.com/watch?v=video-2"));
     }
 

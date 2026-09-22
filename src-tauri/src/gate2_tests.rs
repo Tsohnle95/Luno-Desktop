@@ -338,16 +338,22 @@ fn local_sync_journey_covers_whole_root_dedupe_markers_validation_retry_and_canc
         PlaylistEntry {
             id: Some("existing-id".into()),
             title: "Artist - Existing".into(),
+            channel: None,
+            duration_secs: None,
             url: None,
         },
         PlaylistEntry {
             id: Some("duplicate-id".into()),
             title: "Artist - Existing".into(),
+            channel: None,
+            duration_secs: None,
             url: None,
         },
         PlaylistEntry {
             id: Some("new-id".into()),
             title: "Artist - New".into(),
+            channel: None,
+            duration_secs: None,
             url: Some("local:synthetic".into()),
         },
     ];
@@ -359,8 +365,11 @@ fn local_sync_journey_covers_whole_root_dedupe_markers_validation_retry_and_canc
         entry: PlaylistEntry {
             id: Some(id.into()),
             title: title.into(),
+            channel: None,
+            duration_secs: None,
             url: Some("local:synthetic".into()),
         },
+        source_override: None,
         destination: destination.join(format!("{id}.mp3")),
     };
     let items = vec![
@@ -419,7 +428,7 @@ fn local_sync_journey_covers_whole_root_dedupe_markers_validation_retry_and_canc
     assert!(matches!(result.outcomes[4].1, ItemOutcome::Failed(_)));
     assert!(matches!(
         result.outcomes[5].1,
-        ItemOutcome::PermanentFailure(_)
+        ItemOutcome::Unavailable(_)
     ));
     assert!(matches!(result.outcomes[6].1, ItemOutcome::Failed(_)));
     assert!(result.cancelled);

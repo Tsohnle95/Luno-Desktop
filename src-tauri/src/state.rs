@@ -6009,32 +6009,42 @@ impl AppState {
             state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(0.0), None);
             let outcome = (|| -> Result<(usize, usize, Option<String>), String> {
                 let entries = crate::download::search::playlist_entries(&state.supervisor, &ytdlp, &url, &token)?;
-                let items = crate::download::sync::plan(&worker_root, &destination, &entries);
+                let mut sync_state = crate::download::sync::PlaylistSyncState::load(&destination)?;
+                let markers = crate::download::markers::Markers::load(&destination);
+                let migrated = sync_state.migrate_legacy_unavailable(&destination, &entries, &markers);
+                let pruned = sync_state.prune_unresolved(&entries, &markers);
+                if migrated || pruned { sync_state.save(&destination)?; }
+                let items = crate::download::sync::plan_with_state(&worker_root, &destination, &entries, &sync_state);
                 if items.is_empty() { return Ok((0, 0, None)); }
                 let total = items.len();
                 let mut started = 0usize;
                 let worker_home = worker_root.join(".luno-gate4-worker-home");
                 std::fs::create_dir_all(&worker_home).map_err(|error| format!("download worker home is unavailable: {error}"))?;
                 let mut log_error = None;
-                let result = crate::download::sync::sync_sequential_observed(&destination, &items, &token, |item, item_token| {
+                let result = crate::download::sync::sync_sequential_observed_with_state(&destination, &items, &token, &mut sync_state, |item, item_token| {
                     let item_index = started;
                     started += 1;
                     state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(item_index as f32 / total as f32), Some(&item.entry.title));
-                    let source = item.entry.url.as_deref().ok_or_else(|| "playlist entry has no download URL".to_string())?;
+                    let source = item.source_override.as_ref().map(|source| source.url.as_str()).or(item.entry.url.as_deref()).ok_or_else(|| "playlist entry has no download URL".to_string())?;
                     crate::download::workflows::run_download_helper(&helper, &item.destination, source, &worker_home, item_token, &|fraction| {
                         state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(((item_index as f32 + fraction) / total as f32).clamp(0.0, 0.99)), Some(&item.entry.title));
                     })
                 }, |entry, item_outcome| {
                     let safe_outcome = match item_outcome {
+                        crate::download::sync::ItemOutcome::Unavailable(reason) => crate::download::sync::ItemOutcome::Unavailable(sanitize_download_error(reason)),
                         crate::download::sync::ItemOutcome::Failed(reason) => crate::download::sync::ItemOutcome::Failed(sanitize_download_error(reason)),
                         crate::download::sync::ItemOutcome::PermanentFailure(reason) => crate::download::sync::ItemOutcome::PermanentFailure(sanitize_download_error(reason)),
                         other => other.clone(),
                     };
-                    if let Err(error) = crate::download::sync::append_log(&destination, entry, &safe_outcome) {
+                    let source_id = entry.source_override.as_ref().map(|source| source.video_id.as_str()).or(entry.entry.id.as_deref());
+                    if let Err(error) = crate::download::sync::append_log_with_source(&destination, &entry.entry, source_id, &safe_outcome) {
                         log_error.get_or_insert(error);
                     }
                 });
                 let downloaded = result.outcomes.iter().filter(|(_, item)| matches!(item, crate::download::sync::ItemOutcome::Downloaded)).count();
+                if let Some(error) = result.state_warnings.first() {
+                    log_error.get_or_insert(format!("downloaded audio but could not clear its unresolved source state: {error}"));
+                }
                 if let Some(error) = log_error {
                     if downloaded > 0 { let _ = state.scan_async(); }
                     return Err(error);

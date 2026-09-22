@@ -9,7 +9,7 @@ use crate::download::markers::Markers;
 use crate::download::promotion::{
     promote_output, stage_output, validate_output, CollisionPolicy, Validation,
 };
-use crate::download::sync::{plan, sync_sequential, ItemOutcome, PlaylistEntry, SyncItem};
+use crate::download::sync::{plan, plan_with_state, sync_sequential, sync_sequential_observed_with_state, ItemOutcome, PlaylistEntry, PlaylistSyncState, SyncItem};
 use crate::download::workflows::{run_url_queue, search_sources, validate_http_url, QueueEvent};
 use crate::persistence::atomic_write::write_atomic;
 use crate::persistence::legacy::read_config;
@@ -381,11 +381,15 @@ fn downloader_markers_support_corruption_legacy_retry_and_sync_dedupe() {
             PlaylistEntry {
                 id: Some("new".into()),
                 title: "Artist - Existing".into(),
+                channel: None,
+                duration_secs: None,
                 url: None,
             },
             PlaylistEntry {
                 id: Some("new2".into()),
                 title: "Artist - New".into(),
+                channel: None,
+                duration_secs: None,
                 url: None,
             },
         ],
@@ -403,8 +407,11 @@ fn downloader_markers_support_corruption_legacy_retry_and_sync_dedupe() {
         entry: PlaylistEntry {
             id: Some("invalid".into()),
             title: "Artist - Invalid".into(),
+            channel: None,
+            duration_secs: None,
             url: None,
         },
+        source_override: None,
         destination: destination.join("Artist - Invalid.mp3"),
     };
     let result = sync_sequential(
@@ -422,8 +429,11 @@ fn downloader_markers_support_corruption_legacy_retry_and_sync_dedupe() {
         entry: PlaylistEntry {
             id: Some("valid".into()),
             title: "Artist - Valid".into(),
+            channel: None,
+            duration_secs: None,
             url: None,
         },
+        source_override: None,
         destination: destination.join("Artist - Valid.mp3"),
     };
     let result = sync_sequential(
@@ -744,7 +754,7 @@ fn playlist_sync_downloads_new_ids_once_and_persists_success_markers() {
 fn playlist_sync_log_keeps_song_name_date_and_failure_reason() {
     let root = fixture("playlist-sync-log");
     let entry = crate::download::sync::PlaylistEntry {
-        id: Some("failed-video".into()), title: "Artist - Missing song".into(), url: None,
+        id: Some("failed-video".into()), title: "Artist - Missing song".into(), channel: None, duration_secs: None, url: None,
     };
     crate::download::sync::append_log(&root, &entry, &crate::download::sync::ItemOutcome::Failed("provider refused this video".into())).unwrap();
     let entries = crate::download::sync::read_log(&root).unwrap();
@@ -754,6 +764,124 @@ fn playlist_sync_log_keeps_song_name_date_and_failure_reason() {
     assert_eq!(entries[0].status, "failed");
     assert_eq!(entries[0].reason.as_deref(), Some("provider refused this video"));
     assert!(entries[0].at_ms > 0);
+}
+
+#[test]
+fn unavailable_playlist_entry_persists_review_metadata_and_stops_repeated_attempts() {
+    let root = fixture("playlist-unavailable-state");
+    let music = root.join("music");
+    let playlist = root.join("playlist");
+    fs::create_dir_all(&music).unwrap();
+    fs::create_dir_all(&playlist).unwrap();
+    let entry = PlaylistEntry {
+        id: Some("aPSOTX5AkiY".into()), title: "Boogie T - Get What You Give".into(),
+        channel: Some("Boogie T - Topic".into()), duration_secs: Some(292),
+        url: Some("https://www.youtube.com/watch?v=aPSOTX5AkiY".into()),
+    };
+    let items = plan_with_state(&music, &playlist, std::slice::from_ref(&entry), &PlaylistSyncState::default());
+    assert_eq!(items.len(), 1);
+    let mut sync_state = PlaylistSyncState::default();
+    let mut logged = Vec::new();
+    let result = sync_sequential_observed_with_state(
+        &playlist, &items, &CancellationToken::new(), &mut sync_state,
+        |_, _| Err("ERROR: [youtube] aPSOTX5AkiY: Video unavailable".into()),
+        |item, outcome| {
+            logged.push(outcome.clone());
+            crate::download::sync::append_log_with_source(
+                &playlist, &item.entry, item.entry.id.as_deref(), outcome,
+            ).unwrap();
+        },
+    );
+    assert_eq!(result.outcomes, vec![("aPSOTX5AkiY".into(), ItemOutcome::Unavailable("ERROR: [youtube] aPSOTX5AkiY: Video unavailable".into()))]);
+    assert_eq!(logged.len(), 1);
+    assert!(Markers::load(&playlist).failed.contains("aPSOTX5AkiY"));
+
+    let restored = PlaylistSyncState::load(&playlist).unwrap();
+    let issue = &restored.unresolved["aPSOTX5AkiY"];
+    assert_eq!(issue.title, entry.title);
+    assert_eq!(issue.channel.as_deref(), Some("Boogie T - Topic"));
+    assert_eq!(issue.duration_secs, Some(292));
+    assert!(issue.reason.contains("Video unavailable"));
+    assert_eq!(crate::download::sync::read_log(&playlist).unwrap()[0].status, "unavailable");
+
+    let next_items = plan_with_state(&music, &playlist, &[entry], &restored);
+    assert!(next_items.is_empty(), "the persisted issue should prevent a pointless repeated extraction");
+}
+
+#[test]
+fn selected_replacement_download_marks_the_original_playlist_id_and_logs_both_ids() {
+    let root = fixture("playlist-replacement-source");
+    let music = root.join("music");
+    let playlist = root.join("playlist");
+    fs::create_dir_all(&music).unwrap();
+    fs::create_dir_all(&playlist).unwrap();
+    let original = PlaylistEntry {
+        id: Some("aPSOTX5AkiY".into()), title: "Boogie T - Get What You Give".into(),
+        channel: Some("Boogie T - Topic".into()), duration_secs: Some(292),
+        url: Some("https://www.youtube.com/watch?v=aPSOTX5AkiY".into()),
+    };
+    let mut state = PlaylistSyncState::default();
+    state.select_source("aPSOTX5AkiY", "6U7_Qy5c_uc").unwrap();
+    state.save(&playlist).unwrap();
+    let restored = PlaylistSyncState::load(&playlist).unwrap();
+    let items = plan_with_state(&music, &playlist, std::slice::from_ref(&original), &restored);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].entry.id.as_deref(), Some("aPSOTX5AkiY"));
+    assert_eq!(items[0].source_override.as_ref().map(|source| source.video_id.as_str()), Some("6U7_Qy5c_uc"));
+    assert_eq!(items[0].source_override.as_ref().map(|source| source.url.as_str()), Some("https://www.youtube.com/watch?v=6U7_Qy5c_uc"));
+
+    let result = sync_sequential_observed_with_state(
+        &playlist, &items, &CancellationToken::new(), &mut state,
+        |item, _| {
+            assert_eq!(item.source_override.as_ref().unwrap().video_id, "6U7_Qy5c_uc");
+            fs::write(&item.destination, b"ID3replacement").unwrap();
+            Ok(())
+        },
+        |item, outcome| {
+            crate::download::sync::append_log_with_source(
+                &playlist, &item.entry, item.source_override.as_ref().map(|source| source.video_id.as_str()), outcome,
+            ).unwrap();
+        },
+    );
+    assert_eq!(result.outcomes, vec![("aPSOTX5AkiY".into(), ItemOutcome::Downloaded)]);
+    let markers = Markers::load(&playlist);
+    assert!(markers.successful.contains("aPSOTX5AkiY"));
+    assert!(!markers.successful.contains("6U7_Qy5c_uc"));
+    let log = crate::download::sync::read_log(&playlist).unwrap();
+    assert_eq!(log[0].video_id.as_deref(), Some("aPSOTX5AkiY"));
+    assert_eq!(log[0].source_video_id.as_deref(), Some("6U7_Qy5c_uc"));
+
+    let mut attempts = 0;
+    let repeated = sync_sequential_observed_with_state(
+        &playlist, &items, &CancellationToken::new(), &mut state,
+        |_, _| { attempts += 1; Err("must not redownload a marked original ID".into()) },
+        |_, _| {},
+    );
+    assert_eq!(attempts, 0);
+    assert_eq!(repeated.outcomes, vec![("aPSOTX5AkiY".into(), ItemOutcome::Matched)]);
+    assert_eq!(crate::download::sync::read_log(&playlist).unwrap().len(), 1);
+}
+
+#[test]
+fn legacy_unavailable_markers_migrate_from_log_but_success_markers_remain_authoritative() {
+    let root = fixture("playlist-legacy-unavailable");
+    let entry = PlaylistEntry {
+        id: Some("aPSOTX5AkiY".into()), title: "Boogie T - Get What You Give".into(),
+        channel: Some("Boogie T - Topic".into()), duration_secs: Some(292),
+        url: Some("https://www.youtube.com/watch?v=aPSOTX5AkiY".into()),
+    };
+    fs::write(root.join(".sync_failed_vids"), "aPSOTX5AkiY\tVideo unavailable\n").unwrap();
+    crate::download::sync::append_log(&root, &entry, &ItemOutcome::Failed("ERROR: [youtube] aPSOTX5AkiY: Video unavailable".into())).unwrap();
+    let markers = Markers::load(&root);
+    let mut restored = PlaylistSyncState::default();
+    assert!(restored.migrate_legacy_unavailable(&root, std::slice::from_ref(&entry), &markers));
+    assert_eq!(restored.unresolved["aPSOTX5AkiY"].channel.as_deref(), Some("Boogie T - Topic"));
+
+    let mut successful = markers;
+    successful.record_success(&root, "aPSOTX5AkiY").unwrap();
+    let mut authoritative = PlaylistSyncState::default();
+    assert!(!authoritative.migrate_legacy_unavailable(&root, &[entry], &successful));
+    assert!(authoritative.unresolved.is_empty(), "original-ID success must override a stale failure history");
 }
 
 #[cfg(unix)]
