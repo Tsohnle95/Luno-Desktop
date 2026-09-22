@@ -207,6 +207,37 @@ impl PlaylistSyncState {
     }
 }
 
+/// Resolve previously unavailable playlist entries when their audio has since
+/// appeared in the library through another download path. Keep this aligned
+/// with the filename matching policy used by playlist planning.
+pub fn reconcile_unresolved_local_matches(
+    root: &Path,
+    folder: &Path,
+    entries: &[PlaylistEntry],
+    state: &mut PlaylistSyncState,
+    markers: &mut Markers,
+) -> Result<usize, String> {
+    let mut keys = HashSet::new();
+    let mut titles = HashSet::new();
+    collect_audio(root, &mut keys, &mut titles);
+    let matched: Vec<String> = entries.iter().filter_map(|entry| {
+        let id = entry.id.as_deref()?;
+        if !state.unresolved.contains_key(id) || !existing_audio_matches(entry, &keys, &titles) {
+            return None;
+        }
+        Some(id.to_owned())
+    }).collect();
+    if matched.is_empty() { return Ok(0); }
+
+    for id in &matched {
+        markers.record_success(folder, id).map_err(|error| format!("matched playlist entry could not be recorded: {error}"))?;
+        state.unresolved.remove(id);
+        state.sources.remove(id);
+    }
+    state.save(folder)?;
+    Ok(matched.len())
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |duration| duration.as_millis() as u64)
 }
@@ -304,9 +335,14 @@ pub fn plan_with_state(
     let mut keys = HashSet::new();
     let mut titles = HashSet::new();
     collect_audio(root, &mut keys, &mut titles);
+    let existing_keys = keys.clone();
+    let existing_titles = titles.clone();
     entries
         .iter()
         .filter_map(|entry| {
+            if existing_audio_matches(entry, &existing_keys, &existing_titles) {
+                return None;
+            }
             if let Some(id) = entry.id.as_deref() {
                 if state.unresolved.contains_key(id) && !state.sources.get(id).is_some_and(|source| source.retry_pending) {
                     return None;
@@ -337,6 +373,14 @@ pub fn plan_with_state(
             })
         })
         .collect()
+}
+
+fn existing_audio_matches(entry: &PlaylistEntry, keys: &HashSet<String>, titles: &HashSet<String>) -> bool {
+    let (artist, title) = parse_title(&entry.title);
+    let key = sync_key(&artist, &title);
+    let title_key = sync_key("", &title);
+    !(key.is_empty() && title_key.is_empty())
+        && (keys.contains(&key) || (artist.is_empty() && titles.contains(&title_key)))
 }
 
 pub fn sync_sequential<F>(

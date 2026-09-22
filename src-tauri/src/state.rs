@@ -6013,10 +6013,13 @@ impl AppState {
             let outcome = (|| -> Result<(usize, usize, Option<String>), String> {
                 let entries = crate::download::search::playlist_entries(&state.supervisor, &ytdlp, &url, &token)?;
                 let mut sync_state = crate::download::sync::PlaylistSyncState::load(&destination)?;
-                let markers = crate::download::markers::Markers::load(&destination);
+                let mut markers = crate::download::markers::Markers::load(&destination);
                 let migrated = sync_state.migrate_legacy_unavailable(&destination, &entries, &markers);
                 let pruned = sync_state.prune_unresolved(&entries, &markers);
                 if migrated || pruned { sync_state.save(&destination)?; }
+                crate::download::sync::reconcile_unresolved_local_matches(
+                    &worker_root, &destination, &entries, &mut sync_state, &mut markers,
+                )?;
                 let items = crate::download::sync::plan_with_state(&worker_root, &destination, &entries, &sync_state);
                 if items.is_empty() { return Ok((0, 0, None)); }
                 let total = items.len();
@@ -6102,9 +6105,19 @@ impl AppState {
 
     fn playlist_sync_issues(&self, playlist_id: &PlaylistId) -> Result<Value, ContractError> {
         let folder = self.playlist_sync_folder(playlist_id)?;
-        let state = crate::download::sync::PlaylistSyncState::load(&folder)
+        let root = self.playlist_mutation_root()?;
+        let mut state = crate::download::sync::PlaylistSyncState::load(&folder)
             .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
-        let markers = crate::download::markers::Markers::load(&folder);
+        let mut markers = crate::download::markers::Markers::load(&folder);
+        let unresolved_entries: Vec<crate::download::sync::PlaylistEntry> = state.unresolved.values()
+            .map(|issue| crate::download::sync::PlaylistEntry {
+                id: Some(issue.video_id.clone()), title: issue.title.clone(), channel: issue.channel.clone(),
+                duration_secs: issue.duration_secs, url: None,
+            })
+            .collect();
+        crate::download::sync::reconcile_unresolved_local_matches(
+            &root, &folder, &unresolved_entries, &mut state, &mut markers,
+        ).map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
         let entries: Vec<crate::contracts::types::PlaylistSyncIssue> = state.unresolved.values()
             .filter(|issue| !markers.successful.contains(&issue.video_id))
             .map(|issue| crate::contracts::types::PlaylistSyncIssue {

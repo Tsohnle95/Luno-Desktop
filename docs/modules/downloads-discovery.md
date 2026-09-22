@@ -129,7 +129,10 @@ What it does not own: library snapshots and promotion targets
   extraction is recorded in the playlist-scoped atomic
   `.luno-sync-source-state.json` with the original ID, title, channel, duration,
   reason, and attempted source; that unresolved original is skipped on later
-  syncs until the user explicitly selects/retries a source. Source mappings
+  syncs until the user explicitly selects/retries a source. If matching audio
+  later appears through another download path, sync reconciles that local match
+  using the same filename key, records the original ID as satisfied, and clears
+  the stale unresolved source. Source mappings
   are keyed by the original playlist ID but provide only the helper URL. A
   selection authorizes one durable retry; a failed/unavailable retry is not
   repeated automatically, while a validated output records success against
