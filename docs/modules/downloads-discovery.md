@@ -125,12 +125,26 @@ What it does not own: library snapshots and promotion targets
   marker is persisted before the sync advances. Sync and single downloads share
   one admission gate, publish normal `sync` job events, support process-group
   cancellation, and trigger a coalesced scan after new files arrive.
+  Flat enumeration is not evidence of availability. A concrete unavailable
+  extraction is recorded in the playlist-scoped atomic
+  `.luno-sync-source-state.json` with the original ID, title, channel, duration,
+  reason, and attempted source; that unresolved original is skipped on later
+  syncs until the user explicitly selects/retries a source. Source mappings
+  are keyed by the original playlist ID but provide only the helper URL. A
+  selection authorizes one durable retry; a failed/unavailable retry is not
+  repeated automatically, while a validated output records success against
+  the original ID and clears its unresolved issue.
+  Candidate search is bounded and only runs for an unresolved entry requested
+  by the user. Search results are review suggestions, never automatic choices.
+  The frontend may save multiple explicit selections before starting one sync;
+  a restart preserves both mappings and any pending selected-source retry.
   Each attempted video appends a dated title, outcome, and failure reason to
   `.luno-sync-log.jsonl` in that playlist folder. This is display history,
   not a dedupe marker; `.downloaded_vids` remains the success source. The
   playlist Log shows successful additions, while the separate sync error view
-  shows per-song reasons from the latest failed run. A failed job reports the
-  first per-song error and links to that error view.
+  shows per-song reasons from the latest failed run, including unavailable
+  source attempts. A failed job reports the first per-song error and links to
+  that error view.
 - Missing or mismatched managed tools fail closed with degraded media
   behavior surfaced — never silent success, never an unreviewed download
   at build time.

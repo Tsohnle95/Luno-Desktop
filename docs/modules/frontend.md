@@ -77,13 +77,21 @@ envelope shapes (`docs/modules/contracts.md`).
   real library track: library/recent rows, the queue, home cards, and the
   footer now-playing track. Edit/delete are hidden for non-library
   recommendation rows (they have no library file).
-- A physical playlist's context menu owns the YouTube link editor and
-  `Sync playlist` and `Log` actions. Sync stays disabled until a link is present; React
-  sends only the playlist ID, then reflects backend-owned job success,
-  cancellation, and errors. Active sync status names the current song until the
-  job ends. Log shows dated successful additions; a separate error view shows
-  backend-owned failure reasons for the last run. React
-  does not enumerate videos, choose destinations, or decide which entries are new.
+- A physical playlist's context menu owns the YouTube link editor,
+  `Sync playlist`, `Review unavailable songs`, and `Log` actions. Sync stays
+  disabled until a link is present; React sends only the playlist ID, then
+  reflects backend-owned job progress, completion, cancellation, and errors.
+  Active sync status names the current song until the job ends. If unresolved
+  entries remain after a completed sync, the status offers a review action
+  instead of claiming the playlist is up to date. The review dialog shows the
+  original title, channel, duration, and unavailable reason, then displays
+  candidate title/channel/duration as review cues. Every source must be chosen
+  explicitly per entry; multiple saved choices can be applied in one sync.
+  Saved choices survive restarts, and an unsuccessful selected source is not
+  retried again until the user explicitly chooses/retries it. Log shows only
+  dated successful additions; a separate error view shows backend-owned
+  failure details. React does not enumerate videos, select destinations, or
+  decide which entries are new.
 
 ## Core flows
 
