@@ -63,6 +63,11 @@ transfer manifests (`docs/modules/contracts.md`).
   must fail rather than guess.
 - Mutations are safe-root-contained and atomic; downloads promote only
   inside the configured library root and trigger a coalesced rescan.
+- Physical playlist-to-YouTube links are stored by `PlaylistService` in the
+  root-level `.luno_playlist_urls.json` map. Keys follow playlist names, writes
+  are atomic, rename/delete mutations keep the map aligned, and every scan
+  projects a stored link onto `Playlist.url`; URLs never determine filesystem
+  destinations.
 - Editing a track's artist/title (`edit_track_metadata`) renames its library
   file in place: same folder, extension preserved, collision-rejecting,
   path-keyed favorites moved to the new path, then a coalesced rescan. Because
@@ -89,6 +94,7 @@ scan_async → validate/canonicalize roots → off-thread scan → stable keys
 event when all roots unreadable)
 play_with_context → heal ids vs current map → queue → playback
 visible row → track_artwork command → bounded extract → data URL
+set_playlist_url → validated YouTube URL → atomic URL map → rescan → snapshot
 startup → has_legacy_data → validated_music_root → migrate → status
 ```
 

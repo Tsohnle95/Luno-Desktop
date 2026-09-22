@@ -77,6 +77,11 @@ envelope shapes (`docs/modules/contracts.md`).
   real library track: library/recent rows, the queue, home cards, and the
   footer now-playing track. Edit/delete are hidden for non-library
   recommendation rows (they have no library file).
+- A physical playlist's context menu owns the YouTube link editor and
+  `Sync playlist` action. Sync stays disabled until a link is present; React
+  sends only the playlist ID, then reflects backend-owned job success,
+  cancellation, and errors. It does not enumerate videos, choose destinations,
+  or decide which entries are new.
 
 ## Core flows
 
@@ -85,6 +90,8 @@ backend-event → backend_projection.apply → subscribers → view re-render
 track visible → bridge.trackArtwork(id) → data URL → bounded LRU
 download click → DownloaderView queue → bridge.startDownload* → job events
 → progress render → coalesced rescan → library snapshot
+playlist context menu → set_playlist_url / sync_playlist → sync job events
+→ status notice + refreshed library snapshot
 ```
 
 ## Tests

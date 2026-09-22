@@ -116,6 +116,14 @@ What it does not own: library snapshots and promotion targets
   "Unknown artist". A failed probe degrades the filename only, never the
   download. `src/state/download_naming.ts` owns the shared naming/display
   policy.
+- A physical playlist may link to one canonical YouTube playlist URL. A sync
+  enumerates stable video IDs through the supervised yt-dlp boundary, skips
+  tracks already found anywhere under the library root, and also skips IDs in
+  that playlist's append-only `.downloaded_vids` success markers. Each new item
+  downloads sequentially as M4A into the selected playlist folder; its success
+  marker is persisted before the sync advances. Sync and single downloads share
+  one admission gate, publish normal `sync` job events, support process-group
+  cancellation, and trigger a coalesced scan after new files arrive.
 - Missing or mismatched managed tools fail closed with degraded media
   behavior surfaced — never silent success, never an unreviewed download
   at build time.
@@ -128,6 +136,8 @@ What it does not own: library snapshots and promotion targets
 ```text
 search_downloader → results → start_download → helper spawn → staged output
 → signature validation → atomic promote → coalesced rescan → job succeeded
+playlist sync → supervised flat enumeration → library/marker dedupe
+→ sequential helper downloads → per-item success marker → coalesced rescan
 discover → validated recommendations → shared temporary assets → focused tap
 or Discover projection → select/next/previous → explicit save →
 remux_and_promote or durable download → chosen playlist → library

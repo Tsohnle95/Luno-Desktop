@@ -755,7 +755,10 @@ fn playlist_sync_cancellation_kills_enumerator_and_releases_download_admission()
         playlist_id: crate::contracts::types::PlaylistId("playlist:Road trip".into()),
     }}).unwrap();
     let job_id = started["job_id"].as_str().unwrap().to_owned();
-    for _ in 0..200 {
+    // The full Cargo suite runs many process-heavy tests in parallel. Give the
+    // worker a bounded but generous start window so this asserts behavior, not
+    // host scheduler speed.
+    for _ in 0..1_000 {
         if pid_file.is_file() { break; }
         thread::sleep(Duration::from_millis(5));
     }
@@ -767,7 +770,7 @@ fn playlist_sync_cancellation_kills_enumerator_and_releases_download_admission()
     }}).unwrap_err();
     assert_eq!(blocked.code, crate::contracts::types::ErrorCode::Busy);
     state.dispatch(CommandEnvelope { version: 1, request_id: "cancel-sync".into(), command: BackendCommand::CancelJob { job_id: JobId(job_id.clone()) }}).unwrap();
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if state.events().iter().any(|event| matches!(&event.event, Event::JobUpdated { job } if job.id.0 == job_id && job.state == crate::contracts::types::JobState::Cancelled)) { break; }
         thread::sleep(Duration::from_millis(5));
     }
