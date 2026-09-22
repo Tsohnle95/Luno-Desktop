@@ -5516,6 +5516,9 @@ impl AppState {
             Command::SetPlaylistUrl { playlist_id, url } => self.set_playlist_url(&playlist_id, url.as_deref()),
             Command::SyncPlaylist { playlist_id } => self.sync_playlist(&playlist_id),
             Command::PlaylistSyncLog { playlist_id } => self.playlist_sync_log(&playlist_id),
+            Command::PlaylistSyncIssues { playlist_id } => self.playlist_sync_issues(&playlist_id),
+            Command::PlaylistSyncCandidates { playlist_id, video_id } => self.playlist_sync_candidates(&playlist_id, &video_id),
+            Command::PlaylistSyncSelectSource { playlist_id, video_id, source_video_id } => self.playlist_sync_select_source(&playlist_id, &video_id, &source_video_id),
             Command::DeletePlaylist { playlist_id } => self.delete_playlist(&playlist_id),
             Command::AddTracksToPlaylist { track_ids, playlist_id } => self.add_tracks_to_playlist(&track_ids, &playlist_id),
             Command::DeleteTracks { track_ids } => self.delete_tracks(&track_ids),
@@ -6084,12 +6087,91 @@ impl AppState {
     }
 
     fn playlist_sync_log(&self, playlist_id: &PlaylistId) -> Result<Value, ContractError> {
+        let destination = self.playlist_sync_folder(playlist_id)?;
+        let entries = crate::download::sync::read_log(&destination).map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+        Ok(serde_json::json!({ "entries": entries }))
+    }
+
+    fn playlist_sync_folder(&self, playlist_id: &PlaylistId) -> Result<PathBuf, ContractError> {
         let name = self.playlist_name(playlist_id)?;
         let root = self.playlist_mutation_root()?;
         let destination = std::fs::canonicalize(root.join(name)).map_err(|_| ContractError { code: ErrorCode::NotFound, message: "playlist folder is unavailable".into(), retryable: false })?;
         if !destination.starts_with(&root) { return Err(ContractError::invalid("playlist destination is unsafe")); }
-        let entries = crate::download::sync::read_log(&destination).map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+        Ok(destination)
+    }
+
+    fn playlist_sync_issues(&self, playlist_id: &PlaylistId) -> Result<Value, ContractError> {
+        let folder = self.playlist_sync_folder(playlist_id)?;
+        let state = crate::download::sync::PlaylistSyncState::load(&folder)
+            .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+        let markers = crate::download::markers::Markers::load(&folder);
+        let entries: Vec<crate::contracts::types::PlaylistSyncIssue> = state.unresolved.values()
+            .filter(|issue| !markers.successful.contains(&issue.video_id))
+            .map(|issue| crate::contracts::types::PlaylistSyncIssue {
+                video_id: issue.video_id.clone(), title: issue.title.clone(), channel: issue.channel.clone(),
+                duration_secs: issue.duration_secs, reason: issue.reason.clone(),
+                attempted_source_id: issue.attempted_source_id.clone(),
+                selected_source_id: state.sources.get(&issue.video_id).map(|source| source.video_id.clone()),
+                updated_at_ms: issue.updated_at_ms,
+            })
+            .collect();
         Ok(serde_json::json!({ "entries": entries }))
+    }
+
+    fn playlist_sync_candidates(&self, playlist_id: &PlaylistId, video_id: &str) -> Result<Value, ContractError> {
+        let folder = self.playlist_sync_folder(playlist_id)?;
+        let sync_state = crate::download::sync::PlaylistSyncState::load(&folder)
+            .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+        let issue = sync_state.unresolved.get(video_id)
+            .ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "unresolved playlist entry not found".into(), retryable: false })?;
+        if crate::download::markers::Markers::load(&folder).successful.contains(video_id) {
+            return Err(ContractError { code: ErrorCode::NotFound, message: "playlist entry is already synced".into(), retryable: false });
+        }
+        let query = [issue.title.as_str(), issue.channel.as_deref().unwrap_or("")].into_iter()
+            .filter(|part| !part.trim().is_empty()).collect::<Vec<_>>().join(" ");
+        let found = match crate::download::search::search_youtube_web(&query, 10) {
+            Ok(found) if !found.is_empty() => found,
+            web_result => {
+                let ytdlp = self.discover_ytdlp().map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: false })?;
+                match crate::download::search::search_provider(&ytdlp, "youtube", &query, 10) {
+                    Ok(found) => found,
+                    Err(error) => {
+                        let web_error = web_result.err().unwrap_or_else(|| "YouTube search returned no candidates".into());
+                        return Err(ContractError { code: ErrorCode::Unavailable, message: format!("candidate search failed: {web_error}; {error}"), retryable: true });
+                    }
+                }
+            }
+        };
+        let candidates: Vec<crate::contracts::types::PlaylistSyncCandidate> = found.into_iter().filter_map(|result| {
+            if result.title.trim().is_empty() { return None; }
+            let url = result.url.as_deref()?;
+            let video_id = crate::download::search::youtube_video_id(url)?;
+            let canonical_url = crate::download::sync::youtube_watch_url(&video_id)?;
+            Some(crate::contracts::types::PlaylistSyncCandidate {
+                video_id, title: result.title.trim().to_owned(),
+                channel: result.artist.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()),
+                duration: result.duration.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()),
+                thumbnail_url: result.thumbnail_url.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()),
+                url: canonical_url,
+            })
+        }).collect();
+        serde_json::to_value(candidates).map_err(|error| ContractError { code: ErrorCode::Internal, message: format!("playlist candidates could not be encoded: {error}"), retryable: false })
+    }
+
+    fn playlist_sync_select_source(&self, playlist_id: &PlaylistId, video_id: &str, source_video_id: &str) -> Result<Value, ContractError> {
+        let folder = self.playlist_sync_folder(playlist_id)?;
+        let mut sync_state = crate::download::sync::PlaylistSyncState::load(&folder)
+            .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+        if !sync_state.unresolved.contains_key(video_id) {
+            return Err(ContractError { code: ErrorCode::NotFound, message: "unresolved playlist entry not found".into(), retryable: false });
+        }
+        if crate::download::markers::Markers::load(&folder).successful.contains(video_id) {
+            return Err(ContractError { code: ErrorCode::NotFound, message: "playlist entry is already synced".into(), retryable: false });
+        }
+        sync_state.select_source(video_id, source_video_id).map_err(ContractError::invalid)?;
+        sync_state.save(&folder).map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+        let source = sync_state.sources.get(video_id).expect("source mapping was inserted");
+        Ok(serde_json::json!({ "video_id": video_id, "source_video_id": source.video_id, "url": source.url }))
     }
 
     fn publish_sync_job(&self, job_id: &JobId, generation: Generation, job_state: crate::contracts::types::JobState, progress: Option<f32>, current_item: Option<&str>) {

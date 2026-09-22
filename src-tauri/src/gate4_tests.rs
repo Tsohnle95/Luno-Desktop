@@ -767,6 +767,51 @@ fn playlist_sync_log_keeps_song_name_date_and_failure_reason() {
 }
 
 #[test]
+fn playlist_sync_issue_and_source_commands_persist_explicit_canonical_selection() {
+    let root = fixture("playlist-source-command");
+    let playlist = root.join("Road trip");
+    fs::create_dir_all(&playlist).unwrap();
+    let playlist_id = crate::contracts::types::PlaylistId("playlist:Road trip".into());
+    let mut sync_state = PlaylistSyncState::default();
+    sync_state.unresolved.insert("aPSOTX5AkiY".into(), crate::download::sync::UnresolvedEntry {
+        video_id: "aPSOTX5AkiY".into(), title: "Boogie T - Get What You Give".into(),
+        channel: Some("Boogie T - Topic".into()), duration_secs: Some(292),
+        reason: "Video unavailable".into(), attempted_source_id: Some("aPSOTX5AkiY".into()), updated_at_ms: 7,
+    });
+    sync_state.save(&playlist).unwrap();
+
+    let state = crate::state::AppState::new(8);
+    state.set_scan_roots(vec![root.0.clone()]);
+    state.replace_library(crate::contracts::types::Generation(1), std::collections::BTreeMap::from([("Road trip".into(), vec![])]));
+    let issues = state.dispatch(CommandEnvelope { version: 1, request_id: "sync-issues".into(), command: BackendCommand::PlaylistSyncIssues {
+        playlist_id: playlist_id.clone(),
+    }}).unwrap();
+    assert_eq!(issues["entries"][0]["video_id"], "aPSOTX5AkiY");
+    assert_eq!(issues["entries"][0]["channel"], "Boogie T - Topic");
+    assert_eq!(issues["entries"][0]["duration_secs"], 292);
+
+    let rejected = state.dispatch(CommandEnvelope { version: 1, request_id: "bad-source".into(), command: BackendCommand::PlaylistSyncSelectSource {
+        playlist_id: playlist_id.clone(), video_id: "aPSOTX5AkiY".into(), source_video_id: "https://example.com/watch?v=6U7_Qy5c_uc".into(),
+    }}).unwrap_err();
+    assert_eq!(rejected.code, crate::contracts::types::ErrorCode::InvalidRequest);
+    assert!(PlaylistSyncState::load(&playlist).unwrap().sources.is_empty());
+
+    let selected = state.dispatch(CommandEnvelope { version: 1, request_id: "select-source".into(), command: BackendCommand::PlaylistSyncSelectSource {
+        playlist_id: playlist_id.clone(), video_id: "aPSOTX5AkiY".into(), source_video_id: "6U7_Qy5c_uc".into(),
+    }}).unwrap();
+    assert_eq!(selected["video_id"], "aPSOTX5AkiY");
+    assert_eq!(selected["source_video_id"], "6U7_Qy5c_uc");
+    assert_eq!(selected["url"], "https://www.youtube.com/watch?v=6U7_Qy5c_uc");
+    let restored = PlaylistSyncState::load(&playlist).unwrap();
+    assert_eq!(restored.sources["aPSOTX5AkiY"].video_id, "6U7_Qy5c_uc");
+    assert!(restored.unresolved.is_empty());
+    let issues_after_selection = state.dispatch(CommandEnvelope { version: 1, request_id: "sync-issues-after".into(), command: BackendCommand::PlaylistSyncIssues {
+        playlist_id,
+    }}).unwrap();
+    assert!(issues_after_selection["entries"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn unavailable_playlist_entry_persists_review_metadata_and_stops_repeated_attempts() {
     let root = fixture("playlist-unavailable-state");
     let music = root.join("music");

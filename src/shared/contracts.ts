@@ -23,6 +23,9 @@ export type ErrorCode = "invalid_request" | "unsupported_version" | "not_found" 
 export interface ContractError { code: ErrorCode; message: string; retryable: boolean }
 export interface SettingsInput { music_root: string | null; auto_discovery: boolean | null; volume: number | null; sleep_timer: unknown | null; global_keys: boolean | null; favorite_songs: string[]; video_mode?: boolean | null }
 export interface SearchResult { provider: string; query: string; title: string; artist: string | null; duration: string | null; thumbnail_url: string | null; url: string | null }
+export interface PlaylistSyncIssue { video_id: string; title: string; channel: string | null; duration_secs: number | null; reason: string; attempted_source_id: string | null; selected_source_id: string | null; updated_at_ms: number }
+export interface PlaylistSyncCandidate { video_id: string; title: string; channel: string | null; duration: string | null; thumbnail_url: string | null; url: string }
+export interface PlaylistSyncSelection { video_id: string; source_video_id: string; url: string }
 
 export type Command =
   | { type: "get_library" } | { type: "scan_library" } | { type: "play"; payload: { track_id: TrackId } }
@@ -55,6 +58,9 @@ export type Command =
   | { type: "set_playlist_url"; payload: { playlist_id: PlaylistId; url: string | null } }
   | { type: "sync_playlist"; payload: { playlist_id: PlaylistId } }
   | { type: "playlist_sync_log"; payload: { playlist_id: PlaylistId } }
+  | { type: "playlist_sync_issues"; payload: { playlist_id: PlaylistId } }
+  | { type: "playlist_sync_candidates"; payload: { playlist_id: PlaylistId; video_id: string } }
+  | { type: "playlist_sync_select_source"; payload: { playlist_id: PlaylistId; video_id: string; source_video_id: string } }
   | { type: "delete_playlist"; payload: { playlist_id: PlaylistId } }
   | { type: "add_tracks_to_playlist"; payload: { track_ids: TrackId[]; playlist_id: PlaylistId } }
   | { type: "delete_tracks"; payload: { track_ids: TrackId[] } }
@@ -174,6 +180,9 @@ function isCommand(v: unknown): v is Command {
     if (v.type === "set_playlist_url") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && (v.payload.url === null || typeof v.payload.url === "string") && Object.keys(v.payload).length === 2;
     if (v.type === "sync_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 1;
     if (v.type === "playlist_sync_log") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 1;
+    if (v.type === "playlist_sync_issues") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 1;
+    if (v.type === "playlist_sync_candidates") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && nonEmptyId(v.payload.video_id) && Object.keys(v.payload).length === 2;
+    if (v.type === "playlist_sync_select_source") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && nonEmptyId(v.payload.video_id) && nonEmptyId(v.payload.source_video_id) && Object.keys(v.payload).length === 3;
     if (v.type === "delete_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 1;
     if (v.type === "add_tracks_to_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.track_ids) && v.payload.track_ids.length > 0 && v.payload.track_ids.every(nonEmptyId) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 2;
     if (v.type === "delete_tracks") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.track_ids) && v.payload.track_ids.length > 0 && v.payload.track_ids.every(nonEmptyId) && Object.keys(v.payload).length === 1;
@@ -265,6 +274,29 @@ export function isEventEnvelope(v: unknown): v is EventEnvelope { return exact(v
 export function parseCommandEnvelope(json: string): CommandEnvelope { const value: unknown = JSON.parse(json); if (!isCommandEnvelope(value)) throw new Error("invalid or unsupported command envelope"); return value; }
 export function parseEventEnvelope(json: string): EventEnvelope { const value: unknown = JSON.parse(json); if (!isEventEnvelope(value)) throw new Error("invalid or unsupported event envelope"); return value; }
 export function isSearchResults(value: unknown): value is SearchResult[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["provider", "query", "title", "artist", "duration", "thumbnail_url", "url"]) && nonEmptyId(item.provider) && nonEmptyId(item.query) && nonEmptyId(item.title) && (item.artist === null || nonEmptyId(item.artist)) && (item.duration === null || typeof item.duration === "string") && (item.thumbnail_url === null || nonEmptyId(item.thumbnail_url)) && (item.url === null || nonEmptyId(item.url))); }
+function isCanonicalYouTubeWatchUrl(value: unknown): value is string { return typeof value === "string" && /^https:\/\/www\.youtube\.com\/watch\?v=[A-Za-z0-9_-]{11}$/.test(value); }
+export function isPlaylistSyncIssues(value: unknown): value is { entries: PlaylistSyncIssue[] } {
+  return object(value) && exact(value, ["entries"]) && Array.isArray(value.entries) && value.entries.every((issue) => object(issue)
+    && exact(issue, ["video_id", "title", "channel", "duration_secs", "reason", "attempted_source_id", "selected_source_id", "updated_at_ms"])
+    && nonEmptyId(issue.video_id) && nonEmptyId(issue.title) && (issue.channel === null || nonEmptyId(issue.channel))
+    && (issue.duration_secs === null || (safeInteger(issue.duration_secs) && issue.duration_secs >= 0)) && nonEmptyId(issue.reason)
+    && (issue.attempted_source_id === null || nonEmptyId(issue.attempted_source_id))
+    && (issue.selected_source_id === null || nonEmptyId(issue.selected_source_id)) && safeInteger(issue.updated_at_ms) && issue.updated_at_ms >= 0);
+}
+export function isPlaylistSyncCandidates(value: unknown): value is PlaylistSyncCandidate[] {
+  return Array.isArray(value) && value.every((candidate) => object(candidate)
+    && exact(candidate, ["video_id", "title", "channel", "duration", "thumbnail_url", "url"])
+    && /^[A-Za-z0-9_-]{11}$/.test(String(candidate.video_id)) && nonEmptyId(candidate.title)
+    && (candidate.channel === null || nonEmptyId(candidate.channel))
+    && (candidate.duration === null || typeof candidate.duration === "string")
+    && (candidate.thumbnail_url === null || nonEmptyId(candidate.thumbnail_url)) && isCanonicalYouTubeWatchUrl(candidate.url)
+    && candidate.url.endsWith(`?v=${candidate.video_id}`));
+}
+export function isPlaylistSyncSelection(value: unknown): value is PlaylistSyncSelection {
+  return object(value) && exact(value, ["video_id", "source_video_id", "url"]) && nonEmptyId(value.video_id)
+    && /^[A-Za-z0-9_-]{11}$/.test(String(value.source_video_id)) && isCanonicalYouTubeWatchUrl(value.url)
+    && value.url.endsWith(`?v=${value.source_video_id}`);
+}
 export function isRecommendationList(value: unknown): value is Recommendation[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["artist", "title", "match_score", "artwork_url"]) && nonEmptyId(item.artist) && nonEmptyId(item.title) && typeof item.match_score === "number" && (item.artwork_url === null || typeof item.artwork_url === "string")); }
 export function isPreviewSnapshot(value: unknown): value is PreviewSnapshot { return object(value) && (exact(value, ["generation", "active", "current", "window", "prepared", "unavailable", "cancelled"]) || exact(value, ["generation", "active", "current", "window", "prepared", "unavailable", "cancelled", "progress"])) && typeof value.generation === "number" && Number.isSafeInteger(value.generation) && value.generation >= 0 && typeof value.active === "boolean" && (value.current === null || nonEmptyId(value.current)) && Array.isArray(value.window) && value.window.every(nonEmptyId) && Array.isArray(value.prepared) && value.prepared.every(nonEmptyId) && Array.isArray(value.unavailable) && value.unavailable.every(nonEmptyId) && typeof value.cancelled === "boolean" && (value.progress === undefined || (Array.isArray(value.progress) && value.progress.every((item) => object(item) && exact(item, ["key", "percent"]) && nonEmptyId(item.key) && typeof item.percent === "number" && Number.isInteger(item.percent) && item.percent >= 0 && item.percent <= 100))); }
 export function isDiscoverSnapshot(value: unknown): value is DiscoverSnapshot { return object(value) && (exact(value, ["generation", "enabled", "window", "ready", "queued"]) || exact(value, ["generation", "enabled", "window", "ready", "queued", "prepared"]) || exact(value, ["generation", "enabled", "window", "ready", "queued", "prepared", "unavailable"])) && typeof value.generation === "number" && Number.isSafeInteger(value.generation) && value.generation >= 0 && typeof value.enabled === "boolean" && Array.isArray(value.window) && value.window.every(nonEmptyId) && Number.isSafeInteger(value.ready) && (value.ready as number) >= 0 && Number.isSafeInteger(value.queued) && (value.queued as number) >= 0 && (value.prepared === undefined || (Array.isArray(value.prepared) && value.prepared.every(nonEmptyId))) && (value.unavailable === undefined || (Array.isArray(value.unavailable) && value.unavailable.every(nonEmptyId))); }

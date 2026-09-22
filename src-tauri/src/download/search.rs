@@ -86,6 +86,21 @@ pub fn search_youtube_web(query: &str, requested_limit: usize) -> Result<Vec<Sea
     parse_youtube_initial_data(&body, limit)
 }
 
+/// Extract a concrete YouTube watch ID from an allowlisted watch URL. Search
+/// rows may carry tracking query parameters; callers persist only the ID and
+/// rebuild the canonical watch URL before using it as a download source.
+pub fn youtube_video_id(input: &str) -> Option<String> {
+    let rest = input.strip_prefix("https://")?;
+    let (host, path_query) = rest.split_once('/')?;
+    if !matches!(host, "youtube.com" | "www.youtube.com" | "music.youtube.com" | "m.youtube.com") {
+        return None;
+    }
+    let (path, query) = path_query.split_once('?')?;
+    if path != "watch" { return None; }
+    let id = query.split('&').find_map(|part| part.strip_prefix("v="))?.split('#').next()?;
+    crate::download::sync::youtube_watch_url(id).map(|_| id.to_owned())
+}
+
 fn parse_youtube_initial_data(body: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
     let json = ["var ytInitialData = ", "ytInitialData = "]
         .iter()
@@ -393,6 +408,16 @@ mod tests {
         assert_eq!(results[0].title, "Hello {World}");
         assert_eq!(results[0].artist.as_deref(), Some("Eminem"));
         assert_eq!(results[0].url.as_deref(), Some("https://www.youtube.com/watch?v=abc123"));
+    }
+
+    #[test]
+    fn replacement_video_ids_accept_only_allowlisted_youtube_watch_urls() {
+        assert_eq!(youtube_video_id("https://www.youtube.com/watch?v=6U7_Qy5c_uc&feature=share"), Some("6U7_Qy5c_uc".into()));
+        assert_eq!(youtube_video_id("https://music.youtube.com/watch?v=6U7_Qy5c_uc"), Some("6U7_Qy5c_uc".into()));
+        assert_eq!(youtube_video_id("https://youtube.com.evil/watch?v=6U7_Qy5c_uc"), None);
+        assert_eq!(youtube_video_id("https://youtu.be/6U7_Qy5c_uc"), None);
+        assert_eq!(youtube_video_id("https://www.youtube.com/shorts/6U7_Qy5c_uc"), None);
+        assert_eq!(youtube_video_id("https://www.youtube.com/watch?v=short"), None);
     }
 
     #[test]

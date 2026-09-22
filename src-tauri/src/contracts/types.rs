@@ -193,6 +193,38 @@ pub struct Playlist {
     pub ordered_track_ids: Vec<TrackId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaylistSyncIssue {
+    #[serde(deserialize_with = "non_empty_string")]
+    pub video_id: String,
+    #[serde(deserialize_with = "non_empty_string")]
+    pub title: String,
+    pub channel: Option<String>,
+    #[serde(deserialize_with = "safe_option_u64")]
+    pub duration_secs: Option<u64>,
+    #[serde(deserialize_with = "non_empty_string")]
+    pub reason: String,
+    pub attempted_source_id: Option<String>,
+    pub selected_source_id: Option<String>,
+    #[serde(deserialize_with = "safe_u64")]
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaylistSyncCandidate {
+    #[serde(deserialize_with = "non_empty_string")]
+    pub video_id: String,
+    #[serde(deserialize_with = "non_empty_string")]
+    pub title: String,
+    pub channel: Option<String>,
+    pub duration: Option<String>,
+    pub thumbnail_url: Option<String>,
+    #[serde(deserialize_with = "non_empty_string")]
+    pub url: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LibrarySnapshot {

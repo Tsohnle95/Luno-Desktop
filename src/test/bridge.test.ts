@@ -5,7 +5,7 @@ import { currentVideoForTrack, focusedQueueProjection, playRecentTrack, runBridg
 import type { BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope } from "../shared/contracts";
 import type { SaveState } from "../shared/contracts";
-import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot, isDiscoverSnapshot, isSearchResults } from "../shared/contracts";
+import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot, isDiscoverSnapshot, isSearchResults, isPlaylistSyncIssues, isPlaylistSyncCandidates, isPlaylistSyncSelection } from "../shared/contracts";
 import type { Track } from "../shared/contracts";
 
 const nativeInvoke = vi.hoisted(() => vi.fn());
@@ -114,9 +114,46 @@ describe("typed IPC bridge and projection", () => {
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "set_playlist_url", payload: { playlist_id: "", url: null } } })).toBe(false);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "sync_playlist", payload: { playlist_id: "playlist:Road trip" } } })).toBe(true);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "sync_playlist", payload: { playlist_id: "" } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "playlist_sync_issues", payload: { playlist_id: "playlist:Road trip" } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "playlist_sync_candidates", payload: { playlist_id: "playlist:Road trip", video_id: "aPSOTX5AkiY" } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "playlist_sync_select_source", payload: { playlist_id: "playlist:Road trip", video_id: "aPSOTX5AkiY", source_video_id: "6U7_Qy5c_uc" } } })).toBe(true);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "add_tracks_to_playlist", payload: { track_ids: ["track-1"], playlist_id: "playlist:Road trip" } } })).toBe(true);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "add_tracks_to_playlist", payload: { track_ids: [], playlist_id: "playlist:Road trip" } } })).toBe(false);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "delete_tracks", payload: { track_ids: ["track-1"] } } })).toBe(true);
+  });
+
+  it("validates unresolved playlist entries, YouTube candidates, and explicit source selections", () => {
+    const issue = { video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "aPSOTX5AkiY", selected_source_id: null, updated_at_ms: 1 };
+    expect(isPlaylistSyncIssues({ entries: [issue] })).toBe(true);
+    expect(isPlaylistSyncIssues({ entries: [{ ...issue, extra: true }] })).toBe(false);
+    const candidate = { video_id: "6U7_Qy5c_uc", title: "Get What You Give", channel: "Boogie T - Topic", duration: "4:51", thumbnail_url: null, url: "https://www.youtube.com/watch?v=6U7_Qy5c_uc" };
+    expect(isPlaylistSyncCandidates([candidate])).toBe(true);
+    expect(isPlaylistSyncCandidates([{ ...candidate, url: "https://www.youtube.com.evil/watch?v=6U7_Qy5c_uc" }])).toBe(false);
+    expect(isPlaylistSyncSelection({ video_id: "aPSOTX5AkiY", source_video_id: candidate.video_id, url: candidate.url })).toBe(true);
+    expect(isPlaylistSyncSelection({ video_id: "aPSOTX5AkiY", source_video_id: candidate.video_id, url: "https://example.com/watch?v=6U7_Qy5c_uc" })).toBe(false);
+  });
+
+  it("uses the backend source review commands and validates their responses", async () => {
+    const calls: unknown[] = [];
+    const issue = { video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "aPSOTX5AkiY", selected_source_id: null, updated_at_ms: 1 };
+    const candidate = { video_id: "6U7_Qy5c_uc", title: "Get What You Give", channel: "Boogie T - Topic", duration: "4:51", thumbnail_url: null, url: "https://www.youtube.com/watch?v=6U7_Qy5c_uc" };
+    const selection = { video_id: issue.video_id, source_video_id: candidate.video_id, url: candidate.url };
+    const transport: BridgeTransport = {
+      invoke: async <T>(_name: string, payload: unknown) => {
+        calls.push(payload);
+        const type = (payload as { command: { type: string } }).command.type;
+        const result = type === "playlist_sync_issues" ? { entries: [issue] } : type === "playlist_sync_candidates" ? [candidate] : selection;
+        return result as T;
+      },
+      listen: async () => () => {},
+    };
+    const bridge = createBridge(transport);
+    await expect(bridge.playlistSyncIssues("playlist:Road trip")).resolves.toMatchObject([{ video_id: issue.video_id }]);
+    await expect(bridge.playlistSyncCandidates("playlist:Road trip", issue.video_id)).resolves.toMatchObject([{ video_id: candidate.video_id }]);
+    await expect(bridge.playlistSyncSelectSource("playlist:Road trip", issue.video_id, candidate.video_id)).resolves.toMatchObject(selection);
+    expect(calls.map((payload) => (payload as { command: { type: string } }).command.type)).toEqual([
+      "playlist_sync_issues", "playlist_sync_candidates", "playlist_sync_select_source",
+    ]);
   });
 
   it("validates save_state event envelopes", () => {
