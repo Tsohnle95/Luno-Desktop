@@ -51,7 +51,7 @@ background sync from its right-click menu that downloads only unseen entries.
 |---|---|---|---|---|
 | 1 | Contract, YouTube URL normalization, URL persistence command/snapshot projection | complete | Rust parser/persistence tests; TS contract/bridge tests | phase checkpoint |
 | 2 | Background sync runtime, admission/cancellation, marker and job-state tests | complete | two command-level Cargo tests: new-only marker behavior and process-killing cancellation/admission release | phase checkpoint |
-| 3 | Playlist-menu URL dialog + sync UX | pending | shell/dialog tests, typecheck, focused render check | pending |
+| 3 | Playlist-menu URL dialog + sync UX | complete | TypeScript typecheck; 56 focused bridge/dialog/shell tests | phase checkpoint |
 | 4 | Durable docs, cumulative review and canonical validation | pending | live narrow sync probe where safe; canonical gate | pending |
 
 ## Validation plan

@@ -5,6 +5,7 @@ import { SettingsView } from "../views/SettingsView";
 import { EditTrackDialog } from "../components/EditTrackDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PlayerBar } from "../components/PlayerBar";
+import { PlaylistUrlDialog } from "../components/PlaylistDialogs";
 
 describe("Gate 4 views", () => {
   it("renders downloader error, cancel, and retry controls", () => {
@@ -59,5 +60,15 @@ describe("Player bar context menu", () => {
     const html = renderToStaticMarkup(<PlayerBar track={track} onTrackContextMenu={() => {}} />);
     expect(html).toContain("Song");
     expect(html).toContain("Artist");
+  });
+});
+
+describe("YouTube playlist URL dialog", () => {
+  it("explains new-only sync and offers removal for an existing link", () => {
+    const html = renderToStaticMarkup(<PlaylistUrlDialog playlistName="Road trip" initialUrl="https://www.youtube.com/playlist?list=PL123" onClose={() => {}} onSubmit={() => {}} />);
+    expect(html).toContain("YouTube playlist sync");
+    expect(html).toContain("only songs Luno has not already seen");
+    expect(html).toContain("Remove link");
+    expect(html).toContain("PL123");
   });
 });

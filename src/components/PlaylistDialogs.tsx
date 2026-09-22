@@ -82,3 +82,25 @@ export function PlaylistDialog({ action, playlist, playlists = [], busy = false,
 }
 
 export const PlaylistDialogs = PlaylistDialog;
+
+export function PlaylistUrlDialog({ playlistName, initialUrl, busy = false, error = null, onClose, onSubmit }: {
+  playlistName: string;
+  initialUrl?: string | null;
+  busy?: boolean;
+  error?: string | null;
+  onClose: () => void;
+  onSubmit: (url: string | null) => void;
+}) {
+  const [url, setUrl] = useState(initialUrl ?? "");
+  const normalized = url.trim();
+  return <DialogFrame title="YouTube playlist sync" description={`Link “${playlistName}” to a YouTube playlist. Sync downloads only songs Luno has not already seen.`} error={error} busy={busy} onClose={onClose}>
+    <form onSubmit={(event) => { event.preventDefault(); if (normalized) onSubmit(normalized); }}>
+      <label>YouTube playlist URL<input autoFocus type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="https://www.youtube.com/playlist?list=…" value={url} onChange={(event) => setUrl(event.target.value)} required /></label>
+      <footer>
+        {initialUrl && <button className="is-danger" type="button" disabled={busy} onClick={() => onSubmit(null)}>Remove link</button>}
+        <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+        <button type="submit" disabled={busy || !normalized}>{busy ? "Saving…" : "Save link"}</button>
+      </footer>
+    </form>
+  </DialogFrame>;
+}

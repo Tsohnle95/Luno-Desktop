@@ -25,7 +25,7 @@ import { PlayerBar } from "../components/PlayerBar";
 import { PlaylistPicker } from "../components/PlaylistPicker";
 import { EditTrackDialog } from "../components/EditTrackDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { PlaylistDialog } from "../components/PlaylistDialogs";
+import { PlaylistDialog, PlaylistUrlDialog } from "../components/PlaylistDialogs";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
 import { IconChevronLeft, IconChevronRight, IconClose, IconDownload, IconHeart, IconHome, IconLibrary, IconMusicNote, IconSearch, IconUser } from "../components/icons";
@@ -157,6 +157,10 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [playlistCreateRequest, setPlaylistCreateRequest] = useState<{ tracks: Track[]; onCreated?: (name: string) => void } | null>(null);
   const [playlistCreateBusy, setPlaylistCreateBusy] = useState(false);
   const [playlistCreateError, setPlaylistCreateError] = useState<string | null>(null);
+  const [playlistUrlRequest, setPlaylistUrlRequest] = useState<Playlist | null>(null);
+  const [playlistUrlBusy, setPlaylistUrlBusy] = useState(false);
+  const [playlistUrlError, setPlaylistUrlError] = useState<string | null>(null);
+  const [activePlaylistSync, setActivePlaylistSync] = useState<{ jobId: string; name: string } | null>(null);
   const askConfirm = (request: { title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }) => {
     setConfirmError(null);
     setConfirmDialog(request);
@@ -186,6 +190,14 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     const timer = window.setTimeout(() => setCommandNotice(null), 5000);
     return () => window.clearTimeout(timer);
   }, [commandNotice]);
+  useEffect(() => {
+    if (!activePlaylistSync) return;
+    const job = projection.jobs[activePlaylistSync.jobId];
+    if (!job || !["succeeded", "failed", "cancelled"].includes(job.state)) return;
+    if (job.state === "succeeded") setCommandNotice(`“${activePlaylistSync.name}” is up to date.`);
+    else if (job.state === "cancelled") setCommandNotice(`Stopped syncing “${activePlaylistSync.name}”.`);
+    setActivePlaylistSync(null);
+  }, [activePlaylistSync, projection.jobs]);
   const [downloadSources, setDownloadSources] = useState<SearchResult[]>([]);
   const [downloadSearchLoading, setDownloadSearchLoading] = useState(false);
   const [queuedDownloadUrls, setQueuedDownloadUrls] = useState<string[]>([]);
@@ -266,6 +278,32 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         request?.onCreated?.(name);
       })
       .catch((error: unknown) => { setPlaylistCreateBusy(false); setPlaylistCreateError(normalizeRuntimeCommandError(error)); });
+  };
+  const submitPlaylistUrl = (url: string | null) => {
+    if (!bridge || !playlistUrlRequest) return;
+    const playlist = playlistUrlRequest;
+    setPlaylistUrlBusy(true);
+    setPlaylistUrlError(null);
+    void bridge.setPlaylistUrl(playlist.id, url)
+      .then(() => {
+        setPlaylistUrlBusy(false);
+        setPlaylistUrlRequest(null);
+        setCommandError(null);
+        setCommandNotice(url ? `Linked “${playlist.name}” to YouTube.` : `Removed the YouTube link from “${playlist.name}”.`);
+      })
+      .catch((error: unknown) => { setPlaylistUrlBusy(false); setPlaylistUrlError(normalizeRuntimeCommandError(error)); });
+  };
+  const syncPlaylist = (playlist: Playlist) => {
+    if (!bridge || !available || !playlist.url) return;
+    setCommandError(null);
+    setCommandNotice(`Syncing “${playlist.name}”…`);
+    void bridge.syncPlaylist(playlist.id)
+      .then((value) => {
+        const jobId = value && typeof value === "object" && "job_id" in value && typeof value.job_id === "string" ? value.job_id : null;
+        if (!jobId) throw new Error("sync did not return a job id");
+        setActivePlaylistSync({ jobId, name: playlist.name });
+      })
+      .catch((error: unknown) => { setCommandNotice(null); setCommandError(normalizeRuntimeCommandError(error)); });
   };
   const playShuffled = (items: Track[]) => {
     const first = shuffledFirstTrack(items);
@@ -936,7 +974,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
           const active = libraryScope === entry.scope;
           const art = entry.artId ? sidebarArtwork[entry.artId] : undefined;
           return <button className="luno-playlist-card" type="button" key={`${entry.kind}-${entry.key}`} aria-current={active ? "page" : undefined}
-            onContextMenu={(event) => { if (entry.kind !== "playlist") return; event.preventDefault(); event.stopPropagation(); const playlist = projection.library?.playlists.find((item) => item.id === entry.scope); if (playlist) setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 390)), playlist }); }}
+            onContextMenu={(event) => { if (entry.kind !== "playlist") return; event.preventDefault(); event.stopPropagation(); const playlist = projection.library?.playlists.find((item) => item.id === entry.scope); if (playlist) setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 470)), playlist }); }}
             onClick={() => { setLibraryScope(entry.scope); setLibraryHome(false); navigate("library"); }}>
             {entry.kind === "favorites"
               ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #4c8bf5, #b3b3b3)" }}><IconHeart size={18} /></span>
@@ -981,6 +1019,10 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <button role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const item = contextMenu.playlist!; setPlaylistPickerSelection({ tracks: playlistTracks(projection.library, item), title: `Add “${item.name}” songs to playlist` }); setContextMenu(null); }}>Add all to playlist…</button>
         <button role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { createPlaylist(playlistTracks(projection.library, contextMenu.playlist!)); setContextMenu(null); }}>Add all to new playlist…</button>
         <button role="menuitem" type="button" onClick={() => { createPlaylist(); setContextMenu(null); }}>Create new playlist…</button>
+        <hr />
+        <button role="menuitem" type="button" onClick={() => { setPlaylistUrlError(null); setPlaylistUrlRequest(contextMenu.playlist!); setContextMenu(null); }}>{contextMenu.playlist.url ? "Edit YouTube playlist link…" : "Add YouTube playlist link…"}</button>
+        <button role="menuitem" type="button" disabled={!contextMenu.playlist.url || activePlaylistSync !== null} title={contextMenu.playlist.url ? undefined : "Add a YouTube playlist link first"} onClick={() => { syncPlaylist(contextMenu.playlist!); setContextMenu(null); }}>Sync playlist</button>
+        <hr />
         <button className="is-danger" role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); askConfirm({ title: "Empty playlist", message: `Permanently delete every song in “${item.name}” but keep the playlist?`, confirmLabel: "Empty playlist", danger: true, onConfirm: () => runCommand(bridge?.deleteTracks(item.ordered_track_ids)) }); }}>Empty playlist…</button>
         <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); askConfirm({ title: "Delete playlist", message: `Permanently delete the playlist “${item.name}” and all files inside it?`, confirmLabel: "Delete playlist", danger: true, onConfirm: () => { if (libraryScope === item.id) { setLibraryScope("all"); setLibraryHome(false); } runCommand(bridge?.deletePlaylist(item.id)); } }); }}>Delete playlist…</button>
       </> : null}
@@ -989,6 +1031,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     {editTrack && <EditTrackDialog track={editTrack} busy={editTrackBusy} error={editTrackError} onClose={() => { if (!editTrackBusy) { setEditTrack(null); setEditTrackError(null); } }} onSubmit={(value) => { if (!bridge || !available) return; setEditTrackBusy(true); setEditTrackError(null); void bridge.editTrackMetadata(editTrack.id, value.artist, value.title).then(() => { setEditTrackBusy(false); setEditTrack(null); setCommandNotice(`Updated “${[value.artist, value.title].filter(Boolean).join(" — ")}”.`); }).catch((error: unknown) => { setEditTrackBusy(false); setEditTrackError(normalizeRuntimeCommandError(error)); }); }} />}
     {confirmDialog && <ConfirmDialog title={confirmDialog.title} message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} danger={confirmDialog.danger} busy={confirmBusy} error={confirmError} onClose={() => { if (!confirmBusy) { setConfirmDialog(null); setConfirmError(null); } }} onConfirm={() => { setConfirmBusy(true); setConfirmError(null); try { confirmDialog.onConfirm(); setConfirmBusy(false); setConfirmDialog(null); } catch (error) { setConfirmBusy(false); setConfirmError(normalizeRuntimeCommandError(error)); } }} />}
     {playlistCreateRequest && <PlaylistDialog action="create" busy={playlistCreateBusy} error={playlistCreateError} onClose={() => { if (!playlistCreateBusy) { setPlaylistCreateRequest(null); setPlaylistCreateError(null); } }} onSubmit={(value) => submitCreatePlaylist(value.name ?? "")} />}
+    {playlistUrlRequest && <PlaylistUrlDialog playlistName={playlistUrlRequest.name} initialUrl={playlistUrlRequest.url} busy={playlistUrlBusy} error={playlistUrlError} onClose={() => { if (!playlistUrlBusy) { setPlaylistUrlRequest(null); setPlaylistUrlError(null); } }} onSubmit={submitPlaylistUrl} />}
   </div>;
 }
 
