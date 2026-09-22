@@ -166,6 +166,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [playlistSyncLog, setPlaylistSyncLog] = useState<{ name: string; entries: PlaylistSyncLogEntry[]; loading: boolean; error: string | null } | null>(null);
   const [playlistSyncErrors, setPlaylistSyncErrors] = useState<{ name: string; entries: PlaylistSyncLogEntry[]; loading: boolean; error: string | null } | null>(null);
   const [playlistSyncReview, setPlaylistSyncReview] = useState<{ playlist: Playlist; entries: PlaylistSyncIssue[]; loading: boolean; error: string | null; candidateLookups: Record<string, PlaylistSyncCandidateLookup>; selectingVideoId: string | null } | null>(null);
+  const [playlistSyncReviewDownloadingVideoId, setPlaylistSyncReviewDownloadingVideoId] = useState<string | null>(null);
   const [playlistSyncReviewOffer, setPlaylistSyncReviewOffer] = useState<{ playlist: Playlist; count: number } | null>(null);
   const askConfirm = (request: { title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }) => {
     setConfirmError(null);
@@ -348,6 +349,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const openPlaylistSyncReview = (playlist: Playlist) => {
     if (!bridge || !available) return;
     const sequence = playlistSyncSequence.current;
+    setPlaylistSyncReviewDownloadingVideoId(null);
     setPlaylistSyncReview({ playlist, entries: [], loading: true, error: null, candidateLookups: {}, selectingVideoId: null });
     void bridge.playlistSyncIssues(playlist.id).then((entries) => {
       setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, entries, loading: false } : current);
@@ -389,7 +391,46 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, selectingVideoId: null, error: normalizeRuntimeCommandError(error) } : current);
     });
   };
-  const choosePlaylistSyncCandidate = (videoId: string, candidate: PlaylistSyncCandidate) => persistPlaylistSyncSource(videoId, candidate.video_id);
+  const downloadPlaylistSyncCandidate = (videoId: string, candidate: PlaylistSyncCandidate) => {
+    if (!bridge || !available || !playlistSyncReview) return;
+    if (!libraryRootPath || !downloadHelperPath) {
+      setPlaylistSyncReview((current) => current?.playlist.id === playlistSyncReview.playlist.id
+        ? { ...current, error: "Downloads are unavailable until the library folder and download helper are configured." }
+        : current);
+      return;
+    }
+    if (activePlaylistSync || playlistSyncReviewDownloadingVideoId) return;
+    const { playlist } = playlistSyncReview;
+    const issue = playlistSyncReview.entries.find((entry) => entry.video_id === videoId);
+    if (!issue) return;
+    const destination = playlist.path ?? `${libraryRootPath}/${playlist.name}`;
+    if (!destination.startsWith(`${libraryRootPath}/`)) {
+      setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, error: "Playlist download folder is outside the configured library." } : current);
+      return;
+    }
+    setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, selectingVideoId: videoId, error: null } : current);
+    void bridge.playlistSyncSelectSource(playlist.id, videoId, candidate.video_id).then((selection) => {
+      setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? {
+        ...current,
+        entries: current.entries.map((entry) => entry.video_id === videoId ? { ...entry, selected_source_id: selection.source_video_id, retry_pending: true } : entry),
+        selectingVideoId: null,
+      } : current);
+      setPlaylistSyncReviewDownloadingVideoId(videoId);
+      setCommandError(null);
+      setCommandNotice(`Downloading “${issue.title}” into “${playlist.name}”…`);
+      downloadQueueRef.current.push({
+        id: candidate.video_id,
+        source: candidate.url,
+        destination,
+        title: issue.title,
+        artist: candidate.channel ?? issue.channel,
+        playlistReviewTarget: { playlist, videoId, title: issue.title },
+      });
+      startNextDownload();
+    }).catch((error: unknown) => {
+      setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, selectingVideoId: null, error: normalizeRuntimeCommandError(error) } : current);
+    });
+  };
   const retryOriginalPlaylistSource = (videoId: string) => persistPlaylistSyncSource(videoId, videoId);
   const syncSelectedPlaylistSources = () => {
     if (!playlistSyncReview || activePlaylistSync || !playlistSyncReview.entries.some((issue) => issue.selected_source_id && issue.retry_pending)) return;
@@ -464,7 +505,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [activeDownloadJob, setActiveDownloadJob] = useState<{ jobId: string } | null>(null);
   const [activeDownloadLabel, setActiveDownloadLabel] = useState<string | null>(null);
   const activeDownloadJobRef = useRef<string | null>(null);
-  const downloadQueueRef = useRef<Array<{ id: string; source: string; destination: string } & DownloadMetadata>>([]);
+  const reviewDownloadTargetsRef = useRef(new Map<string, { playlist: Playlist; videoId: string; title: string }>());
+  const downloadQueueRef = useRef<Array<{ id: string; source: string; destination: string; playlistReviewTarget?: { playlist: Playlist; videoId: string; title: string } } & DownloadMetadata>>([]);
   const downloadHelperPath = fixtureHelper ?? bundleHelperPath;
   // Destinations are concrete folders under the library root. The default is
   // `Unsorted` (created inside the root when missing); playlist folders that
@@ -485,6 +527,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     if (activeDownloadJobRef.current) return;
     const next = downloadQueueRef.current.shift();
     if (!next) { setActiveDownloadLabel(null); return; }
+    const reviewTarget = next.playlistReviewTarget;
     if (!next.destination || !downloadHelperPath) {
       setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured.");
       setActiveDownloadJob(null);
@@ -505,6 +548,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     // they are not stuck with the opaque job id and "Unknown artist".
     const filename = downloadFilename(metadata, extension, jobId);
     activeDownloadJobRef.current = jobId;
+    if (reviewTarget) reviewDownloadTargetsRef.current.set(jobId, reviewTarget);
     setActiveDownloadJob({ jobId });
     setActiveDownloadLabel(downloadDisplayLabel(metadata));
     // A rejected start must clear the active-job gate so the NEXT queued item
@@ -512,8 +556,19 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     // double-start (Busy) and the queue wedges silently — the "nothing
     // happened" symptom when a download could not start.
     const start = bridge?.startDownload(jobId, `${next.destination}/${filename}`, downloadHelperPath, next.source.replace(/\r|\n/g, " ").trim());
-    if (!start) { activeDownloadJobRef.current = null; setActiveDownloadJob(null); setActiveDownloadLabel(null); return; }
+    if (!start) {
+      reviewDownloadTargetsRef.current.delete(jobId);
+      if (reviewTarget) setPlaylistSyncReviewDownloadingVideoId(null);
+      activeDownloadJobRef.current = null; setActiveDownloadJob(null); setActiveDownloadLabel(null); return;
+    }
     start.then(() => setCommandError(null)).catch((error: unknown) => {
+      reviewDownloadTargetsRef.current.delete(jobId);
+      if (reviewTarget) {
+        setPlaylistSyncReviewDownloadingVideoId(null);
+        setPlaylistSyncReview((current) => current?.playlist.id === reviewTarget.playlist.id
+          ? { ...current, error: normalizeRuntimeCommandError(error) }
+          : current);
+      }
       activeDownloadJobRef.current = null;
       setActiveDownloadJob(null);
       setActiveDownloadLabel(null);
@@ -526,6 +581,31 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     const job = projection.jobs[activeDownloadJob.jobId];
     if (job) {
       if (["succeeded", "failed", "cancelled"].includes(job.state)) {
+        const reviewTarget = reviewDownloadTargetsRef.current.get(activeDownloadJob.jobId);
+        if (reviewTarget) {
+          reviewDownloadTargetsRef.current.delete(activeDownloadJob.jobId);
+          setPlaylistSyncReviewDownloadingVideoId(null);
+          if (job.state === "succeeded" && bridge) {
+            void bridge.playlistSyncIssues(reviewTarget.playlist.id).then((entries) => {
+              setPlaylistSyncReview((current) => current?.playlist.id === reviewTarget.playlist.id
+                ? { ...current, entries, error: null }
+                : current);
+              setPlaylistSyncReviewOffer(entries.length > 0
+                ? { playlist: reviewTarget.playlist, count: entries.length }
+                : null);
+              setCommandNotice(`Downloaded “${reviewTarget.title}” into “${reviewTarget.playlist.name}”.`);
+            }).catch((error: unknown) => {
+              setPlaylistSyncReview((current) => current?.playlist.id === reviewTarget.playlist.id
+                ? { ...current, error: normalizeRuntimeCommandError(error) }
+                : current);
+            });
+          } else {
+            setCommandNotice(null);
+            setPlaylistSyncReview((current) => current?.playlist.id === reviewTarget.playlist.id
+              ? { ...current, error: job.state === "failed" ? "This version failed to download. The app status message has the downloader's error details; choose another version or retry." : "Download cancelled." }
+              : current);
+          }
+        }
         activeDownloadJobRef.current = null;
         setActiveDownloadJob(null);
         setActiveDownloadLabel(null);
@@ -534,6 +614,15 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       return;
     }
     const deadline = window.setTimeout(() => {
+      const reviewTarget = reviewDownloadTargetsRef.current.get(activeDownloadJob.jobId);
+      if (reviewTarget) {
+        reviewDownloadTargetsRef.current.delete(activeDownloadJob.jobId);
+        setPlaylistSyncReviewDownloadingVideoId(null);
+        setPlaylistSyncReview((current) => current?.playlist.id === reviewTarget.playlist.id
+          ? { ...current, error: "The candidate download did not start. Check the app status message and try again." }
+          : current);
+        setCommandNotice(null);
+      }
       activeDownloadJobRef.current = null;
       setActiveDownloadJob(null);
       setActiveDownloadLabel(null);
@@ -541,7 +630,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       startNextDownload();
     }, 15000);
     return () => window.clearTimeout(deadline);
-  }, [projection.jobs, activeDownloadJob]);
+  }, [projection.jobs, activeDownloadJob, bridge]);
   const chooseRoot = () => {
     if (!viteEnv?.DEV) { setCommandError("Native library root picker is unavailable in this runtime."); return; }
     const root = window.prompt("Development probe: enter an existing absolute library folder", musicRoot === "Not configured" ? "" : musicRoot);
@@ -1150,7 +1239,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     {playlistUrlRequest && <PlaylistUrlDialog playlistName={playlistUrlRequest.name} initialUrl={playlistUrlRequest.url} busy={playlistUrlBusy} error={playlistUrlError} onClose={() => { if (!playlistUrlBusy) { setPlaylistUrlRequest(null); setPlaylistUrlError(null); } }} onSubmit={submitPlaylistUrl} />}
     {playlistSyncLog && <PlaylistSyncLogDialog playlistName={playlistSyncLog.name} entries={playlistSyncLog.entries} loading={playlistSyncLog.loading} error={playlistSyncLog.error} onClose={() => setPlaylistSyncLog(null)} />}
     {playlistSyncErrors && <PlaylistSyncErrorsDialog playlistName={playlistSyncErrors.name} entries={playlistSyncErrors.entries} loading={playlistSyncErrors.loading} error={playlistSyncErrors.error} onClose={() => setPlaylistSyncErrors(null)} />}
-    {playlistSyncReview && <PlaylistSyncReviewDialog playlistName={playlistSyncReview.playlist.name} entries={playlistSyncReview.entries} loading={playlistSyncReview.loading} error={playlistSyncReview.error} candidateLookups={playlistSyncReview.candidateLookups} selectingVideoId={playlistSyncReview.selectingVideoId} onFindCandidates={findPlaylistSyncCandidates} onChooseCandidate={choosePlaylistSyncCandidate} onRetryOriginal={retryOriginalPlaylistSource} onSyncSelected={syncSelectedPlaylistSources} onClose={() => { if (!playlistSyncReview.selectingVideoId) setPlaylistSyncReview(null); }} />}
+    {playlistSyncReview && <PlaylistSyncReviewDialog playlistName={playlistSyncReview.playlist.name} entries={playlistSyncReview.entries} loading={playlistSyncReview.loading} error={playlistSyncReview.error} candidateLookups={playlistSyncReview.candidateLookups} selectingVideoId={playlistSyncReview.selectingVideoId} downloadingVideoId={playlistSyncReviewDownloadingVideoId} onFindCandidates={findPlaylistSyncCandidates} onChooseCandidate={downloadPlaylistSyncCandidate} onRetryOriginal={retryOriginalPlaylistSource} onSyncSelected={syncSelectedPlaylistSources} onClose={() => { if (!playlistSyncReview.selectingVideoId && !playlistSyncReviewDownloadingVideoId) setPlaylistSyncReview(null); }} />}
   </div>;
 }
 

@@ -86,12 +86,13 @@ envelope shapes (`docs/modules/contracts.md`).
   instead of claiming the playlist is up to date. The review dialog shows the
   original title, channel, duration, and unavailable reason, then displays
   candidate title/channel/duration as review cues. Every source must be chosen
-  explicitly per entry; multiple saved choices can be applied in one sync.
-  Saved choices survive restarts, and an unsuccessful selected source is not
-  retried again until the user explicitly chooses/retries it. Log shows only
-  dated successful additions; a separate error view shows backend-owned
-  failure details. React does not enumerate videos, select destinations, or
-  decide which entries are new.
+  explicitly per entry. Choosing a candidate downloads it immediately through
+  the normal single-download pipeline into the linked playlist folder; the
+  selected source remains available for an explicit sync retry if that
+  download fails. A successful file refreshes the issue list and clears the
+  resolved original entry. Log shows only dated successful sync additions; a
+  separate error view shows backend-owned sync failure details. React does not
+  enumerate videos or decide which playlist entries are already satisfied.
 
 ## Core flows
 

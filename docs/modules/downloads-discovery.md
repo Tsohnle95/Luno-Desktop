@@ -139,8 +139,15 @@ What it does not own: library snapshots and promotion targets
   the original ID and clears its unresolved issue.
   Candidate search is bounded and only runs for an unresolved entry requested
   by the user. Search results are review suggestions, never automatic choices.
-  The frontend may save multiple explicit selections before starting one sync;
-  a restart preserves both mappings and any pending selected-source retry.
+  From Review, an explicitly chosen candidate also supports the normal
+  single-download coordinator directly into that playlist folder, so the
+  recovery path uses the same staging, validation, promotion, and rescan as a
+  regular Downloader result. Successful local matching then reconciles the
+  original playlist ID and issue state.
+  Source mappings and pending selected-source retries survive restarts. A
+  direct candidate-download failure leaves the source available for one
+  explicit sync retry; sync consumes that retry authorization before starting
+  the helper.
   Each attempted video appends a dated title, outcome, and failure reason to
   `.luno-sync-log.jsonl` in that playlist folder. This is display history,
   not a dedupe marker; `.downloaded_vids` remains the success source. The

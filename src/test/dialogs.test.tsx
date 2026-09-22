@@ -100,7 +100,7 @@ describe("Playlist sync history", () => {
     expect(html).toContain("Boogie T - Topic · 4:52 original length · original video unavailable");
     expect(html).toContain("Get What You Give");
     expect(html).toContain("4:51");
-    expect(html).toContain("Select this source");
+    expect(html).toContain("Download this version to playlist");
     expect(html).toContain("Retry original source");
     expect(html).not.toContain("Sync selected sources");
     expect(html).not.toContain("selected=");
@@ -122,7 +122,7 @@ describe("Playlist sync history", () => {
     expect(failedHtml).toContain("Selected source: 6U7_Qy5c_uc · last attempt finished; select again to retry or change");
     expect(failedHtml).toContain("Last unavailable attempt: 6U7_Qy5c_uc");
     expect(failedHtml).toContain("Video unavailable");
-    expect(failedHtml).toContain("Find candidate videos");
+    expect(failedHtml).toContain("Search available versions");
     expect(failedHtml).toContain("Retry original source");
   });
 });
