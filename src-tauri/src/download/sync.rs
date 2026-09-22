@@ -86,6 +86,8 @@ pub struct PlaylistEntry {
 pub struct SelectedSource {
     pub video_id: String,
     pub url: String,
+    #[serde(default)]
+    pub retry_pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -159,8 +161,7 @@ impl PlaylistSyncState {
             return Err("original playlist video ID is invalid".into());
         }
         let url = youtube_watch_url(source_id).ok_or_else(|| "choose a valid YouTube video ID".to_string())?;
-        self.sources.insert(original_id.to_owned(), SelectedSource { video_id: source_id.to_owned(), url });
-        self.unresolved.remove(original_id);
+        self.sources.insert(original_id.to_owned(), SelectedSource { video_id: source_id.to_owned(), url, retry_pending: true });
         Ok(())
     }
 
@@ -306,8 +307,10 @@ pub fn plan_with_state(
     entries
         .iter()
         .filter_map(|entry| {
-            if entry.id.as_ref().is_some_and(|id| state.unresolved.contains_key(id)) {
-                return None;
+            if let Some(id) = entry.id.as_deref() {
+                if state.unresolved.contains_key(id) && !state.sources.get(id).is_some_and(|source| source.retry_pending) {
+                    return None;
+                }
             }
             let (artist, title) = parse_title(&entry.title);
             let key = sync_key(&artist, &title);
@@ -390,6 +393,12 @@ where
                 continue;
             }
         }
+        if let Err(error) = consume_selected_source_retry(folder, state, item) {
+            let outcome = ItemOutcome::Failed(format!("selected source retry could not be recorded: {error}"));
+            observe(item, &outcome);
+            result.outcomes.push((label, outcome));
+            continue;
+        }
         let started = Instant::now();
         let outcome = match download(item, token) {
             Ok(()) if token.is_cancelled() => ItemOutcome::Cancelled,
@@ -441,6 +450,18 @@ where
         }
     }
     result
+}
+
+fn consume_selected_source_retry(folder: &Path, state: &mut PlaylistSyncState, item: &SyncItem) -> Result<(), String> {
+    let Some(id) = item.entry.id.as_deref() else { return Ok(()); };
+    let Some(source) = state.sources.get_mut(id) else { return Ok(()); };
+    if !source.retry_pending { return Ok(()); }
+    source.retry_pending = false;
+    if let Err(error) = state.save(folder) {
+        if let Some(source) = state.sources.get_mut(id) { source.retry_pending = true; }
+        return Err(error);
+    }
+    Ok(())
 }
 fn collect_audio(root: &Path, keys: &mut HashSet<String>, titles: &mut HashSet<String>) {
     let Ok(entries) = fs::read_dir(root) else {

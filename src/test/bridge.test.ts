@@ -123,7 +123,7 @@ describe("typed IPC bridge and projection", () => {
   });
 
   it("validates unresolved playlist entries, YouTube candidates, and explicit source selections", () => {
-    const issue = { video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "aPSOTX5AkiY", selected_source_id: null, updated_at_ms: 1 };
+    const issue = { video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "aPSOTX5AkiY", selected_source_id: null, retry_pending: false, updated_at_ms: 1 };
     expect(isPlaylistSyncIssues({ entries: [issue] })).toBe(true);
     expect(isPlaylistSyncIssues({ entries: [{ ...issue, extra: true }] })).toBe(false);
     const candidate = { video_id: "6U7_Qy5c_uc", title: "Get What You Give", channel: "Boogie T - Topic", duration: "4:51", thumbnail_url: null, url: "https://www.youtube.com/watch?v=6U7_Qy5c_uc" };
@@ -135,7 +135,7 @@ describe("typed IPC bridge and projection", () => {
 
   it("uses the backend source review commands and validates their responses", async () => {
     const calls: unknown[] = [];
-    const issue = { video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "aPSOTX5AkiY", selected_source_id: null, updated_at_ms: 1 };
+    const issue = { video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "aPSOTX5AkiY", selected_source_id: null, retry_pending: false, updated_at_ms: 1 };
     const candidate = { video_id: "6U7_Qy5c_uc", title: "Get What You Give", channel: "Boogie T - Topic", duration: "4:51", thumbnail_url: null, url: "https://www.youtube.com/watch?v=6U7_Qy5c_uc" };
     const selection = { video_id: issue.video_id, source_video_id: candidate.video_id, url: candidate.url };
     const transport: BridgeTransport = {

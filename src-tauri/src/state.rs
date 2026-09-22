@@ -6112,6 +6112,7 @@ impl AppState {
                 duration_secs: issue.duration_secs, reason: issue.reason.clone(),
                 attempted_source_id: issue.attempted_source_id.clone(),
                 selected_source_id: state.sources.get(&issue.video_id).map(|source| source.video_id.clone()),
+                retry_pending: state.sources.get(&issue.video_id).is_some_and(|source| source.retry_pending),
                 updated_at_ms: issue.updated_at_ms,
             })
             .collect();

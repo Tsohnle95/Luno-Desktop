@@ -804,11 +804,13 @@ fn playlist_sync_issue_and_source_commands_persist_explicit_canonical_selection(
     assert_eq!(selected["url"], "https://www.youtube.com/watch?v=6U7_Qy5c_uc");
     let restored = PlaylistSyncState::load(&playlist).unwrap();
     assert_eq!(restored.sources["aPSOTX5AkiY"].video_id, "6U7_Qy5c_uc");
-    assert!(restored.unresolved.is_empty());
+    assert!(restored.sources["aPSOTX5AkiY"].retry_pending);
+    assert!(restored.unresolved.contains_key("aPSOTX5AkiY"));
     let issues_after_selection = state.dispatch(CommandEnvelope { version: 1, request_id: "sync-issues-after".into(), command: BackendCommand::PlaylistSyncIssues {
         playlist_id,
     }}).unwrap();
-    assert!(issues_after_selection["entries"].as_array().unwrap().is_empty());
+    assert_eq!(issues_after_selection["entries"][0]["selected_source_id"], "6U7_Qy5c_uc");
+    assert_eq!(issues_after_selection["entries"][0]["retry_pending"], true);
 }
 
 #[test]
@@ -851,6 +853,62 @@ fn unavailable_playlist_entry_persists_review_metadata_and_stops_repeated_attemp
 
     let next_items = plan_with_state(&music, &playlist, &[entry], &restored);
     assert!(next_items.is_empty(), "the persisted issue should prevent a pointless repeated extraction");
+}
+
+#[test]
+fn selected_source_retry_survives_restart_and_does_not_loop_after_failure() {
+    let root = fixture("playlist-selected-source-retry");
+    let music = root.join("music");
+    let playlist = root.join("playlist");
+    fs::create_dir_all(&music).unwrap();
+    fs::create_dir_all(&playlist).unwrap();
+    let entry = PlaylistEntry {
+        id: Some("aPSOTX5AkiY".into()), title: "Boogie T - Get What You Give".into(),
+        channel: Some("Boogie T - Topic".into()), duration_secs: Some(292),
+        url: Some("https://www.youtube.com/watch?v=aPSOTX5AkiY".into()),
+    };
+    let first_plan = plan_with_state(&music, &playlist, std::slice::from_ref(&entry), &PlaylistSyncState::default());
+    let mut state = PlaylistSyncState::default();
+    let unavailable = sync_sequential_observed_with_state(
+        &playlist, &first_plan, &CancellationToken::new(), &mut state,
+        |_, _| Err("ERROR: [youtube] aPSOTX5AkiY: Video unavailable".into()), |_, _| {},
+    );
+    assert!(matches!(unavailable.outcomes[0].1, ItemOutcome::Unavailable(_)));
+
+    state.select_source("aPSOTX5AkiY", "6U7_Qy5c_uc").unwrap();
+    state.save(&playlist).unwrap();
+    let mut restarted = PlaylistSyncState::load(&playlist).unwrap();
+    assert!(restarted.sources["aPSOTX5AkiY"].retry_pending, "selection authorizes one persisted attempt after restart");
+    let selected_plan = plan_with_state(&music, &playlist, std::slice::from_ref(&entry), &restarted);
+    assert_eq!(selected_plan[0].source_override.as_ref().unwrap().video_id, "6U7_Qy5c_uc");
+
+    let transient = sync_sequential_observed_with_state(
+        &playlist, &selected_plan, &CancellationToken::new(), &mut restarted,
+        |_, _| Err("network connection timed out".into()), |_, _| {},
+    );
+    assert!(matches!(transient.outcomes[0].1, ItemOutcome::Failed(_)));
+    assert!(!restarted.sources["aPSOTX5AkiY"].retry_pending);
+    assert!(restarted.unresolved.contains_key("aPSOTX5AkiY"));
+    let after_transient_restart = PlaylistSyncState::load(&playlist).unwrap();
+    assert!(plan_with_state(&music, &playlist, std::slice::from_ref(&entry), &after_transient_restart).is_empty(), "a transient failure requires an explicit retry/selection");
+
+    let mut remapped = after_transient_restart;
+    remapped.select_source("aPSOTX5AkiY", "A1b2C3d4E5F").unwrap();
+    remapped.save(&playlist).unwrap();
+    let alternate_plan = plan_with_state(&music, &playlist, std::slice::from_ref(&entry), &remapped);
+    assert_eq!(alternate_plan[0].source_override.as_ref().unwrap().video_id, "A1b2C3d4E5F");
+    let unavailable_alternate = sync_sequential_observed_with_state(
+        &playlist, &alternate_plan, &CancellationToken::new(), &mut remapped,
+        |_, _| Err("ERROR: [youtube] A1b2C3d4E5F: Video unavailable".into()), |_, _| {},
+    );
+    assert!(matches!(unavailable_alternate.outcomes[0].1, ItemOutcome::Unavailable(_)));
+    let after_unavailable = PlaylistSyncState::load(&playlist).unwrap();
+    assert!(plan_with_state(&music, &playlist, std::slice::from_ref(&entry), &after_unavailable).is_empty(), "a mapped unavailable video must not loop on later syncs");
+
+    let mut explicitly_retried = after_unavailable;
+    explicitly_retried.select_source("aPSOTX5AkiY", "6U7_Qy5c_uc").unwrap();
+    explicitly_retried.save(&playlist).unwrap();
+    assert_eq!(plan_with_state(&music, &playlist, std::slice::from_ref(&entry), &explicitly_retried).len(), 1);
 }
 
 #[test]

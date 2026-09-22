@@ -5,7 +5,7 @@ import { SettingsView } from "../views/SettingsView";
 import { EditTrackDialog } from "../components/EditTrackDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PlayerBar } from "../components/PlayerBar";
-import { PlaylistUrlDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog } from "../components/PlaylistDialogs";
+import { PlaylistUrlDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog } from "../components/PlaylistDialogs";
 
 describe("Gate 4 views", () => {
   it("renders downloader error, cancel, and retry controls", () => {
@@ -89,5 +89,40 @@ describe("Playlist sync history", () => {
     expect(html).toContain("Sync errors · Road trip");
     expect(html).toContain("Artist - Unavailable song");
     expect(html).toContain("video unavailable");
+  });
+
+  it("shows original review cues and requires an explicit candidate choice", () => {
+    const html = renderToStaticMarkup(<PlaylistSyncReviewDialog playlistName="Road trip" loading={false} error={null}
+      entries={[{ video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "aPSOTX5AkiY", selected_source_id: null, retry_pending: false, updated_at_ms: 1 }]}
+      candidateLookups={{ aPSOTX5AkiY: { loading: false, error: null, candidates: [{ video_id: "6U7_Qy5c_uc", title: "Get What You Give", channel: "Boogie T - Topic", duration: "4:51", thumbnail_url: null, url: "https://www.youtube.com/watch?v=6U7_Qy5c_uc" }] }}}
+      onFindCandidates={() => {}} onChooseCandidate={() => {}} onRetryOriginal={() => {}} onSyncSelected={() => {}} onClose={() => {}} />);
+    expect(html).toContain("Review unavailable songs · Road trip");
+    expect(html).toContain("Boogie T - Topic · 4:52 original length · original video unavailable");
+    expect(html).toContain("Get What You Give");
+    expect(html).toContain("4:51");
+    expect(html).toContain("Select this source");
+    expect(html).toContain("Retry original source");
+    expect(html).not.toContain("Sync selected sources");
+    expect(html).not.toContain("selected=");
+
+    const pendingHtml = renderToStaticMarkup(<PlaylistSyncReviewDialog playlistName="Road trip" loading={false} error={null}
+      entries={[{ video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "6U7_Qy5c_uc", selected_source_id: "6U7_Qy5c_uc", retry_pending: true, updated_at_ms: 1 }]}
+      onFindCandidates={() => {}} onChooseCandidate={() => {}} onRetryOriginal={() => {}} onSyncSelected={() => {}} onClose={() => {}} />);
+    expect(pendingHtml).toContain("Selected source: 6U7_Qy5c_uc · ready for next sync");
+    expect(pendingHtml).toContain("Sync selected sources (1)");
+
+    const selectingHtml = renderToStaticMarkup(<PlaylistSyncReviewDialog playlistName="Road trip" loading={false} error={null} selectingVideoId="aPSOTX5AkiY"
+      entries={[{ video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "6U7_Qy5c_uc", selected_source_id: "6U7_Qy5c_uc", retry_pending: true, updated_at_ms: 1 }]}
+      onFindCandidates={() => {}} onChooseCandidate={() => {}} onRetryOriginal={() => {}} onSyncSelected={() => {}} onClose={() => {}} />);
+    expect(selectingHtml).toMatch(/disabled=""[^>]*>Sync selected sources \(1\)/);
+
+    const failedHtml = renderToStaticMarkup(<PlaylistSyncReviewDialog playlistName="Road trip" loading={false} error={null}
+      entries={[{ video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "6U7_Qy5c_uc", selected_source_id: "6U7_Qy5c_uc", retry_pending: false, updated_at_ms: 1 }]}
+      onFindCandidates={() => {}} onChooseCandidate={() => {}} onRetryOriginal={() => {}} onSyncSelected={() => {}} onClose={() => {}} />);
+    expect(failedHtml).toContain("Selected source: 6U7_Qy5c_uc · last attempt finished; select again to retry or change");
+    expect(failedHtml).toContain("Last unavailable attempt: 6U7_Qy5c_uc");
+    expect(failedHtml).toContain("Video unavailable");
+    expect(failedHtml).toContain("Find candidate videos");
+    expect(failedHtml).toContain("Retry original source");
   });
 });

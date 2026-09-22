@@ -23,7 +23,7 @@ export type ErrorCode = "invalid_request" | "unsupported_version" | "not_found" 
 export interface ContractError { code: ErrorCode; message: string; retryable: boolean }
 export interface SettingsInput { music_root: string | null; auto_discovery: boolean | null; volume: number | null; sleep_timer: unknown | null; global_keys: boolean | null; favorite_songs: string[]; video_mode?: boolean | null }
 export interface SearchResult { provider: string; query: string; title: string; artist: string | null; duration: string | null; thumbnail_url: string | null; url: string | null }
-export interface PlaylistSyncIssue { video_id: string; title: string; channel: string | null; duration_secs: number | null; reason: string; attempted_source_id: string | null; selected_source_id: string | null; updated_at_ms: number }
+export interface PlaylistSyncIssue { video_id: string; title: string; channel: string | null; duration_secs: number | null; reason: string; attempted_source_id: string | null; selected_source_id: string | null; retry_pending: boolean; updated_at_ms: number }
 export interface PlaylistSyncCandidate { video_id: string; title: string; channel: string | null; duration: string | null; thumbnail_url: string | null; url: string }
 export interface PlaylistSyncSelection { video_id: string; source_video_id: string; url: string }
 
@@ -277,11 +277,11 @@ export function isSearchResults(value: unknown): value is SearchResult[] { retur
 function isCanonicalYouTubeWatchUrl(value: unknown): value is string { return typeof value === "string" && /^https:\/\/www\.youtube\.com\/watch\?v=[A-Za-z0-9_-]{11}$/.test(value); }
 export function isPlaylistSyncIssues(value: unknown): value is { entries: PlaylistSyncIssue[] } {
   return object(value) && exact(value, ["entries"]) && Array.isArray(value.entries) && value.entries.every((issue) => object(issue)
-    && exact(issue, ["video_id", "title", "channel", "duration_secs", "reason", "attempted_source_id", "selected_source_id", "updated_at_ms"])
+    && exact(issue, ["video_id", "title", "channel", "duration_secs", "reason", "attempted_source_id", "selected_source_id", "retry_pending", "updated_at_ms"])
     && nonEmptyId(issue.video_id) && nonEmptyId(issue.title) && (issue.channel === null || nonEmptyId(issue.channel))
     && (issue.duration_secs === null || (safeInteger(issue.duration_secs) && issue.duration_secs >= 0)) && nonEmptyId(issue.reason)
     && (issue.attempted_source_id === null || nonEmptyId(issue.attempted_source_id))
-    && (issue.selected_source_id === null || nonEmptyId(issue.selected_source_id)) && safeInteger(issue.updated_at_ms) && issue.updated_at_ms >= 0);
+    && (issue.selected_source_id === null || nonEmptyId(issue.selected_source_id)) && typeof issue.retry_pending === "boolean" && safeInteger(issue.updated_at_ms) && issue.updated_at_ms >= 0);
 }
 export function isPlaylistSyncCandidates(value: unknown): value is PlaylistSyncCandidate[] {
   return Array.isArray(value) && value.every((candidate) => object(candidate)

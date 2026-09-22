@@ -207,6 +207,7 @@ pub struct PlaylistSyncIssue {
     pub reason: String,
     pub attempted_source_id: Option<String>,
     pub selected_source_id: Option<String>,
+    pub retry_pending: bool,
     #[serde(deserialize_with = "safe_u64")]
     pub updated_at_ms: u64,
 }

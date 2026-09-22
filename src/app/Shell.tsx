@@ -17,7 +17,7 @@ import { useTrackArtwork } from "../state/track_artwork";
 import { bumpPlayCount, loadDownloadJournal, loadPlayCounts, madeForYouIds, popularTrackIds, recordDownloadCompletions, saveDownloadJournal, savePlayCounts, type DownloadEntry, type PlayCounts } from "../state/play_stats";
 import { downloadDisplayLabel, downloadFilename, type DownloadMetadata } from "../state/download_naming";
 import type { Bridge, MigrationStatus } from "./bridge";
-import { type Playlist, type Recommendation, type SearchResult, type SettingsInput, type Track } from "../shared/contracts";
+import { type Playlist, type PlaylistSyncCandidate, type PlaylistSyncIssue, type Recommendation, type SearchResult, type SettingsInput, type Track } from "../shared/contracts";
 import { previewKey } from "../shared/contracts";
 import type { RecommendationState } from "../components/Recommendations";
 import { Queue } from "../components/Queue";
@@ -25,7 +25,7 @@ import { PlayerBar } from "../components/PlayerBar";
 import { PlaylistPicker } from "../components/PlaylistPicker";
 import { EditTrackDialog } from "../components/EditTrackDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { PlaylistDialog, PlaylistUrlDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, type PlaylistSyncLogEntry } from "../components/PlaylistDialogs";
+import { PlaylistDialog, PlaylistUrlDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog, type PlaylistSyncCandidateLookup, type PlaylistSyncLogEntry } from "../components/PlaylistDialogs";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
 import { IconChevronLeft, IconChevronRight, IconClose, IconDownload, IconHeart, IconHome, IconLibrary, IconMusicNote, IconSearch, IconUser } from "../components/icons";
@@ -160,10 +160,13 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [playlistUrlRequest, setPlaylistUrlRequest] = useState<Playlist | null>(null);
   const [playlistUrlBusy, setPlaylistUrlBusy] = useState(false);
   const [playlistUrlError, setPlaylistUrlError] = useState<string | null>(null);
-  const [activePlaylistSync, setActivePlaylistSync] = useState<{ jobId: string; playlist: Playlist; startedAtMs: number } | null>(null);
+  const [activePlaylistSync, setActivePlaylistSync] = useState<{ jobId: string; playlist: Playlist; startedAtMs: number; sequence: number } | null>(null);
+  const playlistSyncSequence = useRef(0);
   const [lastFailedPlaylistSync, setLastFailedPlaylistSync] = useState<{ playlist: Playlist; startedAtMs: number } | null>(null);
   const [playlistSyncLog, setPlaylistSyncLog] = useState<{ name: string; entries: PlaylistSyncLogEntry[]; loading: boolean; error: string | null } | null>(null);
   const [playlistSyncErrors, setPlaylistSyncErrors] = useState<{ name: string; entries: PlaylistSyncLogEntry[]; loading: boolean; error: string | null } | null>(null);
+  const [playlistSyncReview, setPlaylistSyncReview] = useState<{ playlist: Playlist; entries: PlaylistSyncIssue[]; loading: boolean; error: string | null; candidateLookups: Record<string, PlaylistSyncCandidateLookup>; selectingVideoId: string | null } | null>(null);
+  const [playlistSyncReviewOffer, setPlaylistSyncReviewOffer] = useState<{ playlist: Playlist; count: number } | null>(null);
   const askConfirm = (request: { title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }) => {
     setConfirmError(null);
     setConfirmDialog(request);
@@ -198,11 +201,28 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     if (!activePlaylistSync) return;
     const job = projection.jobs[activePlaylistSync.jobId];
     if (!job || !["succeeded", "failed", "cancelled"].includes(job.state)) return;
-    if (job.state === "succeeded") setCommandNotice(`“${activePlaylistSync.playlist.name}” is up to date.`);
-    else if (job.state === "cancelled") setCommandNotice(`Stopped syncing “${activePlaylistSync.playlist.name}”.`);
-    else setLastFailedPlaylistSync({ playlist: activePlaylistSync.playlist, startedAtMs: activePlaylistSync.startedAtMs });
+    const { playlist } = activePlaylistSync;
+    const sequence = activePlaylistSync.sequence;
+    if (job.state === "cancelled") setCommandNotice(`Stopped syncing “${playlist.name}”.`);
+    else {
+      if (job.state === "failed") setLastFailedPlaylistSync(activePlaylistSync);
+      void bridge?.playlistSyncIssues(playlist.id).then((entries) => {
+        if (playlistSyncSequence.current !== sequence) return;
+        if (entries.length > 0) setPlaylistSyncReviewOffer({ playlist, count: entries.length });
+        else setPlaylistSyncReviewOffer(null);
+        if (job.state === "succeeded") {
+          setCommandNotice(entries.length > 0
+            ? `Sync complete. ${entries.length} ${entries.length === 1 ? "song needs" : "songs need"} source review.`
+            : `“${playlist.name}” is up to date.`);
+        }
+      }).catch((error: unknown) => {
+        if (playlistSyncSequence.current !== sequence) return;
+        if (job.state === "succeeded") setCommandNotice(`Sync completed for “${playlist.name}”; unresolved songs could not be checked.`);
+        setCommandError(normalizeRuntimeCommandError(error));
+      });
+    }
     setActivePlaylistSync(null);
-  }, [activePlaylistSync, projection.jobs]);
+  }, [activePlaylistSync, projection.jobs, bridge]);
   const [downloadSources, setDownloadSources] = useState<SearchResult[]>([]);
   const [downloadSearchLoading, setDownloadSearchLoading] = useState(false);
   const [queuedDownloadUrls, setQueuedDownloadUrls] = useState<string[]>([]);
@@ -300,9 +320,11 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   };
   const syncPlaylist = (playlist: Playlist) => {
     if (!bridge || !available || !playlist.url) return;
+    const sequence = ++playlistSyncSequence.current;
     setCommandError(null);
     backendProjection?.clearErrors?.();
     setLastFailedPlaylistSync(null);
+    setPlaylistSyncReviewOffer(null);
     setCommandNotice(`Starting sync for “${playlist.name}”…`);
     const startedAtMs = Date.now();
     void bridge.syncPlaylist(playlist.id)
@@ -310,7 +332,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         const jobId = value && typeof value === "object" && "job_id" in value && typeof value.job_id === "string" ? value.job_id : null;
         if (!jobId) throw new Error("sync did not return a job id");
         setCommandNotice(null);
-        setActivePlaylistSync({ jobId, playlist, startedAtMs });
+        setActivePlaylistSync({ jobId, playlist, startedAtMs, sequence });
       })
       .catch((error: unknown) => { setCommandNotice(null); setCommandError(normalizeRuntimeCommandError(error)); });
   };
@@ -323,12 +345,64 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       setPlaylistSyncLog((current) => current?.name === playlist.name ? { ...current, loading: false, error: normalizeRuntimeCommandError(error) } : current);
     });
   };
+  const openPlaylistSyncReview = (playlist: Playlist) => {
+    if (!bridge || !available) return;
+    const sequence = playlistSyncSequence.current;
+    setPlaylistSyncReview({ playlist, entries: [], loading: true, error: null, candidateLookups: {}, selectingVideoId: null });
+    void bridge.playlistSyncIssues(playlist.id).then((entries) => {
+      setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, entries, loading: false } : current);
+      if (playlistSyncSequence.current === sequence) setPlaylistSyncReviewOffer(entries.length > 0 ? { playlist, count: entries.length } : null);
+    }).catch((error: unknown) => {
+      setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, loading: false, error: normalizeRuntimeCommandError(error) } : current);
+    });
+  };
+  const findPlaylistSyncCandidates = (videoId: string) => {
+    if (!bridge || !playlistSyncReview) return;
+    const playlist = playlistSyncReview.playlist;
+    setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? {
+      ...current,
+      candidateLookups: { ...current.candidateLookups, [videoId]: { candidates: [], loading: true, error: null } },
+    } : current);
+    void bridge.playlistSyncCandidates(playlist.id, videoId).then((candidates) => {
+      setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? {
+        ...current,
+        candidateLookups: { ...current.candidateLookups, [videoId]: { candidates, loading: false, error: null } },
+      } : current);
+    }).catch((error: unknown) => {
+      setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? {
+        ...current,
+        candidateLookups: { ...current.candidateLookups, [videoId]: { candidates: [], loading: false, error: normalizeRuntimeCommandError(error) } },
+      } : current);
+    });
+  };
+  const persistPlaylistSyncSource = (videoId: string, sourceVideoId: string) => {
+    if (!bridge || !available || !playlistSyncReview || activePlaylistSync) return;
+    const playlist = playlistSyncReview.playlist;
+    setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, selectingVideoId: videoId, error: null } : current);
+    void bridge.playlistSyncSelectSource(playlist.id, videoId, sourceVideoId).then((selection) => {
+      setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? {
+        ...current,
+        entries: current.entries.map((issue) => issue.video_id === videoId ? { ...issue, selected_source_id: selection.source_video_id, retry_pending: true } : issue),
+        selectingVideoId: null,
+      } : current);
+    }).catch((error: unknown) => {
+      setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, selectingVideoId: null, error: normalizeRuntimeCommandError(error) } : current);
+    });
+  };
+  const choosePlaylistSyncCandidate = (videoId: string, candidate: PlaylistSyncCandidate) => persistPlaylistSyncSource(videoId, candidate.video_id);
+  const retryOriginalPlaylistSource = (videoId: string) => persistPlaylistSyncSource(videoId, videoId);
+  const syncSelectedPlaylistSources = () => {
+    if (!playlistSyncReview || activePlaylistSync || !playlistSyncReview.entries.some((issue) => issue.selected_source_id && issue.retry_pending)) return;
+    const playlist = playlistSyncReview.playlist;
+    setPlaylistSyncReview(null);
+    syncPlaylist(playlist);
+  };
   const openPlaylistSyncErrors = () => {
     if (!bridge || !available || !lastFailedPlaylistSync) return;
     const { playlist, startedAtMs } = lastFailedPlaylistSync;
     setPlaylistSyncErrors({ name: playlist.name, entries: [], loading: true, error: null });
     void bridge.playlistSyncLog(playlist.id).then((value) => {
-      const entries = value.entries.filter((entry) => entry.status === "failed" && entry.at_ms >= startedAtMs);
+      const entries = value.entries.filter((entry) => ["failed", "unavailable"].includes(entry.status) && entry.at_ms >= startedAtMs);
       setPlaylistSyncErrors((current) => current?.name === playlist.name ? { ...current, entries, loading: false } : current);
     }).catch((error: unknown) => {
       setPlaylistSyncErrors((current) => current?.name === playlist.name ? { ...current, loading: false, error: normalizeRuntimeCommandError(error) } : current);
@@ -1025,12 +1099,13 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
               : commandError;
           const videoNotice = !connectedVideo && route === "song_page";
           const syncJob = activePlaylistSync ? projection.jobs[activePlaylistSync.jobId] : null;
-          return (!available || displayCommandError || backendError || commandNotice || activePlaylistSync || videoNotice) && <div className="luno-runtime-status" role="status">
+          return (!available || displayCommandError || backendError || commandNotice || activePlaylistSync || videoNotice || playlistSyncReviewOffer) && <div className="luno-runtime-status" role="status">
             {!available && <span data-state="backend-unavailable">Backend unavailable; runtime commands are unavailable.</span>}
             {displayCommandError && <span data-state="command-rejected">{displayCommandError} <button type="button" onClick={() => setCommandError(null)} aria-label="Dismiss error">Dismiss</button></span>}
             {backendError && <span data-state="backend-error">{backendError} <button type="button" onClick={() => backendProjection?.clearErrors?.()} aria-label="Dismiss error">Dismiss</button>{backendError.startsWith("playlist sync") && lastFailedPlaylistSync && <button type="button" onClick={openPlaylistSyncErrors}>View sync errors</button>}</span>}
             {activePlaylistSync && <span data-state="playlist-sync">{syncJob?.current_item ? `Downloading “${syncJob.current_item}”` : `Checking “${activePlaylistSync.playlist.name}”`} {syncJob?.progress != null && syncJob.current_item ? `· playlist ${Math.round(syncJob.progress * 100)}%` : ""}</span>}
             {commandNotice && <span data-state="command-notice">{commandNotice} <button type="button" onClick={() => setCommandNotice(null)} aria-label="Dismiss notice">Dismiss</button></span>}
+            {playlistSyncReviewOffer && <span data-state="playlist-sync-review"><button type="button" onClick={() => openPlaylistSyncReview(playlistSyncReviewOffer.playlist)}>Review {playlistSyncReviewOffer.count} unavailable {playlistSyncReviewOffer.count === 1 ? "song" : "songs"}</button></span>}
             {videoNotice && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}
           </div>; })()}<div className="luno-main-content luno-scroll">{content}</div></main>
         <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : panelQueueTracks} currentIndex={panelRecent ? null : panelQueueIndex} recent={panelRecent} backendAvailable={available} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => playQueueEntry(item, panelRecent ? recentTracks : panelQueueTracks)} onPlayNext={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.playNext([item.id])) : setCommandNotice("Only library tracks can be queued."))} onAddToQueue={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.addToQueue([item.id])) : setCommandNotice("Only library tracks can be queued."))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} onContextMenu={openTrackMenu} />}</aside>
@@ -1061,6 +1136,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <hr />
         <button role="menuitem" type="button" onClick={() => { setPlaylistUrlError(null); setPlaylistUrlRequest(contextMenu.playlist!); setContextMenu(null); }}>{contextMenu.playlist.url ? "Edit YouTube playlist link…" : "Add YouTube playlist link…"}</button>
         <button role="menuitem" type="button" disabled={!contextMenu.playlist.url || activePlaylistSync !== null} title={contextMenu.playlist.url ? undefined : "Add a YouTube playlist link first"} onClick={() => { syncPlaylist(contextMenu.playlist!); setContextMenu(null); }}>Sync playlist</button>
+        <button role="menuitem" type="button" disabled={!contextMenu.playlist.url || activePlaylistSync !== null} title={contextMenu.playlist.url ? undefined : "Add a YouTube playlist link first"} onClick={() => { openPlaylistSyncReview(contextMenu.playlist!); setContextMenu(null); }}>Review unavailable songs…</button>
         <button role="menuitem" type="button" onClick={() => { openPlaylistSyncLog(contextMenu.playlist!); setContextMenu(null); }}>Log</button>
         <hr />
         <button className="is-danger" role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); askConfirm({ title: "Empty playlist", message: `Permanently delete every song in “${item.name}” but keep the playlist?`, confirmLabel: "Empty playlist", danger: true, onConfirm: () => runCommand(bridge?.deleteTracks(item.ordered_track_ids)) }); }}>Empty playlist…</button>
@@ -1074,6 +1150,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     {playlistUrlRequest && <PlaylistUrlDialog playlistName={playlistUrlRequest.name} initialUrl={playlistUrlRequest.url} busy={playlistUrlBusy} error={playlistUrlError} onClose={() => { if (!playlistUrlBusy) { setPlaylistUrlRequest(null); setPlaylistUrlError(null); } }} onSubmit={submitPlaylistUrl} />}
     {playlistSyncLog && <PlaylistSyncLogDialog playlistName={playlistSyncLog.name} entries={playlistSyncLog.entries} loading={playlistSyncLog.loading} error={playlistSyncLog.error} onClose={() => setPlaylistSyncLog(null)} />}
     {playlistSyncErrors && <PlaylistSyncErrorsDialog playlistName={playlistSyncErrors.name} entries={playlistSyncErrors.entries} loading={playlistSyncErrors.loading} error={playlistSyncErrors.error} onClose={() => setPlaylistSyncErrors(null)} />}
+    {playlistSyncReview && <PlaylistSyncReviewDialog playlistName={playlistSyncReview.playlist.name} entries={playlistSyncReview.entries} loading={playlistSyncReview.loading} error={playlistSyncReview.error} candidateLookups={playlistSyncReview.candidateLookups} selectingVideoId={playlistSyncReview.selectingVideoId} onFindCandidates={findPlaylistSyncCandidates} onChooseCandidate={choosePlaylistSyncCandidate} onRetryOriginal={retryOriginalPlaylistSource} onSyncSelected={syncSelectedPlaylistSources} onClose={() => { if (!playlistSyncReview.selectingVideoId) setPlaylistSyncReview(null); }} />}
   </div>;
 }
 

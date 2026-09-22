@@ -483,6 +483,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-sync-log strong { font-size: 13px; overflow-wrap: anywhere; }
 .luno-sync-log span, .luno-sync-log small { color: var(--luno-text-2); font-size: 12px; overflow-wrap: anywhere; }
 .luno-sync-log small { color: #ff9c9c; }
+.luno-sync-review-entry { display: grid; gap: 8px; padding: 14px 0; border-bottom: 1px solid var(--luno-border); }
+.luno-sync-review-entry > p { margin: 0; font-size: 12px; }
+.luno-sync-review-entry > button, .luno-sync-candidate > button { justify-self: start; }
+.luno-sync-candidate { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px; border: 1px solid var(--luno-border); border-radius: 8px; }
+.luno-sync-candidate > div { display: grid; gap: 4px; min-width: 0; }
+.luno-sync-candidate a { color: var(--luno-green); font-size: 12px; }
+.luno-sync-candidate button { flex: 0 0 auto; }
 .luno-scrubber-row { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; width: 100%; max-width: 72%; margin: 0 auto; }
 .luno-time { color: var(--luno-text-2); font-size: 11px; font-variant-numeric: tabular-nums; min-width: 36px; text-align: center; }
 .luno-scrubber-row input[type="range"] { width: 100%; accent-color: var(--luno-green); height: 4px; cursor: pointer; }
