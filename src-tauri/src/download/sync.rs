@@ -189,13 +189,6 @@ where
                 result.outcomes.push((label, ItemOutcome::Matched));
                 continue;
             }
-            if markers.failed.contains(id) {
-                result.outcomes.push((
-                    label,
-                    ItemOutcome::PermanentFailure("previously recorded failure".into()),
-                ));
-                continue;
-            }
         }
         let started = Instant::now();
         let outcome = match download(item, token) {

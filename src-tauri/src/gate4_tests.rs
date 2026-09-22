@@ -712,6 +712,7 @@ fn playlist_sync_downloads_new_ids_once_and_persists_success_markers() {
     }
     let downloaded = playlist.join("Fixture Track.m4a");
     assert!(downloaded.is_file(), "sync should download into the physical playlist");
+    assert!(state.events().iter().any(|event| matches!(&event.event, Event::JobUpdated { job } if job.id.0 == first_job && job.current_item.as_deref() == Some("Fixture Track"))), "sync should publish the song currently being downloaded");
     assert!(Markers::load(&playlist).successful.contains("fixture-video"));
     let log = state.dispatch(CommandEnvelope { version: 1, request_id: "sync-log".into(), command: BackendCommand::PlaylistSyncLog {
         playlist_id: crate::contracts::types::PlaylistId("playlist:Road trip".into()),

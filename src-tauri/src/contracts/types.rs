@@ -320,6 +320,8 @@ pub struct DownloadJob {
     /// Keep that phase explicit so a 95–97% job cannot look stalled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<DownloadPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_item: Option<String>,
     pub generation: Generation,
 }
 

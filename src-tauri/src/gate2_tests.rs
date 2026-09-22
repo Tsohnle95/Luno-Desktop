@@ -434,12 +434,12 @@ fn local_sync_journey_covers_whole_root_dedupe_markers_validation_retry_and_canc
         &destination,
         &[item("permanent-id", "Permanent")],
         &crate::runtime::task_registry::CancellationToken::new(),
-        |_item, _token| panic!("retained permanent failure was retried"),
+        |item, _token| {
+            fs::write(&item.destination, b"ID3retried-audio").unwrap();
+            Ok(())
+        },
     );
-    assert!(matches!(
-        permanent_retry.outcomes.as_slice(),
-        [(id, ItemOutcome::PermanentFailure(_))] if id == "permanent-id"
-    ));
+    assert_eq!(permanent_retry.outcomes, vec![("permanent-id".into(), ItemOutcome::Downloaded)]);
 
     let retry_token = crate::runtime::task_registry::CancellationToken::new();
     let retry = sync_sequential(

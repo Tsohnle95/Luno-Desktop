@@ -18,7 +18,7 @@ export type VideoStatus = "not_checked" | "loading" | "ready" | "playing" | "pau
 export interface VideoState { track_id: TrackId | null; source_url: string | null; staged_path: string | null; status: VideoStatus; position_ms: number; /** 0-100 while status is "loading"; null otherwise. */ download_progress?: number | null; /** Content revision of the staged file: 1 = quick-tier first pass, 2 = background full-quality upgrade completed. */ revision?: number | null; fullscreen: boolean; generation: Generation }
 export type DownloadKind = "single" | "csv" | "sync" | "url_queue";
 export type JobState = "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
-export interface DownloadJob { id: JobId; kind: DownloadKind; state: JobState; track_id: TrackId | null; progress: number | null; phase?: "finalizing" | null; generation: Generation }
+export interface DownloadJob { id: JobId; kind: DownloadKind; state: JobState; track_id: TrackId | null; progress: number | null; phase?: "finalizing" | null; current_item?: string | null; generation: Generation }
 export type ErrorCode = "invalid_request" | "unsupported_version" | "not_found" | "busy" | "cancelled" | "unavailable" | "internal" | "shutting_down";
 export interface ContractError { code: ErrorCode; message: string; retryable: boolean }
 export interface SettingsInput { music_root: string | null; auto_discovery: boolean | null; volume: number | null; sleep_timer: unknown | null; global_keys: boolean | null; favorite_songs: string[]; video_mode?: boolean | null }
@@ -232,8 +232,9 @@ function isEvent(v: unknown): v is Event {
      && (value.revision === undefined || value.revision === null || nonNegativeInt(value.revision));
   const progress = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
   const job = (value: unknown): value is DownloadJob => object(value)
-    && (exact(value, ["id", "kind", "state", "track_id", "progress", "generation"]) || exact(value, ["id", "kind", "state", "track_id", "progress", "phase", "generation"]))
-    && id(value.id) && ["single", "csv", "sync", "url_queue"].includes(String(value.kind)) && ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"].includes(String(value.state)) && (value.track_id === null || id(value.track_id)) && (value.progress === null || progress(value.progress)) && (value.phase === undefined || value.phase === null || value.phase === "finalizing") && generation(value.generation);
+    && ["id", "kind", "state", "track_id", "progress", "generation"].every((key) => key in value)
+    && Object.keys(value).every((key) => ["id", "kind", "state", "track_id", "progress", "phase", "current_item", "generation"].includes(key))
+    && id(value.id) && ["single", "csv", "sync", "url_queue"].includes(String(value.kind)) && ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"].includes(String(value.state)) && (value.track_id === null || id(value.track_id)) && (value.progress === null || progress(value.progress)) && (value.phase === undefined || value.phase === null || value.phase === "finalizing") && (value.current_item === undefined || value.current_item === null || (typeof value.current_item === "string" && value.current_item.length > 0)) && generation(value.generation);
   if (v.type === "track_started") return exact(v.payload, ["track_id"]) && id(v.payload.track_id);
   if (v.type === "queue_changed") return exact(v.payload, ["queue"]) && Array.isArray(v.payload.queue) && v.payload.queue.every(id);
    if (v.type === "library_root_status") return exact(v.payload, ["root_index", "status"]) && safeInteger(v.payload.root_index) && v.payload.root_index >= 0 && ["scanned", "missing", "inaccessible"].includes(String(v.payload.status));

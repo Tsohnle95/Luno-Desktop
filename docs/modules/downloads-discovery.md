@@ -119,15 +119,18 @@ What it does not own: library snapshots and promotion targets
 - A physical playlist may link to one canonical YouTube playlist URL. A sync
   enumerates stable video IDs through the supervised yt-dlp boundary, skips
   tracks already found anywhere under the library root, and also skips IDs in
-  that playlist's append-only `.downloaded_vids` success markers. Each new item
+  that playlist's append-only `.downloaded_vids` success markers. Old
+  `.sync_failed_vids` markers do not block an explicit retry. Each new item
   downloads sequentially as M4A into the selected playlist folder; its success
   marker is persisted before the sync advances. Sync and single downloads share
   one admission gate, publish normal `sync` job events, support process-group
   cancellation, and trigger a coalesced scan after new files arrive.
   Each attempted video appends a dated title, outcome, and failure reason to
-  `.luno-sync-log.jsonl` in that playlist folder. The log is display history,
-  not a dedupe marker; `.downloaded_vids` remains the success source. A failed
-  job reports the first per-song error and directs users to the full log.
+  `.luno-sync-log.jsonl` in that playlist folder. This is display history,
+  not a dedupe marker; `.downloaded_vids` remains the success source. The
+  playlist Log shows successful additions, while the separate sync error view
+  shows per-song reasons from the latest failed run. A failed job reports the
+  first per-song error and links to that error view.
 - Missing or mismatched managed tools fail closed with degraded media
   behavior surfaced — never silent success, never an unreviewed download
   at build time.

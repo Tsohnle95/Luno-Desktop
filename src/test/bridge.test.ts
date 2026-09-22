@@ -149,6 +149,7 @@ describe("typed IPC bridge and projection", () => {
     expect(isDiscoverSnapshot({ ...discover, extra: 1 })).toBe(false);
     expect(isEventEnvelope(event({ type: "discover_snapshot", payload: { snapshot: discover } }, 2))).toBe(true);
     expect(isEventEnvelope(event({ type: "job_updated", payload: { job: { id: "j", kind: "single", state: "running", track_id: null, progress: 0.97, phase: "finalizing", generation: 2 } } }, 2))).toBe(true);
+    expect(isEventEnvelope(event({ type: "job_updated", payload: { job: { id: "sync-j", kind: "sync", state: "running", track_id: null, progress: 0.25, current_item: "Artist - Song", generation: 2 } } }, 2))).toBe(true);
   });
 
   it("uses the required native backend command payload argument shape", () => {

@@ -5,7 +5,7 @@ import { SettingsView } from "../views/SettingsView";
 import { EditTrackDialog } from "../components/EditTrackDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PlayerBar } from "../components/PlayerBar";
-import { PlaylistUrlDialog, PlaylistSyncLogDialog } from "../components/PlaylistDialogs";
+import { PlaylistUrlDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog } from "../components/PlaylistDialogs";
 
 describe("Gate 4 views", () => {
   it("renders downloader error, cancel, and retry controls", () => {
@@ -73,17 +73,21 @@ describe("YouTube playlist URL dialog", () => {
   });
 });
 
-describe("Playlist sync log", () => {
-  it("shows dated song outcomes and a useful failure reason", () => {
-    const html = renderToStaticMarkup(<PlaylistSyncLogDialog playlistName="Road trip" loading={false} error={null} onClose={() => {}} entries={[
-      { title: "Artist - New song", video_id: "video-1", at_ms: 1_700_000_000_000, status: "downloaded", reason: null },
-      { title: "Artist - Unavailable song", video_id: "video-2", at_ms: 1_700_000_000_001, status: "failed", reason: "video unavailable" },
-    ]} />);
+describe("Playlist sync history", () => {
+  const entries = [
+    { title: "Artist - New song", video_id: "video-1", at_ms: 1_700_000_000_000, status: "downloaded", reason: null },
+    { title: "Artist - Unavailable song", video_id: "video-2", at_ms: 1_700_000_000_001, status: "failed", reason: "video unavailable" },
+  ];
+  it("shows only dated successful additions in the playlist log", () => {
+    const html = renderToStaticMarkup(<PlaylistSyncLogDialog playlistName="Road trip" loading={false} error={null} onClose={() => {}} entries={entries} />);
     expect(html).toContain("Sync log · Road trip");
     expect(html).toContain("Artist - New song");
+    expect(html).not.toContain("Artist - Unavailable song");
+  });
+  it("shows failed songs in a separate error dialog", () => {
+    const html = renderToStaticMarkup(<PlaylistSyncErrorsDialog playlistName="Road trip" loading={false} error={null} onClose={() => {}} entries={entries.filter((entry) => entry.status === "failed")} />);
+    expect(html).toContain("Sync errors · Road trip");
     expect(html).toContain("Artist - Unavailable song");
     expect(html).toContain("video unavailable");
-    expect(html).toContain("downloaded");
-    expect(html).toContain("failed");
   });
 });

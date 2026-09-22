@@ -5864,7 +5864,7 @@ impl AppState {
                     },
                     DownloadEvent::Cancelled { .. } => (crate::contracts::types::JobState::Cancelled, None, None, None),
                 };
-                let mut envelope = state.event(generation, Event::JobUpdated { job: crate::contracts::types::DownloadJob { id: worker_job.clone(), kind: crate::contracts::types::DownloadKind::Single, state: state_value, track_id: None, progress, phase, generation } });
+                let mut envelope = state.event(generation, Event::JobUpdated { job: crate::contracts::types::DownloadJob { id: worker_job.clone(), kind: crate::contracts::types::DownloadKind::Single, state: state_value, track_id: None, progress, phase, current_item: None, generation } });
                 envelope.job_id = Some(worker_job.clone());
                 state.publish(envelope);
                 if let Some(error) = error { state.publish(state.event(generation, Event::Error { error })); }
@@ -6006,7 +6006,7 @@ impl AppState {
         let active = PlaylistSyncGuard(self.playlist_sync_active.clone());
         self.submit(spec, move |token| {
             let _active = active;
-            state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(0.0));
+            state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(0.0), None);
             let outcome = (|| -> Result<(usize, usize, Option<String>), String> {
                 let entries = crate::download::search::playlist_entries(&state.supervisor, &ytdlp, &url, &token)?;
                 let items = crate::download::sync::plan(&worker_root, &destination, &entries);
@@ -6019,9 +6019,10 @@ impl AppState {
                 let result = crate::download::sync::sync_sequential_observed(&destination, &items, &token, |item, item_token| {
                     let item_index = started;
                     started += 1;
+                    state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(item_index as f32 / total as f32), Some(&item.entry.title));
                     let source = item.entry.url.as_deref().ok_or_else(|| "playlist entry has no download URL".to_string())?;
                     crate::download::workflows::run_download_helper(&helper, &item.destination, source, &worker_home, item_token, &|fraction| {
-                        state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(((item_index as f32 + fraction) / total as f32).clamp(0.0, 0.99)));
+                        state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(((item_index as f32 + fraction) / total as f32).clamp(0.0, 0.99)), Some(&item.entry.title));
                     })
                 }, |entry, item_outcome| {
                     let safe_outcome = match item_outcome {
@@ -6047,22 +6048,22 @@ impl AppState {
                 if result.cancelled || token.is_cancelled() { Err("cancelled".into()) } else { Ok((downloaded, failed, first_failure)) }
             })();
             match outcome {
-                Err(error) if token.is_cancelled() || error == "cancelled" => state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Cancelled, None),
+                Err(error) if token.is_cancelled() || error == "cancelled" => state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Cancelled, None, None),
                 Err(error) => {
-                    state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Failed, None);
+                    state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Failed, None, None);
                     let mut envelope = state.event(generation, Event::Error { error: ContractError { code: ErrorCode::Unavailable, message: sanitize_download_error(&error), retryable: true } });
                     envelope.job_id = Some(worker_job.clone()); state.publish(envelope);
                 }
                 Ok((downloaded, failed, first_failure)) if failed > 0 => {
                     if downloaded > 0 { let _ = state.scan_async(); }
-                    state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Failed, None);
-                    let detail = first_failure.map(|reason| format!(". First failure: {reason}. Open the playlist Log for details")).unwrap_or_default();
+                    state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Failed, None, None);
+                    let detail = first_failure.map(|reason| format!(". First failure: {reason}. View sync errors for details")).unwrap_or_default();
                     let mut envelope = state.event(generation, Event::Error { error: ContractError { code: ErrorCode::Unavailable, message: format!("playlist sync downloaded {downloaded} and failed {failed}{detail}"), retryable: true } });
                     envelope.job_id = Some(worker_job.clone()); state.publish(envelope);
                 }
                 Ok((downloaded, _, _)) => {
                     if downloaded > 0 { let _ = state.scan_async(); }
-                    state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Succeeded, Some(1.0));
+                    state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Succeeded, Some(1.0), None);
                 }
             }
         }).map_err(|error| match error {
@@ -6081,10 +6082,10 @@ impl AppState {
         Ok(serde_json::json!({ "entries": entries }))
     }
 
-    fn publish_sync_job(&self, job_id: &JobId, generation: Generation, job_state: crate::contracts::types::JobState, progress: Option<f32>) {
+    fn publish_sync_job(&self, job_id: &JobId, generation: Generation, job_state: crate::contracts::types::JobState, progress: Option<f32>, current_item: Option<&str>) {
         let mut envelope = self.event(generation, Event::JobUpdated { job: crate::contracts::types::DownloadJob {
             id: job_id.clone(), kind: crate::contracts::types::DownloadKind::Sync, state: job_state,
-            track_id: None, progress, phase: None, generation,
+            track_id: None, progress, phase: None, current_item: current_item.map(str::to_owned), generation,
         }});
         envelope.job_id = Some(job_id.clone()); self.publish(envelope);
     }

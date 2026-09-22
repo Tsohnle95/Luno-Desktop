@@ -99,10 +99,28 @@ export function PlaylistSyncLogDialog({ playlistName, entries, loading, error, o
   onClose: () => void;
 }) {
   return <DialogFrame title={`Sync log · ${playlistName}`} error={error} onClose={onClose}>
-    {loading ? <p>Loading sync log…</p> : entries.length === 0 ? <p>No songs have been synced yet.</p> : <div className="luno-sync-log">
+    {loading ? <p>Loading sync log…</p> : entries.filter((entry) => entry.status === "downloaded").length === 0 ? <p>No songs have been synced yet.</p> : <div className="luno-sync-log">
+      {entries.filter((entry) => entry.status === "downloaded").map((entry, index) => <div key={`${entry.at_ms}-${entry.video_id ?? index}-${index}`}>
+        <strong>{entry.title}</strong>
+        <span>{new Date(entry.at_ms).toLocaleString()}</span>
+      </div>)}
+    </div>}
+    <footer><button type="button" onClick={onClose}>Close</button></footer>
+  </DialogFrame>;
+}
+
+export function PlaylistSyncErrorsDialog({ playlistName, entries, loading, error, onClose }: {
+  playlistName: string;
+  entries: PlaylistSyncLogEntry[];
+  loading: boolean;
+  error: string | null;
+  onClose: () => void;
+}) {
+  return <DialogFrame title={`Sync errors · ${playlistName}`} error={error} onClose={onClose}>
+    {loading ? <p>Loading sync errors…</p> : entries.length === 0 ? <p>No failed song attempts were recorded for this sync.</p> : <div className="luno-sync-log">
       {entries.map((entry, index) => <div key={`${entry.at_ms}-${entry.video_id ?? index}-${index}`}>
         <strong>{entry.title}</strong>
-        <span>{new Date(entry.at_ms).toLocaleString()} · {entry.status}</span>
+        <span>{new Date(entry.at_ms).toLocaleString()}</span>
         {entry.reason && <small>{entry.reason}</small>}
       </div>)}
     </div>}

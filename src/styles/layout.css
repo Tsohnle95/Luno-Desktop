@@ -154,6 +154,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-main { display: flex; flex-direction: column; background: var(--luno-bg); position: relative; }
 .luno-runtime-status { display: flex; gap: 12px; flex-wrap: wrap; padding: 6px 16px; color: var(--luno-warning); background: var(--luno-bg); border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 12px; }
 .luno-runtime-status [data-state="video-unconnected"], .luno-runtime-status [data-state="migration-completed"] { color: var(--luno-text-2); }
+.luno-runtime-status button { margin-left: 8px; padding: 2px 6px; border: 1px solid currentColor; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 .luno-main-content { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: none; scrollbar-gutter: stable; }
 .luno-main-content > * { min-height: 100%; }
 .luno-route-empty { display: grid; place-items: center; min-height: 100%; color: var(--luno-text-2); }

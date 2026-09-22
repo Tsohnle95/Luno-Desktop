@@ -80,8 +80,9 @@ envelope shapes (`docs/modules/contracts.md`).
 - A physical playlist's context menu owns the YouTube link editor and
   `Sync playlist` and `Log` actions. Sync stays disabled until a link is present; React
   sends only the playlist ID, then reflects backend-owned job success,
-  cancellation, and errors. Active sync progress remains visible until the job
-  ends. Log reads backend-owned dated song outcomes and failure reasons. React
+  cancellation, and errors. Active sync status names the current song until the
+  job ends. Log shows dated successful additions; a separate error view shows
+  backend-owned failure reasons for the last run. React
   does not enumerate videos, choose destinations, or decide which entries are new.
 
 ## Core flows
