@@ -66,6 +66,10 @@ What it does not own: library snapshots and promotion targets
   containing spaces (e.g. `/Applications/Luno Desktop.app/…`) survive as a
   single `--ffmpeg-location` value; a split flag once starved yt-dlp of
   ffmpeg, failing every preview/download postprocess step (2026-09-09).
+- Managed yt-dlp calls ignore user configuration so a local archive, simulate
+  flag, or alternate output path cannot turn a successful lookup into a
+  missing preview file. Node is enabled when already available on PATH; no
+  runtime binary is added to the managed bundle.
 - A direct-media HTTP 403 gets one automatic retry through YouTube's HLS audio
   rendition, which avoids the selectively enforced GVS proof-of-origin token.
   Other failures remain terminal, and the normal provider-neutral quality
@@ -78,24 +82,30 @@ What it does not own: library snapshots and promotion targets
   them. Previous/Next, a mode handoff, and disabling Discover retain valid
   files; a different seed or app cleanup replaces the bounded cache.
 - Outside Discover mode, each audible library seed owns an automatic five-item
-  preparation window. Enabling Discover invalidates that prefetch session;
-  disabling it rebuilds the window even when the library seed did not change.
-  A focused tap requests the selected item plus its next five successors.
+  preparation window. Enabling Discover preserves the active preview session
+  and its preparation driver; disabling Discover restores the physical queue
+  without restarting the audible item. A focused tap requests the selected
+  item plus its next five successors.
 - Preview preparation/playback failures surface only through the preview
   snapshot's per-row `unavailable` state; the retrying prefetch pipeline does
   not publish global error events (which stacked an undismissable banner).
 - Discover mode projects its rolling recommendation window into the queue
   immediately — pending items are prepared on selection — so Next/Previous walk
-  the temporary list instead of falling through to the physical library. It
-  publishes the stable keys whose assets are ready, takes ownership from an
-  active preview/prefetch session rather than racing it, and adopts an
-  already published asset before starting another helper.
-- Each presentation mode has one active serialized preparation driver. A
-  terminal success or failure releases its in-flight key, failed rows leave
+  the temporary list instead of falling through to the physical library. Its
+  cursor anchors to the audible recommendation when a focused preview is
+  already playing. It publishes ready asset keys and adopts files already
+  published by the active preview driver. Queue handoff recognizes an earlier
+  ordered projection from the same session when an asynchronous asset update
+  races a selection, while unrelated or reordered queues still end the session.
+- Each presentation mode has one serialized completion driver. The active
+  PreviewSession owns preparation for its window while Discover is enabled;
+  Discover adopts those completions and waits before launching work outside
+  that window, so toggling does not cancel or duplicate an in-flight download.
+  A terminal success or failure releases its in-flight key, failed rows leave
   the transport projection, and explicit selection retries them. The
   automatic five-item window skips a failed row and continues to its
-  successors; it does not retry a failed row in a loop. Worker
-  deadlines cancel the helper/encoder child; provider failures include a
+  successors; it does not retry a failed row in a loop. Worker deadlines
+  terminate the helper process tree and encoder; provider failures include a
   bounded diagnostic tail instead of an opaque helper error. An active
   preview session is published only after its completion driver is admitted.
   Per-item task-capacity pressure stays pending and is retried by that driver;

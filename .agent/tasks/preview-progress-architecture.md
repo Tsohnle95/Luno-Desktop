@@ -22,6 +22,10 @@ playlist while it is off.
 - Preview audio is a temporary overlay: `current_track` can be a recommendation
   while the authoritative physical queue remains on its seed. Discovery must
   anchor its projection to both identities.
+- An asynchronous readiness/failure update can rebuild the Discover projection
+  between selection and audio start. Handoff must recognize that prior ordered
+  projection as session-owned instead of mistaking the race for a user queue
+  replacement.
 
 ## Acceptance criteria
 
@@ -75,6 +79,10 @@ playlist while it is off.
 - **Can a projection rebuild reset Previous/Next?** Yes. Preserve the live track
   id when recalculating its index, with the audible recommendation placed
   between the captured physical prefix and suffix.
+- **Can readiness change the projection after a tap but before start?** Yes.
+  Accept older queue snapshots that retain the captured physical edges and an
+  ordered subset of the session's recommendation ids; reject unrelated or
+  reordered queues.
 - **Could both modes race for an in-flight download?** Yes. Keep the
   PreviewSession active as the single owner of its existing preparation window
   and mirror its terminal results into Discover. Discover waits before starting
@@ -97,9 +105,9 @@ playlist while it is off.
 
 | Phase | Scope | Status | Validation | Commit |
 |---|---|---|---|---|
-| 1 | Deterministic, retryable, process-tree-safe preview helper path | complete | Preview worker no-output/403/cancellation tests, helper argv checks, and cumulative Rust suite passed | pending |
-| 2 | Discovery projection anchored to audible recommendation; non-interrupting toggles and shared preparation ownership | active | DiscoverMode, queue/backend, and failed-preview ownership tests passed; cumulative review pending | pending |
-| 3 | Integration, canonical docs, cumulative validation, live interaction | pending | `npm run verify`; `cargo test --manifest-path src-tauri/Cargo.toml`; `npm run build`; dev app smoke | pending |
+| 1 | Deterministic, retryable, process-tree-safe preview helper path | complete | Preview worker no-output/403/cancellation tests, helper argv checks, and cumulative Rust suite passed | `3a1441e1` |
+| 2 | Discovery projection anchored to audible recommendation; non-interrupting toggles, shared preparation ownership, and race-safe queue handoff | complete | Focused handoff/playback/ownership tests passed; cumulative Rust suite passed (222 passed, 5 ignored) | pending |
+| 3 | Integration, canonical docs, cumulative validation, live interaction | active | Node 22 `npm run verify` and `npm run build` passed; dev runtime launched. Live recommendation playback is not yet verified. | pending |
 
 ## Validation plan
 

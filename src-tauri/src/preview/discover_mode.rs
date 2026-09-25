@@ -35,6 +35,8 @@ pub struct DiscoverMode {
     failed: Vec<TrackId>,
     queued: Vec<TrackId>,
     cursor: usize,
+    current_recommendation: Option<TrackId>,
+    pending_focus: Option<TrackId>,
     discover: bool,
     active: bool,
     /// One actionable preparation-failure error per session (the pipeline can
@@ -49,9 +51,31 @@ impl DiscoverMode {
         physical_index: usize,
         recommendations: Vec<TrackId>,
     ) -> Option<Self> {
+        Self::new_anchored(generation, physical_queue, physical_index, recommendations, None, None)
+    }
+
+    /// Creates a projection around the audible recommendation, or carries a
+    /// tapped recommendation that is still preparing into Discover ownership.
+    pub fn new_anchored(
+        generation: u64,
+        physical_queue: Vec<TrackId>,
+        physical_index: usize,
+        recommendations: Vec<TrackId>,
+        current_recommendation: Option<&TrackId>,
+        pending_focus: Option<&TrackId>,
+    ) -> Option<Self> {
         if physical_queue.is_empty() || physical_index >= physical_queue.len() {
             return None;
         }
+        let current_recommendation = current_recommendation
+            .filter(|id| recommendations.contains(id))
+            .cloned();
+        let pending_focus = pending_focus
+            .filter(|id| recommendations.contains(id) && current_recommendation.is_none())
+            .cloned();
+        let cursor = current_recommendation.as_ref().or(pending_focus.as_ref())
+            .and_then(|id| recommendations.iter().position(|item| item == id))
+            .unwrap_or(0);
         Some(Self {
             generation,
             physical_queue,
@@ -60,7 +84,9 @@ impl DiscoverMode {
             assets: HashMap::new(),
             failed: Vec::new(),
             queued: Vec::new(),
-            cursor: 0,
+            cursor,
+            current_recommendation,
+            pending_focus,
             discover: false,
             active: false,
             failure_reported: false,
@@ -99,11 +125,21 @@ impl DiscoverMode {
     pub fn physical_queue(&self) -> &[TrackId] {
         &self.physical_queue
     }
+    pub fn current_recommendation(&self) -> Option<&TrackId> {
+        self.current_recommendation.as_ref()
+    }
+    pub fn pending_focus(&self) -> Option<&TrackId> {
+        self.pending_focus.as_ref()
+    }
 
     /// The visible queue projection and its playback position, used by the
     /// wiring layer to apply adoption and restoration to the playback queue.
     pub fn projected(&self) -> (Vec<TrackId>, usize) {
-        (self.projected_queue(), self.physical_index)
+        let queue = self.projected_queue();
+        let index = self.current_recommendation.as_ref()
+            .and_then(|id| queue.iter().position(|candidate| candidate == id))
+            .unwrap_or(self.physical_index);
+        (queue, index)
     }
 
     /// A ready completion is retained for adoption; stale completions cannot
@@ -118,7 +154,7 @@ impl DiscoverMode {
             .recommendations
             .iter()
             .position(|id| id == &asset.id)
-            .is_some_and(|position| position < self.cursor.saturating_add(ROLLING_WINDOW));
+            .is_some_and(|position| position >= self.cursor && position < self.cursor.saturating_add(ROLLING_WINDOW));
         if self.active && self.discover && in_window && !self.queued.contains(&asset.id) {
             self.queued.push(asset.id.clone());
             self.sort_queued();
@@ -135,6 +171,8 @@ impl DiscoverMode {
         }
         self.assets.remove(id);
         if !self.failed.contains(id) { self.failed.push(id.clone()); }
+        if self.pending_focus.as_ref() == Some(id) { self.pending_focus = None; }
+        if self.current_recommendation.as_ref() == Some(id) { self.current_recommendation = None; }
         self.queued.retain(|queued| queued != id);
         self.queue_action()
     }
@@ -159,8 +197,13 @@ impl DiscoverMode {
         }
         self.active = true;
         self.discover = true;
-        self.cursor = 0;
+        self.cursor = self.current_recommendation.as_ref().or(self.pending_focus.as_ref())
+            .and_then(|id| self.recommendations.iter().position(|candidate| candidate == id))
+            .unwrap_or(0);
         self.failure_reported = false;
+        if self.current_recommendation.is_some() || self.pending_focus.is_some() {
+            self.adopt_through(self.cursor);
+        }
         self.adopt_window();
         self.queue_action()
     }
@@ -195,6 +238,8 @@ impl DiscoverMode {
             return DiscoverAction::Noop;
         }
         if let Some(position) = self.recommendations.iter().position(|id| id == current) {
+            self.current_recommendation = Some(current.clone());
+            self.pending_focus = None;
             self.cursor = position.saturating_add(1);
         }
         self.adopt_window();
@@ -215,7 +260,7 @@ impl DiscoverMode {
     /// A natural handoff or queue replacement ends Discover without mutating
     /// a queue owned by somebody else.
     pub fn handoff(&mut self, queue: &[TrackId]) -> DiscoverAction {
-        if queue != self.projected_queue().as_slice() && queue != self.physical_queue.as_slice() {
+        if !self.owns_projection(queue) {
             self.active = false;
             self.discover = false;
             self.queued.clear();
@@ -226,6 +271,37 @@ impl DiscoverMode {
             queue: self.physical_queue.clone(),
             index: self.physical_index,
         }
+    }
+
+    /// Async preparation can update the projection between a UI selection and
+    /// the playback start that follows it. Accept an older snapshot of this
+    /// session's projection during that handoff, while still rejecting queues
+    /// with reordered recommendations or unrelated tracks.
+    fn owns_projection(&self, queue: &[TrackId]) -> bool {
+        if queue == self.projected_queue() || queue == self.physical_queue {
+            return true;
+        }
+        let prefix = &self.physical_queue[..=self.physical_index];
+        let suffix = &self.physical_queue[self.physical_index + 1..];
+        if queue.len() < prefix.len() + suffix.len()
+            || !queue.starts_with(prefix)
+            || !queue.ends_with(suffix)
+        {
+            return false;
+        }
+        let middle_end = queue.len() - suffix.len();
+        let recommendations = &queue[prefix.len()..middle_end];
+        let mut previous = None;
+        for id in recommendations {
+            let Some(position) = self.recommendations.iter().position(|item| item == id) else {
+                return false;
+            };
+            if previous.is_some_and(|previous| position <= previous) {
+                return false;
+            }
+            previous = Some(position);
+        }
+        true
     }
 
     pub fn cancel(&mut self, generation: u64) -> DiscoverAction {
@@ -278,10 +354,20 @@ impl DiscoverMode {
             .sort_by_key(|id| positions.get(id).copied().unwrap_or(usize::MAX));
     }
     fn queue_action(&self) -> DiscoverAction {
+        let (queue, index) = self.projected();
         DiscoverAction::QueueChanged {
-            queue: self.projected_queue(),
-            index: self.physical_index,
+            queue,
+            index,
         }
+    }
+
+    fn adopt_through(&mut self, position: usize) {
+        for id in self.recommendations.iter().take(position.saturating_add(1)) {
+            if !self.failed.contains(id) && !self.queued.contains(id) {
+                self.queued.push(id.clone());
+            }
+        }
+        self.sort_queued();
     }
 }
 
@@ -306,6 +392,83 @@ mod tests {
             mode.projected_queue(),
             vec![id("seed"), id("r0"), id("r1"), id("r2"), id("next")]
         );
+    }
+
+    #[test]
+    fn enabled_projection_anchors_next_and_previous_at_the_audible_recommendation() {
+        let physical = vec![id("physical-before"), id("seed"), id("physical-after")];
+        let recs: Vec<_> = (0..7).map(|n| id(&format!("r{n}"))).collect();
+        let mut mode = DiscoverMode::new_anchored(
+            2,
+            physical.clone(),
+            1,
+            recs.clone(),
+            Some(&recs[2]),
+            None,
+        ).unwrap();
+        mode.enable();
+        let (queue, index) = mode.projected();
+        assert_eq!(queue, vec![
+            id("physical-before"), id("seed"), id("r0"), id("r1"), id("r2"),
+            id("r3"), id("r4"), id("r5"), id("r6"), id("physical-after"),
+        ]);
+        assert_eq!(queue[index], id("r2"), "the queue cursor must match the audible recommendation");
+        assert_eq!(mode.preparation_window(), &recs[2..7]);
+        assert!(matches!(mode.advance(&id("r2")), DiscoverAction::Prepare { id } if id == recs[3]));
+        assert!(matches!(mode.advance(&id("r3")), DiscoverAction::Prepare { id } if id == recs[4]));
+        let (queue, index) = mode.projected();
+        assert_eq!(queue[index], id("r3"), "window growth must keep the audible item selected");
+        assert_eq!(mode.disable(3), DiscoverAction::Restore { queue: physical, index: 1 });
+    }
+
+    #[test]
+    fn pending_tap_keeps_the_seed_current_until_preview_audio_starts() {
+        let recs: Vec<_> = (0..7).map(|n| id(&format!("r{n}"))).collect();
+        let mut mode = DiscoverMode::new_anchored(
+            4,
+            vec![id("seed"), id("next")],
+            0,
+            recs.clone(),
+            None,
+            Some(&recs[3]),
+        ).unwrap();
+        mode.enable();
+        assert_eq!(mode.pending_focus(), Some(&recs[3]));
+        assert_eq!(&mode.preparation_window()[..], &recs[3..]);
+        let (queue, index) = mode.projected();
+        assert_eq!(queue[index], id("seed"), "a policy toggle must not relabel the song still playing");
+        assert_eq!(mode.ready_asset(4, ReadyAsset { id: recs[3].clone(), path: "r3.aac".into() }), DiscoverAction::Noop);
+        assert_eq!(mode.current_recommendation(), None, "preparation completion alone does not claim preview audio started");
+        assert!(matches!(mode.advance(&recs[3]), DiscoverAction::Prepare { .. }));
+        let (queue, index) = mode.projected();
+        assert_eq!(queue[index], recs[3], "the started tapped item becomes the discovery cursor");
+    }
+
+    #[test]
+    fn handoff_accepts_a_stale_snapshot_of_its_own_projection() {
+        let recs = vec![id("r0"), id("r1"), id("r2")];
+        let physical = vec![id("before"), id("seed"), id("after")];
+        let mut mode = DiscoverMode::new(5, physical.clone(), 1, recs.clone()).unwrap();
+        mode.enable();
+        let selected_queue = mode.projected_queue();
+
+        // A terminal failure can remove an id asynchronously after the UI
+        // selected it but before playback reports that its audio started.
+        mode.failed_asset(5, &recs[0]);
+        assert!(matches!(
+            mode.handoff(&selected_queue),
+            DiscoverAction::Restore { queue, index } if queue == physical && index == 1
+        ));
+        assert!(mode.is_active(), "a stale projection is still owned by Discover");
+    }
+
+    #[test]
+    fn handoff_still_ends_for_an_unrelated_or_reordered_queue() {
+        let recs = vec![id("r0"), id("r1")];
+        let mut mode = DiscoverMode::new(6, vec![id("seed"), id("next")], 0, recs).unwrap();
+        mode.enable();
+        assert_eq!(mode.handoff(&[id("seed"), id("r1"), id("r0"), id("next")]), DiscoverAction::Noop);
+        assert!(!mode.is_active());
     }
 
     #[test]

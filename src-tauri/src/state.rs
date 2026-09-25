@@ -101,6 +101,170 @@ mod tests {
     }
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[derive(Clone, Default)]
+    struct PlaybackProbe(Arc<Mutex<PlaybackProbeState>>);
+
+    #[cfg(target_os = "macos")]
+    #[derive(Default)]
+    struct PlaybackProbeState {
+        path: Option<PathBuf>,
+        position: Duration,
+        loads: usize,
+        stops: usize,
+        playing: bool,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl PlaybackProbe {
+        fn snapshot(&self) -> (Option<PathBuf>, Duration, usize, usize, bool) {
+            let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            (state.path.clone(), state.position, state.loads, state.stops, state.playing)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl AudioBackend for PlaybackProbe {
+        fn load(&mut self, path: &Path) -> Result<crate::playback::backend::TrackInfo, BackendError> {
+            let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            state.path = Some(path.to_path_buf());
+            state.position = Duration::ZERO;
+            state.loads += 1;
+            state.playing = false;
+            Ok(crate::playback::backend::TrackInfo {
+                path: path.to_path_buf(),
+                duration: Some(Duration::from_secs(120)),
+                format: crate::playback::backend::OutputFormat::default(),
+            })
+        }
+        fn play(&mut self) -> Result<(), BackendError> {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).playing = true;
+            Ok(())
+        }
+        fn pause(&mut self) -> Result<(), BackendError> {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).playing = false;
+            Ok(())
+        }
+        fn seek(&mut self, position: Duration) -> Result<(), BackendError> {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).position = position;
+            Ok(())
+        }
+        fn position(&self) -> Result<Duration, BackendError> {
+            Ok(self.0.lock().unwrap_or_else(|e| e.into_inner()).position)
+        }
+        fn duration(&self) -> Result<Option<Duration>, BackendError> {
+            Ok(Some(Duration::from_secs(120)))
+        }
+        fn stop(&mut self) {
+            let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            state.stops += 1;
+            state.playing = false;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn wait_for_current_track(state: &AppState, track_id: &TrackId) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            let current = state.current_track.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let playing = *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) == crate::contracts::types::PlaybackStatus::Playing;
+            if current.as_ref() == Some(track_id) && playing { return; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out waiting for {track_id:?} to start");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn discovery_toggle_preserves_preview_audio_and_switches_next_previous_policy() {
+        let root = unique_home("discover-policy");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let store = PreviewAssetStore::at(root.join("previews")).unwrap();
+        let state = AppState::with_preview_store(store, 8);
+        let seeds: Vec<PreviewSeed> = (0..5)
+            .map(|index| PreviewSeed { artist: "Fixture Artist".into(), title: format!("Recommendation {index}") })
+            .collect();
+        let ids = AppState::preview_ids(&seeds).unwrap();
+        let preview_paths: Vec<_> = ids.iter().map(|id| {
+            let path = state.preview_store.lock().unwrap_or_else(|e| e.into_inner()).ready_path(&id.0).unwrap();
+            std::fs::write(&path, b"ID3 fixture recommendation audio").unwrap();
+            path
+        }).collect();
+        let seed = TrackId::new("physical-seed").unwrap();
+        let next = TrackId::new("physical-next").unwrap();
+        let physical = vec![seed.clone(), next.clone()];
+        state.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(physical.clone(), 0);
+        let seed_path = root.join("seed.m4a");
+        let next_path = root.join("next.m4a");
+        std::fs::write(&seed_path, b"fixture").unwrap();
+        std::fs::write(&next_path, b"fixture").unwrap();
+        state.track_paths.lock().unwrap_or_else(|e| e.into_inner()).extend([
+            (seed.clone(), seed_path.clone()),
+            (next.clone(), next_path),
+        ]);
+
+        let probe = PlaybackProbe::default();
+        let mut backend = probe.clone();
+        backend.load(&seed_path).unwrap();
+        backend.seek(Duration::from_secs(7)).unwrap();
+        backend.play().unwrap();
+        *state.audio.lock().unwrap_or_else(|e| e.into_inner()) = Box::new(probe.clone());
+        *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(ids[2].clone());
+        *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Playing;
+        *state.clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlaybackClock::new(Some(Duration::from_secs(120))));
+        if let Some(clock) = state.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.start(7.0); }
+        let mut preview = PreviewSession::start(1, physical.clone(), 0, ids.clone(), &ids[2]).unwrap();
+        assert!(matches!(preview.prepared_asset(1, ids[2].clone(), preview_paths[2].clone()), SessionAction::Play(_)));
+        *state.preview_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(preview);
+
+        state.discover_enable(&seeds).expect("Discover should enable");
+        assert_eq!(state.playback.lock().unwrap_or_else(|e| e.into_inner()).current(), Some(&ids[2]));
+        assert!(state.preview_snapshot().is_some_and(|snapshot| snapshot.active));
+        assert_eq!(probe.snapshot(), (Some(seed_path), Duration::from_secs(7), 1, 0, true), "enabling Discovery must not reload or stop current output");
+
+        state.next_track().expect("Discovery Next should work");
+        wait_for_current_track(&state, &ids[3]);
+        state.previous_track().expect("Discovery Previous should work");
+        wait_for_current_track(&state, &ids[2]);
+        probe.0.lock().unwrap_or_else(|e| e.into_inner()).position = Duration::from_secs(9);
+        state.discover_disable().expect("Discovery should disable");
+        assert_eq!(state.playback.lock().unwrap_or_else(|e| e.into_inner()).queue(), physical.as_slice());
+        assert_eq!(state.playback.lock().unwrap_or_else(|e| e.into_inner()).current(), Some(&seed));
+        assert_eq!(state.current_track.lock().unwrap_or_else(|e| e.into_inner()).as_ref(), Some(&ids[2]));
+        assert!(state.preview_snapshot().is_some_and(|snapshot| snapshot.active), "the focused session remains available for physical-queue handoff");
+        assert_eq!(probe.snapshot().1, Duration::from_secs(9), "disabling Discovery must preserve the live playback position");
+        assert_eq!(probe.snapshot().3, 0, "a policy toggle must not stop the backend");
+        assert_eq!(probe.snapshot().2, 3, "a policy toggle must not reload the seed or recommendation");
+
+        state.next_track().expect("off-mode Next should use the physical queue");
+        wait_for_current_track(&state, &next);
+        assert_eq!(state.playback.lock().unwrap_or_else(|e| e.into_inner()).current(), Some(&next));
+        state.previous_track().expect("off-mode Previous should use the physical queue");
+        wait_for_current_track(&state, &seed);
+        assert_eq!(state.playback.lock().unwrap_or_else(|e| e.into_inner()).current(), Some(&seed));
+        state.tasks.cancel_all();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn discovery_waits_only_for_live_preview_work_for_the_same_key() {
+        let physical = vec![TrackId::new("physical-seed").unwrap()];
+        let recommendations: Vec<_> = (0..6).map(|index| TrackId::new(format!("recommendation-{index}")).unwrap()).collect();
+        let mut session = PreviewSession::start_prefetch(7, physical, 0, recommendations.clone()).unwrap();
+        assert!(AppState::preview_session_owns_discover_work(&session, &[], &recommendations[0]));
+        assert!(!AppState::preview_session_owns_discover_work(&session, &[], &recommendations[5]));
+        assert!(AppState::preview_session_owns_discover_work(
+            &session,
+            &["preview-7-recommendation-5".into()],
+            &recommendations[5],
+        ), "an already-raised helper remains the preview session's work after its window moves");
+
+        session.failed_asset(7, &recommendations[0]);
+        assert!(!AppState::preview_session_owns_discover_work(&session, &[], &recommendations[0]));
+        assert!(AppState::preview_session_owns_discover_work(&session, &[], &recommendations[1]));
+    }
+
     /// Ownership guard truth table for staging-worker completion (2026-08-24
     /// night): a finishing worker may publish only into an empty slot, its
     /// OWN placeholder, or a slot nothing newer claimed. Overwriting a newer
@@ -3415,10 +3579,12 @@ impl AppState {
                     match rx.recv_timeout(Duration::from_millis(250)) {
                         Ok(PreviewCompletion::Prepared { key, path }) => {
                             state.finish_preview_task(generation, &key);
+                            let discover_path = path.clone();
                             let action = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.prepared_asset(generation, TrackId(key.clone()), path)).unwrap_or(SessionAction::Ended);
                             state.publish_preview_snapshot(generation);
                             state.handle_session_action(action, generation);
                             state.ensure_window_prepared(generation);
+                            state.adopt_preview_asset_for_discover(&key, discover_path);
                             // The initial prefetch pass already owns the whole
                             // recommendation window. Re-kicking it after every
                             // serialized audio completion would cancel whichever
@@ -3448,6 +3614,7 @@ impl AppState {
                             state.publish_preview_snapshot(generation);
                             state.handle_session_action(action, generation);
                             state.ensure_window_prepared(generation);
+                            state.mark_preview_asset_failed_in_discover(&key, &error);
                             let prefetch_active = session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_active() && s.is_prefetch());
                             if !prefetch_active { state.kick_video_pipeline(); }
                         }
@@ -3623,6 +3790,7 @@ impl AppState {
             *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(key.clone());
             *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Playing;
             state.record_recent(key.clone());
+            state.discover_track_started(&key);
             // Publish immediately so the footer leaves its stale library
             // position instead of sticking, then heartbeat the preview
             // position the same way library playback does.
@@ -3832,9 +4000,13 @@ impl AppState {
     fn cancel_preview_tasks(&self) {
         let keys: Vec<String> = self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
         for key in keys { self.tasks.cancel_key(&key); }
-        // Bump the store generation so in-flight publishes cannot land
-        // after a handoff or a fresh session.
-        self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).begin_generation();
+        // The store generation is shared across focused preview and Discover.
+        // Invalidating it while Discover owns active work would stale those
+        // unrelated assets; task tokens already fence canceled preview jobs.
+        let discover_active = self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|mode| mode.is_active());
+        if !discover_active {
+            self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).begin_generation();
+        }
     }
 
     fn preview_snapshot(&self) -> Option<PreviewSnapshot> {
@@ -3951,11 +4123,30 @@ impl AppState {
         if active {
             return self.discover_snapshot_value();
         }
-        self.handoff_preview_to_discover();
+        let audible = self.current_track.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let current_recommendation = audible.as_ref().filter(|id| ids.contains(id)).cloned();
+        let pending_focus = if current_recommendation.is_none() {
+            self.preview_session
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .filter(|session| session.is_active() && !session.is_prefetch())
+                .and_then(|session| session.current().or_else(|| session.window().first()).cloned())
+                .filter(|id| ids.contains(id))
+        } else {
+            None
+        };
         *self.discover_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.to_vec();
         self.cancel_discover_tasks();
         let generation = self.next_generation().0;
-        let mut mode = DiscoverMode::new(generation, queue.clone(), index, ids.clone())
+        let mut mode = DiscoverMode::new_anchored(
+            generation,
+            queue.clone(),
+            index,
+            ids.clone(),
+            current_recommendation.as_ref(),
+            pending_focus.as_ref(),
+        )
             .ok_or_else(|| ContractError::invalid("discover session could not start"))?;
         let ready: Vec<ReadyAsset> = {
             let store = self.preview_store.lock().unwrap_or_else(|e| e.into_inner());
@@ -3993,34 +4184,9 @@ impl AppState {
             // a new song deterministic.
             return self.discover_snapshot_value();
         }
-        // Only a RECOMMENDATION must be torn down. If the user never left the
-        // seed, the sounding track is still the library current and disabling
-        // must leave it playing untouched (restarting it from 0:00 was a
-        // needless interruption). Resolve the audible id before the restore
-        // overwrites the queue.
-        let sounding_recommendation = {
-            let current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned();
-            current.is_some_and(|id| {
-                self.discover
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .as_ref()
-                    .is_some_and(|mode| mode.recommendations().contains(&id))
-            })
-        };
-        let was_playing = sounding_recommendation
-            && *self.playback_status.lock().unwrap_or_else(|e| e.into_inner())
-                == crate::contracts::types::PlaybackStatus::Playing;
-        if was_playing {
-            if let Ok(mut backend) = self.audio.lock() {
-                let _ = backend.stop();
-            }
-        }
+        // Discovery changes queue policy only. Restoring the physical queue
+        // must not reload the seed while a recommendation is still sounding.
         self.end_discover(true);
-        #[cfg(target_os = "macos")]
-        if was_playing {
-            let _ = self.start_current_track();
-        }
         self.discover_snapshot_value()
     }
 
@@ -4149,48 +4315,6 @@ impl AppState {
         self.publish_discover_snapshot(generation);
     }
 
-    /// Ends a focused/prefetch preview session when discover mode takes over.
-    /// The two temporary-queue mechanisms must not both drive the asset store
-    /// and output; the queue itself is left for discover to replace with its
-    /// projection.
-    fn handoff_preview_to_discover(&self) {
-        let (active, is_prefetch) = {
-            let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
-            match session.as_ref() {
-                Some(session) if session.is_active() => (true, session.is_prefetch()),
-                _ => (false, true),
-            }
-        };
-        if !active {
-            return;
-        }
-        let was_playing = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner())
-            == crate::contracts::types::PlaybackStatus::Playing;
-        self.tasks.cancel_key("playback-heartbeat");
-        self.tasks.cancel_key("preview-heartbeat");
-        self.cancel_preview_tasks();
-        let generation = self.next_generation().0;
-        if let Some(session) = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            session.invalidate(generation);
-        }
-        self.publish_preview_snapshot(generation);
-        // A focused preview owns the output until invalidated. Stop it so the
-        // (still-audible) recommendation does not keep sounding while every
-        // surface names the library seed. A prefetch session never played.
-        if was_playing && !is_prefetch {
-            if let Ok(mut backend) = self.audio.lock() {
-                let _ = backend.stop();
-            }
-            if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-                clock.stop();
-            }
-            *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) =
-                crate::contracts::types::PlaybackStatus::Stopped;
-            *self.current_track.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            self.publish_queue_snapshot();
-        }
-    }
-
     /// Leaves discover mode for an explicit recommendation tap without
     /// deleting staged assets. The focused preview session can then adopt the
     /// files that were already downloaded by discover mode.
@@ -4203,11 +4327,18 @@ impl AppState {
     }
 
     fn apply_discover_action(&self, action: Option<DiscoverAction>) {
-        if let Some(DiscoverAction::QueueChanged { queue, index }
-        | DiscoverAction::Restore { queue, index }) = action
-        {
-            self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
-            self.publish_queue_snapshot();
+        match action {
+            Some(DiscoverAction::QueueChanged { queue, index }) => {
+                let current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned();
+                let index = current.as_ref().and_then(|id| queue.iter().position(|candidate| candidate == id)).unwrap_or(index);
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
+                self.publish_queue_snapshot();
+            }
+            Some(DiscoverAction::Restore { queue, index }) => {
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
+                self.publish_queue_snapshot();
+            }
+            _ => {}
         }
     }
 
@@ -4244,8 +4375,9 @@ impl AppState {
                                 },
                             )
                         });
-                        if let Some(DiscoverAction::Prepare { id }) = action {
-                            state.ensure_discover_prepared(generation, &id);
+                        match action {
+                            Some(DiscoverAction::Prepare { id }) => state.ensure_discover_prepared(generation, &id),
+                            _ => {}
                         }
                         state.discover_refill(generation);
                         state.discover_sync_queue();
@@ -4317,25 +4449,27 @@ impl AppState {
     /// is always rebuilt from the captured physical queue so restoration
     /// stays exact.
     fn discover_sync_queue(&self) {
+        let audible = self.current_track.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let changed = {
-            let mut discover = self.discover.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(mode) = discover.as_mut() else { return };
+            let discover = self.discover.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(mode) = discover.as_ref() else { return };
             let projected = mode.projected();
             let playback = self.playback.lock().unwrap_or_else(|e| e.into_inner());
             let live = playback.queue().to_vec();
             let live_index = playback.current_index();
             let live_current = playback.current().cloned();
             drop(playback);
-            if projected.0 != live {
-                // Readiness and rolling-window changes may rebuild the queue
-                // while playback is inside the recommendation block. Preserve
-                // the selected identity; falling back to the original physical
-                // index reset every Next/Previous transition to the seed.
-                let index = live_current
-                    .as_ref()
-                    .and_then(|current| projected.0.iter().position(|id| id == current))
-                    .or_else(|| live_index.map(|index| index.min(projected.0.len().saturating_sub(1))))
-                    .unwrap_or(projected.1);
+            // Readiness and rolling-window changes may rebuild the queue while
+            // playback is inside the recommendation block. Prefer the audible
+            // recommendation after a focused preview starts; otherwise keep
+            // the live queue item (which may be a physical playlist track).
+            let audible_is_current_recommendation = audible.as_ref()
+                .is_some_and(|audible| mode.current_recommendation() == Some(audible));
+            let current_identity = if audible_is_current_recommendation { audible.as_ref() } else { live_current.as_ref() };
+            let index = current_identity
+                .and_then(|current| projected.0.iter().position(|id| id == current))
+                .unwrap_or(projected.1);
+            if projected.0 != live || Some(index) != live_index {
                 self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(projected.0, index);
                 true
             } else {
@@ -4395,6 +4529,64 @@ impl AppState {
         }
     }
 
+    /// Preview preparation remains the single owner for its tapped/prefetch
+    /// window while Discovery is active. Mirror its terminal result into the
+    /// transport projection so the two modes share work instead of racing the
+    /// same asset through separate helpers.
+    fn adopt_preview_asset_for_discover(&self, key: &str, path: PathBuf) {
+        let Some(generation) = self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            .filter(|mode| mode.is_active())
+            .map(|mode| mode.generation()) else { return };
+        if let Ok(id) = TrackId::new(key) {
+            let action = self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|mode| {
+                mode.ready_asset(generation, ReadyAsset { id: id.clone(), path })
+            });
+            if let Some(action) = action {
+                self.apply_discover_action(Some(action));
+            }
+            self.discover_refill(generation);
+            self.discover_sync_queue();
+            self.publish_discover_snapshot(generation);
+            #[cfg(target_os = "macos")]
+            {
+                let is_current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current() == Some(&id);
+                let not_playing = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner())
+                    != crate::contracts::types::PlaybackStatus::Playing;
+                if is_current && not_playing { let _ = self.start_current_track(); }
+            }
+        }
+    }
+
+    fn mark_preview_asset_failed_in_discover(&self, key: &str, error: &str) {
+        let Some(generation) = self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            .filter(|mode| mode.is_active())
+            .map(|mode| mode.generation()) else { return };
+        let id = TrackId::new(key.to_owned()).unwrap_or_else(|_| TrackId(key.to_owned()));
+        let failed_was_current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current() == Some(&id);
+        let first = {
+            let mut discover = self.discover.lock().unwrap_or_else(|e| e.into_inner());
+            discover.as_mut().map(|mode| {
+                let first = mode.note_failure(generation, &id);
+                let _ = mode.failed_asset(generation, &id);
+                first
+            }).unwrap_or(false)
+        };
+        self.discover_sync_queue();
+        self.discover_refill(generation);
+        self.publish_discover_snapshot(generation);
+        #[cfg(target_os = "macos")]
+        if failed_was_current { let _ = self.start_current_track(); }
+        if first {
+            self.publish(self.event(self.next_generation(), Event::Error {
+                error: ContractError {
+                    code: ErrorCode::Unavailable,
+                    message: format!("Discovery could not prepare recommendations: {error}"),
+                    retryable: true,
+                },
+            }));
+        }
+    }
+
     fn ensure_discover_prepared(&self, generation: u64, key: &TrackId) {
         // Discover and focused preview share the same private asset store.
         // Adopt a published file before starting a second helper when a
@@ -4417,6 +4609,21 @@ impl AppState {
             self.apply_discover_action(Some(action));
             self.discover_sync_queue();
             self.publish_discover_snapshot(generation);
+            #[cfg(target_os = "macos")]
+            {
+                let is_current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current() == Some(key);
+                let not_playing = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner())
+                    != crate::contracts::types::PlaybackStatus::Playing;
+                if is_current && not_playing { let _ = self.start_current_track(); }
+            }
+            return;
+        }
+        let preview_owns_work = {
+            let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
+            let tasks = self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner());
+            session.as_ref().is_some_and(|session| Self::preview_session_owns_discover_work(session, &tasks, key))
+        };
+        if preview_owns_work {
             return;
         }
         let Some(query) = self.seed_for(&key.0) else { return };
@@ -4468,6 +4675,14 @@ impl AppState {
         }
     }
 
+    fn preview_session_owns_discover_work(session: &PreviewSession, tasks: &[String], key: &TrackId) -> bool {
+        if !session.is_active() || session.is_prepared(key) || session.unavailable().contains(key) {
+            return false;
+        }
+        let helper_key = format!("preview-{}-{}", session.generation(), key.0);
+        session.window().contains(key) || tasks.iter().any(|task| task == &helper_key)
+    }
+
     fn finish_discover_task(&self, generation: u64, key: &str) {
         let task_key = format!("discover-{generation}-{key}");
         self.discover_tasks.lock().unwrap_or_else(|e| e.into_inner()).retain(|task| task != &task_key);
@@ -4478,9 +4693,13 @@ impl AppState {
         for key in keys {
             self.tasks.cancel_key(&key);
         }
-        // Bump the store generation so in-flight preview publishes cannot
-        // land after the session ended.
-        self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).begin_generation();
+        // Preview and Discover share this store generation. Preserve preview
+        // workers across a queue-policy toggle; canceled Discover task tokens
+        // reject their own late completions.
+        let preview_active = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active());
+        if !preview_active {
+            self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).begin_generation();
+        }
         *self.discover_completions.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
