@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::preview::assets::{AssetError, PreviewAssetStore};
@@ -21,6 +21,44 @@ use crate::runtime::task_registry::CancellationToken;
 pub const PREVIEW_SAMPLE_RATE: u32 = 44100;
 pub const PREVIEW_CHANNELS: u32 = 2;
 pub const PREVIEW_BITRATE: &str = "192k";
+
+struct CancellationBridge {
+    cancelled: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
+    watcher: Option<JoinHandle<()>>,
+}
+
+impl CancellationBridge {
+    fn new(token: &CancellationToken) -> Result<Self, AssetError> {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        let token_watcher = token.clone();
+        let cancelled_watcher = cancelled.clone();
+        let done_watcher = done.clone();
+        let watcher = thread::Builder::new()
+            .name("luno-preview-cancellation".into())
+            .spawn(move || {
+                while !done_watcher.load(Ordering::Acquire) {
+                    if token_watcher.is_cancelled() {
+                        cancelled_watcher.store(true, Ordering::Release);
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+            })
+            .map_err(|error| AssetError::Failed(format!("preview cancellation watcher could not start: {error}")))?;
+        Ok(Self { cancelled, done, watcher: Some(watcher) })
+    }
+}
+
+impl Drop for CancellationBridge {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Release);
+        if let Some(watcher) = self.watcher.take() {
+            let _ = watcher.join();
+        }
+    }
+}
 
 /// A worker's terminal report to the session driver.
 #[derive(Debug)]
@@ -58,20 +96,8 @@ pub fn prepare_preview_with_progress(
     // any work is scheduled.  The bridge below only propagates cancellations
     // that arrive while a stage is already running.
     if token.is_cancelled() { return Err(AssetError::Cancelled); }
-    let bridge = Arc::new(AtomicBool::new(false));
-    let done = Arc::new(AtomicBool::new(false));
-    let token_watcher = token.clone();
-    let bridge_watcher = bridge.clone();
-    let done_watcher = done.clone();
-    thread::spawn(move || {
-        while !done_watcher.load(Ordering::Acquire) {
-            if token_watcher.is_cancelled() {
-                bridge_watcher.store(true, Ordering::Release);
-                break;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-    });
+    let cancellation = CancellationBridge::new(token)?;
+    let bridge = cancellation.cancelled.clone();
 
     let helper_owned = helper.to_path_buf();
     let ffmpeg_owned = ffmpeg.to_path_buf();
@@ -92,7 +118,6 @@ pub fn prepare_preview_with_progress(
         encode_adts(&ffmpeg_owned, &fetched_for_encode, writer, &bridge_in_encode)
     });
     let _ = fs::remove_file(&fetched);
-    done.store(true, Ordering::Release);
     publish
 }
 
@@ -137,6 +162,32 @@ fn parse_media_progress(line: &str) -> Option<MediaProgress> {
 fn media_percent(progress: MediaProgress) -> Option<u8> {
     let ratio = (u128::from(progress.downloaded_bytes) * 100) / u128::from(progress.total_bytes);
     Some(ratio.min(99) as u8).filter(|percent| *percent > 0)
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_watcher_is_joined_when_bridge_drops() {
+        let token = CancellationToken::new();
+        let bridge = CancellationBridge::new(&token).unwrap();
+        let done = bridge.done.clone();
+        drop(bridge);
+        assert!(done.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn cancellation_watcher_propagates_task_cancellation() {
+        let token = CancellationToken::new();
+        let bridge = CancellationBridge::new(&token).unwrap();
+        token.cancel();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !bridge.cancelled.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(bridge.cancelled.load(Ordering::Acquire));
+    }
 }
 
 /// Runs the download helper against the preview query with the same process

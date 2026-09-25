@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PlayerBar } from "../../components/PlayerBar";
 import { Queue, queueVirtualWindow } from "../../components/Queue";
-import { isMissingConfigurationError, Shell, videoFullscreenClass } from "../../app/Shell";
+import { isMissingConfigurationError, isRetryableRuntimeCommandError, Shell, videoFullscreenClass } from "../../app/Shell";
 import type { BackendProjection } from "../../state/backend_projection";
 
 const projectionTrack = { id: "t1", path: null, title: "Aurora", artist: "Gate Six", album: "Chaos 93", duration_ms: 3000, artwork_url: null, favorite: false, provider: null };
@@ -19,6 +19,15 @@ describe("Gate 6 player bar", () => {
     expect(isMissingConfigurationError(new Error(JSON.stringify(missingConfig)))).toBe(true);
     expect(isMissingConfigurationError({ code: "not_found", message: "library root is missing" })).toBe(false);
     expect(isMissingConfigurationError({ code: "invalid_request", message: "configuration is corrupt" })).toBe(false);
+  });
+
+  it("recognizes retryable command errors when scheduling automatic preview prefetch", () => {
+    const busy = { code: "busy", message: "preview preparation is waiting for background task capacity", retryable: true };
+    expect(isRetryableRuntimeCommandError(busy)).toBe(true);
+    expect(isRetryableRuntimeCommandError(JSON.stringify(busy))).toBe(true);
+    expect(isRetryableRuntimeCommandError(new Error(JSON.stringify(busy)))).toBe(true);
+    expect(isRetryableRuntimeCommandError({ ...busy, retryable: false })).toBe(false);
+    expect(isRetryableRuntimeCommandError(new Error("command failed"))).toBe(false);
   });
 
   it("uses an explicit shell state class for app fullscreen", () => {

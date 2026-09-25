@@ -73,6 +73,19 @@ export function isMissingConfigurationError(error: unknown): boolean {
   return contractError.code === "not_found" && contractError.message === "configuration is missing";
 }
 
+export function isRetryableRuntimeCommandError(error: unknown): boolean {
+  let details: unknown = error instanceof Error ? error.message : error;
+  if (typeof details === "string") {
+    try {
+      details = JSON.parse(details);
+    } catch {
+      return false;
+    }
+  }
+  return Boolean(details && typeof details === "object" && !Array.isArray(details)
+    && (details as Record<string, unknown>).retryable === true);
+}
+
 export function runBridgeCommand(command: Promise<unknown> | null | undefined, onError: (message: string) => void): void {
   if (command) void command.catch((error: unknown) => onError(normalizeRuntimeCommandError(error)));
 }
@@ -723,8 +736,13 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         if (cancelled) return;
         attempts += 1;
         // Playback snapshots and command workers can settle a few hundred ms
-        // apart when a track was just selected. Retry that transient window.
-        if (attempts < 5) retry = setTimeout(attempt, 500);
+        // apart when a track was just selected. Retry those initial races,
+        // then keep retrying explicit backend-busy responses with backoff so
+        // bounded task capacity cannot silently skip this seed's window.
+        if (attempts < 5 || isRetryableRuntimeCommandError(error)) {
+          const delay = attempts < 5 ? 500 : Math.min(30_000, 500 * (2 ** Math.min(attempts - 5, 6)));
+          retry = setTimeout(attempt, delay);
+        }
         else setCommandError(normalizeRuntimeCommandError(error));
       });
     };

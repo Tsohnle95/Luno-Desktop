@@ -35,7 +35,7 @@ impl TaskSpec {
 pub struct Cancelled;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpawnError { AtCapacity, ShuttingDown }
+pub enum SpawnError { AtCapacity, ShuttingDown, ThreadSpawnFailed }
 
 pub struct TaskHandle<T> { pub spec: TaskSpec, receiver: std::sync::mpsc::Receiver<T> }
 impl<T> TaskHandle<T> {
@@ -82,7 +82,7 @@ impl TaskRegistry {
                 }
                 let result = work(thread_token);
                 let _ = tx.send(result);
-            }).expect("failed to spawn runtime task");
+            }).map_err(|_| SpawnError::ThreadSpawnFailed)?;
             state.latest.insert(spec.key.clone(), id);
             state.entries.insert(id, Entry { spec: spec.clone(), token: token.clone(), join });
             started.store(true, Ordering::Release);

@@ -1598,6 +1598,14 @@ mod tests {
     }
 
     #[test]
+    fn preview_worker_panic_becomes_a_terminal_row_failure() {
+        let key = TrackId::new("recommendation").unwrap();
+        let completion = prepare_one_safely(&key, || panic!("simulated preview worker failure"));
+        assert!(matches!(completion, PreviewCompletion::Failed { key: failed, error }
+            if failed == "recommendation" && error.contains("panicked")));
+    }
+
+    #[test]
     fn shutdown_admission_barrier_is_active_before_requested_event() {
         let state = AppState::new(1);
         let observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3261,7 +3269,7 @@ impl AppState {
         self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         *self.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.to_vec();
         self.preview_cancelled.store(false, Ordering::Release);
-        self.spawn_preview_driver(generation);
+        self.spawn_preview_driver(generation)?;
         // Adopt cached files before publishing the entry snapshot. A ready
         // row must never flash back to "Finding a playable source" merely
         // because the user left and re-entered focused playback.
@@ -3318,7 +3326,7 @@ impl AppState {
         self.video_prefetch_cancel.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Release);
         *self.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.to_vec();
         self.preview_cancelled.store(false, Ordering::Release);
-        self.spawn_preview_driver(generation);
+        self.spawn_preview_driver(generation)?;
         self.adopt_existing_preview_window(generation);
         self.ensure_window_prepared(generation);
         // Audio preparation is serialized by the preview driver, while the
@@ -3390,7 +3398,7 @@ impl AppState {
 
     /// The session driver applies worker completions while the session is
     /// still current and publishes a snapshot after every transition.
-    fn spawn_preview_driver(&self, generation: u64) {
+    fn spawn_preview_driver(&self, generation: u64) -> Result<(), ContractError> {
         let (tx, rx) = std::sync::mpsc::channel::<PreviewCompletion>();
         *self.preview_completions.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
         let state = self.clone();
@@ -3399,56 +3407,98 @@ impl AppState {
         self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).push(key.clone());
         let spec = self.generation(key, Generation(generation));
         let submitted = self.submit(spec, move |task_token| {
-            while !state.is_closing() && !task_token.is_cancelled() {
-                let current = session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_active() && s.generation() == generation);
-                if !current { break; }
-                match rx.recv_timeout(Duration::from_millis(50)) {
-                    Ok(PreviewCompletion::Prepared { key, path }) => {
-                        state.finish_preview_task(generation, &key);
-                        let action = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.prepared_asset(generation, TrackId(key.clone()), path)).unwrap_or(SessionAction::Ended);
-                        state.publish_preview_snapshot(generation);
-                        state.handle_session_action(action, generation);
-                        state.ensure_window_prepared(generation);
-                        // The initial prefetch pass already owns the whole
-                        // recommendation window. Re-kicking it after every
-                        // serialized audio completion would cancel whichever
-                        // successor video is downloading and restart it from
-                        // the first item. Focused sessions still re-kick so a
-                        // tapped item can stage its audible overlay.
-                        let prefetch_active = session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_active() && s.is_prefetch());
-                        if !prefetch_active { state.kick_video_pipeline(); }
-                    }
-                    Ok(PreviewCompletion::Progress { key, percent }) => {
-                        if let Some(session) = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-                            session.set_progress(generation, TrackId(key), percent);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut disconnected = false;
+                while !state.is_closing() && !task_token.is_cancelled() {
+                    let current = session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_active() && s.generation() == generation);
+                    if !current { break; }
+                    match rx.recv_timeout(Duration::from_millis(250)) {
+                        Ok(PreviewCompletion::Prepared { key, path }) => {
+                            state.finish_preview_task(generation, &key);
+                            let action = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.prepared_asset(generation, TrackId(key.clone()), path)).unwrap_or(SessionAction::Ended);
+                            state.publish_preview_snapshot(generation);
+                            state.handle_session_action(action, generation);
+                            state.ensure_window_prepared(generation);
+                            // The initial prefetch pass already owns the whole
+                            // recommendation window. Re-kicking it after every
+                            // serialized audio completion would cancel whichever
+                            // successor video is downloading and restart it from
+                            // the first item. Focused sessions still re-kick so a
+                            // tapped item can stage its audible overlay.
+                            let prefetch_active = session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_active() && s.is_prefetch());
+                            if !prefetch_active { state.kick_video_pipeline(); }
                         }
-                        state.publish_preview_snapshot(generation);
+                        Ok(PreviewCompletion::Progress { key, percent }) => {
+                            if let Some(session) = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                                session.set_progress(generation, TrackId(key), percent);
+                            }
+                            state.publish_preview_snapshot(generation);
+                        }
+                        Ok(PreviewCompletion::Failed { key, error }) => {
+                            state.finish_preview_task(generation, &key);
+                            eprintln!("[luno-preview] preparation failed for {key}: {error}");
+                            let id = TrackId::new(key.clone()).unwrap_or_else(|_| TrackId(key.clone()));
+                            let action = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &id)).unwrap_or(SessionAction::Ended);
+                            // Per-row truth: the preview snapshot's `unavailable`
+                            // list drives "Preview unavailable" on the exact row.
+                            // A global error event added nothing and, because the
+                            // rolling prefetch retries every seed, it stacked an
+                            // undismissable banner on every failed recommendation
+                            // ("preview could not be prepared").
+                            state.publish_preview_snapshot(generation);
+                            state.handle_session_action(action, generation);
+                            state.ensure_window_prepared(generation);
+                            let prefetch_active = session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_active() && s.is_prefetch());
+                            if !prefetch_active { state.kick_video_pipeline(); }
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            // Task admission is bounded. If an item could not
+                            // start while the registry was full, retry after
+                            // other work has had time to release its slot.
+                            state.ensure_window_prepared(generation);
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        }
                     }
-                    Ok(PreviewCompletion::Failed { key, error }) => {
-                        state.finish_preview_task(generation, &key);
-                        eprintln!("[luno-preview] preparation failed for {key}: {error}");
-                        let id = TrackId::new(key.clone()).unwrap_or_else(|_| TrackId(key.clone()));
-                        let action = session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &id)).unwrap_or(SessionAction::Ended);
-                        // Per-row truth: the preview snapshot's `unavailable`
-                        // list drives "Preview unavailable" on the exact row.
-                        // A global error event added nothing and, because the
-                        // rolling prefetch retries every seed, it stacked an
-                        // undismissable banner on every failed recommendation
-                        // ("preview could not be prepared").
-                        state.publish_preview_snapshot(generation);
-                        state.handle_session_action(action, generation);
-                        state.ensure_window_prepared(generation);
-                        let prefetch_active = session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_active() && s.is_prefetch());
-                        if !prefetch_active { state.kick_video_pipeline(); }
-                    }
-                    Err(_) => {}
                 }
+                disconnected
+            }));
+            if !state.is_closing() && !matches!(outcome, Ok(false)) {
+                state.stop_preview_driver(generation, true);
             }
         });
-        if submitted.is_err() {
+        if let Err(error) = submitted {
             self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).retain(|task| task != &format!("preview-driver-{generation}"));
-            self.publish_preview_snapshot(generation);
+            *self.preview_completions.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            self.stop_preview_driver(generation, false);
+            return Err(match error {
+                SpawnError::AtCapacity => ContractError { code: ErrorCode::Busy, message: "preview preparation is waiting for background task capacity".into(), retryable: true },
+                SpawnError::ShuttingDown => ContractError { code: ErrorCode::ShuttingDown, message: "backend is shutting down".into(), retryable: false },
+                SpawnError::ThreadSpawnFailed => ContractError { code: ErrorCode::Internal, message: "preview completion driver could not start".into(), retryable: true },
+            });
         }
+        Ok(())
+    }
+
+    fn stop_preview_driver(&self, generation: u64, mark_pending_unavailable: bool) {
+        let stopped = {
+            let mut session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
+            session.as_mut().and_then(|session| {
+                if !session.is_active() || session.generation() != generation { return None; }
+                let prefetch = session.is_prefetch();
+                if mark_pending_unavailable { session.fail_pending(generation); }
+                let handoff = session.invalidate(self.next_generation().0);
+                Some((session.generation(), !prefetch, handoff))
+            })
+        };
+        let Some((snapshot_generation, restore_audio, handoff)) = stopped else { return };
+        self.preview_cancelled.store(true, Ordering::Release);
+        *self.preview_completions.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.cancel_preview_tasks();
+        if restore_audio { self.restore_preview_queue(handoff.queue, handoff.index); }
+        self.publish_preview_snapshot(snapshot_generation);
     }
 
     fn finish_preview_task(&self, generation: u64, key: &str) {
@@ -3464,8 +3514,10 @@ impl AppState {
                 }
             }
             SessionAction::Wait(key) => {
-                let prepared = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_prepared(&key));
-                if !prepared { self.ensure_prepared(generation, &key); }
+                let (prepared, unavailable) = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                    .map(|session| (session.is_prepared(&key), session.unavailable().contains(&key)))
+                    .unwrap_or((false, false));
+                if !prepared && !unavailable { self.ensure_prepared(generation, &key); }
             }
             SessionAction::LeaveToNext { queue, index } => {
                 self.tasks.cancel_key("preview-heartbeat");
@@ -3621,16 +3673,21 @@ impl AppState {
     fn ensure_window_prepared(&self, generation: u64) {
         let keys = {
             let session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
-            session.as_ref().filter(|s| s.is_active()).map(|s| s.window().to_vec()).unwrap_or_default()
+            session.as_ref().filter(|s| s.is_active() && s.generation() == generation).map(|s| s.window().to_vec()).unwrap_or_default()
         };
         let raised = self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).clone();
         for key in keys {
-            let prepared = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_prepared(&key));
+            let (prepared, unavailable) = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                .map(|s| (s.is_prepared(&key), s.unavailable().contains(&key)))
+                .unwrap_or((false, false));
             let task_key = format!("preview-{generation}-{}", key.0);
-            if !prepared && !raised.iter().any(|task| task == &task_key) {
+            if !prepared && !unavailable && !raised.iter().any(|task| task == &task_key) {
                 // One yt-dlp helper at a time. Launching the whole six-item
                 // window concurrently exhausted the bundled executable and
                 // made the tapped item lose the race to its own prefetches.
+                // Failed rows stay terminal until explicit selection retries
+                // them; otherwise the first unavailable key starves its five
+                // successors in this ordered window.
                 self.ensure_prepared(generation, &key);
                 break;
             }
@@ -3705,7 +3762,9 @@ impl AppState {
             let progress_sender = sender.clone();
             let progress_key = key_for_task.0.clone();
             let progress = std::sync::Arc::new(move |percent| { if let Some(sender) = &progress_sender { let _ = sender.send(PreviewCompletion::Progress { key: progress_key.clone(), percent }); } });
-            let completion = prepare_one(&store, store_generation, &key_for_task, &query, &helper, &ffmpeg, &task_token, progress);
+            let completion = prepare_one_safely(&key_for_task, || {
+                prepare_one(&store, store_generation, &key_for_task, &query, &helper, &ffmpeg, &task_token, progress)
+            });
             if let Some(sender) = sender {
                 let current = state
                     .tasks
@@ -3713,13 +3772,28 @@ impl AppState {
                 if current { let _ = sender.send(completion); }
             }
         });
-        if submitted.is_err() {
-            self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).retain(|task| task != &task_key);
-            if let Some(sender) = self.preview_completions.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-                let _ = sender.send(PreviewCompletion::Failed { key: key.0.clone(), error: "preview task could not be scheduled".into() });
+        if let Err(error) = submitted {
+            self.finish_preview_task(generation, &key.0);
+            match error {
+                // Capacity pressure is transient, unlike a media-source
+                // failure. Leave the row pending; the driver retries it.
+                SpawnError::AtCapacity => {}
+                SpawnError::ShuttingDown => {}
+                SpawnError::ThreadSpawnFailed => {
+                    if let Some(sender) = self.preview_completions.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                        let _ = sender.send(PreviewCompletion::Failed { key: key.0.clone(), error: "preview task could not start".into() });
+                    }
+                }
             }
         }
     }
+}
+
+fn prepare_one_safely(key: &TrackId, work: impl FnOnce() -> PreviewCompletion) -> PreviewCompletion {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|_| PreviewCompletion::Failed {
+        key: key.0.clone(),
+        error: "recommendation preparation worker panicked".into(),
+    })
 }
 
 fn prepare_one(
@@ -5305,6 +5379,11 @@ impl AppState {
                         message: "backend is shutting down".into(),
                         retryable: false,
                     },
+                    SpawnError::ThreadSpawnFailed => ContractError {
+                        code: ErrorCode::Internal,
+                        message: "background task could not start".into(),
+                        retryable: true,
+                    },
                 })?;
                 Ok(serde_json::json!({ "generation": generation.0, "job_id": "library-scan" }))
             }
@@ -5962,6 +6041,7 @@ impl AppState {
         self.scan_async().map(|generation| generation.0).map_err(|error| match error {
             SpawnError::AtCapacity => ContractError { code: ErrorCode::Busy, message: "playlist changed, but the library refresh queue is full".into(), retryable: true },
             SpawnError::ShuttingDown => ContractError { code: ErrorCode::ShuttingDown, message: "backend is shutting down".into(), retryable: false },
+            SpawnError::ThreadSpawnFailed => ContractError { code: ErrorCode::Internal, message: "playlist changed, but the library refresh could not start".into(), retryable: true },
         })
     }
 
@@ -6085,6 +6165,7 @@ impl AppState {
         }).map_err(|error| match error {
             SpawnError::AtCapacity => ContractError { code: ErrorCode::Busy, message: "task capacity is full".into(), retryable: true },
             SpawnError::ShuttingDown => ContractError { code: ErrorCode::ShuttingDown, message: "backend is shutting down".into(), retryable: false },
+            SpawnError::ThreadSpawnFailed => ContractError { code: ErrorCode::Internal, message: "playlist sync worker could not start".into(), retryable: true },
         })?;
         Ok(serde_json::json!({ "job_id": job_id, "playlist": name }))
     }

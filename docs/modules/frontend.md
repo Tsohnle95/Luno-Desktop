@@ -50,6 +50,9 @@ envelope shapes (`docs/modules/contracts.md`).
 - Song recommendations follow the audible library seed so the first temporary
   window can prepare before the song page opens. Discover owns that work while
   enabled; otherwise the prefetch effect is idempotent for the current seed.
+  Retryable backend task-capacity errors keep retrying with backoff while that
+  seed remains current; an active preview projection always has a backend
+  completion driver.
 - The song page, player bar, queue, and video correlation follow the AUDIBLE
   track: during a focused preview or discover-mode recommendation the shell
   passes that recommendation as `nowPlaying` instead of the library track still

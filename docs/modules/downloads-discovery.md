@@ -92,10 +92,16 @@ What it does not own: library snapshots and promotion targets
   already published asset before starting another helper.
 - Each presentation mode has one active serialized preparation driver. A
   terminal success or failure releases its in-flight key, failed rows leave
-  the transport projection, and explicit selection retries them. Worker
+  the transport projection, and explicit selection retries them. The
+  automatic five-item window skips a failed row and continues to its
+  successors; it does not retry a failed row in a loop. Worker
   deadlines cancel the helper/encoder child; provider failures include a
-  bounded diagnostic tail instead of an opaque helper error. Plain metadata
-  queries go directly to the managed helper as `ytsearch1:` sources.
+  bounded diagnostic tail instead of an opaque helper error. An active
+  preview session is published only after its completion driver is admitted.
+  Per-item task-capacity pressure stays pending and is retried by that driver;
+  a driver panic closes the session and marks its unprepared window rows
+  unavailable. The cancellation watcher is joined on every worker exit. Plain
+  metadata queries go directly to the managed helper as `ytsearch1:` sources.
 - Preview percentages are computed from yt-dlp's machine-readable downloaded
   and exact/estimated total bytes. Helper startup, source resolution, zero-byte
   samples, and unknown totals remain indeterminate; transfer values stay
@@ -159,8 +165,9 @@ What it does not own: library snapshots and promotion targets
   behavior surfaced — never silent success, never an unreviewed download
   at build time.
 - Blocking network/process work runs off the UI thread through the task
-  registry (bounded slots) or `spawn_blocking`; cancellation and shutdown
-  drain are first-class.
+  registry (bounded slots) or `spawn_blocking`; capacity and thread-creation
+  failures are returned to the caller instead of panicking through task
+  admission; cancellation and shutdown drain are first-class.
 
 ## Core flows
 

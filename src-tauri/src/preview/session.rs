@@ -123,8 +123,9 @@ impl PreviewSession {
         SessionAction::Wait(id)
     }
 
-    /// A failed tapped item ends the session without changing physical
-    /// playback.  Later-item failures simply leave a preparation gap.
+    /// A failed focused tap ends playback without changing the physical queue.
+    /// Preparation-only sessions keep moving through their window after any
+    /// item fails, including the first one.
     pub fn failed_asset(&mut self, generation: u64, id: &TrackId) -> SessionAction {
         if !self.active || generation != self.generation { return SessionAction::Ended; }
         if !self.failed.contains(id) { self.failed.push(id.clone()); }
@@ -132,12 +133,27 @@ impl PreviewSession {
         // until a fresh byte report arrives. Do not reuse a failed attempt's
         // last numeric value for that new preparation.
         self.progress.remove(id);
-        if self.current.is_none() && self.recommendations.get(self.window_start) == Some(id) {
+        if self.auto_play && self.current.is_none() && self.recommendations.get(self.window_start) == Some(id) {
             self.active = false;
             return SessionAction::Ended;
         }
         self.paths.remove(id);
         SessionAction::Wait(id.clone())
+    }
+
+    /// Closes a session whose completion driver stopped unexpectedly. Assets
+    /// already published stay usable; every remaining item in this window is
+    /// made explicitly retryable instead of being left in a loading state.
+    pub fn fail_pending(&mut self, generation: u64) -> bool {
+        if !self.active || generation != self.generation { return false; }
+        for id in self.window().to_vec() {
+            if self.paths.contains_key(&id) { continue; }
+            if !self.failed.contains(&id) { self.failed.push(id.clone()); }
+            self.progress.remove(&id);
+        }
+        self.current = None;
+        self.active = false;
+        true
     }
 
     /// Advances to a prepared recommendation and extends the desired window.
@@ -205,5 +221,17 @@ mod tests {
 
         session.failed_asset(7, &recommendation);
         assert!(session.progress().is_empty(), "a retry must return to indeterminate preparation");
+    }
+
+    #[test]
+    fn lost_driver_marks_unprepared_window_items_retryable_and_stops_session() {
+        let physical = vec![TrackId::new("library-track").unwrap()];
+        let recommendations = (0..6).map(|n| TrackId::new(format!("rec-{n}")).unwrap()).collect::<Vec<_>>();
+        let mut session = PreviewSession::start_prefetch(7, physical, 0, recommendations.clone()).unwrap();
+
+        assert!(session.fail_pending(7));
+        assert!(!session.is_active());
+        assert_eq!(session.unavailable(), &recommendations[..AHEAD_WINDOW]);
+        assert!(!session.fail_pending(7), "a stale/repeated driver failure must be ignored");
     }
 }

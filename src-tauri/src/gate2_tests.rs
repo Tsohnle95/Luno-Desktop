@@ -742,6 +742,69 @@ fn preview_snapshots(state: &AppState) -> Vec<crate::contracts::types::PreviewSn
 }
 
 #[test]
+fn preview_prefetch_does_not_leave_an_active_session_when_driver_cannot_be_admitted() {
+    let state = isolated_preview_state("driver-capacity", 1);
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    state.submit(state.generation("capacity-holder", Generation(1)), move |token| {
+        let _ = started_tx.send(());
+        while !token.is_cancelled() && release_rx.try_recv().is_err() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }).expect("occupy the only task slot");
+    started_rx.recv_timeout(Duration::from_secs(1)).expect("capacity holder started");
+    let seed = TrackId("library-seed".into());
+    state.set_playing(seed.clone(), vec![seed]);
+
+    let error = state.dispatch(command("prefetch-driver-capacity", Command::PreviewPrefetch {
+        seeds: vec![preview_seed("Artist", "Track")],
+    })).expect_err("a full task registry must be retryable, not look like an active preview");
+    assert_eq!(error.code, crate::contracts::types::ErrorCode::Busy);
+    assert!(error.retryable);
+    let snapshot = preview_snapshots(&state).into_iter().last().expect("terminal snapshot is published");
+    assert!(!snapshot.active, "no active preview may exist without a completion driver: {snapshot:?}");
+
+    let _ = release_tx.send(());
+    let report = state.shutdown(Duration::from_secs(1));
+    assert!(!report.timed_out, "capacity holder must drain: {report:?}");
+    state.cleanup_previews();
+}
+
+#[test]
+fn preview_prefetch_retries_item_admission_after_task_capacity_frees() {
+    let (_toolchain, helper, ffmpeg) = fixture_preview_toolchain();
+    let state = isolated_preview_state("item-capacity-retry", 2);
+    state.set_preview_toolchain(Some(helper), Some(ffmpeg));
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    state.submit(state.generation("temporary-capacity-holder", Generation(1)), move |token| {
+        let _ = started_tx.send(());
+        while !token.is_cancelled() && release_rx.try_recv().is_err() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }).expect("occupy the remaining task slot");
+    started_rx.recv_timeout(Duration::from_secs(1)).expect("capacity holder started");
+    let seed = TrackId("library-seed".into());
+    state.set_playing(seed.clone(), vec![seed]);
+    let seeds: Vec<_> = (0..5).map(|n| preview_seed(&format!("Artist{n}"), &format!("Track{n}"))).collect();
+
+    let value = state.dispatch(command("prefetch-item-capacity", Command::PreviewPrefetch { seeds }))
+        .expect("the session driver has one available slot");
+    let initial: crate::contracts::types::PreviewSnapshot = serde_json::from_value(value).unwrap();
+    assert!(initial.active);
+    assert!(initial.prepared.is_empty());
+    assert!(initial.unavailable.is_empty(), "capacity pressure must not become a media failure");
+
+    let _ = release_tx.send(());
+    wait_until(10, "five recommendation previews after capacity release", || {
+        preview_snapshots(&state).iter().any(|snapshot| snapshot.active && snapshot.prepared.len() == 5)
+    }, || format!("{:#?}", preview_snapshots(&state)));
+    let report = state.shutdown(Duration::from_secs(1));
+    assert!(!report.timed_out, "preview workers must drain: {report:?}");
+    state.cleanup_previews();
+}
+
+#[test]
 fn preview_tap_requires_an_active_playback_queue() {
     let state = AppState::new(2);
     let result = state.dispatch(command(
@@ -866,6 +929,31 @@ fn preview_tap_without_toolchain_ends_the_session_truthfully() {
     let final_snapshot = preview_snapshots(&state).into_iter().last().expect("snapshots exist");
     assert!(!final_snapshot.active);
     assert!(final_snapshot.unavailable.iter().any(|key| key == "Artist-Track"), "tapped key must be reported unavailable: {final_snapshot:?}");
+    state.cleanup_previews();
+}
+
+#[test]
+fn preview_prefetch_marks_every_first_window_item_unavailable_when_media_cannot_start() {
+    let state = isolated_preview_state("unavailable-window", 16);
+    let seed = TrackId("library-seed".into());
+    state.set_playing(seed.clone(), vec![seed]);
+    let seeds: Vec<_> = (0..5).map(|n| preview_seed(&format!("Artist{n}"), &format!("Track{n}"))).collect();
+    state.dispatch(command("prefetch-unavailable-window", Command::PreviewPrefetch { seeds }))
+        .expect("prefetch reports session before media preparation");
+
+    wait_until(5, "unavailable recommendation window", || {
+        preview_snapshots(&state).iter().any(|snapshot| snapshot.active && snapshot.unavailable.len() == 5)
+    }, || format!("{:#?}", preview_snapshots(&state)));
+    let snapshot = preview_snapshots(&state).into_iter().last().expect("final preview snapshot");
+    assert!(snapshot.active, "a prefetch-only session remains available for explicit retry");
+    assert_eq!(snapshot.unavailable, (0..5).map(|n| format!("Artist{n}-Track{n}")).collect::<Vec<_>>());
+    let terminal_snapshot_count = preview_snapshots(&state).len();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(preview_snapshots(&state).len(), terminal_snapshot_count,
+        "terminal failures must not be retried automatically and starve later rows");
+
+    let report = state.shutdown(Duration::from_secs(1));
+    assert!(!report.timed_out, "preview driver must drain: {report:?}");
     state.cleanup_previews();
 }
 
