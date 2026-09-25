@@ -26,7 +26,17 @@ fi
 # truncated --ffmpeg-location plus a phantom source URL — yt-dlp then ran
 # without ffmpeg and every preview/download postprocessing step failed with
 # exit 1 ("preview download helper failed", 2026-09-09).
-set -- --no-playlist --newline --progress-delta 0.25
+# Ignore machine/user yt-dlp configuration. A configured download archive,
+# --simulate, or output path can otherwise return success without creating the
+# one output file this helper owns.
+set -- --ignore-config --no-playlist --newline --progress-delta 0.25
+# yt-dlp currently enables Deno by default. Enable Node when the app already
+# has it on PATH so YouTube's JavaScript challenges can be solved without
+# adding an unmanaged runtime dependency to the bundle.
+NODE_RUNTIME=$(command -v node 2>/dev/null || true)
+if [ -n "$NODE_RUNTIME" ]; then
+  set -- "$@" --js-runtimes "node:$NODE_RUNTIME"
+fi
 if [ "${LUNO_PREVIEW:-0}" = "1" ]; then
   # Preview progress is parsed from machine-readable byte counters. The
   # status field keeps source lookup and post-processing indeterminate, while

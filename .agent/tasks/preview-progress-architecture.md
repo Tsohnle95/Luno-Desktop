@@ -75,9 +75,11 @@ playlist while it is off.
 - **Can a projection rebuild reset Previous/Next?** Yes. Preserve the live track
   id when recalculating its index, with the audible recommendation placed
   between the captured physical prefix and suffix.
-- **Could both modes race for an in-flight download?** Yes. Invalidate and
-  cancel only preview preparation on enable, retain published assets, then let
-  Discovery adopt them. Do not leave two active preparation drivers.
+- **Could both modes race for an in-flight download?** Yes. Keep the
+  PreviewSession active as the single owner of its existing preparation window
+  and mirror its terminal results into Discover. Discover waits before starting
+  work for an id still inside that window, then prepares outside it. Preserve
+  the shared store generation while either mode has live workers.
 - **Will off mode accidentally autoplay recommendations?** It must invalidate
   Discover and restore the physical queue without stopping the overlay; the
   existing physical Next path handles keys and natural completion.
@@ -95,8 +97,8 @@ playlist while it is off.
 
 | Phase | Scope | Status | Validation | Commit |
 |---|---|---|---|---|
-| 1 | Deterministic, retryable, process-tree-safe preview helper path | active | helper argv/no-output/403/cancellation tests | pending |
-| 2 | Discovery projection anchored to audible recommendation; non-interrupting toggles | pending | DiscoverMode and state policy tests | pending |
+| 1 | Deterministic, retryable, process-tree-safe preview helper path | complete | Preview worker no-output/403/cancellation tests, helper argv checks, and cumulative Rust suite passed | pending |
+| 2 | Discovery projection anchored to audible recommendation; non-interrupting toggles and shared preparation ownership | active | DiscoverMode, queue/backend, and failed-preview ownership tests passed; cumulative review pending | pending |
 | 3 | Integration, canonical docs, cumulative validation, live interaction | pending | `npm run verify`; `cargo test --manifest-path src-tauri/Cargo.toml`; `npm run build`; dev app smoke | pending |
 
 ## Validation plan

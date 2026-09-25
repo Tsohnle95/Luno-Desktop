@@ -24,6 +24,7 @@ pub mod runtime {
     pub mod task_registry;
 }
 pub mod process {
+    pub mod child;
     pub mod executables;
     pub mod supervisor;
 }
@@ -93,4 +94,3 @@ mod gate4_tests;
 mod gate5_tests;
 #[cfg(test)]
 mod gate4_real_dl_test;
-

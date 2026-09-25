@@ -1,15 +1,15 @@
 use crate::runtime::task_registry::{CancellationToken, TaskRegistry};
+use crate::process::child::{isolate_process_group, terminate_process_tree};
+pub use crate::process::child::DEFAULT_KILL_GRACE;
 use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_OUTPUT_LIMIT: usize = 1024 * 1024;
-pub const DEFAULT_KILL_GRACE: Duration = Duration::from_millis(250);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopReason { Exited, Failed, TimedOut, Cancelled }
 
@@ -82,7 +82,7 @@ impl Supervisor {
 
 fn run_process(spec: &ProcessSpec, token: &CancellationToken, external: Option<&CancellationToken>) -> Result<ProcessOutput, SuperviseError> {
     let mut command = Command::new(&spec.program); command.args(&spec.args).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)] unsafe { use std::os::unix::process::CommandExt; command.pre_exec(|| { if libc::setpgid(0, 0) != 0 { return Err(io::Error::last_os_error()); } Ok(()) }); }
+    isolate_process_group(&mut command);
     let mut child = command.spawn().map_err(SuperviseError::Spawn)?;
     let stdout = child.stdout.take().ok_or_else(|| SuperviseError::Io(io::Error::other("stdout pipe unavailable")))?;
     let stderr = child.stderr.take().ok_or_else(|| SuperviseError::Io(io::Error::other("stderr pipe unavailable")))?;
@@ -90,17 +90,10 @@ fn run_process(spec: &ProcessSpec, token: &CancellationToken, external: Option<&
     let start = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? { let (o, ot) = out.join().map_err(|_| SuperviseError::OutputThread)??; let (e, et) = err.join().map_err(|_| SuperviseError::OutputThread)??; return Ok(ProcessOutput { status, stdout:o, stderr:e, truncated_stdout:ot, truncated_stderr:et, reason: if status.success() { StopReason::Exited } else { StopReason::Failed } }); }
-        if token.is_cancelled() || external.is_some_and(CancellationToken::is_cancelled) { terminate(&mut child, spec.kill_grace); let _ = out.join(); let _ = err.join(); return Err(SuperviseError::Cancelled); }
-        if start.elapsed() >= spec.deadline { terminate(&mut child, spec.kill_grace); let _ = out.join(); let _ = err.join(); return Err(SuperviseError::Timeout); }
+        if token.is_cancelled() || external.is_some_and(CancellationToken::is_cancelled) { terminate_process_tree(&mut child, spec.kill_grace); let _ = out.join(); let _ = err.join(); return Err(SuperviseError::Cancelled); }
+        if start.elapsed() >= spec.deadline { terminate_process_tree(&mut child, spec.kill_grace); let _ = out.join(); let _ = err.join(); return Err(SuperviseError::Timeout); }
         thread::sleep(Duration::from_millis(5));
     }
 }
 
 fn read_bounded(mut reader: impl Read, limit: usize) -> io::Result<(Vec<u8>, bool)> { let mut data = Vec::new(); let mut buf = [0u8; 8192]; let mut truncated = false; loop { let n = reader.read(&mut buf)?; if n == 0 { break; } let room = limit.saturating_sub(data.len()); if n > room { data.extend_from_slice(&buf[..room]); truncated = true; } else { data.extend_from_slice(&buf[..n]); } } Ok((data, truncated)) }
-
-fn terminate(child: &mut Child, grace: Duration) {
-    #[cfg(unix)] { let _ = Command::new("/bin/kill").arg("-TERM").arg(format!("-{}", child.id())).status(); }
-    let start = Instant::now(); while start.elapsed() < grace { if child.try_wait().ok().flatten().is_some() { return; } thread::sleep(Duration::from_millis(5)); }
-    #[cfg(unix)] { let _ = Command::new("/bin/kill").arg("-KILL").arg(format!("-{}", child.id())).status(); }
-    let _ = child.kill(); let _ = child.wait();
-}

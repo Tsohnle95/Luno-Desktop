@@ -16,6 +16,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::preview::assets::{AssetError, PreviewAssetStore};
+use crate::process::child::{isolate_process_group, terminate_process_tree, DEFAULT_KILL_GRACE};
 use crate::runtime::task_registry::CancellationToken;
 
 pub const PREVIEW_SAMPLE_RATE: u32 = 44100;
@@ -190,17 +191,64 @@ mod cancellation_tests {
     }
 }
 
-/// Runs the download helper against the preview query with the same process
-/// contract the downloader uses (output path argument, `LUNO_DOWNLOAD_SOURCE`
-/// environment variable), polling cancellation while the child runs.
+/// Runs the download helper in an isolated yt-dlp home and retries once with
+/// the provider's HLS audio rendition after a direct-audio 403 or a successful
+/// helper exit that produced no usable file.
 fn fetch_source(helper: &Path, query: &str, output: &Path, cancel: &AtomicBool, progress: Arc<dyn Fn(u8) + Send + Sync>) -> Result<(), String> {
     if is_cancelled(cancel) { return Err("cancelled".into()); }
-    let mut child = Command::new(helper)
+    let worker_home = temp_output("home");
+    fs::create_dir_all(&worker_home).map_err(|error| format!("preview helper home could not be created: {error}"))?;
+    let mut last_percent = 0;
+    let first = fetch_source_attempt(helper, query, output, &worker_home, cancel, &progress, &mut last_percent, None);
+    let result = match first {
+        Err(error) if !is_cancelled(cancel) && should_retry_preview_source(&error) => {
+            let _ = fs::remove_file(output);
+            fetch_source_attempt(
+                helper,
+                query,
+                output,
+                &worker_home,
+                cancel,
+                &progress,
+                &mut last_percent,
+                Some("bestaudio[protocol^=m3u8]/bestaudio/best"),
+            ).map_err(|fallback| format!("direct audio failed ({error}); HLS fallback failed ({fallback})"))
+        }
+        result => result,
+    };
+    let _ = fs::remove_dir_all(&worker_home);
+    result
+}
+
+fn should_retry_preview_source(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("http error 403") || error.contains("no output file") || error.contains("empty output file")
+}
+
+fn fetch_source_attempt(
+    helper: &Path,
+    query: &str,
+    output: &Path,
+    worker_home: &Path,
+    cancel: &AtomicBool,
+    progress: &Arc<dyn Fn(u8) + Send + Sync>,
+    last_percent: &mut u8,
+    format: Option<&str>,
+) -> Result<(), String> {
+    if is_cancelled(cancel) { return Err("cancelled".into()); }
+    let mut command = Command::new(helper);
+    command
         .arg(output)
+        .env("HOME", worker_home)
+        .env("XDG_CONFIG_HOME", worker_home.join(".config"))
         .env("LUNO_DOWNLOAD_SOURCE", query)
         .env("LUNO_PREVIEW", "1")
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(format) = format { command.env("LUNO_DOWNLOAD_FORMAT", format); }
+    else { command.env_remove("LUNO_DOWNLOAD_FORMAT"); }
+    isolate_process_group(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|_| "preview download helper could not start".to_string())?;
     let stdout = child.stdout.take().ok_or_else(|| "preview download helper output unreadable".to_string())?;
@@ -218,16 +266,15 @@ fn fetch_source(helper: &Path, query: &str, output: &Path, cancel: &AtomicBool, 
         }
     });
     let mut errors = Vec::new();
-    let mut last_percent = 0u8;
     let mut handle_line = |is_error: bool, line: String| {
         if let Some(media_progress) = parse_media_progress(&line) {
             if let Some(percent) = media_percent(media_progress) {
                 // yt-dlp can print a fresh transfer stage after a stream has
                 // completed. Keep visible progress monotonic and never let a
                 // transfer line claim publication complete.
-                let percent = percent.max(last_percent);
-                if percent > last_percent {
-                    last_percent = percent;
+                let percent = percent.max(*last_percent);
+                if percent > *last_percent {
+                    *last_percent = percent;
                     progress(percent);
                 }
             }
@@ -238,8 +285,7 @@ fn fetch_source(helper: &Path, query: &str, output: &Path, cancel: &AtomicBool, 
     };
     loop {
         if is_cancelled(cancel) {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_process_tree(&mut child, DEFAULT_KILL_GRACE);
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
             return Err("cancelled".into());
@@ -247,8 +293,15 @@ fn fetch_source(helper: &Path, query: &str, output: &Path, cancel: &AtomicBool, 
         while let Ok((is_error, line)) = progress_rx.try_recv() {
             handle_line(is_error, line);
         }
-        match child.try_wait().map_err(|_| "preview download helper failed".to_string())? {
-            Some(status) => {
+        match child.try_wait() {
+            Err(error) => {
+                terminate_process_tree(&mut child, DEFAULT_KILL_GRACE);
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                let _ = fs::remove_file(output);
+                return Err(format!("preview download helper wait failed: {error}"));
+            }
+            Ok(Some(status)) => {
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
                 while let Ok((is_error, line)) = progress_rx.try_recv() {
@@ -260,11 +313,15 @@ fn fetch_source(helper: &Path, query: &str, output: &Path, cancel: &AtomicBool, 
                     return Err(format!("preview helper exited with {status}: {detail}"));
                 }
                 if !output.is_file() {
-                    return Err("preview download helper produced no output".into());
+                    return Err("preview download helper produced no output file".into());
+                }
+                if fs::metadata(output).map(|metadata| metadata.len() == 0).unwrap_or(true) {
+                    let _ = fs::remove_file(output);
+                    return Err("preview download helper produced an empty output file".into());
                 }
                 return Ok(());
             }
-            None => thread::sleep(Duration::from_millis(5)),
+            Ok(None) => thread::sleep(Duration::from_millis(5)),
         }
     }
 }
@@ -413,6 +470,87 @@ mod tests {
         assert!(error.contains("exit status: 7"), "status missing: {error}");
         assert!(error.contains("requested format is unavailable"), "stderr missing: {error}");
         assert!(!output.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn no_output_success_retries_once_with_hls_audio() {
+        let root = std::env::temp_dir().join(format!("luno-preview-no-output-retry-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        fs::write(
+            &helper,
+            "#!/bin/sh\nprintf '%s\\n' \"${LUNO_DOWNLOAD_FORMAT:-default}\" >> \"$1.attempts\"\nif [ \"${LUNO_DOWNLOAD_FORMAT:-}\" = 'bestaudio[protocol^=m3u8]/bestaudio/best' ]; then printf 'ID3fallback bytes' > \"$1\"; fi\nexit 0\n",
+        ).unwrap();
+        let mut permissions = fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper, permissions).unwrap();
+        let output = root.join("source.m4a");
+        let fetched = fetch_source(&helper, "ytsearch1:fixture", &output, &AtomicBool::new(false), Arc::new(|_| {}));
+        fetched.expect("a no-output success must retry the HLS selector");
+        assert_eq!(fs::read_to_string(root.join("source.m4a.attempts")).unwrap(), "default\nbestaudio[protocol^=m3u8]/bestaudio/best\n");
+        assert_eq!(fs::read(output).unwrap(), b"ID3fallback bytes");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn direct_audio_403_retries_once_with_hls_audio() {
+        let root = std::env::temp_dir().join(format!("luno-preview-403-retry-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        fs::write(
+            &helper,
+            "#!/bin/sh\nprintf '%s\\n' \"${LUNO_DOWNLOAD_FORMAT:-default}\" >> \"$1.attempts\"\nif [ \"${LUNO_DOWNLOAD_FORMAT:-}\" = 'bestaudio[protocol^=m3u8]/bestaudio/best' ]; then printf 'ID3fallback bytes' > \"$1\"; exit 0; fi\necho 'ERROR: HTTP Error 403: Forbidden' >&2\nexit 1\n",
+        ).unwrap();
+        let mut permissions = fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper, permissions).unwrap();
+        let output = root.join("source.m4a");
+        fetch_source(&helper, "ytsearch1:fixture", &output, &AtomicBool::new(false), Arc::new(|_| {}))
+            .expect("a direct-audio 403 must retry the HLS selector");
+        assert_eq!(fs::read_to_string(root.join("source.m4a.attempts")).unwrap(), "default\nbestaudio[protocol^=m3u8]/bestaudio/best\n");
+        assert_eq!(fs::read(output).unwrap(), b"ID3fallback bytes");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_preview_kills_helper_process_group_and_descendants() {
+        let root = std::env::temp_dir().join(format!("luno-preview-process-tree-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        fs::write(&helper, "#!/bin/sh\nsleep 30 &\nchild=$!\nprintf '%s\\n' \"$$\" > \"$1.group\"\nwait \"$child\"\n").unwrap();
+        let mut permissions = fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper, permissions).unwrap();
+        let output = root.join("source.m4a");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let worker_helper = helper.clone();
+        let worker_output = output.clone();
+        let worker = thread::spawn(move || fetch_source(
+            &worker_helper,
+            "ytsearch1:fixture",
+            &worker_output,
+            &worker_cancel,
+            Arc::new(|_| {}),
+        ));
+        let group_file = root.join("source.m4a.group");
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !group_file.is_file() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let group = fs::read_to_string(&group_file).expect("helper should publish its process group").trim().parse::<i32>().unwrap();
+        cancel.store(true, Ordering::Release);
+        assert_eq!(worker.join().unwrap(), Err("cancelled".into()));
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while unsafe { libc::kill(-group, 0) == 0 } && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_ne!(unsafe { libc::kill(-group, 0) }, 0, "cancel must terminate the shell and every helper descendant");
         let _ = fs::remove_dir_all(root);
     }
 
