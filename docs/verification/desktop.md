@@ -67,6 +67,9 @@ repository.
 The dev launcher runs the debug binary `src-tauri/target/debug/luno-desktop`;
 the Dock-pinned `/Applications/Luno Desktop.app` is a RELEASE bundle and never
 rebuilds — refresh it with `scripts/install-release-app.sh`.
+The `.command` and Dock launchers resolve the Node major from `.node-version`
+before starting Tauri, including the local `~/.local/share/orbit-toolchains`
+install layout, so a GUI's reduced `PATH` does not silently skip the dev build.
 
 ## Known verification gaps (do not treat as passes)
 

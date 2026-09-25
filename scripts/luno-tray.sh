@@ -18,9 +18,8 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-# A double-clicked launcher gets a minimal PATH: make sure the Rust toolchain
-# and local node binaries are findable.
-export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:$REPO/node_modules/.bin:$PATH"
+source "$REPO/scripts/dev-env.sh"
+luno_configure_dev_path "$REPO"
 
 RUNDIR="${TMPDIR:-/tmp}/luno-dev"
 PIDFILE="$RUNDIR/server.pid"
@@ -114,12 +113,18 @@ cmd_launch() {
   if ! mkdir "$LOCKDIR" 2>/dev/null; then return 0; fi
   trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT
 
-  if daemon_alive && ! vite_up; then return 0; fi  # boot in progress
-  if vite_up && daemon_alive; then
-    app_running && { focus_app; return 0; }
-    # Vite is up but the app is not (crashed/quit): fall through and wait,
-    # which lets `tauri dev` restart the app on its next watch pass.
+  if daemon_alive; then
+    if vite_up && app_running; then
+      focus_app
+      return 0
+    fi
+    # An existing launch may still be compiling. Wait for both readiness
+    # signals below instead of reporting success while the app is absent.
   else
+    luno_require_node "$REPO" || {
+      alert "Node.js $(cat "$REPO/.node-version") is required. See the launcher log."
+      return 1
+    }
     if [ ! -x "$REPO/node_modules/.bin/tauri" ]; then
       alert "Dependencies are not installed. Run npm ci in $REPO once, then click again."
       echo "Missing node_modules/.bin/tauri; run npm ci first." >&2
@@ -147,11 +152,15 @@ cmd_launch() {
   waited=0
   while [ "$waited" -lt "$READY_TIMEOUT_SECS" ]; do
     vite_up && break
-    daemon_alive || { alert "The dev server exited during startup. See the log."; return 1; }
+    daemon_alive || break
     sleep 2
     waited=$((waited + 2))
   done
-  vite_up || { alert "The dev server did not come up in time. See the log."; return 1; }
+  if ! vite_up; then
+    alert "The dev server did not start. See the log."
+    echo "The dev server did not start within ${READY_TIMEOUT_SECS}s; see $LOGFILE." >&2
+    return 1
+  fi
 
   # The debug app follows once Rust finishes compiling/restarting.
   waited=0
@@ -161,6 +170,11 @@ cmd_launch() {
     sleep 2
     waited=$((waited + 2))
   done
+  if ! app_running; then
+    alert "The debug app did not launch. See the log."
+    echo "The debug app did not launch within ${READY_TIMEOUT_SECS}s; see $LOGFILE." >&2
+    return 1
+  fi
   focus_app
   echo "Luno dev build is up."
 }
