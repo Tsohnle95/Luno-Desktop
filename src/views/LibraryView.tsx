@@ -172,6 +172,17 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
     const filtered = scopeTracks(snapshot, selectedScope).filter((track) => normalizeFilterText(`${track.title} ${track.artist ?? ""} ${track.album ?? ""}`).includes(needle));
     return sortLibraryTracks(filtered, sort);
   }, [snapshot, selectedScope, needle, sort]);
+  const playlistNamesByTrackId = useMemo(() => {
+    const names = new Map<string, string[]>();
+    for (const playlist of snapshot?.playlists ?? []) {
+      for (const trackId of playlist.ordered_track_ids) {
+        const trackNames = names.get(trackId);
+        if (trackNames) trackNames.push(playlist.name);
+        else names.set(trackId, [playlist.name]);
+      }
+    }
+    return new Map([...names].map(([trackId, values]) => [trackId, values.join(", ")]));
+  }, [snapshot]);
   // Unfiltered scope size: the hero must report the LIBRARY size even when the
   // active query matches nothing — a zero-match filter previously made the hero
   // read "0 songs" and the empty state claim "No songs in All Music", which
@@ -298,7 +309,7 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
           ? <div className="luno-table-filter">
             <input autoFocus autoCorrect="off" spellCheck={false} aria-label="Filter tracks" placeholder={`Search in ${scopeName}`} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setQuery(""); setFilterOpen(false); } }} />
           </div>
-          : <><span className="luno-th-index">#</span><span aria-hidden="true"></span><span>Title</span><span className="luno-track-cell-album">Album</span><span className="luno-track-cell-playlist">Playlist</span><span aria-hidden="true"></span><span className="luno-th-duration" title="Duration" aria-label="Duration"><IconClock size={13} /></span></>}
+          : <><span className="luno-th-index">#</span><span aria-hidden="true"></span><span>Title</span><span className="luno-track-cell-album">Album</span><span className="luno-track-cell-playlist">Playlist</span><span className="luno-track-cell-added">Date added</span><span aria-hidden="true"></span><span className="luno-th-duration" title="Duration" aria-label="Duration"><IconClock size={13} /></span></>}
       </div>
       {loading ? <p role="status" className="luno-track-empty">Loading library...</p>
         : error ? <div role="alert" className="luno-track-empty">{error}<button type="button" disabled={!backendAvailable} onClick={onScan}>Retry</button></div>
@@ -306,7 +317,7 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
             : tracks.length === 0 && scopeSize > 0 ? <p className="luno-track-empty">No matches for “{query}” in {scopeName} — showing all {scopeSize} songs once you clear the search. <button type="button" aria-label="Clear search" onClick={() => setQuery("")}>Clear search</button></p>
               : tracks.length === 0 ? <p className="luno-track-empty">No songs in {scopeName}.</p>
               : <div style={{ height: tracks.length * 56, position: "relative" }}>
-                <div style={{ transform: `translateY(${startIndex * 56}px)` }}>{visible.map((track, index) => <div role="listitem" key={`${track.id}:${startIndex + index}`} onClick={(event) => toggleSelection(track, event)}><TrackRow track={track} artwork={artwork[track.id] ?? track.artwork_url} index={startIndex + index} playlistName={isAlbumScope ? track.album ?? scopeName : scopeName} selected={selected.has(track.id)} playing={playing === track.id} onClick={play} onFavoriteToggle={onFavoriteToggle} onContextMenu={onContextMenu} backendAvailable={backendAvailable} /></div>)}</div>
+                <div style={{ transform: `translateY(${startIndex * 56}px)` }}>{visible.map((track, index) => <div role="listitem" key={`${track.id}:${startIndex + index}`} onClick={(event) => toggleSelection(track, event)}><TrackRow track={track} artwork={artwork[track.id] ?? track.artwork_url} index={startIndex + index} playlistName={playlistNamesByTrackId.get(track.id) ?? "—"} selected={selected.has(track.id)} playing={playing === track.id} onClick={play} onFavoriteToggle={onFavoriteToggle} onContextMenu={onContextMenu} backendAvailable={backendAvailable} /></div>)}</div>
               </div>}
     </div>
   </section>;

@@ -64,7 +64,9 @@ envelope shapes (`docs/modules/contracts.md`).
   enabled and through focused preview otherwise. Their Add to playlist action
   remains available while audio is pending or unavailable; the backend reuses
   a prepared file or starts the durable playlist download path.
-- "Recently added" sorts by `Track.added_ms` (file mtime), not queue order.
+- "Recently added" sorts by `Track.added_ms` (file mtime), not queue order;
+  the library table shows that timestamp as Date added and derives playlist
+  names from each playlist's ordered track IDs.
 - Video element behavior is CSS-driven; fullscreen toggles must not call
   `window.setFullscreen()` (blacks out WKWebView over the hide
   transition).

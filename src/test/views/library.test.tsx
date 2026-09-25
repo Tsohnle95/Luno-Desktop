@@ -17,6 +17,7 @@ if (!libraryViewChecks.favorites || !libraryViewChecks.sort || libraryViewChecks
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LibraryView, normalizeFilterText, shuffledFirstTrack, virtualWindow } from "../../views/LibraryView";
+import { formatAddedDate } from "../../components/TrackRow";
 
 describe("normalizeFilterText", () => {
   it("matches straight and typographic apostrophes", () => {
@@ -86,6 +87,22 @@ describe("library sort", () => {
     ];
     expect(sortLibraryTracks(list, "Z-A").map((item) => item.id)).toEqual(["b", "a"]);
     expect(sortLibraryTracks(list, "Duration").map((item) => item.id)).toEqual(["b", "a"]);
+  });
+});
+
+describe("library track metadata", () => {
+  it("shows each track's date and playlist memberships", () => {
+    const added = new Date(2026, 8, 25, 12).getTime();
+    const datedSnapshot: LibrarySnapshot = {
+      ...snapshot,
+      tracks: [{ ...snapshot.tracks[0], added_ms: added }, snapshot.tracks[1]],
+      playlists: [{ ...snapshot.playlists[0], name: "Road trip" }],
+    };
+    const html = renderToStaticMarkup(<LibraryView snapshot={datedSnapshot} />);
+    expect(html).toContain("Date added");
+    expect(html).toContain("Sep 25, 2026");
+    expect(html).toContain('class="luno-track-cell-playlist luno-truncate" title="Road trip">Road trip</span>');
+    expect(formatAddedDate(undefined)).toBe("—");
   });
 });
 

@@ -27,7 +27,17 @@ export function formatDuration(ms: number | null | undefined) {
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+const addedDateFormatter = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" });
+
+export function formatAddedDate(ms: number | null | undefined) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+  const date = new Date(ms);
+  return Number.isFinite(date.getTime()) ? addedDateFormatter.format(date) : "—";
+}
+
 export function TrackRow({ track, index, playlistName, selected = false, playing = false, artwork, onClick, onFavoriteToggle, onContextMenu, backendAvailable = true }: TrackRowProps) {
+  const addedAt = track.added_ms != null && Number.isFinite(track.added_ms) && track.added_ms >= 0 ? new Date(track.added_ms) : null;
+  const hasAddedAt = addedAt != null && Number.isFinite(addedAt.getTime());
   return <div className={`luno-track-row${selected ? " is-selected" : ""}${playing ? " is-playing" : ""}`} role="button" tabIndex={backendAvailable ? 0 : -1}
     aria-current={playing ? "true" : undefined} aria-disabled={!backendAvailable} onClick={() => backendAvailable && onClick?.(track)} onContextMenu={(event) => { if (backendAvailable) onContextMenu?.(event, track); }}
     onKeyDown={(event) => { if (backendAvailable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onClick?.(track); } }}>
@@ -40,6 +50,7 @@ export function TrackRow({ track, index, playlistName, selected = false, playing
       <span className="luno-track-copy"><strong title={track.title}>{truncate(track.title, 52)}</strong><span title={track.artist ?? "Unknown artist"}>{truncate(track.artist ?? "Unknown artist", 64)}</span></span>
       <span className="luno-track-cell-album" title={track.album ?? undefined}>{truncate(track.album ?? "", 40)}</span>
       <span className="luno-track-cell-playlist luno-truncate" title={playlistName ?? undefined}>{playlistName}</span>
+      <span className="luno-track-cell-added" title={hasAddedAt ? "Date added" : "Date added unavailable"}>{hasAddedAt ? <time dateTime={addedAt.toISOString()}>{formatAddedDate(track.added_ms)}</time> : "—"}</span>
       <span className="luno-track-favorite"><button className={`luno-favorite${track.favorite ? " is-on" : ""}`} type="button" aria-label={track.favorite ? `Remove ${track.title} from favorites` : `Add ${track.title} to favorites`} disabled={!backendAvailable} onClick={(event) => { event.stopPropagation(); if (backendAvailable) onFavoriteToggle?.(track); }}>{track.favorite ? "★" : "☆"}</button></span>
       <span className="luno-track-cell-duration">{formatDuration(track.duration_ms)}</span>
     </span>

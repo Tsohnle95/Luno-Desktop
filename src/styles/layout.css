@@ -27,7 +27,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* Focus mode: the dedicated settings page takes over the entire app — BOTH
  * side tracks collapse to zero (a hidden queue must not reserve its 240px
  * minimum) and gaps/radius vanish for one seamless surface. */
-.luno-shell.focus-mode { grid-template-columns: minmax(0, 0fr) minmax(var(--luno-content-min), 1fr) minmax(0, 0fr); gap: 0; padding-right: 0; }
+.luno-shell.focus-mode { min-width: 0; grid-template-columns: minmax(0, 0fr) minmax(var(--luno-content-min), 1fr) minmax(0, 0fr); gap: 0; padding-right: 0; }
 .luno-shell.focus-mode .luno-main { border-radius: 0; }
 
 /* Video fullscreen is app-owned CSS state. Collapse the shell itself before
@@ -212,7 +212,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-selection-count { color: var(--luno-text-2); font-size: 13px; white-space: nowrap; }
 
 /* ---- Track table ---- */
-.luno-track-grid-template { display: grid; grid-template-columns: 16px 40px minmax(0, 4fr) minmax(0, 2fr) minmax(0, 1.5fr) 24px 48px; gap: 14px; align-items: center; padding: 0 16px; }
+.luno-track-grid-template { display: grid; grid-template-columns: 16px 40px minmax(0, 4fr) minmax(0, 2fr) minmax(0, 1.5fr) minmax(86px, 1.2fr) 24px 48px; gap: 14px; align-items: center; padding: 0 16px; }
 .luno-table-head {
   position: sticky; top: 0; z-index: 4; height: 36px;
   background: var(--luno-bg);
@@ -229,7 +229,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   border: 0; border-radius: 15px; background: var(--luno-bg-3); color: var(--luno-text); font-size: 13px;
 }
 
-.luno-track-grid { display: grid; grid-template-columns: 16px 40px minmax(0, 4fr) minmax(0, 2fr) minmax(0, 1.5fr) 24px 48px; gap: 14px; align-items: center; padding: 0 16px; height: 100%; min-width: 0; }
+.luno-track-grid { display: grid; grid-template-columns: 16px 40px minmax(0, 4fr) minmax(0, 2fr) minmax(0, 1.5fr) minmax(86px, 1.2fr) 24px 48px; gap: 14px; align-items: center; padding: 0 16px; height: 100%; min-width: 0; }
 .luno-track-row {
   height: var(--luno-row-height); min-height: var(--luno-row-height);
   border-radius: 4px; cursor: pointer; transition: background-color 120ms ease;
@@ -243,7 +243,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-track-hover-play { display: none; color: var(--luno-text); }
 .luno-track-row:hover .luno-track-hover-play { display: inline-flex; }
 .luno-track-row:hover .luno-track-num { display: none; }
-.luno-track-cell-album, .luno-track-cell-playlist { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--luno-text-2); font-size: 13px; }
+.luno-track-cell-album, .luno-track-cell-playlist, .luno-track-cell-added { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--luno-text-2); font-size: 13px; }
+.luno-track-cell-added { font-size: 12px; font-variant-numeric: tabular-nums; }
 .luno-track-favorite { display: inline-flex; align-items: center; justify-content: center; }
 .luno-track-cell-duration { text-align: right; color: var(--luno-text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
 .luno-track-copy { min-width: 0; display: grid; align-content: center; gap: 3px; }
@@ -325,7 +326,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-queue-empty { padding: 16px; color: var(--luno-text-2); }
 
 /* ---- Settings (two-pane: category rail + content) ---- */
-.luno-settings { display: flex; align-items: flex-start; gap: 0; min-height: 100%; }
+.luno-settings { display: flex; align-items: flex-start; gap: 0; min-height: 100%; min-width: 0; width: 100%; }
 .luno-settings-nav {
   flex: 0 0 230px; position: sticky; top: 0;
   display: flex; flex-direction: column; gap: 4px;
@@ -340,12 +341,26 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-settings-nav button:hover { color: var(--luno-text); background: #1a1a1a; }
 .luno-settings-nav button[aria-current="true"] { color: var(--luno-text); background: var(--luno-bg-3); font-weight: 600; }
 .luno-settings-content { flex: 1; min-width: 0; padding: 32px clamp(24px, 4vw, 56px) 60px; }
-.luno-settings-screen { min-height: 100%; }
+.luno-settings-screen { min-height: 100%; min-width: 0; }
+.luno-download-status { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; min-width: 0; }
+.luno-download-status > span { min-width: 0; overflow-wrap: anywhere; }
+.luno-download-status > progress { width: 100%; grid-column: 1 / -1; }
+.luno-downloader-view { width: 100%; min-width: 0; }
+.luno-download-search { min-width: 0; }
+.luno-download-search input { min-width: 0; }
+.luno-download-result { min-width: 0; flex-wrap: wrap; }
+.luno-download-result > span { flex: 1 1 120px; min-width: 0; }
+.luno-download-result > button { flex-shrink: 0; }
 @media (max-width: 900px) {
   .luno-settings { flex-direction: column; }
   .luno-settings-nav { position: static; flex: none; width: 100%; flex-direction: row; overflow-x: auto; padding: 20px 16px 8px; }
   .luno-settings-nav h1 { flex: 0 0 auto; margin: 0 12px 0 0; font-size: 17px; }
   .luno-settings-nav button { width: auto; white-space: nowrap; }
+}
+@media (max-width: 560px) {
+  .luno-settings-content { padding-right: 16px; padding-left: 16px; }
+  .luno-download-status { grid-template-columns: auto minmax(0, 1fr); }
+  .luno-download-status > button { grid-column: 2; justify-self: start; }
 }
 
 /* ---- Home dashboard ---- */
@@ -537,14 +552,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* ---- Responsive ---- */
 @media (max-width: 1280px) {
-  .luno-track-grid, .luno-track-grid-template { grid-template-columns: 16px 40px minmax(0, 4fr) minmax(0, 2fr) 24px 48px; }
+  .luno-track-grid, .luno-track-grid-template { grid-template-columns: 16px 40px minmax(0, 4fr) minmax(0, 2fr) minmax(86px, 1.2fr) 24px 48px; }
   .luno-track-cell-playlist { display: none; }
 }
 @media (max-width: 1100px) {
   .luno-shell { grid-template-columns: minmax(var(--luno-sidebar-min), 1fr) minmax(var(--luno-content-min), 3fr) minmax(0, 0fr); min-width: 0; }
   .luno-queue { display: none; }
-  .luno-track-grid, .luno-track-grid-template { grid-template-columns: 16px 40px minmax(0, 1fr) 24px 48px; }
+  .luno-track-grid, .luno-track-grid-template { grid-template-columns: 16px 40px minmax(0, 1fr) minmax(82px, 1.15fr) 24px 48px; }
   .luno-track-cell-album { display: none; }
+}
+@media (max-width: 450px) {
+  .luno-track-grid, .luno-track-grid-template { grid-template-columns: 16px 40px minmax(0, 1fr) minmax(78px, 1.15fr) 20px 44px; gap: 8px; padding-right: 10px; padding-left: 10px; }
 }
 @media (max-width: 720px) {
   .luno-shell { display: flex; flex-direction: column; min-width: 0; padding: 0; gap: 4px; }
