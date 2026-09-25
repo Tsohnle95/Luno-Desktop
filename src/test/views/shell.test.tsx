@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PlayerBar } from "../../components/PlayerBar";
 import { Queue, queueVirtualWindow } from "../../components/Queue";
-import { Shell, videoFullscreenClass } from "../../app/Shell";
+import { isMissingConfigurationError, Shell, videoFullscreenClass } from "../../app/Shell";
 import type { BackendProjection } from "../../state/backend_projection";
 
 const projectionTrack = { id: "t1", path: null, title: "Aurora", artist: "Gate Six", album: "Chaos 93", duration_ms: 3000, artwork_url: null, favorite: false, provider: null };
@@ -12,6 +12,15 @@ const projection = {
 };
 
 describe("Gate 6 player bar", () => {
+  it("treats a missing settings file as first-run but surfaces other errors", () => {
+    const missingConfig = { code: "not_found", message: "configuration is missing", retryable: false };
+    expect(isMissingConfigurationError(missingConfig)).toBe(true);
+    expect(isMissingConfigurationError(JSON.stringify(missingConfig))).toBe(true);
+    expect(isMissingConfigurationError(new Error(JSON.stringify(missingConfig)))).toBe(true);
+    expect(isMissingConfigurationError({ code: "not_found", message: "library root is missing" })).toBe(false);
+    expect(isMissingConfigurationError({ code: "invalid_request", message: "configuration is corrupt" })).toBe(false);
+  });
+
   it("uses an explicit shell state class for app fullscreen", () => {
     expect(videoFullscreenClass(false)).toBe("");
     expect(videoFullscreenClass(true)).toBe(" video-fullscreen");

@@ -59,6 +59,20 @@ export function normalizeRuntimeCommandError(error: unknown): string {
   return "Runtime command unavailable";
 }
 
+export function isMissingConfigurationError(error: unknown): boolean {
+  let details: unknown = error instanceof Error ? error.message : error;
+  if (typeof details === "string") {
+    try {
+      details = JSON.parse(details);
+    } catch {
+      return false;
+    }
+  }
+  if (!details || typeof details !== "object" || Array.isArray(details)) return false;
+  const contractError = details as Record<string, unknown>;
+  return contractError.code === "not_found" && contractError.message === "configuration is missing";
+}
+
 export function runBridgeCommand(command: Promise<unknown> | null | undefined, onError: (message: string) => void): void {
   if (command) void command.catch((error: unknown) => onError(normalizeRuntimeCommandError(error)));
 }
@@ -469,7 +483,9 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       if (typeof item.video_mode === "boolean") setVideoMode(item.video_mode);
     };
     if (fixtureHome) {
-      bridge.loadSettings(fixtureHome).then(applySettings).catch((error) => setCommandError(normalizeRuntimeCommandError(error)));
+      bridge.loadSettings(fixtureHome).then(applySettings).catch((error) => {
+        if (!isMissingConfigurationError(error)) setCommandError(normalizeRuntimeCommandError(error));
+      });
       return;
     }
     bridge.resolveRuntimeHome().then((value) => {
@@ -477,7 +493,9 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       if (!home) return;
       setRuntimeHome(home);
       return bridge.loadSettings(home).then(applySettings);
-    }).then(() => bundleHelperFetch()).catch((error) => setCommandError(normalizeRuntimeCommandError(error)));
+    }).catch((error) => {
+      if (!isMissingConfigurationError(error)) setCommandError(normalizeRuntimeCommandError(error));
+    }).then(() => bundleHelperFetch());
   }, [bridge, fixtureHome]);
   const bundleHelperFetch = () => {
     if (!bridge) return Promise.resolve();
