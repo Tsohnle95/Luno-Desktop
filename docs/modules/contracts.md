@@ -69,6 +69,10 @@ docs), release packaging (`docs/release/desktop.md`).
   these fields are additive for clients that still read older snapshot shapes.
   `discover_select` selects or retries one recommendation inside the active
   Discover projection without transferring ownership to focused preview.
+- Playback snapshots include `audible_track_id` when audio is playing or
+  paused. It can differ from `queue[current_index]` while a focused preview is
+  sounding over a physical queue, including after Discover is disabled.
+  Older snapshots without the field remain accepted by the frontend.
 - Transfer manifests are metadata-only: no local paths, secrets, audio
   bytes, queue state, favorites, or history. Imports are additive —
   consumers never delete existing library content. A track without

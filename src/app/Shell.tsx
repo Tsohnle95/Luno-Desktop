@@ -110,6 +110,13 @@ export function focusedQueueProjection(queue: Track[], currentIndex: number | nu
   return queue.map((item, index) => index === currentIndex ? previewTrack : item);
 }
 
+/** Discover selects from its projected queue; outside it, the audible ID can be outside the physical queue. */
+export function playbackDisplayTrack(discoverEnabled: boolean, discoverCurrent: Track | null, audible: Track | null, previewCurrent: Track | null, libraryCurrent: Track | null): Track | null {
+  return discoverEnabled
+    ? discoverCurrent ?? audible ?? libraryCurrent
+    : audible ?? previewCurrent ?? libraryCurrent;
+}
+
 export function videoCommandsEnabled(available: boolean, connected: boolean, source: string | null, status: VideoStageStatus | undefined): boolean {
   return available && connected && !!source && !!status && !["not-checked", "loading", "unavailable", "error", "fallback"].includes(status);
 }
@@ -791,10 +798,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // Discover owns a separate queue projection, so its ready assets must stay
   // visible to recommendation rows after the focused preview session hands
   // off. Keep one presentation snapshot for both session owners.
-  const recommendationPreview = projection.preview?.active
-    ? projection.preview
-    : projection.discover?.enabled
-      ? {
+  const recommendationPreview = projection.discover?.enabled
+    ? {
           generation: projection.discover.generation,
           active: true,
           current: discoverCurrentId && recommendationTracks.has(discoverCurrentId) ? discoverCurrentId : null,
@@ -804,10 +809,17 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
           cancelled: false,
           progress: [],
         }
-      : projection.preview;
+    : projection.preview;
+  const audibleId = projection.playback?.audible_track_id;
+  const audibleTrack = audibleId
+    ? tracksByIdForQueue.get(audibleId) ?? recommendationTracks.get(audibleId) ?? {
+        id: audibleId, path: null, title: "Unavailable track", artist: null, album: null,
+        duration_ms: null, artwork_url: null, favorite: false, provider: null,
+      }
+    : null;
   // The track whose identity the AUDIBLE output and every correlated surface
   // (song page, video slot, queue Now playing) must reflect.
-  const displayTrack = previewDisplayTrack ?? discoverCurrentTrack ?? track;
+  const displayTrack = playbackDisplayTrack(!!projection.discover?.enabled, discoverCurrentTrack, audibleTrack, previewDisplayTrack, track);
   const audibleArtwork = displayTrack && displayTrack !== track ? displayTrack.artwork_url : currentArtwork;
   // Keep queue referentially stable across heartbeats: only recompute when the
   // actual queue content changes, not on every position tick. Unresolvable ids
@@ -832,7 +844,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // Focused preview is an audible overlay over the captured physical queue.
   // Only Discover changes the backend queue; focused recommendations replace
   // the visible current row while Next Up stays in the physical context.
-  const panelQueueTracks = focusedQueueProjection(queueTracks, projection.playback?.current_index, previewDisplayTrack);
+  const panelQueueTracks = focusedQueueProjection(queueTracks, projection.playback?.current_index,
+    projection.discover?.enabled ? null : audibleTrack && !tracksByIdForQueue.has(audibleTrack.id) ? audibleTrack : previewDisplayTrack);
   const panelQueueIndex = projection.playback?.current_index;
   const currentVideo = displayTrack ? currentVideoForTrack(projection, displayTrack.id) : null;
   // A queue row can be a temporary recommendation key (discover mode injects

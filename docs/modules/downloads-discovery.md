@@ -81,6 +81,12 @@ What it does not own: library snapshots and promotion targets
   independently of whether focused preview or Discover currently presents
   them. Previous/Next, a mode handoff, and disabling Discover retain valid
   files; a different seed or app cleanup replaces the bounded cache.
+- Focused Preview Next/Previous starts an already prepared successor, and a
+  selected item starts when its cached file is adopted after a pending tap.
+  A preserved focused completion cannot retake audio after Discover selects
+  a different row. Preview audio and its clock heartbeat share one admitted
+  worker; admission failure marks the selected row unavailable instead of
+  leaving a silent, apparently active preview.
 - Outside Discover mode, each audible library seed owns an automatic five-item
   preparation window. Enabling Discover preserves the active preview session
   and its preparation driver; disabling Discover restores the physical queue

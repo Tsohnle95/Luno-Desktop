@@ -121,6 +121,12 @@ impl DiscoverMode {
     pub fn physical_queue(&self) -> &[TrackId] {
         &self.physical_queue
     }
+    pub fn physical_index_for_projected(&self, index: usize) -> Option<usize> {
+        let physical = if index <= self.physical_index { index }
+            else if index < self.physical_index + 1 + self.queued.len() { return None }
+            else { index - self.queued.len() };
+        (physical < self.physical_queue.len()).then_some(physical)
+    }
     pub fn current_recommendation(&self) -> Option<&TrackId> {
         self.current_recommendation.as_ref()
     }
@@ -375,6 +381,18 @@ mod tests {
             mode.projected_queue(),
             vec![id("seed"), id("r0"), id("r1"), id("r2"), id("next")]
         );
+    }
+
+    #[test]
+    fn queue_edits_translate_only_physical_rows() {
+        let recs = vec![id("r0"), id("r1")];
+        let mut mode = DiscoverMode::new(1, vec![id("before"), id("seed"), id("after")], 1, recs).unwrap();
+        mode.enable();
+        assert_eq!(mode.physical_index_for_projected(0), Some(0));
+        assert_eq!(mode.physical_index_for_projected(1), Some(1));
+        assert_eq!(mode.physical_index_for_projected(2), None);
+        assert_eq!(mode.physical_index_for_projected(3), None);
+        assert_eq!(mode.physical_index_for_projected(4), Some(2));
     }
 
     #[test]

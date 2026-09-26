@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { backendCommandArgs, createBridge, isValidLibraryResponse, parseMigrationStatus, tauriTransport } from "../app/bridge";
 import { createBackendProjection, mergeVideoSnapshot } from "../state/backend_projection";
-import { currentVideoForTrack, focusedQueueProjection, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled, videoSurfaceActive } from "../app/Shell";
+import { currentVideoForTrack, focusedQueueProjection, playbackDisplayTrack, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled, videoSurfaceActive } from "../app/Shell";
 import type { BridgeTransport } from "../app/bridge";
-import type { Event, EventEnvelope } from "../shared/contracts";
+import type { Event, EventEnvelope, PlaybackSnapshot } from "../shared/contracts";
 import type { SaveState } from "../shared/contracts";
 import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot, isDiscoverSnapshot, isSearchResults, isPlaylistSyncIssues, isPlaylistSyncCandidates, isPlaylistSyncSelection } from "../shared/contracts";
 import type { Track } from "../shared/contracts";
@@ -26,6 +26,22 @@ describe("typed IPC bridge and projection", () => {
     const projected = focusedQueueProjection(physical, 1, preview);
     expect(projected.map((item) => item.id)).toEqual(["a", "rec", "c"]);
     expect(projected[2]).toBe(physical[2]);
+  });
+
+  it("uses the projected selection in Discover and the audible recommendation after restoring the physical queue", () => {
+    const library: Track = { id: "seed", path: null, title: "Seed", artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null };
+    const oldPreview = { ...library, id: "old", title: "Old preview" };
+    const selected = { ...library, id: "selected", title: "Selected" };
+    expect(playbackDisplayTrack(true, selected, oldPreview, oldPreview, library)).toBe(selected);
+    expect(focusedQueueProjection([library, selected], 1, null)[1]).toBe(selected);
+    expect(playbackDisplayTrack(false, null, selected, oldPreview, library)).toBe(selected);
+    expect(focusedQueueProjection([library], 0, selected)[0]).toBe(selected);
+  });
+
+  it("accepts an audible ID in playback events and rejects unrelated fields", () => {
+    const snapshot: PlaybackSnapshot = { queue: ["seed"], current_index: 0, audible_track_id: "recommendation", shuffle: false, repeat: "off", position_ms: 10, duration_ms: null, status: "playing", generation: 1 };
+    expect(isEventEnvelope(event({ type: "playback_snapshot", payload: { snapshot: { ...snapshot } } }))).toBe(true);
+    expect(isEventEnvelope(event({ type: "playback_snapshot", payload: { snapshot: { ...snapshot, unexpected: true } } } as unknown as Event))).toBe(false);
   });
 
   it("passes Gate 5 fixture roots to the native command without changing no-arg calls", async () => {

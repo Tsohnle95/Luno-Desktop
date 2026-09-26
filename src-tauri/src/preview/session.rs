@@ -107,6 +107,12 @@ impl PreviewSession {
     }
     pub fn physical_queue(&self) -> &[TrackId] { &self.physical_queue }
     pub fn physical_index(&self) -> usize { self.physical_index }
+    pub fn update_physical_queue(&mut self, queue: Vec<TrackId>, index: usize) {
+        if self.active && index < queue.len() {
+            self.physical_queue = queue;
+            self.physical_index = index;
+        }
+    }
     pub fn recommendations(&self) -> &[TrackId] { &self.recommendations }
 
     /// Accepts a completed asset.  A stale completion is ignored and cannot
@@ -118,6 +124,9 @@ impl PreviewSession {
         self.progress.insert(id.clone(), 100);
         if self.current.is_none() && self.auto_play {
             self.current = Some(self.window_start);
+            return SessionAction::Play(id);
+        }
+        if self.auto_play && self.current().is_some_and(|current| current == &id) {
             return SessionAction::Play(id);
         }
         SessionAction::Wait(id)
@@ -209,6 +218,18 @@ impl PreviewSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_selected_cached_successor_starts_playback() {
+        let seed = TrackId::new("seed").unwrap();
+        let first = TrackId::new("first").unwrap();
+        let second = TrackId::new("second").unwrap();
+        let mut session = PreviewSession::start(1, vec![seed], 0, vec![first.clone(), second.clone()], &first).unwrap();
+        assert_eq!(session.prepared_asset(1, first.clone(), "first.m4a".into()), SessionAction::Play(first));
+        assert_eq!(session.prepared_asset(1, second.clone(), "second.m4a".into()), SessionAction::Wait(second.clone()));
+        assert_eq!(session.next(), SessionAction::Play(second.clone()));
+        assert_eq!(session.prepared_asset(1, second.clone(), "second.m4a".into()), SessionAction::Play(second));
+    }
 
     #[test]
     fn failed_retry_clears_stale_numeric_progress() {

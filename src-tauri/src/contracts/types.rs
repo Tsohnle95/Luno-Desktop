@@ -241,6 +241,8 @@ pub struct LibrarySnapshot {
 pub struct PlaybackSnapshot {
     pub queue: Vec<TrackId>,
     pub current_index: Option<u32>,
+    #[serde(default)]
+    pub audible_track_id: Option<TrackId>,
     pub shuffle: bool,
     pub repeat: crate::contracts::events::RepeatMode,
     #[serde(deserialize_with = "safe_u64")]

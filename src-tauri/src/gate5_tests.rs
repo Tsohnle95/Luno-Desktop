@@ -248,7 +248,7 @@ fn ref_preview_session_and_discover_mode_cover_windows_handoff_and_intervention(
     assert_eq!(navigation.next(), SessionAction::Wait(recs[3].clone()));
     assert_eq!(
         navigation.prepared_asset(3, recs[3].clone(), PathBuf::from("fixture://rec-3")),
-        SessionAction::Wait(recs[3].clone())
+        SessionAction::Play(recs[3].clone())
     );
     assert_eq!(navigation.previous(), SessionAction::Play(recs[2].clone()));
     assert_eq!(navigation.next(), SessionAction::Play(recs[3].clone()));

@@ -53,10 +53,11 @@ envelope shapes (`docs/modules/contracts.md`).
   Retryable backend task-capacity errors keep retrying with backoff while that
   seed remains current; an active preview projection always has a backend
   completion driver.
-- The song page, player bar, queue, and video correlation follow the AUDIBLE
-  track: during a focused preview or discover-mode recommendation the shell
-  passes that recommendation as `nowPlaying` instead of the library track still
-  behind it. A focused preview replaces only the visible current queue row;
+- The song page, player bar, queue, and video correlation follow Discover's
+  projected selection while that mode is enabled, including a pending item;
+  otherwise `PlaybackSnapshot.audible_track_id` identifies a sounding focused
+  recommendation even after the physical queue is restored. A focused preview
+  replaces only the visible current queue row;
   its successors remain the captured physical context. Discover queue rows
   resolve recommendation keys and keep placeholder slots for unresolvable ids
   so row indices stay aligned with the backend queue.

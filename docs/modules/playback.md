@@ -65,9 +65,18 @@ What it does not own: library snapshots and track identity
   queue.
 - The backend `PlaybackSnapshot.current_index` is authoritative; the frontend
   never re-derives it from `track_started` (duplicate ids made first-occurrence
-  `indexOf` regress the queue panel).
+  `indexOf` regress the queue panel). `audible_track_id` is separately
+  authoritative for the sounding item when it is outside the physical queue.
+- An explicit library queue edit while Discover is active ends the temporary
+  projection before applying the edit to the physical queue. Projected
+  recommendation rows cannot be removed or reordered as physical tracks.
+  Focused preview updates its captured physical queue after a library edit so
+  later handoff keeps that edit. Late Discover completions cannot reapply a
+  disabled projection over the edited queue.
 - Removing the currently-playing queue row restarts (or stops) output so audio
   matches the newly-current track instead of leaving the removed song playing.
+  That replacement retires any focused preview session so a late completion
+  cannot restart the old recommendation.
 - Single-instance guard: a localhost port claim (`LUNO_INSTANCE_PORT`
   override for QA) prevents two instances last-writer-winning shared
   config.
