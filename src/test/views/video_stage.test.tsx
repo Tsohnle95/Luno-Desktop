@@ -61,6 +61,14 @@ describe("Video stage download-progress ring", () => {
     expect(html).toContain("luno-rec-art");
     expect(html).not.toContain("luno-artwork-fallback");
   });
+
+  it("keeps artwork visible until a staged video has decoded its first frame", () => {
+    const html = renderToStaticMarkup(<VideoStage src="clip.mp4" status="ready" artworkArtist="Artist" artworkTitle="Spaceboy" />);
+    expect(html).toContain('class="luno-video-fallback"');
+    expect(html).toContain('data-design="');
+    expect(html).toContain('src="clip.mp4"');
+    expect(html).toContain('visibility:hidden');
+  });
 });
 
 describe("Video stage end-of-media hold", () => {

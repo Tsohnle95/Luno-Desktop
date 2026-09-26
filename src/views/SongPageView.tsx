@@ -99,7 +99,7 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
   // Favorites toggle lives in the footer PlayerBar; the song page keeps only
   // title/artist here (see onFavoriteToggle prop retained for API compat).
   void onFavoriteToggle;
-  const backdropArtwork = displayedTrack?.artwork_url;
+  const backdropArtwork = video?.artworkUrl ?? displayedTrack?.artwork_url;
   const hasBackdropArtwork = !!backdropArtwork && !isPlaceholderArtwork(backdropArtwork);
   return <div ref={pageRef} className="luno-song-page" data-testid="song-page">
     <style>{songPageStyles}</style>

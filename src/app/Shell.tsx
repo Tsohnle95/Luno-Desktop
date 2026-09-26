@@ -694,8 +694,6 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const lastLibraryTrackRef = useRef<Track | null>(null);
   if (track) lastLibraryTrackRef.current = track;
   const seedTrack = track ?? lastLibraryTrackRef.current;
-  const footerArtwork = useTrackArtwork(track ? [track.id] : [], bridge ? (id) => bridge.trackArtwork(id) : undefined);
-  const currentArtwork = track ? (footerArtwork[track.id] ?? track.artwork_url) : null;
   const tracks = projection.library?.tracks ?? [];
   const tracksKey = `${projection.library?.generation ?? 0}`;
   // Fast O(1) track lookup — the previous `tracks.find` per queue entry was
@@ -832,7 +830,9 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // The track whose identity the AUDIBLE output and every correlated surface
   // (song page, video slot, queue Now playing) must reflect.
   const displayTrack = playbackDisplayTrack(!!projection.discover?.enabled, discoverCurrentTrack, audibleTrack, previewDisplayTrack, track);
-  const audibleArtwork = displayTrack && displayTrack !== track ? displayTrack.artwork_url : currentArtwork;
+  const displayedLibraryTrack = displayTrack ? tracksByIdForQueue.get(displayTrack.id) : null;
+  const displayedArtwork = useTrackArtwork(displayedLibraryTrack ? [displayedLibraryTrack.id] : [], bridge ? (id) => bridge.trackArtwork(id) : undefined);
+  const audibleArtwork = displayTrack ? (displayedArtwork[displayTrack.id] ?? displayTrack.artwork_url) : null;
   // Keep queue referentially stable across heartbeats: only recompute when the
   // actual queue content changes, not on every position tick. Unresolvable ids
   // keep a placeholder slot so every later row stays index-aligned with the

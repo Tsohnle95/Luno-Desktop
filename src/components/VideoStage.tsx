@@ -157,6 +157,7 @@ const stageChromeStyles = `
 @keyframes luno-video-spin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
 .luno-video-progress-pct { position:absolute; font-size:13px; font-weight:700; color:#fff; font-variant-numeric:tabular-nums; }
 .luno-video-loading-caption { padding:6px 10px; border-radius:6px; background:rgba(0,0,0,.55); color:var(--luno-text-2,#a7a7a7); font-size:12px; text-align:center; }
+.luno-video-stage > video, .luno-video-stage > .luno-video-fallback { position:absolute; inset:0; width:100%; height:100%; }
 .luno-video-stage.is-fullscreen { position:fixed; inset:0; z-index:1000; width:100vw; height:100vh; border-radius:0; background:#000; visibility:visible; }
 .luno-video-stage.is-fullscreen video { object-fit:contain; }
 `;
@@ -183,8 +184,11 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
   latestPositionRef.current = positionMs;
   const [fullscreenWanted, setFullscreenWanted] = useState(false);
   const [volumeDraft, setVolumeDraft] = useState(volume);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
   useEffect(() => setVolumeDraft(volume), [volume]);
   const showVideo = Boolean(src) && !fallbackStatuses.has(status);
+  const videoVisible = showVideo && loadedSrc === src;
+  useEffect(() => { if (!showVideo) setLoadedSrc(null); }, [showVideo]);
   useEffect(() => {
     // Turning video mode off removes the playable surface. Exit CSS
     // fullscreen with it so a fixed artwork stage cannot outlive its owner.
@@ -294,11 +298,12 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
     endedHoldRef.current = Math.max(0, latestPositionRef.current);
     onEnded?.();
   };
-  const onVideoError = (event: SyntheticEvent<HTMLVideoElement>) => { event.currentTarget.pause(); if (showVideo) handleError(); };
+  const onVideoError = (event: SyntheticEvent<HTMLVideoElement>) => { setLoadedSrc(null); event.currentTarget.pause(); if (showVideo) handleError(); };
 
   return <div ref={stageRef} className={`luno-video-stage${fullscreenWanted ? " is-fullscreen" : ""}`} data-testid="video-stage" aria-label="Song video preview">
     <style>{stageChromeStyles}</style>
-    {showVideo ? <video ref={videoRef} src={src!} preload="auto" playsInline muted aria-label="Song video" onError={onVideoError} onSeeked={handleSeeked} onPause={handlePause} onPlay={handlePlay} onEnded={handleEnded} /> : <RecommendationArtworkImage artworkUrl={artworkUrl} alt={artworkAlt} artist={artworkArtist ?? ""} title={artworkTitle ?? ""} size="100%" />}
+    {!videoVisible && <div className="luno-video-fallback"><RecommendationArtworkImage artworkUrl={artworkUrl} alt={artworkAlt} artist={artworkArtist ?? ""} title={artworkTitle ?? ""} size="100%" /></div>}
+    {showVideo && <video key={src} ref={videoRef} src={src!} preload="auto" playsInline muted aria-label="Song video" style={{ visibility: videoVisible ? "visible" : "hidden" }} onLoadedData={() => setLoadedSrc(src ?? null)} onError={onVideoError} onSeeked={handleSeeked} onPause={handlePause} onPlay={handlePlay} onEnded={handleEnded} />}
     {status === "loading" && <div className="luno-video-loading" role="status">
       <DownloadRing progress={typeof videoProgress === "number" ? videoProgress : null} />
       {/* null covers lookup, extractor setup, and unknown-total transfers;

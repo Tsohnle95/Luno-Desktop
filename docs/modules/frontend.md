@@ -62,8 +62,11 @@ envelope shapes (`docs/modules/contracts.md`).
   resolve recommendation keys and keep placeholder slots for unresolvable ids
   so row indices stay aligned with the backend queue.
 - Video staging requests use that same audible identity, including focused
-  recommendation keys. Missing recommendation artwork renders the same
-  deterministic custom design in the backdrop and media stage.
+  recommendation keys. Embedded artwork is requested for the displayed
+  library track, including when the physical queue points elsewhere; the
+  resolved image feeds both the backdrop and media stage. Missing artwork
+  renders the same deterministic custom design, which stays visible until a
+  staged video decodes its first frame.
 - Recommendation rows select through `discover_select` while Discover is
   enabled and through focused preview otherwise. Their Add to playlist action
   remains available while audio is pending or unavailable; the backend reuses

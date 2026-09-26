@@ -113,6 +113,13 @@ describe("Audible recommendation identity", () => {
     expect(html.match(new RegExp(`data-design="${design}"`, "g"))).toHaveLength(2);
     expect(html).not.toContain("luno-artwork-fallback");
   });
+
+  it("uses extracted library artwork for both the backdrop and media stage", () => {
+    const artworkUrl = "data:image/png;base64,AAAA";
+    const html = renderToStaticMarkup(<SongPageView track={track} nowPlaying={track} video={{ artworkUrl }} backendAvailable />);
+    expect(html).toContain(`background-image:url(${artworkUrl})`);
+    expect(html).toContain(`src="${artworkUrl}"`);
+  });
 });
 
 describe("Discovery mode toggle", () => {
