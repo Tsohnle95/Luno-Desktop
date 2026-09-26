@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Arc as StdArc;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     Mutex,
 };
 use std::time::Duration;
@@ -528,12 +528,76 @@ mod tests {
         envelope.command = Command::LoadSettings { home: home.to_string_lossy().into_owned() };
         let value = state.dispatch(envelope.into()).expect("persisted volume should load");
         assert_eq!(value.get("volume").and_then(serde_json::Value::as_f64), Some(0.35));
-        let stored = *state.volume.lock().unwrap_or_else(|e| e.into_inner());
+        let stored = f32::from_bits(state.volume.load(Ordering::Acquire));
         assert!(
             (stored - 0.35).abs() < 1e-6,
             "persisted volume must seed the engine so the first track plays at the saved level, got {stored}"
         );
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mute_does_not_wait_for_a_busy_audio_backend() {
+        let state = AppState::with_preview_store(
+            PreviewAssetStore::at(std::env::temp_dir().join(format!("luno-volume-lock-{}", std::process::id()))).unwrap(),
+            4,
+        );
+        let held = state.audio.lock().unwrap();
+        let worker_state = state.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            worker_state.set_volume(0.0).unwrap();
+            done_tx.send(()).unwrap();
+        });
+        done_rx.recv_timeout(Duration::from_millis(250)).expect("mute should bypass the backend lock");
+        assert_eq!(f32::from_bits(state.volume.load(Ordering::Acquire)), 0.0);
+        drop(held);
+        worker.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recommendation_tap_and_discover_toggle_do_not_wait_for_preview_helper() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = unique_home("responsive-preview");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        let started = root.join("helper-started");
+        std::fs::write(&helper, format!("#!/bin/sh\nprintf started > '{}'\nsleep 30\n", started.display())).unwrap();
+        let mut permissions = std::fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&helper, permissions).unwrap();
+
+        let state = AppState::with_preview_store(PreviewAssetStore::at(root.join("previews")).unwrap(), 8);
+        state.set_preview_toolchain(Some(helper), Some(PathBuf::from("/usr/bin/false")));
+        let physical = TrackId::new("physical-seed").unwrap();
+        state.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(vec![physical], 0);
+        let seeds = vec![PreviewSeed { artist: "Fixture Artist".into(), title: "Fixture Song".into() }];
+        let key = AppState::preview_ids(&seeds).unwrap().remove(0);
+        *state.preview_seeds.lock().unwrap_or_else(|e| e.into_inner()) = seeds.clone();
+        *state.preview_session.lock().unwrap_or_else(|e| e.into_inner()) =
+            PreviewSession::start_prefetch(1, vec![TrackId::new("physical-seed").unwrap()], 0, vec![key.clone()]);
+        state.ensure_prepared(1, &key);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !started.is_file() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(started.is_file(), "fixture helper did not start");
+
+        let tapped_at = std::time::Instant::now();
+        state.preview_tap(&seeds, &key.0).expect("tap should be admitted");
+        assert!(tapped_at.elapsed() < Duration::from_secs(1), "tap waited for the helper");
+        let toggled_at = std::time::Instant::now();
+        state.discover_enable(&seeds).expect("Discover should enable");
+        state.discover_disable().expect("Discover should disable");
+        assert!(toggled_at.elapsed() < Duration::from_secs(1), "Discovery toggle waited for the helper");
+        state.cancel_preview_tasks();
+        let report = state.tasks.shutdown(Duration::from_secs(3));
+        assert!(!report.timed_out, "preview helper did not stop after cancellation");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -779,7 +843,7 @@ mod tests {
         // the REAL backend, which would otherwise blast tones through the
         // machine's speakers at the seeded volume while `cargo test` runs.
         // Zero volume keeps the full production path intact and silent.
-        *state.volume.lock().unwrap_or_else(|e| e.into_inner()) = 0.0;
+        state.volume.store(0.0f32.to_bits(), Ordering::Release);
         let dir = std::env::temp_dir().join(format!("luno-shuffle-back-{}", std::process::id()));
         let playlist_dir = dir.join("Unsorted");
         std::fs::create_dir_all(&playlist_dir).unwrap();
@@ -2293,11 +2357,10 @@ pub struct AppState {
     playback_status: Arc<Mutex<crate::contracts::types::PlaybackStatus>>,
     #[cfg(target_os = "macos")]
     audio: Arc<Mutex<Box<dyn AudioBackend + Send>>>,
-    /// Intended master volume (`0.0..=1.0`). Tracked at the state level so the
-    /// value survives backend state replacement on every track load, seeded
-    /// from persisted settings, and is reapplied whenever a new track starts.
+    /// Master volume shared with the output callback. A mute must not wait
+    /// behind a slow producer shutdown or track handoff on the audio mutex.
     #[cfg(target_os = "macos")]
-    volume: Arc<Mutex<f32>>,
+    volume: Arc<AtomicU32>,
     /// Stall watchdog for the macOS heartbeat: `Some((last_position, ticks))`
     /// while status is Playing and the backend position has stopped advancing.
     /// A silent cpal stream death (device switch) freezes `played_frames`
@@ -2492,6 +2555,8 @@ impl AppState {
     /// Constructor with a caller-owned preview store.  Tests and embedders
     /// use this to isolate preview assets instead of the HOME default.
     pub fn with_preview_store(preview_store: PreviewAssetStore, task_limit: usize) -> Self {
+        #[cfg(target_os = "macos")]
+        let volume = Arc::new(AtomicU32::new(if cfg!(test) { 0.0f32.to_bits() } else { 1.0f32.to_bits() }));
         let track_paths: Arc<Mutex<BTreeMap<TrackId, PathBuf>>> =
             Arc::new(Mutex::new(BTreeMap::new()));
         let artwork_resolver = {
@@ -2581,14 +2646,14 @@ impl AppState {
                 #[cfg(test)]
                 { Box::new(FakeBackend::new()) as Box<dyn AudioBackend + Send> }
                 #[cfg(not(test))]
-                { Box::new(CpalSymphoniaBackend::new()) as Box<dyn AudioBackend + Send> }
+                { Box::new(CpalSymphoniaBackend::with_volume(volume.clone())) as Box<dyn AudioBackend + Send> }
             })),
             #[cfg(target_os = "macos")]
             // TESTS ARE ALWAYS SILENT: the harness initializes volume to 0 so
             // no unit test can ever emit audio through real speakers (a
             // shuffle regression test once blasted 30 s tones at full
             // volume). Production still seeds from persisted settings.
-            volume: Arc::new(Mutex::new(if cfg!(test) { 0.0 } else { 1.0 })),
+            volume,
             #[cfg(target_os = "macos")]
             playback_stall: Arc::new(Mutex::new(None)),
             video_mode_enabled: Arc::new(Mutex::new(false)),
@@ -3614,7 +3679,7 @@ impl AppState {
                             state.publish_preview_snapshot(generation);
                             state.handle_session_action(action, generation);
                             state.ensure_window_prepared(generation);
-                            state.mark_preview_asset_failed_in_discover(&key, &error);
+                            state.mark_preview_asset_failed_in_discover(&key);
                             let prefetch_active = session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.is_active() && s.is_prefetch());
                             if !prefetch_active { state.kick_video_pipeline(); }
                         }
@@ -3739,21 +3804,17 @@ impl AppState {
     fn play_preview_audio(&self, key: TrackId, path: PathBuf, generation: u64) {
         self.tasks.cancel_key("playback-heartbeat");
         self.tasks.cancel_key("preview-heartbeat");
-        // The preview session is authoritative while it owns the output.
-        // Stop the library stream before the async load starts; otherwise the
-        // UI can report the prepared preview as current while the old stream
-        // continues playing during the load window.
-        if let Ok(mut backend) = self.audio.lock() { let _ = backend.stop(); }
+        // The backend handoff can wait for a cold producer. Keep it on the
+        // playback worker so a ready-row tap returns before that wait.
         let state = self.clone();
         let task_key = format!("preview-audio-{generation}");
         self.preview_tasks.lock().unwrap_or_else(|e| e.into_inner()).push(task_key.clone());
         let _ = self.submit(self.generation(task_key, Generation(generation)), move |token| {
             if token.is_cancelled() { return; }
-            let volume = *state.volume.lock().unwrap_or_else(|e| e.into_inner());
             let loaded = {
                 let mut backend = match state.audio.lock() { Ok(backend) => backend, Err(_) => return };
                 match backend.load_streaming(&path) {
-                    Ok(info) => { backend.set_volume(volume); info }
+                    Ok(info) => info,
                     Err(error) => {
                         eprintln!("[luno-preview] audio load failed for {}: {error:?}", key.0);
                         drop(backend);
@@ -3914,7 +3975,7 @@ impl AppState {
             raised.push(task_key.clone());
         }
         let state = self.clone();
-        let store = self.preview_store.clone();
+        let store = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).clone();
         // The store and session generations are independent counters; the
         // store's own download() gates publishes against its generation, so
         // tasks capture the store generation at raise time.
@@ -3965,7 +4026,7 @@ fn prepare_one_safely(key: &TrackId, work: impl FnOnce() -> PreviewCompletion) -
 }
 
 fn prepare_one(
-    store: &Arc<Mutex<PreviewAssetStore>>,
+    store: &PreviewAssetStore,
     store_generation: u64,
     key: &TrackId,
     query: &str,
@@ -3985,8 +4046,7 @@ fn prepare_one(
         // recommendation.
         format!("ytsearch1:{query}")
     };
-    let store = store.lock().unwrap_or_else(|e| e.into_inner());
-    match prepare_preview_with_progress(&store, &key.0, store_generation, &source, helper, ffmpeg, task_token, progress) {
+    match prepare_preview_with_progress(store, &key.0, store_generation, &source, helper, ffmpeg, task_token, progress) {
         Ok(path) => PreviewCompletion::Prepared { key: key.0.clone(), path },
         Err(crate::preview::assets::AssetError::Failed(message)) => failed(message),
         Err(crate::preview::assets::AssetError::Timeout) => failed("recommendation preparation timed out".into()),
@@ -4404,14 +4464,12 @@ impl AppState {
                         eprintln!("[luno-discover] preparation failed for {key}: {error}");
                         let id = TrackId::new(key.clone()).unwrap_or_else(|_| TrackId(key.clone()));
                         let failed_was_current = state.playback.lock().unwrap_or_else(|e| e.into_inner()).current() == Some(&id);
-                        let first = {
+                        {
                             let mut mode = discover.lock().unwrap_or_else(|e| e.into_inner());
-                            mode.as_mut().map(|mode| {
-                                let first = mode.note_failure(generation, &id);
+                            if let Some(mode) = mode.as_mut() {
                                 let _ = mode.failed_asset(generation, &id);
-                                first
-                            }).unwrap_or(false)
-                        };
+                            }
+                        }
                         // Remove the failed id from the transport projection,
                         // preserve the audible identity when possible, and
                         // continue preparing the rest of the rolling window.
@@ -4421,22 +4479,6 @@ impl AppState {
                         #[cfg(target_os = "macos")]
                         if failed_was_current {
                             let _ = state.start_current_track();
-                        }
-                        // Discover is user-initiated and otherwise silent (the
-                        // transport simply parks when nothing stages); report
-                        // the first failure once so the dead-end is explicable.
-                        if first {
-                            // Mint a fresh generation: the frontend filters
-                            // `error` events by the shared errors watermark, and
-                            // the session generation captured at enable can be
-                            // older than an unrelated error published since.
-                            state.publish(state.event(state.next_generation(), Event::Error {
-                                error: ContractError {
-                                    code: ErrorCode::Unavailable,
-                                    message: format!("Discovery could not prepare recommendations: {error}"),
-                                    retryable: true,
-                                },
-                            }));
                         }
                     }
                     Err(_) => {}
@@ -4557,34 +4599,23 @@ impl AppState {
         }
     }
 
-    fn mark_preview_asset_failed_in_discover(&self, key: &str, error: &str) {
+    fn mark_preview_asset_failed_in_discover(&self, key: &str) {
         let Some(generation) = self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
             .filter(|mode| mode.is_active())
             .map(|mode| mode.generation()) else { return };
         let id = TrackId::new(key.to_owned()).unwrap_or_else(|_| TrackId(key.to_owned()));
         let failed_was_current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current() == Some(&id);
-        let first = {
+        {
             let mut discover = self.discover.lock().unwrap_or_else(|e| e.into_inner());
-            discover.as_mut().map(|mode| {
-                let first = mode.note_failure(generation, &id);
+            if let Some(mode) = discover.as_mut() {
                 let _ = mode.failed_asset(generation, &id);
-                first
-            }).unwrap_or(false)
-        };
+            }
+        }
         self.discover_sync_queue();
         self.discover_refill(generation);
         self.publish_discover_snapshot(generation);
         #[cfg(target_os = "macos")]
         if failed_was_current { let _ = self.start_current_track(); }
-        if first {
-            self.publish(self.event(self.next_generation(), Event::Error {
-                error: ContractError {
-                    code: ErrorCode::Unavailable,
-                    message: format!("Discovery could not prepare recommendations: {error}"),
-                    retryable: true,
-                },
-            }));
-        }
     }
 
     fn ensure_discover_prepared(&self, generation: u64, key: &TrackId) {
@@ -4637,7 +4668,7 @@ impl AppState {
             raised.push(task_key.clone());
         }
         let state = self.clone();
-        let store = self.preview_store.clone();
+        let store = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let store_generation = self.preview_store.lock().unwrap_or_else(|e| e.into_inner()).current_generation();
         let helper = self.preview_helper.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let ffmpeg = self.preview_ffmpeg.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -6007,10 +6038,7 @@ impl AppState {
         #[cfg(target_os = "macos")]
         if let Some(volume) = config.volume {
             let volume = volume.clamp(0.0, 1.0) as f32;
-            *self.volume.lock().unwrap_or_else(|e| e.into_inner()) = volume;
-            if let Ok(mut backend) = self.audio.lock() {
-                backend.set_volume(volume);
-            }
+            self.volume.store(volume.to_bits(), Ordering::Release);
         }
         if let Some(paths) = config.favorite_songs {
             let mut favorites = self.favorites.lock().unwrap_or_else(|e| e.into_inner());
@@ -7048,9 +7076,6 @@ fn promotion_error(error: PromotionError) -> ContractError {
             eprintln!("[luno-play] load cancelled for {track_id:?}");
             return;
         }
-        // Snapshot the intended volume before locking audio so `set_volume`
-        // (volume-then-audio lock order) can never deadlock against this task.
-        let desired_volume = *self.volume.lock().unwrap_or_else(|e| e.into_inner());
         // Do not synchronously probe the file here. The streaming producer
         // already has to open the container, and the old duplicate pre-probe
         // was the entire multi-second first-click delay on cold/cloud files.
@@ -7073,13 +7098,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
                 }
             };
             match backend.load_streaming_with_duration(&path, known_duration) {
-                Ok(info) => {
-                    // A fresh load replaces the output state; reapply the
-                    // intended volume so the new track starts at the level the
-                    // user set (covers tracks chosen before any playback).
-                    backend.set_volume(desired_volume);
-                    info
-                }
+                Ok(info) => info,
                 Err(error) => {
                     drop(backend);
                     eprintln!("[luno-play] load_streaming failed: {error:?}");
@@ -7524,13 +7543,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
     #[cfg(target_os = "macos")]
     fn set_volume(&self, volume: f32) -> Result<Value, ContractError> {
         let volume = volume.clamp(0.0, 1.0);
-        // Record the intended volume first (guards are dropped before the
-        // audio lock is taken below, keeping a single lock order), then apply
-        // it to the live backend so current playback responds immediately.
-        *self.volume.lock().unwrap_or_else(|e| e.into_inner()) = volume;
-        if let Ok(mut backend) = self.audio.lock() {
-            backend.set_volume(volume);
-        }
+        self.volume.store(volume.to_bits(), Ordering::Release);
         Ok(Value::Null)
     }
 

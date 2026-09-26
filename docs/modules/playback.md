@@ -102,6 +102,9 @@ What it does not own: library snapshots and track identity
 - Pause never gates staging: videos stage and publish `Ready` while
   paused; resume runs a catch-up pipeline pass when current video is
   unresolved. Dead `Loading` slots (no live worker) restage.
+- Master volume is shared atomically with the macOS output callback. Mute
+  applies during a slow producer shutdown or track load, without waiting for
+  the backend mutex, and survives each output-state replacement.
 - Video responses are small ranged windows (stock asset protocol buffered
   whole files and froze the window on 100 MB+ MP4s).
 - Media keys control Luno via MPRemoteCommandCenter instead of falling

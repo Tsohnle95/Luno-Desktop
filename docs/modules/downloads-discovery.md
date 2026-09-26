@@ -89,6 +89,8 @@ What it does not own: library snapshots and promotion targets
 - Preview preparation/playback failures surface only through the preview
   snapshot's per-row `unavailable` state; the retrying prefetch pipeline does
   not publish global error events (which stacked an undismissable banner).
+  Discover uses the same per-row failure state and advances past a failed
+  recommendation without publishing a session-wide error banner.
 - Discover mode projects its rolling recommendation window into the queue
   immediately — pending items are prepared on selection — so Next/Previous walk
   the temporary list instead of falling through to the physical library. Its
@@ -112,6 +114,12 @@ What it does not own: library snapshots and promotion targets
   a driver panic closes the session and marks its unprepared window rows
   unavailable. The cancellation watcher is joined on every worker exit. Plain
   metadata queries go directly to the managed helper as `ytsearch1:` sources.
+  If its first YouTube result requires age verification, preview preparation
+  tries a bounded set of alternate public search results; cancellation remains
+  effective between candidates. A worker keeps only a cloned store handle
+  during helper/encode work, so a new tap, Discover toggle, or save lookup does
+  not wait on the helper. Store generation changes, cleanup, and publication
+  share a short lock that prevents stale files from being published.
 - Preview percentages are computed from yt-dlp's machine-readable downloaded
   and exact/estimated total bytes. Helper startup, source resolution, zero-byte
   samples, and unknown totals remain indeterminate; transfer values stay

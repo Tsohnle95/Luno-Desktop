@@ -18,6 +18,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use symphonia::core::{
@@ -33,13 +34,13 @@ use symphonia::core::{
 /// decode while staying bounded.
 const BUFFER_CAPACITY_FRAMES: usize = SAMPLE_RATE as usize * 2;
 
-#[derive(Default)]
 pub struct CpalSymphoniaBackend {
     track: Option<TrackInfo>,
     state: Option<Arc<Mutex<OutputState>>>,
     commands: Option<mpsc::Sender<StreamCommand>>,
     thread: Option<JoinHandle<()>>,
     producer: Option<ProducerHandle>,
+    master_volume: Arc<AtomicU32>,
 }
 
 struct ProducerHandle {
@@ -63,7 +64,6 @@ struct OutputState {
     playing: bool,
     /// The producer reached EOF (or a fatal decode error).
     ended: bool,
-    volume: f32,
     /// Frame target requested by `seek`; consumed by the producer thread.
     seek_to: Option<u64>,
     /// cpal reported an error on the live output stream (device switched,
@@ -78,7 +78,11 @@ enum StreamCommand {
 
 impl CpalSymphoniaBackend {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_volume(Arc::new(AtomicU32::new(1.0f32.to_bits())))
+    }
+
+    pub fn with_volume(master_volume: Arc<AtomicU32>) -> Self {
+        Self { track: None, state: None, commands: None, thread: None, producer: None, master_volume }
     }
 
     fn open_track(
@@ -262,7 +266,7 @@ impl CpalSymphoniaBackend {
         }
     }
 
-    fn stream(state: Arc<Mutex<OutputState>>) -> Result<Stream, BackendError> {
+    fn stream(state: Arc<Mutex<OutputState>>, master_volume: Arc<AtomicU32>) -> Result<Stream, BackendError> {
         let device = cpal::default_host()
             .default_output_device()
             .ok_or_else(|| BackendError::Device("no default output device".into()))?;
@@ -285,7 +289,7 @@ impl CpalSymphoniaBackend {
                 &config,
                 move |data: &mut [f32], _| {
                     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-                    let volume = state.volume;
+                    let volume = f32::from_bits(master_volume.load(Ordering::Acquire));
                     for frame in data.chunks_mut(CHANNELS as usize) {
                         let mut left = 0.0f32;
                         let mut right = 0.0f32;
@@ -323,9 +327,10 @@ impl CpalSymphoniaBackend {
     fn start_stream(&mut self, state: Arc<Mutex<OutputState>>) -> Result<(), BackendError> {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (commands_tx, commands_rx) = mpsc::channel();
+        let master_volume = self.master_volume.clone();
         let thread = std::thread::Builder::new()
             .name("luno-audio-output".into())
-            .spawn(move || match Self::stream(state) {
+            .spawn(move || match Self::stream(state, master_volume) {
                 Ok(stream) => {
                     if stream.play().is_err() {
                         let _ = ready_tx.send(Err(BackendError::Device(
@@ -414,14 +419,6 @@ impl AudioBackend for CpalSymphoniaBackend {
         }
         self.stop_stream();
         self.stop_producer();
-        // Loading replaces the output state, so carry the master volume across
-        // it: the volume slider is a master output setting, not per-track, and
-        // a fresh track must never reset the user's volume back to 1.0.
-        let prior_volume = self
-            .state
-            .as_ref()
-            .map(|state| state.lock().map(|state| state.volume).unwrap_or(1.0))
-            .unwrap_or(1.0);
         let duration = known_duration;
         let info = TrackInfo {
             path: path.to_path_buf(),
@@ -437,7 +434,6 @@ impl AudioBackend for CpalSymphoniaBackend {
             duration,
             playing: false,
             ended: false,
-            volume: prior_volume.clamp(0.0, 1.0),
             seek_to: None,
             failed: false,
         }));
@@ -448,9 +444,7 @@ impl AudioBackend for CpalSymphoniaBackend {
     }
 
     fn set_volume(&mut self, volume: f32) {
-        if let Some(state) = &self.state {
-            state.lock().unwrap_or_else(|e| e.into_inner()).volume = volume.clamp(0.0, 1.0);
-        }
+        self.master_volume.store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Release);
     }
 
     fn play(&mut self) -> Result<(), BackendError> {
@@ -572,7 +566,7 @@ mod tests {
         let path = wav_fixture("reload");
         backend.load_streaming(&path).expect("first track should load");
         assert_eq!(
-            backend.state.as_ref().unwrap().lock().unwrap_or_else(|e| e.into_inner()).volume,
+            f32::from_bits(backend.master_volume.load(Ordering::Acquire)),
             1.0,
             "a fresh backend starts at full volume"
         );
@@ -580,7 +574,7 @@ mod tests {
         // A transition reloads the output state; the user's volume must carry
         // over instead of snapping back to 1.0.
         backend.load_streaming(&path).expect("reload should swap the output state");
-        let volume = backend.state.as_ref().unwrap().lock().unwrap_or_else(|e| e.into_inner()).volume;
+        let volume = f32::from_bits(backend.master_volume.load(Ordering::Acquire));
         assert!(
             (volume - 0.3).abs() < 1e-6,
             "master volume must survive a track reload, got {volume}"

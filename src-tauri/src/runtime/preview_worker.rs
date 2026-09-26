@@ -195,29 +195,84 @@ mod cancellation_tests {
 /// the provider's HLS audio rendition after a direct-audio 403 or a successful
 /// helper exit that produced no usable file.
 fn fetch_source(helper: &Path, query: &str, output: &Path, cancel: &AtomicBool, progress: Arc<dyn Fn(u8) + Send + Sync>) -> Result<(), String> {
+    fetch_source_with_search(helper, query, output, cancel, progress, crate::download::search::search_youtube_web)
+}
+
+fn fetch_source_with_search(
+    helper: &Path,
+    query: &str,
+    output: &Path,
+    cancel: &AtomicBool,
+    progress: Arc<dyn Fn(u8) + Send + Sync>,
+    search: impl FnOnce(&str, usize) -> Result<Vec<crate::contracts::types::SearchResult>, String>,
+) -> Result<(), String> {
     if is_cancelled(cancel) { return Err("cancelled".into()); }
     let worker_home = temp_output("home");
     fs::create_dir_all(&worker_home).map_err(|error| format!("preview helper home could not be created: {error}"))?;
     let mut last_percent = 0;
-    let first = fetch_source_attempt(helper, query, output, &worker_home, cancel, &progress, &mut last_percent, None);
+    let first = fetch_source_with_format_fallback(helper, query, output, &worker_home, cancel, &progress, &mut last_percent);
     let result = match first {
+        Err(error) if !is_cancelled(cancel) && is_age_restricted(&error) && query.starts_with("ytsearch1:") => {
+            let search_query = query.trim_start_matches("ytsearch1:");
+            match search(search_query, 6) {
+                Ok(candidates) => {
+                    let mut last_error = error.clone();
+                    let mut attempted = std::collections::HashSet::new();
+                    let mut recovered = None;
+                    for candidate in candidates.into_iter().take(6) {
+                        if is_cancelled(cancel) { break; }
+                        let Some(url) = candidate.url else { continue };
+                        let Some(id) = crate::download::search::youtube_video_id(&url) else { continue };
+                        if error.contains(&id) || !attempted.insert(id.clone()) { continue; }
+                        let source = crate::video::source::canonical_url(&id);
+                        match fetch_source_with_format_fallback(helper, &source, output, &worker_home, cancel, &progress, &mut last_percent) {
+                            Ok(()) => { recovered = Some(()); break; }
+                            Err(next_error) => last_error = next_error,
+                        }
+                    }
+                    if is_cancelled(cancel) { Err("cancelled".into()) }
+                    else { recovered.ok_or_else(|| format!("age-restricted source; alternatives unavailable: {last_error}")) }
+                }
+                Err(search_error) => Err(format!("{error}; alternative source search failed: {search_error}")),
+            }
+        }
+        result => result,
+    };
+    let _ = fs::remove_dir_all(&worker_home);
+    result
+}
+
+fn fetch_source_with_format_fallback(
+    helper: &Path,
+    query: &str,
+    output: &Path,
+    worker_home: &Path,
+    cancel: &AtomicBool,
+    progress: &Arc<dyn Fn(u8) + Send + Sync>,
+    last_percent: &mut u8,
+) -> Result<(), String> {
+    let first = fetch_source_attempt(helper, query, output, worker_home, cancel, progress, last_percent, None);
+    match first {
         Err(error) if !is_cancelled(cancel) && should_retry_preview_source(&error) => {
             let _ = fs::remove_file(output);
             fetch_source_attempt(
                 helper,
                 query,
                 output,
-                &worker_home,
+                worker_home,
                 cancel,
-                &progress,
-                &mut last_percent,
+                progress,
+                last_percent,
                 Some("bestaudio[protocol^=m3u8]/bestaudio/best"),
             ).map_err(|fallback| format!("direct audio failed ({error}); HLS fallback failed ({fallback})"))
         }
         result => result,
-    };
-    let _ = fs::remove_dir_all(&worker_home);
-    result
+    }
+}
+
+fn is_age_restricted(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("sign in to confirm your age") || error.contains("age-restricted") || error.contains("age restricted")
 }
 
 fn should_retry_preview_source(error: &str) -> bool {
@@ -470,6 +525,37 @@ mod tests {
         assert!(error.contains("exit status: 7"), "status missing: {error}");
         assert!(error.contains("requested format is unavailable"), "stderr missing: {error}");
         assert!(!output.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn age_gated_search_result_tries_the_next_public_candidate() {
+        let root = std::env::temp_dir().join(format!("luno-preview-age-fallback-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        fs::write(&helper, "#!/bin/sh\nprintf '%s\\n' \"$LUNO_DOWNLOAD_SOURCE\" >> \"$1.sources\"\ncase \"$LUNO_DOWNLOAD_SOURCE\" in\n  *abc123def45*) printf 'ID3playable bytes' > \"$1\" ;;\n  *) echo 'ERROR: [youtube] Iyy3YOpxL2k: Sign in to confirm your age.' >&2; exit 1 ;;\nesac\n").unwrap();
+        let mut permissions = fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper, permissions).unwrap();
+        let output = root.join("source.m4a");
+        let source = |id: &str| {
+            let url = format!("https://www.youtube.com/watch?v={id}");
+            crate::contracts::types::SearchResult {
+                provider: "youtube".into(), query: url.clone(), title: "Fixture".into(),
+                artist: None, duration: None, thumbnail_url: None, url: Some(url),
+            }
+        };
+        fetch_source_with_search(&helper, "ytsearch1:artist song", &output, &AtomicBool::new(false), Arc::new(|_| {}),
+            |query, limit| {
+                assert_eq!(query, "artist song");
+                assert_eq!(limit, 6);
+                Ok(vec![source("Iyy3YOpxL2k"), source("abc123def45")])
+            })
+            .expect("the second candidate should prepare the preview");
+        assert_eq!(fs::read(output).unwrap(), b"ID3playable bytes");
+        assert_eq!(fs::read_to_string(root.join("source.m4a.sources")).unwrap(),
+            "ytsearch1:artist song\nhttps://www.youtube.com/watch?v=abc123def45\n");
         let _ = fs::remove_dir_all(root);
     }
 

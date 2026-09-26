@@ -9,6 +9,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MAX_PREVIEW_BYTES: u64 = 512 * 1024 * 1024;
@@ -48,7 +49,8 @@ impl Write for LimitedWriter {
     fn flush(&mut self) -> io::Result<()> { self.file.flush() }
 }
 
-pub struct PreviewAssetStore { root: PathBuf, generation: u64 }
+#[derive(Clone)]
+pub struct PreviewAssetStore { root: PathBuf, generation: Arc<Mutex<u64>> }
 
 impl PreviewAssetStore {
     /// Uses `~/.luno_previews`, never a child of the configured music root.
@@ -60,11 +62,15 @@ impl PreviewAssetStore {
         let root = root.into();
         fs::create_dir_all(&root)?;
         cleanup_dir(&root, &[])?; // startup cleanup; no previous session is trusted
-        Ok(Self { root, generation: 0 })
+        Ok(Self { root, generation: Arc::new(Mutex::new(0)) })
     }
     pub fn root(&self) -> &Path { &self.root }
-    pub fn begin_generation(&mut self) -> u64 { self.generation += 1; self.generation }
-    pub fn current_generation(&self) -> u64 { self.generation }
+    pub fn begin_generation(&mut self) -> u64 {
+        let mut generation = self.generation.lock().unwrap_or_else(|e| e.into_inner());
+        *generation += 1;
+        *generation
+    }
+    pub fn current_generation(&self) -> u64 { *self.generation.lock().unwrap_or_else(|e| e.into_inner()) }
 
     pub fn ready_path(&self, key: &str) -> Result<PathBuf, AssetError> {
         let path = self.root.join(format!("{}.aac", safe_key(key)?));
@@ -79,7 +85,7 @@ impl PreviewAssetStore {
     /// Writes a preview to a private partial file and atomically publishes it.
     pub fn download(&self, key: &str, generation: u64, cancel: &AtomicBool, work: impl FnOnce(&mut LimitedWriter) -> Result<(), String> + Send + 'static) -> Result<PathBuf, AssetError> {
         let final_path = self.ready_path(key)?;
-        if generation != self.generation { return Err(AssetError::StaleGeneration); }
+        if generation != self.current_generation() { return Err(AssetError::StaleGeneration); }
         let partial = self.partial_path(&final_path)?;
         let file = OpenOptions::new().write(true).create_new(true).open(&partial)?;
         let result = self.deadline(generation, cancel, DOWNLOAD_DEADLINE, move || {
@@ -89,7 +95,10 @@ impl PreviewAssetStore {
         match result {
             Ok(()) => {
                 if cancel.load(Ordering::Acquire) { let _ = fs::remove_file(&partial); return Err(AssetError::Cancelled); }
-                if generation != self.generation { let _ = fs::remove_file(&partial); return Err(AssetError::StaleGeneration); }
+                // Publication and invalidation share this short lock. A stale
+                // worker can finish its encode but cannot rename over a new seed.
+                let active = self.generation.lock().unwrap_or_else(|e| e.into_inner());
+                if generation != *active { let _ = fs::remove_file(&partial); return Err(AssetError::StaleGeneration); }
                 let bytes = fs::metadata(&partial)?.len();
                 if bytes == 0 { let _ = fs::remove_file(&partial); return Err(AssetError::Failed("empty preview".into())); }
                 if bytes > MAX_PREVIEW_BYTES { let _ = fs::remove_file(&partial); return Err(AssetError::TooLarge); }
@@ -100,7 +109,10 @@ impl PreviewAssetStore {
         }
     }
 
-    pub fn cleanup_session(&self, preserve: Option<&Path>) -> Result<(), AssetError> { cleanup_dir(&self.root, preserve.map(|p| p.to_path_buf()).as_slice()).map_err(Into::into) }
+    pub fn cleanup_session(&self, preserve: Option<&Path>) -> Result<(), AssetError> {
+        let _generation = self.generation.lock().unwrap_or_else(|e| e.into_inner());
+        cleanup_dir(&self.root, preserve.map(|p| p.to_path_buf()).as_slice()).map_err(Into::into)
+    }
     pub fn mark_unavailable(&self, key: impl Into<String>, generation: u64) -> Asset { Asset { key: key.into(), generation, state: AssetState::Unavailable, path: None } }
 
     fn partial_path(&self, final_path: &Path) -> Result<PathBuf, AssetError> {
@@ -110,13 +122,13 @@ impl PreviewAssetStore {
     }
     fn deadline<T: Send + 'static>(&self, generation: u64, cancel: &AtomicBool, limit: Duration, work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, AssetError> {
         if cancel.load(Ordering::Acquire) { return Err(AssetError::Cancelled); }
-        if generation != self.generation { return Err(AssetError::StaleGeneration); }
+        if generation != self.current_generation() { return Err(AssetError::StaleGeneration); }
         let (tx, rx) = mpsc::sync_channel(1);
         std::thread::spawn(move || { let _ = tx.send(work()); });
         let started = Instant::now();
         loop {
             if cancel.load(Ordering::Acquire) { return Err(AssetError::Cancelled); }
-            if generation != self.generation {
+            if generation != self.current_generation() {
                 cancel.store(true, Ordering::Release);
                 return Err(AssetError::StaleGeneration);
             }
@@ -143,4 +155,36 @@ fn contained(root: &Path, path: &Path) -> bool { path.parent().is_some_and(|p| p
 fn cleanup_dir(root: &Path, preserve: &[PathBuf]) -> io::Result<()> {
     for entry in fs::read_dir(root)? { let path = entry?.path(); if preserve.iter().any(|p| p == &path) { continue; } if path.is_file() { let _ = fs::remove_file(path); } }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generation_change_does_not_wait_for_a_running_download_and_fences_publication() {
+        let root = std::env::temp_dir().join(format!("luno-preview-store-concurrency-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let mut store = PreviewAssetStore::at(&root).unwrap();
+        let generation = store.current_generation();
+        let worker_store = store.clone();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            worker_store.download("old-seed", generation, &AtomicBool::new(false), move |writer| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                writer.write_all(b"stale audio").map_err(|error| error.to_string())
+            })
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).expect("download should start");
+        let started = Instant::now();
+        store.begin_generation();
+        store.cleanup_session(None).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(250), "a new seed must not wait for the old helper");
+        release_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap(), Err(AssetError::StaleGeneration));
+        assert!(!store.ready_path("old-seed").unwrap().exists());
+        let _ = fs::remove_dir_all(root);
+    }
 }
