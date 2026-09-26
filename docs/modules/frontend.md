@@ -67,7 +67,9 @@ envelope shapes (`docs/modules/contracts.md`).
 - Recommendation rows select through `discover_select` while Discover is
   enabled and through focused preview otherwise. Their Add to playlist action
   remains available while audio is pending or unavailable; the backend reuses
-  a prepared file or starts the durable playlist download path.
+  a prepared file or starts the durable playlist download path. When a
+  selected recommendation is stopped, the footer Play control retries it
+  through the owning Discover or focused-preview command.
 - "Recently added" sorts by `Track.added_ms` (file mtime), not queue order;
   the library table shows that timestamp as Date added and derives playlist
   names from each playlist's ordered track IDs.

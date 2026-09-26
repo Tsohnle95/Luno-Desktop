@@ -48,6 +48,7 @@ Keep audible playback, the selected queue row, the song page, and the footer con
 
 - Playback snapshots need an explicit audible identity because restoring a physical queue can leave a recommendation sounding outside that queue. The queue index remains authoritative for transport position.
 - Discover's active snapshot takes presentation precedence over a preserved focused preview snapshot.
+- A stopped selected recommendation must route the footer Play control back through its owning mode; the library-only fallback left an enabled button with no action.
 - Review result: queue edits must either update the captured physical queue or clearly exit Discover; silent loss of edits on disable is unacceptable. Keep changes scoped to existing backend policy rather than duplicating it in React.
 
 ## Open risks / blockers

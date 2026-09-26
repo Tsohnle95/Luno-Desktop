@@ -117,6 +117,18 @@ export function playbackDisplayTrack(discoverEnabled: boolean, discoverCurrent: 
     : audible ?? previewCurrent ?? libraryCurrent;
 }
 
+export function stoppedPlaybackCommand(bridge: Pick<Bridge, "discoverSelect" | "previewTap" | "playWithContext"> | undefined, selected: Track | null, libraryCurrent: Track | null, discoverEnabled: boolean, recommendations: Recommendation[], queue: Track[]): Promise<unknown> | undefined {
+  if (!bridge || !selected) return;
+  const index = recommendations.findIndex((item) => previewKey(item.artist, item.title) === selected.id);
+  if (index >= 0) {
+    if (discoverEnabled) return bridge.discoverSelect(selected.id);
+    const seeds = recommendations.slice(Math.floor(index / 50) * 50, Math.floor(index / 50) * 50 + 50)
+      .map((item) => ({ artist: item.artist, title: item.title }));
+    return bridge.previewTap(seeds, selected.id);
+  }
+  if (libraryCurrent) return bridge.playWithContext(libraryCurrent.id, queue.map((item) => item.id));
+}
+
 export function videoCommandsEnabled(available: boolean, connected: boolean, source: string | null, status: VideoStageStatus | undefined): boolean {
   return available && connected && !!source && !!status && !["not-checked", "loading", "unavailable", "error", "fallback"].includes(status);
 }
@@ -1247,7 +1259,11 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
             {videoNotice && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}
           </div>; })()}<div className="luno-main-content luno-scroll">{content}</div></main>
         <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : panelQueueTracks} currentIndex={panelRecent ? null : panelQueueIndex} recent={panelRecent} backendAvailable={available} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => playQueueEntry(item, panelRecent ? recentTracks : panelQueueTracks)} onPlayNext={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.playNext([item.id])) : setCommandNotice("Only library tracks can be queued."))} onAddToQueue={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.addToQueue([item.id])) : setCommandNotice("Only library tracks can be queued."))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} onContextMenu={openTrackMenu} />}</aside>
-        <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={displayTrack} playback={projection.playback} artwork={audibleArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => runCommand(projection.playback?.status === "playing" ? bridge?.pause() : projection.playback?.status === "paused" ? bridge?.resume() : track && bridge?.playWithContext(track.id, queueTracks.map((item) => item.id)))} onNext={() => { if (!bridge || !available) return; runCommand(bridge.next()); }} onPrevious={() => { if (!bridge || !available) return; runCommand(bridge.previous()); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onSeek={(positionMs) => runCommand(bridge?.seek(positionMs))} onVolume={(value) => runCommand(bridge?.setVolume(value))} onVolumeCommit={(value) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }} onOpenTrack={() => navigate("song_page")} onTrackContextMenu={openTrackMenu} />}</footer>
+        <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={displayTrack} playback={projection.playback} artwork={audibleArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => {
+          if (projection.playback?.status === "playing") { runCommand(bridge?.pause()); return; }
+          if (projection.playback?.status === "paused") { runCommand(bridge?.resume()); return; }
+          runCommand(stoppedPlaybackCommand(bridge, displayTrack, track, !!projection.discover?.enabled, [...songRecs.items, ...discover.items], queueTracks));
+        }} onNext={() => { if (!bridge || !available) return; runCommand(bridge.next()); }} onPrevious={() => { if (!bridge || !available) return; runCommand(bridge.previous()); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onSeek={(positionMs) => runCommand(bridge?.seek(positionMs))} onVolume={(value) => runCommand(bridge?.setVolume(value))} onVolumeCommit={(value) => { runCommand(bridge?.setVolume(value)); saveSettings({ ...settings, volume: value }); }} onOpenTrack={() => navigate("song_page")} onTrackContextMenu={openTrackMenu} />}</footer>
     {route !== "settings" && <div className="luno-resize-handle" style={{ left: showSidebar ? 8 + sidebarWidth - 4 : 2 }} role="separator" aria-orientation="vertical" aria-label="Resize library panel width" onPointerDown={startPanelDrag("sidebar")} />}
     {route !== "settings" && !narrowViewport && <div className="luno-resize-handle" style={{ left: showQueue ? Math.max(0, shellWidth - 8 - queueWidth - 4) : Math.max(2, shellWidth - 6) }} role="separator" aria-orientation="vertical" aria-label="Resize queue panel width" onPointerDown={startPanelDrag("queue")} />}
     {contextMenu && <div className="luno-context-menu" role="menu" aria-label={contextMenu.track ? `${contextMenu.track.title} actions` : `${contextMenu.playlist?.name ?? "Playlist"} actions`} style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>

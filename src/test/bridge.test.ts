@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { backendCommandArgs, createBridge, isValidLibraryResponse, parseMigrationStatus, tauriTransport } from "../app/bridge";
 import { createBackendProjection, mergeVideoSnapshot } from "../state/backend_projection";
-import { currentVideoForTrack, focusedQueueProjection, playbackDisplayTrack, playRecentTrack, runBridgeCommand, safeVideoSource, videoCommandsEnabled, videoSurfaceActive } from "../app/Shell";
-import type { BridgeTransport } from "../app/bridge";
+import { currentVideoForTrack, focusedQueueProjection, playbackDisplayTrack, playRecentTrack, runBridgeCommand, safeVideoSource, stoppedPlaybackCommand, videoCommandsEnabled, videoSurfaceActive } from "../app/Shell";
+import type { Bridge, BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope, PlaybackSnapshot } from "../shared/contracts";
 import type { SaveState } from "../shared/contracts";
-import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot, isDiscoverSnapshot, isSearchResults, isPlaylistSyncIssues, isPlaylistSyncCandidates, isPlaylistSyncSelection } from "../shared/contracts";
+import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot, isDiscoverSnapshot, isSearchResults, isPlaylistSyncIssues, isPlaylistSyncCandidates, isPlaylistSyncSelection, previewKey } from "../shared/contracts";
 import type { Track } from "../shared/contracts";
 
 const nativeInvoke = vi.hoisted(() => vi.fn());
@@ -42,6 +42,22 @@ describe("typed IPC bridge and projection", () => {
     const snapshot: PlaybackSnapshot = { queue: ["seed"], current_index: 0, audible_track_id: "recommendation", shuffle: false, repeat: "off", position_ms: 10, duration_ms: null, status: "playing", generation: 1 };
     expect(isEventEnvelope(event({ type: "playback_snapshot", payload: { snapshot: { ...snapshot } } }))).toBe(true);
     expect(isEventEnvelope(event({ type: "playback_snapshot", payload: { snapshot: { ...snapshot, unexpected: true } } } as unknown as Event))).toBe(false);
+  });
+
+  it("retries a stopped recommendation through its active mode", async () => {
+    const discoverSelect = vi.fn(async () => ({}));
+    const previewTap = vi.fn(async () => ({}));
+    const playWithContext = vi.fn(async () => ({}));
+    const bridge = { discoverSelect, previewTap, playWithContext } as unknown as Pick<Bridge, "discoverSelect" | "previewTap" | "playWithContext">;
+    const recommendations = Array.from({ length: 60 }, (_, index) => ({ artist: "Artist", title: `Track ${index}`, match_score: 1, artwork_url: null }));
+    const library: Track = { id: "seed", path: null, title: "Seed", artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null };
+    const selected = { ...library, id: previewKey("Artist", "Track 55") };
+    await stoppedPlaybackCommand(bridge, selected, library, true, recommendations, [library]);
+    expect(discoverSelect).toHaveBeenCalledWith(selected.id);
+    await stoppedPlaybackCommand(bridge, selected, library, false, recommendations, [library]);
+    expect(previewTap).toHaveBeenCalledWith(recommendations.slice(50).map(({ artist, title }) => ({ artist, title })), selected.id);
+    await stoppedPlaybackCommand(bridge, library, library, false, recommendations, [library]);
+    expect(playWithContext).toHaveBeenCalledWith(library.id, [library.id]);
   });
 
   it("passes Gate 5 fixture roots to the native command without changing no-arg calls", async () => {
