@@ -54,6 +54,8 @@ describe("typed IPC bridge and projection", () => {
     const selected = { ...library, id: previewKey("Artist", "Track 55") };
     await stoppedPlaybackCommand(bridge, selected, library, true, recommendations, [library]);
     expect(discoverSelect).toHaveBeenCalledWith(selected.id);
+    await stoppedPlaybackCommand(bridge, selected, null, true, [], []);
+    expect(discoverSelect).toHaveBeenCalledTimes(2);
     await stoppedPlaybackCommand(bridge, selected, library, false, recommendations, [library]);
     expect(previewTap).toHaveBeenCalledWith(recommendations.slice(50).map(({ artist, title }) => ({ artist, title })), selected.id);
     await stoppedPlaybackCommand(bridge, library, library, false, recommendations, [library]);

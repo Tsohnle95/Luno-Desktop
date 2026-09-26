@@ -120,8 +120,8 @@ export function playbackDisplayTrack(discoverEnabled: boolean, discoverCurrent: 
 export function stoppedPlaybackCommand(bridge: Pick<Bridge, "discoverSelect" | "previewTap" | "playWithContext"> | undefined, selected: Track | null, libraryCurrent: Track | null, discoverEnabled: boolean, recommendations: Recommendation[], queue: Track[]): Promise<unknown> | undefined {
   if (!bridge || !selected) return;
   const index = recommendations.findIndex((item) => previewKey(item.artist, item.title) === selected.id);
+  if (discoverEnabled && (index >= 0 || selected.id !== libraryCurrent?.id)) return bridge.discoverSelect(selected.id);
   if (index >= 0) {
-    if (discoverEnabled) return bridge.discoverSelect(selected.id);
     const seeds = recommendations.slice(Math.floor(index / 50) * 50, Math.floor(index / 50) * 50 + 50)
       .map((item) => ({ artist: item.artist, title: item.title }));
     return bridge.previewTap(seeds, selected.id);
