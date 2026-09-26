@@ -76,6 +76,9 @@ transfer manifests (`docs/modules/contracts.md`).
   count and byte budget and retries evicted entries lazily on the next
   visible pass — never eagerly from the eviction event (fetch-evict-refetch
   loop, 2026-09-09).
+- Library track rows, home song and playlist cards, and playlist cover mosaics use the
+  deterministic generated Luno artwork when a file has no usable embedded
+  cover, including recommendations saved to a physical playlist.
 - Served artwork is downscaled to a 512 px display size (`MAX_ARTWORK_DIM`):
   embedded covers are routinely far larger than anything the UI shows, and
   serving them raw put gigabytes of decoded bitmaps into the renderer.

@@ -1,7 +1,6 @@
 import { useEffect, useRef, type MouseEvent } from "react";
 import type { Playlist, Track } from "../shared/contracts";
-import { Artwork } from "../components/Artwork";
-import { IconMusicNote } from "../components/icons";
+import { RecommendationArtworkImage } from "../components/RecommendationArtwork";
 import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
 
 export interface PopularPlaylist { playlist: Playlist; plays: number }
@@ -60,6 +59,7 @@ export interface HomeViewProps {
   popularTracks: Track[];
   popularPlaylists: PopularPlaylist[];
   recentlyDownloaded: Track[];
+  tracksById?: ReadonlyMap<string, Track>;
   onPlayTrack?: (track: Track, context: Track[]) => void;
   /** Right-click on a track card (opens the shared track menu). */
   onTrackContextMenu?: (event: MouseEvent, track: Track) => void;
@@ -84,7 +84,7 @@ function greeting() {
  * Made for you → Favorites → Recently played → Most popular songs →
  * Most popular playlists → Recently downloaded.
  */
-export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, popularTracks, popularPlaylists, recentlyDownloaded, onPlayTrack, onTrackContextMenu, onOpenLibrary, onOpenRecent, onOpenDownloader, onOpenPlaylist, onArtwork, backendAvailable = true }: HomeViewProps) {
+export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, popularTracks, popularPlaylists, recentlyDownloaded, tracksById, onPlayTrack, onTrackContextMenu, onOpenLibrary, onOpenRecent, onOpenDownloader, onOpenPlaylist, onArtwork, backendAvailable = true }: HomeViewProps) {
   // One lazy artwork pass for every card on the page, budgeted FAIRLY
   // across sections: previously the first 40 deduplicated ids (Made-for-you
   // order) consumed the whole budget, so Favorites / Recently played / Most
@@ -119,7 +119,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
 
   const trackCard = (list: Track[]) => (track: Track) => (
     <button className="luno-card" type="button" key={track.id} onClick={() => playFrom(list)(track)} onContextMenu={(event) => onTrackContextMenu?.(event, track)} disabled={!backendAvailable}>
-      <Artwork className="luno-card-artwork" src={artwork[track.id] ?? track.artwork_url} alt="" size="100%" fallback={<span className="luno-artwork-fallback"><IconMusicNote size={26} /></span>} />
+      <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
       <span className="luno-card-copy"><strong title={track.title}>{track.title}</strong><small>{track.artist ?? "Unknown artist"}</small></span>
     </button>
   );
@@ -156,7 +156,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
         : <div className="luno-card-row luno-scroll">{recentTracks.map((track, index) => (
           // History can legitimately contain a track twice — index keeps keys unique.
           <button className="luno-card" type="button" key={`${track.id}-${index}`} onClick={() => playFrom(recentTracks)(track)} onContextMenu={(event) => onTrackContextMenu?.(event, track)} disabled={!backendAvailable}>
-            <Artwork className="luno-card-artwork" src={artwork[track.id] ?? track.artwork_url} alt="" size="100%" fallback={<span className="luno-artwork-fallback"><IconMusicNote size={26} /></span>} />
+            <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
             <span className="luno-card-copy"><strong title={track.title}>{track.title}</strong><small>{track.artist ?? "Unknown artist"}</small></span>
           </button>
         ))}</div>}
@@ -177,10 +177,9 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
           {popularPlaylists.map(({ playlist, plays }) => {
             const artId = playlist.ordered_track_ids[0];
             const art = artId ? artwork[artId] : undefined;
+            const firstTrack = artId ? tracksById?.get(artId) : undefined;
             return <button className="luno-card" type="button" key={playlist.id} onClick={() => onOpenPlaylist?.(playlist.id)}>
-              <span className="luno-card-artwork luno-artwork">{art
-                ? <img src={art} alt="" decoding="async" loading="lazy" />
-                : <span className="luno-artwork-fallback">♫</span>}</span>
+              <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={art ?? firstTrack?.artwork_url} artist={firstTrack?.artist ?? ""} title={firstTrack?.title ?? playlist.name} alt="" size="100%" />
               <span className="luno-card-copy"><strong title={playlist.name}>{playlist.name}</strong><small>{plays} {plays === 1 ? "play" : "plays"}</small></span>
             </button>;
           })}

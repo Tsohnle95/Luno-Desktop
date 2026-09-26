@@ -3,6 +3,7 @@ import type { LibrarySnapshot, PlaybackSnapshot, Playlist, Track } from "../shar
 import { TrackRow } from "../components/TrackRow";
 import { IconClock, IconClose, IconPlay, IconRefresh, IconSearch, IconShuffle } from "../components/icons";
 import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
+import { RecommendationArtworkImage } from "../components/RecommendationArtwork";
 
 export type LibraryScope = "all" | "unsorted" | "favorites" | string;
 export type LibrarySort = "A-Z" | "Z-A" | "Recently added" | "Duration";
@@ -278,10 +279,9 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
                   const src = coverArtwork[track.id] ?? track.artwork_url;
                   // Mosaic spans: 1 artwork fills the tile, 2 split columns, 3 put one full-height lead column.
                   const span = covers.length === 1 ? { gridColumn: "1 / -1", gridRow: "1 / -1" } : covers.length === 2 ? { gridRow: "1 / -1" } : covers.length === 3 && index === 0 ? { gridRow: "1 / -1" } : {};
-                  const background = src ? undefined : "rgba(255,255,255,0.08)";
-                  return src
-                    ? <img key={track.id} src={src} alt="" decoding="async" style={span} />
-                    : <span key={track.id} style={{ ...span, background, display: "grid", placeItems: "center", fontSize: 24 }}>♫</span>;
+                  return <span key={track.id} style={span}>
+                    <RecommendationArtworkImage artworkUrl={src} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
+                  </span>;
                 })}
             </div>
             <div className="luno-hero-info">

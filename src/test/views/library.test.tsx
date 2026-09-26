@@ -17,6 +17,7 @@ if (!libraryViewChecks.favorites || !libraryViewChecks.sort || libraryViewChecks
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LibraryView, normalizeFilterText, shuffledFirstTrack, virtualWindow } from "../../views/LibraryView";
+import { HomeView } from "../../views/HomeView";
 import { formatAddedDate } from "../../components/TrackRow";
 
 describe("normalizeFilterText", () => {
@@ -103,6 +104,31 @@ describe("library track metadata", () => {
     expect(html).toContain("Sep 25, 2026");
     expect(html).toContain('class="luno-track-cell-playlist luno-truncate" title="Road trip">Road trip</span>');
     expect(formatAddedDate(undefined)).toBe("—");
+  });
+});
+
+describe("library artwork fallback", () => {
+  it("uses generated Luno artwork for saved tracks without embedded art", () => {
+    const html = renderToStaticMarkup(<LibraryView snapshot={snapshot} />);
+    expect(html).toContain("luno-track-artwork-slot");
+    expect(html).toContain("luno-rec-art");
+    expect(html).not.toContain("luno-artwork-fallback");
+  });
+
+  it("uses the saved song's design for its Home playlist card", () => {
+    const html = renderToStaticMarkup(<HomeView
+      allTracksCount={1}
+      madeForYou={[]}
+      favorites={[]}
+      recentTracks={[]}
+      popularTracks={[]}
+      recentlyDownloaded={[]}
+      popularPlaylists={[{ playlist: { ...snapshot.playlists[0], name: "Saved songs", ordered_track_ids: ["a"] }, plays: 1 }]}
+      tracksById={new Map([["a", snapshot.tracks[0]]])}
+    />);
+    expect(html).toContain("luno-card-artwork");
+    expect(html).toContain("luno-rec-art");
+    expect(html).not.toContain("luno-artwork-fallback");
   });
 });
 

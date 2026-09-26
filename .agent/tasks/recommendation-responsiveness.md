@@ -10,7 +10,7 @@ Recommendation preparation must not hold shared controls behind a media helper; 
 
 - [x] A running preview helper does not block a new recommendation tap, Discovery toggle, or save lookup.
 - [x] An age gated first YouTube result is skipped through a bounded, cancellable fallback; a genuinely unavailable recommendation settles its row without a global error banner.
-- [ ] Saved playlist rows without artwork use the same generated design as recommendation, queue, and player surfaces.
+- [x] Saved playlist rows without artwork use the same generated design as recommendation, queue, and player surfaces.
 - [x] Volume changes remain effective during a preview handoff.
 
 ## Relevant context
@@ -36,8 +36,8 @@ Recommendation preparation must not hold shared controls behind a media helper; 
 
 | Phase | Scope | Status | Validation | Commit |
 |---|---|---|---|---|
-| 1 | Preview responsiveness, source recovery, and volume | complete | Focused regressions; 225 Rust tests pass, 5 ignored | pending |
-| 2 | Playlist artwork and final integration | active | 188 frontend tests, docs check, and build pass; diff review pending | pending |
+| 1 | Preview responsiveness, source recovery, and volume | complete | Focused regressions; 225 Rust tests pass, 5 ignored | `e8093407` |
+| 2 | Playlist artwork and final integration | complete | 189 frontend tests, docs check, and build pass | pending |
 
 ## Validation plan
 

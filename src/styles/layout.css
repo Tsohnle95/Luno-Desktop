@@ -176,6 +176,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .luno-hero-cover > * { min-width: 0; min-height: 0; }
 .luno-hero-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.luno-hero-cover > span > .luno-rec-art, .luno-hero-cover > span > .luno-artwork { width: 100%; height: 100%; }
 .luno-hero-info { min-width: 0; padding-bottom: 4px; }
 .luno-hero-eyebrow { margin: 0 0 4px; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
 .luno-hero-info h1 {
@@ -390,7 +391,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .luno-card:hover:not(:disabled) { background: var(--luno-bg-3); }
 .luno-card:disabled { cursor: default; opacity: 0.7; }
-.luno-card .luno-artwork { width: 100% !important; height: auto !important; flex: none !important; aspect-ratio: 1 / 1; border-radius: 7px; font-size: 30px; }
+.luno-card .luno-artwork, .luno-card .luno-rec-art { width: 100% !important; height: auto !important; flex: none !important; aspect-ratio: 1 / 1; border-radius: 7px; font-size: 30px; }
 .luno-card-copy { min-width: 0; display: grid; gap: 3px; }
 .luno-card-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .luno-card-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--luno-text-2); font-size: 12px; }
