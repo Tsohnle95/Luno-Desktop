@@ -96,13 +96,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   color: var(--luno-text-2); background: rgba(24, 24, 24, 0.9); cursor: pointer;
 }
 .luno-home-button:hover, .luno-home-button[aria-current="page"] { color: var(--luno-text); background: var(--luno-bg-3); }
-/* The nav fills the remaining bar width; Home + search travel as one centered
- * group and the route icons hug the right edge. */
-.luno-top-nav { flex: 1; display: flex; align-items: center; gap: 8px; margin-left: 4px; min-width: 0; }
-.luno-top-center { display: flex; align-items: center; gap: 8px; margin: 0 auto; min-width: 0; }
+/* Center the search field against the app window; Home sits in the equal-width
+ * left cell so it does not shift the field's center. */
+.luno-top-nav { position: absolute; inset: 0; display: block; flex: none; margin: 0; min-width: 0; pointer-events: none; }
+.luno-top-center { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: grid; grid-template-columns: 32px minmax(0, 1fr) 32px; align-items: center; gap: 8px; width: min(540px, calc(100vw - 168px)); margin: 0; min-width: 0; pointer-events: auto; }
+.luno-top-center .luno-home-button { grid-column: 1; justify-self: end; width: 32px; min-width: 32px; padding: 0; }
 .luno-search {
-  flex: 0 1 460px; display: flex; align-items: center; gap: 8px;
-  min-width: 150px;
+  grid-column: 2; display: flex; align-items: center; gap: 8px;
+  width: 100%; min-width: 0;
   height: 34px; padding: 0 14px;
   border-radius: 17px; background: rgba(24, 24, 24, 0.9); color: var(--luno-text-2);
 }
@@ -569,7 +570,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .luno-shell { display: flex; flex-direction: column; min-width: 0; padding: 0; gap: 4px; }
   .luno-topbar { flex: 0 0 auto; padding: 6px 8px; }
   .luno-search { height: 38px; }
-  .luno-top-nav { display: none; }
   .luno-sidebar { flex: 0 0 auto; max-height: 180px; }
   .luno-playlist-list { padding: 0 8px 8px; }
   .luno-main { flex: 1; min-height: 0; }
