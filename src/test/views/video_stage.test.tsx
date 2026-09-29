@@ -22,14 +22,14 @@ describe("Video stage download-progress ring", () => {
     // .is-determinate inside its :not() selector for the spin animation.
     expect(html).toContain('<span class="luno-video-progress" style=');
     expect(html).not.toContain('class="luno-video-progress is-determinate"');
-    expect(html).toContain("Preparing video…");
+    expect(html).not.toContain("Preparing video…");
   });
 
   it("renders a supplied zero ratio as determinate", () => {
     const html = renderToStaticMarkup(<VideoStage status="loading" downloadProgress={0} />);
     expect(html).toContain("is-determinate is-starting");
     expect(html).toContain(">0%</b>");
-    expect(html).toContain("Downloading video… 0%");
+    expect(html).not.toContain("Downloading video… 0%");
   });
 
   it("renders a determinate ring that fills with the reported percentage", () => {
@@ -38,7 +38,7 @@ describe("Video stage download-progress ring", () => {
     // Ring fill offset matches the 42 % geometry (0 = complete circle).
     expect(html).toContain(`stroke-dashoffset="${ringDashOffset(42)}"`);
     expect(html).toContain(">42%</b>");
-    expect(html).toContain("Downloading video… 42%");
+    expect(html).not.toContain("Downloading video… 42%");
   });
 
   it("completes the circle exactly at 100 %", () => {

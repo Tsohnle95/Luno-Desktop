@@ -80,12 +80,15 @@ describe("Music-mode hover controls", () => {
     );
     expect(html).not.toContain("Load music video");
     expect(html).not.toContain("Retry music video");
-    // Mode ON + no source + a failed/absent attempt => the only allowed
-    // manual control, phrased as a retry (never the old ghost button).
+    // A failed lookup stays inside the hover controls with its retry action;
+    // it no longer leaves a persistent popup over the artwork.
     const retryHtml = renderToStaticMarkup(
       <SongPageView track={track} backendAvailable videoConnection="connected" onLoadVideo={() => undefined} videoMode onVideoModeChange={() => undefined} video={{ status: "unavailable" }} />
     );
-    expect(retryHtml).toContain("Video unavailable");
+    expect(retryHtml).toContain("Error loading video");
+    expect(retryHtml).toContain('data-testid="video-hover-controls"');
+    expect(retryHtml).toContain(">Retry</button>");
+    expect(retryHtml).not.toContain('class="luno-video-status"');
     const idleHtml = renderToStaticMarkup(
       <SongPageView track={track} backendAvailable videoConnection="connected" onLoadVideo={() => undefined} videoMode onVideoModeChange={() => undefined} />
     );

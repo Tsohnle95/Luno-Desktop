@@ -101,6 +101,8 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
   void onFavoriteToggle;
   const backdropArtwork = video?.artworkUrl ?? displayedTrack?.artwork_url;
   const hasBackdropArtwork = !!backdropArtwork && !isPlaceholderArtwork(backdropArtwork);
+  const canRetryVideo = !!onLoadVideo && backendAvailable && videoConnection === "connected" && videoMode && !video?.src
+    && (video?.status === "unavailable" || video?.status === "error" || video?.status === "fallback");
   return <div ref={pageRef} className="luno-song-page" data-testid="song-page">
     <style>{songPageStyles}</style>
     <div className="luno-song-page-backdrop" aria-hidden="true" style={hasBackdropArtwork ? { backgroundImage: `url(${backdropArtwork})` } : undefined}>
@@ -109,7 +111,7 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
     {onVideoModeChange && backendAvailable && null}
     <div className="luno-song-page-scroll">
       <main className="luno-song-page-content">
-        <div className="luno-song-media-slot" data-video-slot="song-page"><VideoStage {...video} status={videoConnection === "loading" ? "loading" : videoConnection === "disconnected" ? "not-checked" : video?.status} artworkUrl={video?.artworkUrl ?? displayedTrack?.artwork_url} artworkAlt={displayedTrack ? `${displayedTrack.title} artwork` : "Artwork unavailable"} artworkArtist={displayedTrack?.artist} artworkTitle={displayedTrack?.title} videoModeEnabled={videoMode} onVideoModeChange={onVideoModeChange} /><span className="luno-video-connection" role="status">{videoConnection === "loading" ? "Connecting video preview..." : videoConnection === "disconnected" ? "Video preview unavailable; showing artwork." : null}</span>{onLoadVideo && backendAvailable && videoConnection === "connected" && videoMode && !video?.src && (video?.status === "unavailable" || video?.status === "error" || video?.status === "fallback") && <button type="button" className="luno-video-load" onClick={onLoadVideo}>{video?.status === "unavailable" ? "Video unavailable — retry?" : "Retry music video"}</button>}</div>
+        <div className="luno-song-media-slot" data-video-slot="song-page"><VideoStage {...video} status={videoConnection === "loading" ? "loading" : videoConnection === "disconnected" ? "not-checked" : video?.status} artworkUrl={video?.artworkUrl ?? displayedTrack?.artwork_url} artworkAlt={displayedTrack ? `${displayedTrack.title} artwork` : "Artwork unavailable"} artworkArtist={displayedTrack?.artist} artworkTitle={displayedTrack?.title} videoModeEnabled={videoMode} onVideoModeChange={onVideoModeChange} onRetry={canRetryVideo ? onLoadVideo : undefined} /><span className="luno-video-connection" role="status">{videoConnection === "loading" ? "Connecting video preview..." : videoConnection === "disconnected" ? "Video preview unavailable; showing artwork." : null}</span></div>
         <div className="luno-song-meta">{displayedTrack ? <><h1>{displayedTrack.title}</h1><p>{displayedTrack.artist || "Unknown artist"}</p></> : <><h1>Nothing playing</h1><p>Play a song to open its page.</p></>}</div>
         {onToggleDiscoverMode && <div className="luno-discover-toggle" style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "center", marginBottom: 16, flexWrap: "wrap" }}>
           <button type="button" aria-pressed={discoverMode} aria-label={discoverMode ? "Disable discovery mode" : "Enable discovery mode"} disabled={!backendAvailable} onClick={onToggleDiscoverMode}>{discoverMode ? "Discovery mode: On" : "Discovery mode: Off"}</button>
@@ -141,11 +143,13 @@ const songPageStyles = `
 .luno-video-stage { position:relative; width:100%; height:100%; background:var(--luno-bg-3); }
 .luno-video-stage video, .luno-video-stage .luno-artwork { display:block; width:100% !important; height:100% !important; object-fit:contain; }
 .luno-video-stage .luno-artwork img { object-fit:cover; }
-.luno-video-status { position:absolute; inset:auto 12px 12px; z-index:5; margin:0; padding:7px 10px; border-radius:6px; background:rgba(0,0,0,.7); color:var(--luno-text-2); text-align:center; }
 .luno-video-fullscreen { position:absolute; right:10px; top:10px; border:0; border-radius:6px; padding:6px 9px; color:var(--luno-text); background:rgba(0,0,0,.7); cursor:pointer; }
 .luno-video-hover-controls { position:absolute; right:10px; top:10px; z-index:6; display:flex; gap:6px; align-items:center; opacity:0; pointer-events:none; transition:opacity .15s ease; }
 .luno-video-stage:hover .luno-video-hover-controls, .luno-video-stage:focus-within .luno-video-hover-controls { opacity:1; pointer-events:auto; }
 .luno-video-hover-controls .luno-video-fullscreen { position:static; }
+.luno-video-hover-error { padding:6px 9px; border-radius:6px; background:rgba(0,0,0,.75); color:var(--luno-text); font-size:12px; white-space:nowrap; }
+.luno-video-hover-retry { border:0; border-radius:6px; padding:6px 9px; color:var(--luno-text); background:rgba(0,0,0,.75); font-size:12px; cursor:pointer; }
+.luno-video-hover-retry:hover { background:var(--luno-bg-4); }
 .luno-video-volume { display:flex; align-items:center; gap:7px; min-height:30px; padding:0 9px; border-radius:6px; color:#fff; background:rgba(0,0,0,.7); }
 .luno-video-volume input { width:min(22vw,150px); accent-color:var(--luno-green,#1db954); }
 .luno-video-mode-mini { position:relative; width:38px; height:22px; border:0; border-radius:999px; background:rgba(255,255,255,.28); cursor:pointer; transition:background .15s ease; }
@@ -153,8 +157,6 @@ const songPageStyles = `
 .luno-video-mode-mini .luno-video-mode-mini-knob { position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:999px; background:#fff; transition:left .15s ease; }
 .luno-video-mode-mini.is-on .luno-video-mode-mini-knob { left:19px; }
 .luno-video-fullscreen:disabled { opacity:.45; cursor:default; }
-.luno-video-load { position:absolute; left:10px; top:10px; border:0; border-radius:999px; padding:7px 13px; font-size:12px; font-weight:700; color:#001a08; background:var(--luno-green); cursor:pointer; box-shadow:0 6px 16px rgba(0,0,0,.4); }
-.luno-video-load:hover { filter:brightness(1.08); }
 .luno-song-meta { text-align:center; margin-bottom:40px; }
 .luno-song-meta h1 { margin:0; font-size:clamp(28px,5vw,48px); line-height:1.1; }
 .luno-song-meta p { margin:10px 0 20px; color:var(--luno-text-2); font-size:18px; }
