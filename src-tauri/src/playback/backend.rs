@@ -72,6 +72,11 @@ pub trait AudioBackend {
     /// Position is the backend's authoritative elapsed audio position.
     fn position(&self) -> Result<Duration, BackendError>;
     fn duration(&self) -> Result<Option<Duration>, BackendError>;
+    /// Reports stream completion when the backend exposes an EOF signal:
+    /// `Some(true)` means EOF and buffered output have both drained,
+    /// `Some(false)` means playback is still producing, and `None` lets the
+    /// runtime use its duration clock for backends without that signal.
+    fn is_finished(&self) -> Option<bool> { None }
     fn stop(&mut self) {}
     fn shutdown(&mut self) {}
 }
@@ -192,5 +197,9 @@ impl AudioBackend for FakeBackend {
             .as_ref()
             .map(|t| t.duration)
             .ok_or(BackendError::NotLoaded)
+    }
+    fn is_finished(&self) -> Option<bool> {
+        self.track.as_ref().and_then(|track| track.duration)
+            .map(|duration| self.position >= duration)
     }
 }

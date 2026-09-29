@@ -125,6 +125,10 @@ What it does not own: library snapshots and track identity
   A launch-only claim without `playbackState` loses key routing on current
   macOS; disabling Settings ▸ Playback releases the claim (Stopped + cleared
   info).
+- Queue selections publish their cursor while audio loads, but enter recent
+  history only after the backend starts output. Streaming EOF advances as soon
+  as the decoded output buffer drains; the multi-second stall watchdog remains
+  a recovery path for a dead stream, not normal track completion.
 
 ## Core flows
 

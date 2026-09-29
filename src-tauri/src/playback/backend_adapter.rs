@@ -504,6 +504,11 @@ impl AudioBackend for CpalSymphoniaBackend {
             .or(track.duration))
     }
 
+    fn is_finished(&self) -> Option<bool> {
+        self.state.as_ref().and_then(|state| state.lock().ok())
+            .map(|state| state.ended && !state.playing && state.buffer.is_empty())
+    }
+
     fn stop(&mut self) {
         self.stop_stream();
         self.stop_producer();

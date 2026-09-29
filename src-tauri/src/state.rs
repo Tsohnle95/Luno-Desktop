@@ -7013,6 +7013,21 @@ fn promotion_error(error: PromotionError) -> ContractError {
         }
     }
 
+    /// Publishes a selected track while its asynchronous load is pending.
+    /// Keep OS metadata aligned with the selection, but only emit TrackStarted
+    /// after the output backend actually begins playing it.
+    #[cfg(target_os = "macos")]
+    fn publish_playback_pending(
+        &self,
+        snapshot: crate::contracts::types::PlaybackSnapshot,
+        track: &TrackId,
+    ) {
+        let snapshot_generation = snapshot.generation;
+        #[cfg(target_os = "macos")]
+        self.publish_now_playing(&snapshot, Some(track));
+        self.publish(self.event(snapshot_generation, Event::PlaybackSnapshot { snapshot }));
+    }
+
     /// Publish truthful Now Playing metadata + playback state. Modern macOS
     /// consults `MPNowPlayingInfoCenter.playbackState` when deciding which
     /// process owns the hardware media keys; a launch-time claim without it
@@ -7241,7 +7256,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
             Duration::ZERO,
             None,
         );
-        self.publish_playback(ack.clone(), Some(track_id.clone()));
+        self.publish_playback_pending(ack.clone(), &track_id);
         let load_state = self.clone();
         let generation = ack.generation;
         self.submit(self.generation("playback-load", generation), move |token| {
@@ -7372,6 +7387,9 @@ fn promotion_error(error: PromotionError) -> ContractError {
     /// order so toggling shuffle off restored the shuffled sequence.
     #[cfg(target_os = "macos")]
     fn start_current_track(&self) -> Result<Value, ContractError> {
+        // The old track's heartbeat must not keep publishing or attempt a
+        // second advance while this selection loads asynchronously.
+        self.tasks.cancel_key("playback-heartbeat");
         let Some(track_id) = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned() else {
             return Ok(Value::Null);
         };
@@ -7438,7 +7456,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
             Duration::ZERO,
             None,
         );
-        self.publish_playback(ack.clone(), Some(track_id.clone()));
+        self.publish_playback_pending(ack.clone(), &track_id);
         let load_state = self.clone();
         let generation = ack.generation;
         self.submit(self.generation("playback-load", generation), move |token| {
@@ -7494,6 +7512,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
             // The queue is exhausted. An active Discover session hands the
             // block back: restore the captured queue at the seed position so
             // the library is intact when playback resumes.
+            self.tasks.cancel_key("playback-heartbeat");
             self.end_discover(true);
             if let Ok(mut backend) = self.audio.lock() { backend.stop(); }
             if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.stop(); }
@@ -7770,6 +7789,17 @@ fn promotion_error(error: PromotionError) -> ContractError {
         };
         let status = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner());
         let elapsed = position;
+        let completion_state = backend.is_finished();
+        if status == crate::contracts::types::PlaybackStatus::Playing
+            && completion_state == Some(true)
+            && self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
+                .is_some_and(|clock| clock.dispatch_completion())
+        {
+            drop(backend);
+            *self.playback_stall.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            let _ = self.next_track()?;
+            return Ok(());
+        }
         // ---- Video follow: auto-play/pause + COARSE clock sync --------------
         // Event-driven, not poll-driven: publish ONLY on play/pause transitions
         // or a genuine >2s drift. Streaming an update every heartbeat tick made
@@ -7864,7 +7894,9 @@ fn promotion_error(error: PromotionError) -> ContractError {
             StallAction::None => {}
         }
         // ----------------------------------------------------------------------
-        let due = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|clock| clock.completion_due(elapsed, true, elapsed));
+        let due = completion_state.is_none()
+            && self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                .is_some_and(|clock| clock.completion_due(elapsed, true, elapsed));
         if due && self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut().is_some_and(|clock| clock.dispatch_completion()) {
             drop(backend);
             let _ = self.next_track()?;
