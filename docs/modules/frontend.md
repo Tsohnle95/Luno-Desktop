@@ -88,6 +88,9 @@ envelope shapes (`docs/modules/contracts.md`).
   real library track: library/recent rows, the queue, home cards, and the
   footer now-playing track. Edit/delete are hidden for non-library
   recommendation rows (they have no library file).
+- The Queue tab shows the authoritative current track followed only by its
+  upcoming queue rows. Earlier plays are shown in Recently played, which is
+  driven by backend TrackStarted events after output actually starts.
 - A physical playlist's context menu owns the YouTube link editor,
   `Sync playlist`, `Review unavailable songs`, and `Log` actions. Sync stays
   disabled until a link is present; React sends only the playlist ID, then
