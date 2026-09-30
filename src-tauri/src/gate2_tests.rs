@@ -4,7 +4,7 @@ use crate::contracts::events::{
     Event, RootStatus as ContractRootStatus, ShutdownReason, ShutdownState,
 };
 use crate::contracts::types::{
-    DiscoverSnapshot, Generation, PlaybackSnapshot, PlaylistId, SaveState, SaveStateKind,
+    DiscoverSnapshot, Generation, PlaybackSnapshot, PlaylistId, SaveState, SaveStateKind, SettingsInput,
     TrackId,
 };
 use crate::download::markers::Markers;
@@ -15,7 +15,7 @@ use crate::library::favorites::Favorites;
 use crate::library::index::{LibraryIndex, RefreshRequest};
 use crate::library::mutations::{MutationError, PlaylistService};
 use crate::library::reference_repair::PathReferences;
-use crate::library::scanner::{scan_library, Entry, FileSystem, RootStatus};
+use crate::library::scanner::{scan_library, Entry, FileSystem, OsFileSystem, RootStatus};
 use crate::persistence::atomic_write::write_atomic;
 use crate::persistence::legacy::read_config;
 use crate::persistence::recovery::{recover, RecoveryResult};
@@ -1447,6 +1447,103 @@ fn target_command_boundary_loads_config_registers_root_and_syncs_markers() {
     assert_eq!(markers["successful"], 1);
     assert_eq!(markers["permanent_failures"], 1);
     fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn scanner_ignores_legacy_and_current_download_worker_homes() {
+    let root = fixture_dir("worker-home-scan");
+    fs::create_dir_all(root.join(".luno-gate4-worker-home")).unwrap();
+    fs::create_dir_all(root.join(".luno-download-worker-home")).unwrap();
+    fs::create_dir_all(root.join("Visible playlist")).unwrap();
+
+    let outcome = scan_library(&[root.clone()], &OsFileSystem);
+    assert_eq!(outcome.playlists.keys().map(String::as_str).collect::<Vec<_>>(), ["Visible playlist"]);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn save_settings_preserves_backend_favorites_when_frontend_sends_stale_list() {
+    let home = fixture_dir("save-settings-favorites");
+    let favorite = home.join("Music/favorite.m4a");
+    let stale = home.join("Music/stale.m4a");
+    fs::create_dir_all(favorite.parent().unwrap()).unwrap();
+    fs::write(&favorite, b"audio fixture").unwrap();
+    fs::write(home.join(".luno_config.json"), br#"{"favorite_songs":["stale"],"keep_me":true}"#).unwrap();
+    let state = AppState::new(2);
+    state.set_favorite_path(&favorite);
+    let settings = SettingsInput {
+        music_root: None,
+        auto_discovery: Some(true),
+        volume: None,
+        sleep_timer: None,
+        global_keys: None,
+        favorite_songs: vec![stale.display().to_string()],
+        video_mode: None,
+    };
+
+    state.dispatch(command("save-settings-stale-favorites", Command::SaveSettings {
+        home: home.display().to_string(),
+        settings,
+    })).unwrap();
+
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(home.join(".luno_config.json")).unwrap()).unwrap();
+    let persisted_favorite = PathBuf::from(saved["favorite_songs"][0].as_str().unwrap());
+    assert_eq!(fs::canonicalize(persisted_favorite).unwrap(), fs::canonicalize(favorite).unwrap());
+    assert_eq!(saved["keep_me"], true);
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn adding_a_favorite_track_to_a_playlist_copies_its_favorite_state() {
+    let root = fixture_dir("favorite-playlist-copy");
+    let unsorted = root.join("Unsorted");
+    let destination = root.join("Saved songs");
+    fs::create_dir_all(&unsorted).unwrap();
+    fs::create_dir_all(&destination).unwrap();
+    let root = fs::canonicalize(root).unwrap();
+    let unsorted = root.join("Unsorted");
+    let destination = root.join("Saved songs");
+    let source = unsorted.join("Artist - Favorite.mp3");
+    fs::write(&source, b"audio fixture").unwrap();
+
+    let state = AppState::new(4);
+    let settings_home = fixture_dir("favorite-playlist-copy-settings");
+    fs::write(settings_home.join(".luno_config.json"), br#"{"favorite_songs":[]}"#).unwrap();
+    state.dispatch(command("load-favorite-settings", Command::LoadSettings {
+        home: settings_home.display().to_string(),
+    })).unwrap();
+    state.set_scan_roots(vec![root.clone()]);
+    state.set_favorite_path(&source);
+    let snapshot = state.replace_library(
+        Generation(1),
+        BTreeMap::from([
+            ("Unsorted".to_owned(), vec![source.clone()]),
+            ("Saved songs".to_owned(), Vec::new()),
+        ]),
+    );
+    assert_eq!(snapshot.tracks.iter().filter(|track| track.favorite).count(), 1, "the original favorite must be present before copying");
+    let source_id = snapshot.tracks.iter().find(|track| track.title == "Favorite").unwrap().id.clone();
+    state.dispatch(command("copy-favorite", Command::AddTracksToPlaylist {
+        track_ids: vec![source_id],
+        playlist_id: PlaylistId("playlist:Saved songs".into()),
+    })).unwrap();
+    let copy = destination.join("Artist - Favorite.mp3");
+    let paths = state.favorite_paths();
+    assert!(paths.contains(&crate::library::favorites::normalize_path(&source)), "the original favorite was removed: {paths:?}");
+    assert!(paths.contains(&crate::library::favorites::normalize_path(&copy)), "the copied favorite was not added: {paths:?}");
+
+    wait_until(3, "favorite playlist copy", || {
+        let snapshot = state.library();
+        snapshot.tracks.len() == 2 && snapshot.tracks.iter().all(|track| track.favorite)
+    }, || format!("favorite state did not follow the copied file: {:#?}; favorite paths: {:?}", state.library().tracks, state.favorite_paths()));
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(settings_home.join(".luno_config.json")).unwrap()).unwrap();
+    let persisted = saved["favorite_songs"].as_array().unwrap();
+    let persisted_paths = persisted.iter().map(|path| PathBuf::from(path.as_str().unwrap()))
+        .map(|path| fs::canonicalize(path).unwrap()).collect::<Vec<_>>();
+    assert!(persisted_paths.contains(&fs::canonicalize(source).unwrap()));
+    assert!(persisted_paths.contains(&fs::canonicalize(copy).unwrap()));
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(settings_home).unwrap();
 }
 
 #[test]

@@ -111,8 +111,10 @@ fn supported(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn preview_dir(name: &str) -> bool {
+fn internal_dir(name: &str) -> bool {
     name == ".luno_previews"
+        || name == crate::download::workflows::WORKER_HOME_DIR
+        || name == crate::download::workflows::LEGACY_WORKER_HOME_DIR
 }
 
 fn filename_key(path: &Path) -> String {
@@ -163,7 +165,7 @@ pub fn scan_library_with_cancel<F: FileSystem, C: Fn() -> bool>(
         let mut unsorted = Vec::new();
         let mut folders: Vec<Entry> = entries
             .iter()
-            .filter(|e| e.is_dir && !preview_dir(&e.name))
+            .filter(|e| e.is_dir && !internal_dir(&e.name))
             .cloned()
             .collect();
         folders.sort_by_key(|e| (e.name.to_lowercase(), e.name.clone()));

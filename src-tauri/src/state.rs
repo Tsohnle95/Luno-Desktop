@@ -41,6 +41,8 @@ use crate::runtime::task_registry::{
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Arc as StdArc;
@@ -747,7 +749,11 @@ mod tests {
         let helper = fixture_helper(
             &root,
             "capture-helper.sh",
-            "#!/bin/sh\nprintf 'ID3\\003\\000\\000\\000' > \"$1\"\nprintf '%s' \"${2:-none}\" > \"$HOME/captured.source\"\n",
+            &format!(
+                "#!/bin/sh\nprintf 'ID3\\003\\000\\000\\000' > \"$1\"\nprintf '%s' \"${{2:-none}}\" > '{}'\nprintf '%s' \"$HOME\" > '{}'\n",
+                root.join("captured.source").display(),
+                root.join("captured.home").display(),
+            ),
         );
         let state = AppState::new(2);
         state.set_scan_roots(vec![root.clone()]);
@@ -772,8 +778,11 @@ mod tests {
         }
         assert!(succeeded);
         assert!(destination.exists());
-        let captured = std::fs::read_to_string(root.join(".luno-gate4-worker-home").join("captured.source")).unwrap();
+        let captured = std::fs::read_to_string(root.join("captured.source")).unwrap();
         assert_eq!(captured, "scsearch1:fixture query");
+        let captured_home = std::fs::read_to_string(root.join("captured.home")).unwrap();
+        assert!(!Path::new(&captured_home).starts_with(&root));
+        assert!(!Path::new(&captured_home).exists(), "per-job helper home should be cleaned after completion");
         let retry = state.dispatch(default_envelope_retry("job-1")).unwrap();
         assert!(retry.get("job_id").is_some());
         std::fs::remove_dir_all(&root).ok();
@@ -2578,6 +2587,19 @@ pub const VIDEO_PREFETCH_DEPTH: usize = 5;
 /// (registry cap is 32; keeping slots free guarantees playback-load,
 /// heartbeat, scan and discovery tasks never starve behind media work).
 pub const VIDEO_STAGE_PRESSURE_LIMIT: usize = 24;
+
+/// Give each admitted attempt an isolated home and keep it outside the library.
+/// Generation prevents a duplicate/retried job ID from sharing a live worker's files.
+fn download_worker_home(root: &Path, job_id: &str, generation: u64) -> PathBuf {
+    let mut root_hash = DefaultHasher::new();
+    root.hash(&mut root_hash);
+    let mut job_hash = DefaultHasher::new();
+    (job_id, generation).hash(&mut job_hash);
+    std::env::temp_dir()
+        .join(crate::download::workflows::WORKER_HOME_DIR)
+        .join(format!("{:016x}", root_hash.finish()))
+        .join(format!("{:016x}", job_hash.finish()))
+}
 
 /// How long a current-track worker may wait for the staging store. Speculative
 /// work is cancellable and uses cloned store handles, so a longer wait means a
@@ -6322,6 +6344,8 @@ impl AppState {
         if !merged.is_object() {
             merged = serde_json::json!({});
         }
+        let favorite_songs = self.favorites.lock().unwrap_or_else(|e| e.into_inner())
+            .paths().map(str::to_owned).collect::<Vec<_>>();
         let incoming = serde_json::json!({
             "music_root": settings.music_root,
             "auto_discovery": settings.auto_discovery,
@@ -6329,7 +6353,10 @@ impl AppState {
             "sleep_timer": settings.sleep_timer,
             "global_keys": settings.global_keys,
             "video_mode": settings.video_mode,
-            "favorite_songs": settings.favorite_songs,
+            // Favorite toggles are persisted by the backend as they happen.
+            // The settings view can hold an older snapshot, so never let a
+            // general preferences save replace this authoritative set.
+            "favorite_songs": favorite_songs,
         });
         if let (Some(target), Some(source)) = (merged.as_object_mut(), incoming.as_object()) {
             for (key, value) in source {
@@ -6381,27 +6408,38 @@ impl AppState {
             return Err(ContractError::invalid("download helper or destination is unsafe"));
         }
         let source = source.replace('\r', " ").replace('\n', " ").trim().to_owned();
-        self.download_requests.lock().unwrap_or_else(|e| e.into_inner()).insert(job_id.0.clone(), (destination.clone(), helper.clone(), source.clone()));
         let generation = self.next_generation();
         let job = job_id.clone();
         let coordinator = self.downloads.clone();
         let state = self.clone();
         let helper_for_worker = helper.clone();
         let source_for_worker = source.clone();
+        let worker_home = download_worker_home(&root, &job.0, generation.0);
+        if std::fs::create_dir_all(&worker_home).is_err() {
+            let _ = std::fs::remove_dir_all(&worker_home);
+            return Err(ContractError::invalid("download worker home is unavailable"));
+        }
+        let worker_home_cleanup = worker_home.clone();
+        let request_destination = destination.clone();
         let receiver = coordinator.events_for(&job.0);
-        let worker_home = root.join(".luno-gate4-worker-home");
-        std::fs::create_dir_all(&worker_home).map_err(|_| ContractError::invalid("download worker home is unavailable"))?;
         let start_result = coordinator.start(crate::download::coordinator::DownloadRequest { job_id: job.0.clone(), destination }, Box::new(move |temporary, token, progress| {
-            if token.is_cancelled() { return Err("cancelled".into()); }
-            crate::download::workflows::run_download_helper(&helper_for_worker, temporary, &source_for_worker, &worker_home, token, progress)
+            let result = if token.is_cancelled() {
+                Err("cancelled".into())
+            } else {
+                crate::download::workflows::run_download_helper(&helper_for_worker, temporary, &source_for_worker, &worker_home, token, progress)
+            };
+            let _ = std::fs::remove_dir_all(&worker_home);
+            result
         }));
         if let Err(error) = start_result {
             coordinator.remove_events_for(&job.0);
+            let _ = std::fs::remove_dir_all(&worker_home_cleanup);
             return Err(ContractError { code: match error { crate::download::coordinator::StartError::Busy => ErrorCode::Busy, crate::download::coordinator::StartError::ShuttingDown => ErrorCode::ShuttingDown, crate::download::coordinator::StartError::InvalidRequest => ErrorCode::InvalidRequest }, message: "download could not start".into(), retryable: matches!(error, crate::download::coordinator::StartError::Busy) });
         }
+        self.download_requests.lock().unwrap_or_else(|e| e.into_inner()).insert(job.0.clone(), (request_destination, helper.clone(), source.clone()));
         let spec = self.generation(format!("download-{}", job.0), generation);
         let worker_job = job.clone();
-        self.submit(spec, move |task_token| {
+        if self.submit(spec, move |task_token| {
             while !state.is_closing() {
                 if task_token.is_cancelled() { break; }
                 let Ok(event) = receiver.recv_timeout(Duration::from_millis(50)) else {
@@ -6454,7 +6492,11 @@ impl AppState {
                 }
                 if matches!(event, DownloadEvent::Succeeded { .. } | DownloadEvent::Failed { .. } | DownloadEvent::Cancelled { .. }) { break; }
             }
-        }).map_err(|_| ContractError { code: ErrorCode::Internal, message: "download worker could not start".into(), retryable: true })?;
+        }).is_err() {
+            self.downloads.cancel_job(&job.0);
+            self.download_requests.lock().unwrap_or_else(|e| e.into_inner()).remove(&job.0);
+            return Err(ContractError { code: ErrorCode::Internal, message: "download worker could not start".into(), retryable: true });
+        }
         Ok(serde_json::json!({ "job_id": job.0, "generation": generation.0 }))
     }
 
@@ -6591,7 +6633,7 @@ impl AppState {
                 if items.is_empty() { return Ok((0, 0, None)); }
                 let total = items.len();
                 let mut started = 0usize;
-                let worker_home = worker_root.join(".luno-gate4-worker-home");
+                let worker_home = download_worker_home(&worker_root, &worker_job.0, generation.0);
                 std::fs::create_dir_all(&worker_home).map_err(|error| format!("download worker home is unavailable: {error}"))?;
                 let mut log_error = None;
                 let result = crate::download::sync::sync_sequential_observed_with_state(&destination, &items, &token, &mut sync_state, |item, item_token| {
@@ -6614,6 +6656,7 @@ impl AppState {
                         log_error.get_or_insert(error);
                     }
                 });
+                let _ = std::fs::remove_dir_all(&worker_home);
                 let downloaded = result.outcomes.iter().filter(|(_, item)| matches!(item, crate::download::sync::ItemOutcome::Downloaded)).count();
                 if let Some(error) = result.state_warnings.first() {
                     log_error.get_or_insert(format!("downloaded audio but could not clear its unresolved source state: {error}"));
@@ -6777,7 +6820,18 @@ impl AppState {
         let name = self.playlist_name(playlist_id).or_else(|_| playlist_id.0.strip_prefix("playlist:").map(str::to_owned).ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "playlist not found".into(), retryable: false }))?;
         let paths = { let map = self.track_paths.lock().unwrap_or_else(|e| e.into_inner()); track_ids.iter().map(|id| map.get(id).cloned().ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "one or more tracks are no longer in the library".into(), retryable: true })).collect::<Result<Vec<_>, _>>()? };
         let service = crate::library::mutations::PlaylistService::new(self.playlist_mutation_root()?); let mut index = crate::library::index::LibraryIndex::default();
-        let result = service.add_files(&paths, &name, &mut index).map_err(playlist_mutation_error)?; let generation = self.schedule_mutation_scan()?;
+        let result = service.add_files(&paths, &name, &mut index).map_err(playlist_mutation_error)?;
+        let copied_favorites = {
+            let mut favorites = self.favorites.lock().unwrap_or_else(|e| e.into_inner());
+            let targets = result.value.copied_paths.iter()
+                .filter(|(source, _)| favorites.contains(source))
+                .map(|(_, target)| target.clone())
+                .collect::<Vec<_>>();
+            for target in &targets { favorites.set(target, true); }
+            targets
+        };
+        if !copied_favorites.is_empty() { self.persist_favorites(); }
+        let generation = self.schedule_mutation_scan()?;
         Ok(serde_json::json!({ "playlist": name, "copied": result.value.copied, "failed": result.value.failed, "generation": generation }))
     }
 
@@ -7027,19 +7081,22 @@ fn promotion_error(error: PromotionError) -> ContractError {
         self.publish(self.event(snapshot.generation, Event::LibrarySnapshot { snapshot }));
         // Persist so the choice survives restarts. Merge semantics keep other
         // prefs intact; failures are non-fatal (in-memory state already won).
-        if let Some(home) = self.settings_home.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-            let settings = crate::contracts::types::SettingsInput {
-                music_root: None,
-                auto_discovery: None,
-                volume: None,
-                sleep_timer: None,
-                global_keys: None,
-                favorite_songs: self.favorites.lock().unwrap_or_else(|e| e.into_inner()).paths().map(str::to_owned).collect(),
-                video_mode: None,
-            };
-            let _ = self.save_settings(home, settings);
-        }
+        self.persist_favorites();
         Ok(serde_json::json!({ "favorite": favorite }))
+    }
+
+    fn persist_favorites(&self) {
+        let Some(home) = self.settings_home.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return; };
+        let settings = crate::contracts::types::SettingsInput {
+            music_root: None,
+            auto_discovery: None,
+            volume: None,
+            sleep_timer: None,
+            global_keys: None,
+            favorite_songs: self.favorites.lock().unwrap_or_else(|e| e.into_inner()).paths().map(str::to_owned).collect(),
+            video_mode: None,
+        };
+        let _ = self.save_settings(home, settings);
     }
 
     pub fn record_recent(&self, track_id: TrackId) {

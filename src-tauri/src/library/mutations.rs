@@ -25,7 +25,7 @@ pub enum MutationError {
 pub struct MutationResult<T> { pub value: T, pub refresh: RefreshRequest, pub errors: Vec<MutationError> }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CopyResult { pub copied: usize, pub failed: usize }
+pub struct CopyResult { pub copied: usize, pub failed: usize, pub copied_paths: Vec<(PathBuf, PathBuf)> }
 
 #[derive(Debug, Clone)]
 pub struct PlaylistService { root: PathBuf }
@@ -65,7 +65,7 @@ impl PlaylistService {
     pub fn dump(&self, source: &str, destination: &str, index: &mut LibraryIndex) -> Result<MutationResult<CopyResult>, MutationError> {
         let source_path = self.playlist_path(source)?; let destination_path = self.playlist_path(destination)?;
         if source_path == destination_path { return Err(MutationError::Collision(destination.to_owned())); }
-        let mut copied = 0; let mut errors = Vec::new();
+        let mut copied = 0; let mut errors = Vec::new(); let mut copied_paths = Vec::new();
         let mut metadata = match TrackMetadataStore::load(&self.root) {
             Ok(store) => Some(store),
             Err(error) => { errors.push(io_error(&self.root.join(crate::library::metadata::FILE_NAME), error)); None }
@@ -79,6 +79,7 @@ impl PlaylistService {
             match fs::copy(&child, &target) {
                 Ok(_) => {
                     copied += 1;
+                    copied_paths.push((child.clone(), target.clone()));
                     if let Some(store) = metadata.as_mut() {
                         if let Err(error) = store.copy_path(&self.root, &child, &target) {
                             errors.push(io_error(&self.root.join(crate::library::metadata::FILE_NAME), error));
@@ -95,12 +96,12 @@ impl PlaylistService {
                 }
             }
         }
-        let failed = errors.len(); let mut result = self.result_with_errors(CopyResult { copied, failed }, errors, index); if failed > 0 { result.errors.push(MutationError::PartialCopy(failed)); } Ok(result)
+        let failed = errors.len(); let mut result = self.result_with_errors(CopyResult { copied, failed, copied_paths }, errors, index); if failed > 0 { result.errors.push(MutationError::PartialCopy(failed)); } Ok(result)
     }
     /// Copy selected library files into a physical playlist folder without
     /// overwriting same-named audio that is already there.
     pub fn add_files(&self, files: &[PathBuf], destination: &str, index: &mut LibraryIndex) -> Result<MutationResult<CopyResult>, MutationError> {
-        let destination_path = self.playlist_path(destination)?; let mut copied = 0; let mut errors = Vec::new();
+        let destination_path = self.playlist_path(destination)?; let mut copied = 0; let mut errors = Vec::new(); let mut copied_paths = Vec::new();
         let mut metadata = match TrackMetadataStore::load(&self.root) {
             Ok(store) => Some(store),
             Err(error) => { errors.push(io_error(&self.root.join(crate::library::metadata::FILE_NAME), error)); None }
@@ -112,6 +113,7 @@ impl PlaylistService {
             match fs::copy(source, &target) {
                 Ok(_) => {
                     copied += 1;
+                    copied_paths.push((source.clone(), target.clone()));
                     if let Some(store) = metadata.as_mut() {
                         if let Err(error) = store.copy_path(&self.root, source, &target) {
                             errors.push(io_error(&self.root.join(crate::library::metadata::FILE_NAME), error));
@@ -128,7 +130,7 @@ impl PlaylistService {
                 }
             }
         }
-        let failed = errors.len(); let mut result = self.result_with_errors(CopyResult { copied, failed }, errors, index); if failed > 0 { result.errors.push(MutationError::PartialCopy(failed)); } Ok(result)
+        let failed = errors.len(); let mut result = self.result_with_errors(CopyResult { copied, failed, copied_paths }, errors, index); if failed > 0 { result.errors.push(MutationError::PartialCopy(failed)); } Ok(result)
     }
     fn playlist_path(&self, name: &str) -> Result<PathBuf, MutationError> { let safe = sanitize_name(name).ok_or(MutationError::InvalidName)?; self.check_name(&safe)?; let path = self.root.join(&safe); if !path.exists() || !path.is_dir() { return Err(MutationError::NotFound(safe)); } Ok(path) }
     fn check_name(&self, name: &str) -> Result<(), MutationError> { let root = self.root.file_name().and_then(|n| n.to_str()).unwrap_or(""); if ["All Music", "Unsorted", "Luno_Library", root].contains(&name) { Err(MutationError::Protected(name.to_owned())) } else { Ok(()) } }

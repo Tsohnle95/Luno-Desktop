@@ -10,6 +10,9 @@ use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+pub const WORKER_HOME_DIR: &str = ".luno-download-worker-home";
+pub const LEGACY_WORKER_HOME_DIR: &str = ".luno-gate4-worker-home";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowError { InvalidUrl, EmptyUrl, EmptySearch, MissingDestination, Cancelled }
 
