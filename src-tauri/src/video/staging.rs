@@ -1,5 +1,6 @@
 //! Current/next temporary MP4 staging, isolated from the music library.
 
+use crate::persistence::atomic_write::write_atomic;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -19,10 +20,9 @@ impl From<io::Error> for StageError { fn from(e: io::Error) -> Self { Self::Io(e
 #[derive(Debug, Clone)]
 pub struct VideoStage { root: PathBuf, library_root: Option<PathBuf>, generation: u64 }
 
-/// Session sidecar mapping track identity -> downloaded YouTube id, stored next
-/// to the MP4s. Without it every staging attempt had to re-run the multi-second
-/// YouTube search BEFORE the cache could be checked (the filename needs the
-/// id), so a cached video still sat behind minutes of network work.
+/// Track identity -> downloaded YouTube id mapping. In production the index is
+/// stored beside the music library so it survives app rebuilds and moves with
+/// the user's files; MP4s remain a disposable session cache.
 ///
 /// Entries carry a QUALITY TIER: `"high"` (final ≤1080p bytes — also how every
 /// pre-tier legacy entry reads) or `"quick"` (the viewable ≤480p first pass whose HD
@@ -30,7 +30,8 @@ pub struct VideoStage { root: PathBuf, library_root: Option<PathBuf>, generation
 /// track switch cancelling the upgrade, …). Adoption paths use the tier to
 /// decide `needs_upgrade`, so an interrupted quick pass is RE-UPGRADED on the
 /// next play instead of being served the quick tier forever.
-const INDEX_FILE: &str = "index.json";
+const CACHE_INDEX_FILE: &str = "index.json";
+const LIBRARY_INDEX_FILE: &str = ".luno_video_index.json";
 
 /// Final-quality tier marker (≤1080p ladder or legacy full-ladder bytes).
 pub const INDEX_TIER_HIGH: &str = "high";
@@ -70,17 +71,27 @@ fn index_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 impl VideoStage {
-    fn index_path(&self) -> PathBuf { self.root.join(INDEX_FILE) }
+    fn index_path(&self) -> PathBuf {
+        self.library_root.as_ref()
+            .map(|root| root.join(LIBRARY_INDEX_FILE))
+            .unwrap_or_else(|| self.root.join(CACHE_INDEX_FILE))
+    }
     fn load_index(&self) -> serde_json::Map<String, serde_json::Value> {
-        let text = fs::read_to_string(self.index_path()).unwrap_or_default();
-        serde_json::from_str::<serde_json::Value>(&text).ok()
+        fs::read(self.index_path()).ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
             .and_then(|value| value.as_object().cloned())
             .unwrap_or_default()
     }
     fn save_index(&self, entries: serde_json::Map<String, serde_json::Value>) {
-        let temp = self.root.join(format!(".{INDEX_FILE}.tmp"));
-        if fs::write(&temp, serde_json::to_vec(&entries).unwrap_or_default()).and_then(|_| fs::rename(&temp, self.index_path())).is_err() {
-            let _ = fs::remove_file(&temp);
+        let path = self.index_path();
+        if path.exists() && !valid_index_file(&path) {
+            eprintln!("[luno-video] preserving unreadable video index at {}", path.display());
+            return;
+        }
+        if let Ok(bytes) = serde_json::to_vec(&entries) {
+            if let Err(error) = write_atomic(&path, &bytes) {
+                eprintln!("[luno-video] could not persist video index: {error}");
+            }
         }
     }
     /// Indexed YouTube id for a track, if any.
@@ -162,6 +173,19 @@ impl VideoStage {
             if root == library || root.starts_with(library) { return Err(StageError::InvalidRoot); }
         }
         fs::create_dir_all(&root)?;
+        if let Some(library) = library_root {
+            let portable_index = library.join(LIBRARY_INDEX_FILE);
+            let previous_index = root.join(CACHE_INDEX_FILE);
+            if !portable_index.exists() && previous_index.is_file() {
+                let bytes = fs::read(&previous_index)?;
+                if serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .ok()
+                    .is_some_and(|value| value.is_object())
+                {
+                    write_atomic(&portable_index, &bytes)?;
+                }
+            }
+        }
         cleanup(&root)?;
         Ok(Self { root, library_root: library_root.map(Path::to_path_buf), generation: 0 })
     }
@@ -211,6 +235,12 @@ impl VideoStage {
     fn check_generation(&self, generation: u64) -> Result<(), StageError> { if generation != self.generation { Err(StageError::StaleGeneration) } else { Ok(()) } }
     fn destination(&self, slot: Slot, key: &str) -> Result<PathBuf, StageError> { let name = match slot { Slot::Current => "current", Slot::Next => "next" }; let safe = safe_key(key)?; Ok(self.root.join(format!("{name}-{safe}.mp4"))) }
     fn contained(&self, path: &Path) -> bool { path.parent() == Some(self.root.as_path()) && self.library_root.as_ref().map(|r| !path.starts_with(r)).unwrap_or(true) }
+}
+
+fn valid_index_file(path: &Path) -> bool {
+    fs::read(path).ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|value| value.is_object())
 }
 
 fn cleanup(root: &Path) -> io::Result<()> {

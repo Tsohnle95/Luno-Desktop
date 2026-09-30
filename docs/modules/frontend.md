@@ -73,9 +73,10 @@ envelope shapes (`docs/modules/contracts.md`).
   a prepared file or starts the durable playlist download path. When a
   selected recommendation is stopped, the footer Play control retries it
   through the owning Discover or focused-preview command.
-- "Recently added" sorts by `Track.added_ms` (file mtime), not queue order;
-  the library table shows that timestamp as Date added and derives playlist
-  names from each playlist's ordered track IDs.
+- "Recently added" sorts by `Track.added_ms` (portable first-added time,
+  seeded from file mtime for existing files), not queue order; the library
+  table shows that timestamp as Date added and derives playlist names from
+  each playlist's ordered track IDs.
 - Video element behavior is CSS-driven; fullscreen toggles must not call
   `window.setFullscreen()` (blacks out WKWebView over the hide
   transition).

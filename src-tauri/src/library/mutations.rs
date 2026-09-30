@@ -1,6 +1,7 @@
 //! Safe mutations of physical playlist folders.
 
 use crate::library::index::{LibraryIndex, RefreshRequest};
+use crate::library::metadata::TrackMetadataStore;
 use crate::persistence::atomic_write::write_atomic;
 use std::collections::BTreeMap;
 use std::fs;
@@ -65,12 +66,34 @@ impl PlaylistService {
         let source_path = self.playlist_path(source)?; let destination_path = self.playlist_path(destination)?;
         if source_path == destination_path { return Err(MutationError::Collision(destination.to_owned())); }
         let mut copied = 0; let mut errors = Vec::new();
+        let mut metadata = match TrackMetadataStore::load(&self.root) {
+            Ok(store) => Some(store),
+            Err(error) => { errors.push(io_error(&self.root.join(crate::library::metadata::FILE_NAME), error)); None }
+        };
+        let initial_metadata = metadata.clone();
         for entry in fs::read_dir(&source_path).map_err(|e| io_error(&source_path, e))? {
             let entry = entry.map_err(|e| io_error(&source_path, e))?; let child = entry.path();
             if !entry.file_type().map_err(|e| io_error(&child, e))?.is_file() { continue; }
             let target = destination_path.join(entry.file_name());
             if target.exists() { errors.push(MutationError::Collision(target.display().to_string())); continue; }
-            match fs::copy(&child, &target) { Ok(_) => copied += 1, Err(e) => errors.push(io_error(&target, e)) }
+            match fs::copy(&child, &target) {
+                Ok(_) => {
+                    copied += 1;
+                    if let Some(store) = metadata.as_mut() {
+                        if let Err(error) = store.copy_path(&self.root, &child, &target) {
+                            errors.push(io_error(&self.root.join(crate::library::metadata::FILE_NAME), error));
+                        }
+                    }
+                }
+                Err(e) => errors.push(io_error(&target, e)),
+            }
+        }
+        if metadata != initial_metadata {
+            if let Some(store) = metadata.as_ref() {
+                if let Err(error) = store.save(&self.root) {
+                    errors.push(io_error(&self.root.join(crate::library::metadata::FILE_NAME), error));
+                }
+            }
         }
         let failed = errors.len(); let mut result = self.result_with_errors(CopyResult { copied, failed }, errors, index); if failed > 0 { result.errors.push(MutationError::PartialCopy(failed)); } Ok(result)
     }
@@ -78,10 +101,32 @@ impl PlaylistService {
     /// overwriting same-named audio that is already there.
     pub fn add_files(&self, files: &[PathBuf], destination: &str, index: &mut LibraryIndex) -> Result<MutationResult<CopyResult>, MutationError> {
         let destination_path = self.playlist_path(destination)?; let mut copied = 0; let mut errors = Vec::new();
+        let mut metadata = match TrackMetadataStore::load(&self.root) {
+            Ok(store) => Some(store),
+            Err(error) => { errors.push(io_error(&self.root.join(crate::library::metadata::FILE_NAME), error)); None }
+        };
+        let initial_metadata = metadata.clone();
         for source in files {
             let Some(name) = source.file_name() else { continue }; let target = destination_path.join(name);
             if target.exists() { continue; }
-            match fs::copy(source, &target) { Ok(_) => copied += 1, Err(error) => errors.push(io_error(&target, error)) }
+            match fs::copy(source, &target) {
+                Ok(_) => {
+                    copied += 1;
+                    if let Some(store) = metadata.as_mut() {
+                        if let Err(error) = store.copy_path(&self.root, source, &target) {
+                            errors.push(io_error(&self.root.join(crate::library::metadata::FILE_NAME), error));
+                        }
+                    }
+                }
+                Err(error) => errors.push(io_error(&target, error)),
+            }
+        }
+        if metadata != initial_metadata {
+            if let Some(store) = metadata.as_ref() {
+                if let Err(error) = store.save(&self.root) {
+                    errors.push(io_error(&self.root.join(crate::library::metadata::FILE_NAME), error));
+                }
+            }
         }
         let failed = errors.len(); let mut result = self.result_with_errors(CopyResult { copied, failed }, errors, index); if failed > 0 { result.errors.push(MutationError::PartialCopy(failed)); } Ok(result)
     }

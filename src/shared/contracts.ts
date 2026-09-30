@@ -8,7 +8,7 @@ export type SessionId = string;
 export type Generation = number;
 
 export interface ProviderId { provider: string; id: string }
-export interface Track { id: TrackId; path: string | null; title: string; artist: string | null; album: string | null; duration_ms: number | null; artwork_url: string | null; favorite: boolean; provider: ProviderId | null; /** File mtime (ms since epoch) when known; drives "Recently added". */ added_ms?: number | null }
+export interface Track { id: TrackId; path: string | null; title: string; artist: string | null; album: string | null; duration_ms: number | null; artwork_url: string | null; favorite: boolean; provider: ProviderId | null; /** Portable first-added time (ms since epoch); drives "Recently added". */ added_ms?: number | null }
 export interface Playlist { id: PlaylistId; name: string; path: string | null; url: string | null; ordered_track_ids: TrackId[] }
 export interface LibrarySnapshot { version: ContractVersion; generation: Generation; tracks: Track[]; playlists: Playlist[] }
 export type PlaybackStatus = "stopped" | "playing" | "paused" | "failed";
@@ -218,8 +218,8 @@ function isEvent(v: unknown): v is Event {
   const generation = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
   const nonNegativeInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
   const provider = (value: unknown): value is ProviderId => exact(value, ["provider", "id"]) && id(value.provider) && id(value.id);
-  // `added_ms` is an OPTIONAL trailing field: the backend omits it when the
-  // file mtime is unknown, so require the core keys and only bound the extra.
+  // `added_ms` is an OPTIONAL trailing field: the backend omits it when both
+  // the portable metadata and file mtime are unknown, so bound the extra only.
   const track = (value: unknown): value is Track => object(value)
     && (["id", "path", "title", "artist", "album", "duration_ms", "artwork_url", "favorite", "provider"] as const).every((key) => key in value)
     && Object.keys(value).every((key) => ["id", "path", "title", "artist", "album", "duration_ms", "artwork_url", "favorite", "provider", "added_ms"].includes(key))

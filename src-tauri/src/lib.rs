@@ -46,6 +46,7 @@ pub mod library {
     pub mod duplicates;
     pub mod index;
     pub mod mutations;
+    pub mod metadata;
     pub mod reconcile;
     pub mod reference_repair;
     pub mod scanner;

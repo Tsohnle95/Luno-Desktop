@@ -3545,14 +3545,16 @@ impl AppState {
     }
 
     fn preview_ids(seeds: &[PreviewSeed]) -> Result<Vec<TrackId>, ContractError> {
-        seeds
+        let ids = seeds
             .iter()
             .map(|seed| {
                 let key = crate::preview::assets::safe_key(&format!("{}-{}", seed.artist.trim(), seed.title.trim()))
                     .map_err(|error| ContractError::invalid(format!("{error:?}")))?;
                 TrackId::new(key)
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut seen = std::collections::HashSet::new();
+        Ok(ids.into_iter().filter(|id| seen.insert(id.0.clone())).collect())
     }
 
     /// Begins (or restarts) a preview session around the tapped
@@ -5565,6 +5567,15 @@ impl AppState {
                 self.publish(error);
             }
         }
+        let complete_roots = outcome.roots
+            .iter()
+            .enumerate()
+            .filter(|(index, (_, status))| {
+                matches!(status, crate::library::scanner::RootStatus::Scanned)
+                    && !outcome.errors.iter().any(|issue| issue.root_index == *index)
+            })
+            .map(|(_, (root, _))| root.clone())
+            .collect::<BTreeSet<_>>();
         for issue in outcome.errors {
             let scope = issue
                 .playlist
@@ -5590,7 +5601,7 @@ impl AppState {
             error.job_id = Some(JobId("library-scan".into()));
             self.publish(error);
         }
-        let snapshot = self.replace_library(generation, outcome.playlists);
+        let snapshot = self.replace_library_with_metadata(generation, outcome.playlists, &complete_roots);
         let mut event = self.event(generation, Event::LibrarySnapshot { snapshot });
         event.job_id = Some(JobId("library-scan".into()));
         self.publish(event);
@@ -5600,12 +5611,34 @@ impl AppState {
         generation: Generation,
         playlists: BTreeMap<String, Vec<PathBuf>>,
     ) -> LibrarySnapshot {
+        self.replace_library_with_metadata(generation, playlists, &BTreeSet::new())
+    }
+
+    fn replace_library_with_metadata(
+        &self,
+        generation: Generation,
+        playlists: BTreeMap<String, Vec<PathBuf>>,
+        complete_roots: &BTreeSet<PathBuf>,
+    ) -> LibrarySnapshot {
         // Build the ENTIRE id→path map in a local, then swap it in with ONE
         // lock write. Clearing the shared map first left a rebuild-sized
         // window where play commands for rows still on screen resolved
         // against an EMPTY map and failed with "track is not available
         // locally" — the flaky search-click rejection.
-        let playlist_urls = self.scan_roots().first()
+        let library_roots = self.scan_roots();
+        let mut metadata_stores = BTreeMap::new();
+        for root in &library_roots {
+            match crate::library::metadata::TrackMetadataStore::load(root) {
+                Ok(store) => {
+                    metadata_stores.insert(root.clone(), Some((store.clone(), store)));
+                }
+                Err(error) => {
+                    eprintln!("[luno-library] could not read portable metadata: {error}");
+                    metadata_stores.insert(root.clone(), None);
+                }
+            }
+        }
+        let playlist_urls = library_roots.first()
             .and_then(|root| crate::library::mutations::PlaylistService::new(root).playlist_urls().ok())
             .unwrap_or_default();
         let mut rebuilt = BTreeMap::<TrackId, PathBuf>::new();
@@ -5613,6 +5646,7 @@ impl AppState {
         let mut seen_ids = std::collections::HashSet::<String>::new();
         let mut tracks = Vec::new();
         let mut playlist_data = Vec::new();
+        let mut scanned_by_root = BTreeMap::<PathBuf, Vec<PathBuf>>::new();
         for (name, files) in playlists {
             let playlist_id = crate::contracts::types::PlaylistId(format!("playlist:{}", name));
             let mut ids = Vec::new();
@@ -5627,15 +5661,42 @@ impl AppState {
                     ids.push(existing.clone());
                     continue;
                 }
-                let metadata = self
-                    .provider_metadata
-                    .lock()
-                    .unwrap()
-                    .get(&path)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        crate::domain::identity::filename_metadata(&path.to_string_lossy())
-                    });
+                let metadata_root = library_roots
+                    .iter()
+                    .filter(|root| path.starts_with(root))
+                    .max_by_key(|root| root.components().count())
+                    .cloned();
+                if let Some(root) = &metadata_root {
+                    scanned_by_root.entry(root.clone()).or_default().push(path.clone());
+                }
+                let saved_record = metadata_root.as_ref().and_then(|root| {
+                    metadata_stores.get(root)
+                        .and_then(Option::as_ref)
+                        .and_then(|(store, _)| store.get(root, &path))
+                        .cloned()
+                });
+                let provider_metadata = self.provider_metadata.lock().unwrap_or_else(|e| e.into_inner()).get(&path).cloned();
+                let metadata = provider_metadata
+                    .clone()
+                    .or_else(|| saved_record.as_ref().map(|record| record.song.clone()))
+                    .unwrap_or_else(|| crate::domain::identity::filename_metadata(&path.to_string_lossy()));
+                let album = saved_record.as_ref().and_then(|record| record.album.clone());
+                let added_ms = saved_record.as_ref().and_then(|record| record.added_ms)
+                    .or_else(|| crate::library::metadata::file_modified_ms(&path));
+                if let Some(root) = &metadata_root {
+                    if let Some(Some((store, _))) = metadata_stores.get_mut(root) {
+                        let record = crate::library::metadata::TrackRecord {
+                            added_ms,
+                            song: metadata.clone(),
+                            album: album.clone(),
+                        };
+                        if saved_record.as_ref() != Some(&record) {
+                            if let Err(error) = store.set(root, &path, record) {
+                                eprintln!("[luno-library] could not update portable track metadata: {error}");
+                            }
+                        }
+                    }
+                }
                 let candidate = TrackId(crate::domain::identity::track_id(&metadata));
                 // Filename-only metadata cannot distinguish "Unsorted/song.m4a"
                 // from "Favorites/song.m4a" (or repeated downloads of one
@@ -5660,28 +5721,20 @@ impl AppState {
                 tracks.push(Track {
                     id: id.clone(),
                     path: None,
-                    title: metadata.title,
-                    artist: (!metadata.artist.is_empty()).then_some(metadata.artist),
-                    album: None,
+                    title: metadata.title.clone(),
+                    artist: (!metadata.artist.is_empty()).then_some(metadata.artist.clone()),
+                    album,
                     duration_ms: (metadata.duration_ms != 0)
                         .then_some(metadata.duration_ms),
                     artwork_url: None,
                     favorite,
-                    provider: metadata.provider.map(|provider| {
+                    provider: metadata.provider.clone().map(|provider| {
                         crate::contracts::types::ProviderId {
                             provider: provider.provider,
                             id: provider.id,
                         }
                     }),
-                    added_ms: std::fs::metadata(&path)
-                        .and_then(|metadata| metadata.modified())
-                        .ok()
-                        .and_then(|modified| {
-                            modified
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .ok()
-                                .map(|elapsed| elapsed.as_millis().min(u64::MAX as u128) as u64)
-                        }),
+                    added_ms,
                 });
                 ids.push(id);
             }
@@ -5699,6 +5752,17 @@ impl AppState {
             tracks,
             playlists: playlist_data,
         };
+        for (root, stores) in &mut metadata_stores {
+            let Some((store, original)) = stores else { continue };
+            if complete_roots.contains(root) {
+                store.retain_paths(root, scanned_by_root.get(root).into_iter().flatten());
+            }
+            if store != original {
+                if let Err(error) = store.save(root) {
+                    eprintln!("[luno-library] could not save portable track metadata: {error}");
+                }
+            }
+        }
         *self.library.lock().unwrap_or_else(|e| e.into_inner()) = snapshot.clone();
         // Single atomic swap — see the comment at the top of this function.
         *self.track_paths.lock().unwrap_or_else(|e| e.into_inner()) = rebuilt;
@@ -6064,8 +6128,16 @@ impl AppState {
                 Ok(Value::Null)
             }
             Command::ToggleShuffle => {
-                self.end_discover(true);
+                let disabling_shuffle_during_discover = self.discover.lock().unwrap_or_else(|e| e.into_inner())
+                    .as_ref().is_some_and(|mode| mode.is_active())
+                    && self.playback.lock().unwrap_or_else(|e| e.into_inner()).shuffle();
+                if !disabling_shuffle_during_discover {
+                    self.end_discover(true);
+                }
                 self.playback.lock().unwrap_or_else(|e| e.into_inner()).toggle_shuffle();
+                if disabling_shuffle_during_discover {
+                    self.discover_sync_queue();
+                }
                 self.sync_preview_physical_queue();
                 self.publish_queue_snapshot();
                 Ok(Value::Null)
@@ -6403,8 +6475,22 @@ impl AppState {
     }
 
     fn transfer_index(&self) -> crate::transfer::provider_index::ProviderIndex {
-        let metadata = self.provider_metadata.lock().unwrap_or_else(|e| e.into_inner());
-        crate::transfer::provider_index::ProviderIndex::new(self.track_paths.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(id, path)| crate::transfer::provider_index::IndexedTrack { path: path.clone(), metadata: metadata.get(path).cloned().unwrap_or_else(|| crate::domain::identity::filename_metadata(&id.0)) }))
+        let library = self.library();
+        let paths = self.track_paths.lock().unwrap_or_else(|e| e.into_inner());
+        let provider_metadata = self.provider_metadata.lock().unwrap_or_else(|e| e.into_inner());
+        crate::transfer::provider_index::ProviderIndex::new(library.tracks.iter().filter_map(|track| {
+            let path = paths.get(&track.id)?.clone();
+            let metadata = provider_metadata.get(&path).cloned().unwrap_or_else(|| TrackMetadata {
+                title: track.title.clone(),
+                artist: track.artist.clone().unwrap_or_default(),
+                duration_ms: track.duration_ms.unwrap_or_default(),
+                provider: track.provider.as_ref().map(|provider| crate::domain::identity::ProviderIdentity {
+                    provider: provider.provider.clone(),
+                    id: provider.id.clone(),
+                }),
+            });
+            Some(crate::transfer::provider_index::IndexedTrack { path, metadata })
+        }))
     }
 
     fn transfer_preview(&self, manifest: &str, destination: PathBuf) -> Result<Value, ContractError> {
@@ -6748,6 +6834,25 @@ impl AppState {
                 retryable: false,
             })?;
         let path = validate_library_path(self, &path, true)?;
+        let current_track = self.library().tracks.into_iter().find(|track| track.id == track_id);
+        let mut song_metadata = self.provider_metadata.lock().unwrap_or_else(|e| e.into_inner())
+            .get(&path).cloned().or_else(|| current_track.as_ref().map(|track| TrackMetadata {
+                title: track.title.clone(),
+                artist: track.artist.clone().unwrap_or_default(),
+                duration_ms: track.duration_ms.unwrap_or_default(),
+                provider: track.provider.as_ref().map(|provider| crate::domain::identity::ProviderIdentity {
+                    provider: provider.provider.clone(),
+                    id: provider.id.clone(),
+                }),
+            })).unwrap_or_else(|| crate::domain::identity::filename_metadata(&path.to_string_lossy()));
+        song_metadata.title = title.clone();
+        song_metadata.artist = artist.clone();
+        let metadata_fallback = crate::library::metadata::TrackRecord {
+            added_ms: current_track.as_ref().and_then(|track| track.added_ms)
+                .or_else(|| crate::library::metadata::file_modified_ms(&path)),
+            song: song_metadata.clone(),
+            album: current_track.as_ref().and_then(|track| track.album.clone()),
+        };
         let parent = path.parent().ok_or_else(|| ContractError::invalid("track file has no parent directory"))?;
         let stem = if artist.is_empty() { title.clone() } else { format!("{artist} - {title}") };
         let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
@@ -6773,7 +6878,22 @@ impl AppState {
                 favorites.set(&path, false);
                 favorites.set(&new_path, true);
             }
-            self.provider_metadata.lock().unwrap_or_else(|e| e.into_inner()).remove(&path);
+            let roots = self.scan_roots();
+            if let Some(root) = roots.iter().filter(|root| new_path.starts_with(root)).max_by_key(|root| root.components().count()) {
+                match crate::library::metadata::TrackMetadataStore::load(root) {
+                    Ok(mut metadata) => {
+                        if let Err(error) = metadata.move_path(root, &path, &new_path, metadata_fallback.clone())
+                            .and_then(|()| metadata.save(root))
+                        {
+                            eprintln!("[luno-library] could not preserve metadata through rename: {error}");
+                        }
+                    }
+                    Err(error) => eprintln!("[luno-library] could not read portable metadata for rename: {error}"),
+                }
+            }
+            let mut provider_metadata = self.provider_metadata.lock().unwrap_or_else(|e| e.into_inner());
+            provider_metadata.remove(&path);
+            provider_metadata.insert(new_path.clone(), song_metadata);
         }
         // Optimistic snapshot so the row reflects the new name immediately; the
         // follow-up scan swaps the filename-derived id and reconciles membership.

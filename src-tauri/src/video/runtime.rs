@@ -633,11 +633,31 @@ pub fn prefetch_track(
         // recording nothing would make a later restage re-search anyway.
         if stager.index_lookup(key, Slot::Current).is_some() { return true; }
     }
-    let sources = find_sources_cancellable(helper, artist, title, Some(cancel));
-    eprintln!("[luno-video] prefetch \"{artist:?} - {title}\" -> {} candidates", sources.len());
+    let saved_id = track_key.as_ref().and_then(|key| stager.indexed_id(key));
+    let mut sources = saved_id.clone()
+        .map(|id| vec![VideoSource {
+            url: crate::video::source::canonical_url(&id),
+            id,
+            title: title.to_owned(),
+            artist: artist.map(str::to_owned),
+        }])
+        .unwrap_or_default();
+    let mut searched = false;
+    let mut candidate_index = 0;
+    eprintln!("[luno-video] prefetch \"{artist:?} - {title}\"");
     let mut last_error = String::from("no candidate could be downloaded");
-    for source in sources.into_iter().take(3) {
+    while candidate_index < 3 {
+        if candidate_index >= sources.len() {
+            if searched { break; }
+            searched = true;
+            let found = find_sources_cancellable(helper, artist, title, Some(cancel));
+            eprintln!("[luno-video] prefetch search -> {} candidates", found.len());
+            sources.extend(found.into_iter().filter(|source| Some(source.id.as_str()) != saved_id.as_deref()));
+            if candidate_index >= sources.len() { break; }
+        }
         if cancel.load(Ordering::Acquire) { return false; }
+        let source = sources[candidate_index].clone();
+        candidate_index += 1;
         let destination = match stager.external_destination(Slot::Next, &source.id) {
             Ok(path) => path,
             Err(_) => return false,
@@ -800,15 +820,22 @@ pub fn stage_track(
             };
         }
     }
-    let sources = find_sources_cancellable(helper, artist, title, Some(cancel));
-    eprintln!("[luno-video] search for \"{artist:?} - {title}\" -> {} candidates", sources.len());
-    if sources.is_empty() {
-        return Ok(VideoOutcome::Unavailable("no relevant video found".into()));
-    }
+    let track_key = track_index_key(artist, title);
+    let saved_id = track_key.as_ref().and_then(|key| stager.indexed_id(key));
+    let mut sources = saved_id.clone()
+        .map(|id| vec![VideoSource {
+            url: crate::video::source::canonical_url(&id),
+            id,
+            title: title.to_owned(),
+            artist: artist.map(str::to_owned),
+        }])
+        .unwrap_or_default();
+    let mut searched = false;
+    let mut candidate_index = 0;
+    eprintln!("[luno-video] stage \"{artist:?} - {title}\"");
     // Try candidates in relevance order: YouTube refuses SOME licensed videos
     // to every downloader client ("not available on this app"), so the first
     // hit is not always downloadable — fall through to alternates.
-    let track_key = track_index_key(artist, title);
     let mut last_error = String::from("no candidate could be downloaded");
     // Interactive staging has a hard TOTAL budget. Previously every one of
     // three candidates could consume a five-minute timeout, so a bad result
@@ -816,8 +843,23 @@ pub fn stage_track(
     const INTERACTIVE_TOTAL_BUDGET: Duration = Duration::from_secs(120);
     const INTERACTIVE_CANDIDATE_BUDGET: Duration = Duration::from_secs(75);
     let interactive_started = std::time::Instant::now();
-    for source in sources.into_iter().take(3) {
+    while candidate_index < 3 {
+        if candidate_index >= sources.len() {
+            if searched { break; }
+            searched = true;
+            let found = find_sources_cancellable(helper, artist, title, Some(cancel));
+            eprintln!("[luno-video] search -> {} candidates", found.len());
+            sources.extend(found.into_iter().filter(|source| Some(source.id.as_str()) != saved_id.as_deref()));
+            if candidate_index >= sources.len() {
+                if candidate_index == 0 && saved_id.is_none() {
+                    return Ok(VideoOutcome::Unavailable("no relevant video found".into()));
+                }
+                break;
+            }
+        }
         if cancel.load(Ordering::Acquire) { return Ok(VideoOutcome::Unavailable("cancelled".into())); }
+        let source = sources[candidate_index].clone();
+        candidate_index += 1;
         let remaining = INTERACTIVE_TOTAL_BUDGET.saturating_sub(interactive_started.elapsed());
         if remaining.is_zero() {
             last_error = "video staging timed out after 120s".into();

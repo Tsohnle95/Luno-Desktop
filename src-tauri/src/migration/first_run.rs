@@ -535,6 +535,8 @@ fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
             ".luno_config.json",
             ".luno_playlist_urls.json",
             ".luno_allowed_dups.json",
+            ".luno_track_metadata.json",
+            ".luno_video_index.json",
             ".downloaded_vids",
             ".sync_failed_vids",
             ".downloaded.txt",
@@ -557,7 +559,12 @@ fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
             }
         }
         if let Some(root) = music_root.filter(|root| *root != p.legacy_root) {
-            for name in [".luno_playlist_urls.json", ".luno_allowed_dups.json"] {
+            for name in [
+                ".luno_playlist_urls.json",
+                ".luno_allowed_dups.json",
+                ".luno_track_metadata.json",
+                ".luno_video_index.json",
+            ] {
                 let from = root.join(name);
                 if regular_file(&from) {
                     let destination = dir.join("music-root").join(name);

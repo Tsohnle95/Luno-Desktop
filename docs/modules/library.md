@@ -29,6 +29,8 @@ transfer manifests (`docs/modules/contracts.md`).
   `reference_repair.rs` — rescan reconciliation, `heal_track_id`.
 - `src-tauri/src/library/favorites.rs`, `watch.rs` — favorites store,
   filesystem watcher.
+- `src-tauri/src/library/metadata.rs` — versioned portable per-track metadata
+  in `.luno_track_metadata.json` at the music root.
 - `src-tauri/src/library/artwork.rs` — bounded embedded-artwork extraction
   served as data URLs over the `track_artwork` command.
 - `src-tauri/src/domain/identity.rs` — `TrackMetadata`, filename-derived
@@ -68,6 +70,16 @@ transfer manifests (`docs/modules/contracts.md`).
   are atomic, rename/delete mutations keep the map aligned, and every scan
   projects a stored link onto `Playlist.url`; URLs never determine filesystem
   destinations.
+- Track dates and persisted song metadata are stored in the root-level
+  `.luno_track_metadata.json` sidecar, keyed by normalized paths relative to
+  the music root. The first scan seeds `added_ms` from file mtime; later scans,
+  renames, and playlist copies retain that timestamp. The atomic sidecar moves
+  with the music folder and is not part of the app bundle. A corrupt or
+  unsupported sidecar is left untouched while the snapshot falls back to
+  filename metadata and file mtime.
+- Duplicate allow decisions remain in the root-level
+  `.luno_allowed_dups.json` sidecar, so the existing allowlist moves with the
+  music folder and is independent of app rebuilds.
 - Editing a track's artist/title (`edit_track_metadata`) renames its library
   file in place: same folder, extension preserved, collision-rejecting,
   path-keyed favorites moved to the new path, then a coalesced rescan. Because

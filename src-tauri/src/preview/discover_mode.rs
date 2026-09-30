@@ -191,8 +191,10 @@ impl DiscoverMode {
         self.queue_action()
     }
 
-    /// Enables Discover and projects the rolling window in order. It does not
-    /// start playback: the ordinary completion path autoplays it.
+    /// Enables Discover and projects every recommendation in order. Audio
+    /// preparation still uses the smaller rolling window; the queue shows the
+    /// complete plan immediately so its later rows are not hidden behind the
+    /// captured physical queue.
     pub fn enable(&mut self) -> DiscoverAction {
         if self.active && self.discover {
             return DiscoverAction::Noop;
@@ -205,7 +207,7 @@ impl DiscoverMode {
         if self.current_recommendation.is_some() || self.pending_focus.is_some() {
             self.adopt_through(self.cursor);
         }
-        self.adopt_window();
+        self.adopt_all_recommendations();
         self.queue_action()
     }
 
@@ -325,6 +327,14 @@ impl DiscoverMode {
             .skip(self.cursor)
             .take(ROLLING_WINDOW)
         {
+            if !self.failed.contains(id) && !self.queued.contains(id) {
+                self.queued.push(id.clone());
+            }
+        }
+        self.sort_queued();
+    }
+    fn adopt_all_recommendations(&mut self) {
+        for id in &self.recommendations {
             if !self.failed.contains(id) && !self.queued.contains(id) {
                 self.queued.push(id.clone());
             }

@@ -56,13 +56,15 @@ What it does not own: library snapshots and track identity
   its physical order even while a recommendation is audible. Prepared
   recommendation audio remains available.
 - Discover owns a temporary recommendation projection while enabled. The
-  projection anchors to the audible recommendation, pending rows are valid
+  projection shows the complete recommendation plan in order while preparation
+  stays limited to the five-item rolling window. Pending rows are valid
   transport targets, and Previous/Next plus natural completion walk the
-  recommendation order. Toggling Discover changes queue policy only: it keeps
-  the backend stream, playback clock, and audible item running. Disabling
-  restores the exact captured physical queue and index while the recommendation
-  continues; later Previous/Next and natural completion follow the physical
-  queue.
+  recommendation order. Turning shuffle off during Discover keeps the mode
+  active and resynchronizes the same projected queue. Toggling Discover changes
+  queue policy only: it keeps the backend stream, playback clock, and audible
+  item running. Disabling restores the exact captured physical queue and index
+  while the recommendation continues; later Previous/Next and natural
+  completion follow the physical queue.
 - The backend `PlaybackSnapshot.current_index` is authoritative; the frontend
   never re-derives it from `track_started` (duplicate ids made first-occurrence
   `indexOf` regress the queue panel). `audible_track_id` is separately
@@ -83,6 +85,10 @@ What it does not own: library snapshots and track identity
 - Staging requests collapse: repeated requests for one track dedupe to a
   single cancellable waiter; a finishing worker publishes only into an
   empty slot, its own placeholder, or a slot nothing newer claimed.
+- The video ID and quality-tier mapping lives in the music-root
+  `.luno_video_index.json` sidecar, so it survives app rebuilds and follows a
+  copied library. Downloaded MP4s remain session cache files and can be
+  reacquired from the saved mapping.
 - A `Loading` video state always has a live inflight worker. Registry pressure
   defers before publishing, and cancellation/store-wait exits settle their
   owned slot, so playback-load/heartbeat stay available without orphaned

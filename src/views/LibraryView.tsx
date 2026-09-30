@@ -111,8 +111,8 @@ export function sortLibraryTracks(tracks: Track[], sort: LibrarySort): Track[] {
   return [...tracks].sort((a, b) => {
     if (sort === "Duration") return (a.duration_ms ?? 0) - (b.duration_ms ?? 0);
     if (sort === "Recently added") {
-      // Newest file first; tracks with no mtime sort last, ties fall through to
-      // the alphabetical comparison below so the order stays deterministic.
+      // Newest saved first; tracks with no known date sort last, ties fall
+      // through to the alphabetical comparison below for deterministic order.
       const delta = (b.added_ms ?? 0) - (a.added_ms ?? 0);
       if (delta !== 0) return delta;
     }
