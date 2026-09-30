@@ -303,7 +303,7 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
           ? <div className="luno-table-filter">
             <input autoFocus autoCorrect="off" spellCheck={false} aria-label="Filter tracks" placeholder={`Search in ${scopeName}`} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setQuery(""); setFilterOpen(false); } }} />
           </div>
-          : <><span className="luno-th-index">#</span><span aria-hidden="true"></span><span>Title</span><span className="luno-track-cell-album">Album</span><span className="luno-track-cell-playlist">Playlist</span><span className="luno-track-cell-added">Date added</span><span aria-hidden="true"></span><span className="luno-th-duration" title="Duration" aria-label="Duration"><IconClock size={13} /></span></>}
+          : <><span className="luno-th-index">#</span><span aria-hidden="true"></span><span>Title</span><span className="luno-track-cell-playlist">Playlist</span><span className="luno-track-cell-added">Date added</span><span aria-hidden="true"></span><span className="luno-th-duration" title="Duration" aria-label="Duration"><IconClock size={13} /></span></>}
       </div>
       {loading ? <p role="status" className="luno-track-empty">Loading library...</p>
         : error ? <div role="alert" className="luno-track-empty">{error}<button type="button" disabled={!backendAvailable} onClick={onScan}>Retry</button></div>

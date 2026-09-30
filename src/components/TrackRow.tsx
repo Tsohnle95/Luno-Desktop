@@ -48,7 +48,6 @@ export function TrackRow({ track, index, playlistName, selected = false, playing
       </span>
       <RecommendationArtworkImage className="luno-track-artwork-slot" artworkUrl={artwork ?? track.artwork_url} artist={track.artist ?? ""} title={track.title} alt={`${track.title} artwork`} size={40} />
       <span className="luno-track-copy"><strong title={track.title}>{truncate(track.title, 52)}</strong><span title={track.artist ?? "Unknown artist"}>{truncate(track.artist ?? "Unknown artist", 64)}</span></span>
-      <span className="luno-track-cell-album" title={track.album ?? undefined}>{truncate(track.album ?? "", 40)}</span>
       <span className="luno-track-cell-playlist luno-truncate" title={playlistName ?? undefined}>{playlistName}</span>
       <span className="luno-track-cell-added" title={hasAddedAt ? "Date added" : "Date added unavailable"}>{hasAddedAt ? <time dateTime={addedAt.toISOString()}>{formatAddedDate(track.added_ms)}</time> : "—"}</span>
       <span className="luno-track-favorite"><button className={`luno-favorite${track.favorite ? " is-on" : ""}`} type="button" aria-label={track.favorite ? `Remove ${track.title} from favorites` : `Add ${track.title} to favorites`} disabled={!backendAvailable} onClick={(event) => { event.stopPropagation(); if (backendAvailable) onFavoriteToggle?.(track); }}>{track.favorite ? "★" : "☆"}</button></span>

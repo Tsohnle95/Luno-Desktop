@@ -29,19 +29,23 @@ const actionCopy: Record<PlaylistAction, { title: string; submit: string }> = {
   smart: { title: "Smart playlist", submit: "Create smart playlist" },
 };
 
-function DialogFrame({ title, description, error, busy, onClose, children }: {
-  title: string; description?: string; error?: string | null; busy?: boolean;
+function DialogFrame({ title, description, error, busy, focusFirstInput = false, onClose, children }: {
+  title: string; description?: string; error?: string | null; busy?: boolean; focusFirstInput?: boolean;
   onClose: () => void; children: ReactNode;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    closeRef.current?.focus();
+    const firstInput = focusFirstInput ? dialogRef.current?.querySelector<HTMLInputElement>("input") : null;
+    (firstInput ?? closeRef.current)?.focus();
+  }, [focusFirstInput]);
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) onClose(); };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [busy, onClose]);
   return <div className="luno-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
-    <section className="luno-dialog" role="dialog" aria-modal="true" aria-labelledby="luno-dialog-title">
+    <section ref={dialogRef} className="luno-dialog" role="dialog" aria-modal="true" aria-labelledby="luno-dialog-title">
       <header><h2 id="luno-dialog-title">{title}</h2><button ref={closeRef} type="button" aria-label="Close dialog" onClick={onClose} disabled={busy}>×</button></header>
       {description && <p>{description}</p>}
       {error && <p role="alert" className="luno-dialog-error">{error}</p>}
@@ -188,7 +192,7 @@ export function PlaylistUrlDialog({ playlistName, initialUrl, busy = false, erro
 }) {
   const [url, setUrl] = useState(initialUrl ?? "");
   const normalized = url.trim();
-  return <DialogFrame title="YouTube playlist sync" description={`Link “${playlistName}” to a YouTube playlist. Sync downloads only songs Luno has not already seen.`} error={error} busy={busy} onClose={onClose}>
+  return <DialogFrame title="YouTube playlist sync" description={`Link “${playlistName}” to a YouTube playlist. Sync downloads only songs Luno has not already seen.`} error={error} busy={busy} focusFirstInput onClose={onClose}>
     <form onSubmit={(event) => { event.preventDefault(); if (normalized) onSubmit(normalized); }}>
       <label>YouTube playlist URL<input autoFocus type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="https://www.youtube.com/playlist?list=…" value={url} onChange={(event) => setUrl(event.target.value)} required /></label>
       <footer>
