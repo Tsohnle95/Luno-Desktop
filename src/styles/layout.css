@@ -96,13 +96,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   color: var(--luno-text-2); background: rgba(24, 24, 24, 0.9); cursor: pointer;
 }
 .luno-home-button:hover, .luno-home-button[aria-current="page"] { color: var(--luno-text); background: var(--luno-bg-3); }
-/* Center the search field against the app window; Home sits in the equal-width
- * left cell so it does not shift the field's center. */
+/* Center the search field against the app window; Home sits just to its left
+ * without taking part in centering or widening the field. */
 .luno-top-nav { position: absolute; inset: 0; display: block; flex: none; margin: 0; min-width: 0; pointer-events: none; }
-.luno-top-center { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: grid; grid-template-columns: 32px minmax(0, 1fr) 32px; align-items: center; gap: 8px; width: min(540px, calc(100vw - 168px)); margin: 0; min-width: 0; pointer-events: auto; }
-.luno-top-center .luno-home-button { grid-column: 1; justify-self: end; width: 32px; min-width: 32px; padding: 0; }
+.luno-top-center { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: block; width: min(460px, calc(100vw - 168px)); margin: 0; min-width: 0; pointer-events: auto; }
+.luno-top-center .luno-home-button { position: absolute; top: 50%; right: calc(100% + 8px); transform: translateY(-50%); width: 32px; min-width: 32px; padding: 0; }
 .luno-search {
-  grid-column: 2; display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px;
   width: 100%; min-width: 0;
   height: 34px; padding: 0 14px;
   border-radius: 17px; background: rgba(24, 24, 24, 0.9); color: var(--luno-text-2);
