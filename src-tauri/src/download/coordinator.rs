@@ -1,4 +1,4 @@
-//! Coordination for the one normal library download/write job.
+//! Coordination for bounded normal library download/write jobs.
 
 use crate::download::promotion::{promote_output, stage_output, CollisionPolicy, PromotionError, Validation};
 use crate::runtime::task_registry::CancellationToken;
@@ -34,7 +34,9 @@ pub enum StartError { Busy, ShuttingDown, InvalidRequest }
 pub type DownloadWorker = Box<dyn FnOnce(&Path, &CancellationToken, &dyn Fn(f32)) -> Result<(), String> + Send + 'static>;
 
 struct Job { job_id: String, token: CancellationToken, terminal: Arc<AtomicBool>, join: JoinHandle<()> }
-struct Inner { closing: bool, active: Option<Job> }
+struct Inner { closing: bool, active: HashMap<String, Job> }
+
+pub const MAX_ACTIVE_DOWNLOADS: usize = 3;
 
 /// Owns the worker handle.  In particular, this type never uses a detached
 /// thread: an unfinished handle remains owned until its worker has exited.
@@ -45,7 +47,7 @@ pub struct DownloadCoordinator {
 
 impl DownloadCoordinator {
     pub fn new() -> Self {
-        Self { inner: Arc::new(Mutex::new(Inner { closing: false, active: None })), subscribers: Arc::new(Mutex::new(HashMap::new())) }
+        Self { inner: Arc::new(Mutex::new(Inner { closing: false, active: HashMap::new() })), subscribers: Arc::new(Mutex::new(HashMap::new())) }
     }
 
     /// Subscribe before starting a job. Each job delivery consumer owns its receiver.
@@ -69,7 +71,13 @@ impl DownloadCoordinator {
     pub fn is_busy(&self) -> bool {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         reap(&mut inner);
-        inner.active.is_some()
+        !inner.active.is_empty()
+    }
+
+    pub fn active_count(&self) -> usize {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        reap(&mut inner);
+        inner.active.len()
     }
 
     pub fn start(&self, request: DownloadRequest, worker: DownloadWorker) -> Result<(), StartError> {
@@ -77,7 +85,7 @@ impl DownloadCoordinator {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         reap(&mut inner);
         if inner.closing { return Err(StartError::ShuttingDown); }
-        if inner.active.is_some() { return Err(StartError::Busy); }
+        if inner.active.contains_key(&request.job_id) || inner.active.len() >= MAX_ACTIVE_DOWNLOADS { return Err(StartError::Busy); }
         let temporary = stage_output(&request.destination).map_err(|_| StartError::InvalidRequest)?;
         let job_id = request.job_id.clone();
         let owned_job_id = job_id.clone();
@@ -121,23 +129,33 @@ impl DownloadCoordinator {
             worker_terminal.store(true, Ordering::Release);
             emit(terminal);
         }).map_err(|_| StartError::InvalidRequest)?;
-        inner.active = Some(Job { job_id: owned_job_id, token, terminal, join });
+        inner.active.insert(owned_job_id.clone(), Job { job_id: owned_job_id, token, terminal, join });
         Ok(())
     }
 
     pub fn cancel(&self) -> bool {
-        let job_id = self.inner.lock().unwrap_or_else(|e| e.into_inner()).active.as_ref().map(|job| job.job_id.clone());
-        job_id.is_some_and(|job_id| self.cancel_job(&job_id))
+        let job_ids = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            reap(&mut inner);
+            inner.active.keys().cloned().collect::<Vec<_>>()
+        };
+        job_ids.into_iter().fold(false, |cancelled, job_id| self.cancel_job(&job_id) || cancelled)
     }
 
     pub fn cancel_job(&self, requested_job_id: &str) -> bool {
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(job) = inner.active.as_ref().filter(|job| job.job_id == requested_job_id) {
-            if job.token.is_cancelled() { false } else {
-                job.token.cancel();
-                self.emit(DownloadEvent::Cancelling { job_id: job.job_id.clone() });
-                true
-            }
+        let cancelled_job = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            reap(&mut inner);
+            inner.active.get(requested_job_id).and_then(|job| {
+                if job.token.is_cancelled() { None } else {
+                    job.token.cancel();
+                    Some(job.job_id.clone())
+                }
+            })
+        };
+        if let Some(job_id) = cancelled_job {
+            self.emit(DownloadEvent::Cancelling { job_id });
+            true
         } else { false }
     }
 
@@ -153,13 +171,14 @@ impl DownloadCoordinator {
         let started = Instant::now();
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.closing = true;
-        if let Some(job) = &inner.active { job.token.cancel(); }
-        while inner.active.as_ref().is_some_and(|job| !job.join.is_finished()) && started.elapsed() < deadline {
+        for job in inner.active.values() { job.token.cancel(); }
+        while inner.active.values().any(|job| !job.join.is_finished()) && started.elapsed() < deadline {
             drop(inner);
             thread::sleep(Duration::from_millis(2));
             inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            reap(&mut inner);
         }
-        let timed_out = inner.active.as_ref().is_some_and(|job| !job.join.is_finished());
+        let timed_out = inner.active.values().any(|job| !job.join.is_finished());
         if !timed_out { reap(&mut inner); }
         ShutdownReport { timed_out }
     }
@@ -169,8 +188,11 @@ impl DownloadCoordinator {
 pub struct ShutdownReport { pub timed_out: bool }
 
 fn reap(inner: &mut Inner) {
-    if inner.active.as_ref().is_some_and(|job| job.join.is_finished() || job.terminal.load(Ordering::Acquire)) {
-        if let Some(job) = inner.active.take() { let _ = job.join.join(); }
+    let finished = inner.active.iter()
+        .filter_map(|(job_id, job)| (job.join.is_finished() || job.terminal.load(Ordering::Acquire)).then_some(job_id.clone()))
+        .collect::<Vec<_>>();
+    for job_id in finished {
+        if let Some(job) = inner.active.remove(&job_id) { let _ = job.join.join(); }
     }
 }
 
@@ -186,8 +208,11 @@ impl Default for DownloadCoordinator { fn default() -> Self { Self::new() } }
 
 impl Drop for DownloadCoordinator {
     fn drop(&mut self) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(job) = inner.active.take() {
+        let jobs = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut inner.active).into_values().collect::<Vec<_>>()
+        };
+        for job in jobs {
             job.token.cancel();
             let _ = job.join.join();
         }

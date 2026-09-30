@@ -266,11 +266,25 @@ fn downloader_coordinator_exposes_busy_progress_cancel_error_and_terminal_states
         .expect("timed out waiting for progress");
     assert!(matches!(first, DownloadEvent::Started { .. }));
     assert!(matches!(second, DownloadEvent::Progress { .. }));
+    for id in ["parallel-1", "parallel-2"] {
+        coordinator
+            .start(
+                request(id),
+                Box::new(|_, token, _| {
+                    while !token.is_cancelled() {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err("worker stopped".into())
+                }),
+            )
+            .unwrap();
+    }
+    assert_eq!(coordinator.active_count(), 3);
     assert_eq!(
         coordinator.start(request("busy"), Box::new(|_, _, _| Ok(()))),
         Err(StartError::Busy)
     );
-    assert!(coordinator.cancel());
+    assert!(coordinator.cancel_job("cancel"));
     let mut observed = vec![first, second];
     for _ in 0..20 {
         match events.recv_timeout(Duration::from_millis(50)) {
@@ -299,6 +313,17 @@ fn downloader_coordinator_exposes_busy_progress_cancel_error_and_terminal_states
     let cancelling = observed.iter().position(|event| matches!(event, DownloadEvent::Cancelling { .. })).unwrap();
     let cancelled = observed.iter().position(|event| matches!(event, DownloadEvent::Cancelled { .. })).unwrap();
     assert!(cancelling < cancelled);
+    assert_eq!(coordinator.active_count(), 2, "cancelling one job must leave its peers running");
+    for job_id in ["parallel-1", "parallel-2"] {
+        assert!(coordinator.cancel_job(job_id));
+        let mut saw_terminal = false;
+        while !saw_terminal {
+            let event = events.recv_timeout(Duration::from_millis(100)).expect("timed out waiting for peer cancellation");
+            saw_terminal = matches!(&event, DownloadEvent::Cancelled { job_id: cancelled } if cancelled == job_id);
+            observed.push(event);
+        }
+    }
+    assert_eq!(coordinator.active_count(), 0);
     coordinator
         .start(
             request("retry"),
@@ -313,6 +338,21 @@ fn downloader_coordinator_exposes_busy_progress_cancel_error_and_terminal_states
     assert!(matches!(events.recv_timeout(Duration::from_millis(100)).unwrap(), DownloadEvent::Progress { .. }));
     assert!(matches!(events.recv_timeout(Duration::from_millis(100)).unwrap(), DownloadEvent::Finalizing { .. }));
     assert!(matches!(events.recv_timeout(Duration::from_millis(100)).unwrap(), DownloadEvent::Succeeded { .. }));
+    for id in ["shutdown-1", "shutdown-2"] {
+        coordinator
+            .start(
+                request(id),
+                Box::new(|_, token, _| {
+                    while !token.is_cancelled() {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err("worker stopped".into())
+                }),
+            )
+            .unwrap();
+    }
+    assert!(!coordinator.shutdown(Duration::from_secs(1)).timed_out);
+    assert_eq!(coordinator.active_count(), 0);
     let error_coordinator = DownloadCoordinator::new();
     let error_events = error_coordinator.events().unwrap();
     error_coordinator
@@ -1039,6 +1079,52 @@ fn playlist_sync_cancellation_kills_enumerator_and_releases_download_admission()
         helper: helper.to_string_lossy().into_owned(), source: String::new(),
     }});
     assert!(accepted.is_ok(), "playlist sync must release shared download admission after cancellation: {accepted:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn playlist_sync_stays_exclusive_with_active_normal_downloads() {
+    let root = fixture("playlist-sync-normal-download-exclusion");
+    let playlist = root.join("Road trip");
+    fs::create_dir_all(&playlist).unwrap();
+    fs::write(root.join(".luno_playlist_urls.json"), br#"{"Road trip":"https://www.youtube.com/playlist?list=PL_fixture"}"#).unwrap();
+    let helper = fake_helper(&root);
+    let started_file = root.join("normal-download.started");
+    fs::write(&helper, format!(
+        "#!/bin/sh\nprintf started > '{}'\nsleep 30\nprintf 'ID3synthetic-audio' > \"$1\"\n",
+        started_file.display(),
+    )).unwrap();
+    let mut permissions = fs::metadata(&helper).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&helper, permissions).unwrap();
+
+    let state = crate::state::AppState::new(8);
+    state.set_scan_roots(vec![root.0.clone()]);
+    state.set_bundle_helper(Some(helper.clone()));
+    state.replace_library(crate::contracts::types::Generation(1), std::collections::BTreeMap::from([("Road trip".into(), vec![])]));
+    state.dispatch(CommandEnvelope { version: 1, request_id: "active-download".into(), command: BackendCommand::StartDownload {
+        job_id: JobId("active-download".into()), destination: playlist.join("active.m4a").to_string_lossy().into_owned(),
+        helper: helper.to_string_lossy().into_owned(), source: "fixture source".into(),
+    }}).unwrap();
+    for _ in 0..200 {
+        if started_file.is_file() { break; }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(started_file.is_file(), "normal download helper should have started");
+
+    let blocked = state.dispatch(CommandEnvelope { version: 1, request_id: "blocked-sync".into(), command: BackendCommand::SyncPlaylist {
+        playlist_id: crate::contracts::types::PlaylistId("playlist:Road trip".into()),
+    }}).unwrap_err();
+    assert_eq!(blocked.code, crate::contracts::types::ErrorCode::Busy);
+
+    state.dispatch(CommandEnvelope { version: 1, request_id: "cancel-active-download".into(), command: BackendCommand::CancelJob {
+        job_id: JobId("active-download".into()),
+    }}).unwrap();
+    for _ in 0..200 {
+        if state.events().iter().any(|event| matches!(&event.event, Event::JobUpdated { job } if job.id.0 == "active-download" && job.state == crate::contracts::types::JobState::Cancelled)) { break; }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(state.events().iter().any(|event| matches!(&event.event, Event::JobUpdated { job } if job.id.0 == "active-download" && job.state == crate::contracts::types::JobState::Cancelled)));
 }
 
 #[test]

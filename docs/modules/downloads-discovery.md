@@ -59,6 +59,12 @@ What it does not own: library snapshots and promotion targets
   rescan. The post-transfer validation/promotion interval is published as
   `finalizing` so the UI stays live while the file becomes playable. Missing
   parents outside the root are rejected, never created.
+- Normal downloader jobs have a three-job coordinator limit and are tracked
+  by job ID for independent cancellation and shutdown draining. Each helper
+  receives a per-attempt home keyed by library root, job ID, and generation
+  under an app-specific system temporary directory;
+  the home is removed after the helper exits. Playlist sync stays sequential
+  and mutually exclusive with normal downloader jobs.
 - Download helper invocations receive the source (`scsearch1:`-style or
   URL); the bundled helper resolves via `resolve_bundle_helper`
   (resource dir → manifest dir). Retry reuses the stored job.
@@ -178,6 +184,11 @@ What it does not own: library snapshots and promotion targets
   direct candidate-download failure leaves the source available for one
   explicit sync retry; sync consumes that retry authorization before starting
   the helper.
+- Playlist titles come from physical library folder names and do not establish
+  where their songs came from. A linked sync URL and its log can show playlist
+  sync history; ordinary search and direct-URL downloads do not keep a
+  per-file source-URL ledger, so their exact original source cannot be
+  reconstructed from the playlist name.
   Each attempted video appends a dated title, outcome, and failure reason to
   `.luno-sync-log.jsonl` in that playlist folder. This is display history,
   not a dedupe marker; `.downloaded_vids` remains the success source. The
