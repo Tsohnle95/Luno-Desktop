@@ -54,6 +54,9 @@ docs), release packaging (`docs/release/desktop.md`).
   strictness in Rust — an approved additive shape such as `phase` or
   `prepared` must be added to both validators together; arbitrary fields
   remain invalid.
+- The optional `SettingsInput.youtube_cookies_browser` field is allowlisted
+  on both sides. `"none"` explicitly clears the preference; omitted or null
+  values preserve existing config under settings merge semantics.
 - Frontend never recreates backend policy: it renders snapshots and sends
   commands. Queue order, scan results, job state, and playback position
   are backend-owned; frontend projections (`src/state/`) are read models.

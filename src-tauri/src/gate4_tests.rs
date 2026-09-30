@@ -706,6 +706,7 @@ fn target_dispatch_runs_search_settings_and_fake_download_event_path() {
         global_keys: Some(true),
         favorite_songs: vec![],
         video_mode: Some(false),
+        youtube_cookies_browser: None,
     };
     state
         .dispatch(CommandEnvelope {

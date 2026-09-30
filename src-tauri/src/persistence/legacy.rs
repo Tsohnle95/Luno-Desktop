@@ -16,6 +16,7 @@ pub struct LegacyConfig {
     pub global_keys: Option<bool>,
     pub favorite_songs: Option<Vec<String>>,
     pub video_mode: Option<bool>,
+    pub youtube_cookies_browser: Option<String>,
 }
 
 /// Parse config while retaining only known fields. A malformed or non-object
@@ -26,7 +27,7 @@ pub fn read_config(path: &Path) -> Result<LegacyConfig, String> {
     let object = value.as_object().ok_or_else(|| "config must be a JSON object".to_string())?;
     let mut config = LegacyConfig::default();
     macro_rules! string { ($name:literal, $field:ident) => { if let Some(v) = object.get($name) { if let Some(s) = v.as_str() { config.$field = Some(s.to_owned()); } } }; }
-    string!("music_root", music_root); string!("lastfm_key", lastfm_key);
+    string!("music_root", music_root); string!("lastfm_key", lastfm_key); string!("youtube_cookies_browser", youtube_cookies_browser);
     if let Some(v) = object.get("auto_discovery").and_then(Value::as_bool) { config.auto_discovery = Some(v); }
     if let Some(v) = object.get("global_keys").and_then(Value::as_bool) { config.global_keys = Some(v); }
     if let Some(v) = object.get("video_mode").and_then(Value::as_bool) { config.video_mode = Some(v); }

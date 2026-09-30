@@ -1479,6 +1479,7 @@ fn save_settings_preserves_backend_favorites_when_frontend_sends_stale_list() {
         global_keys: None,
         favorite_songs: vec![stale.display().to_string()],
         video_mode: None,
+        youtube_cookies_browser: None,
     };
 
     state.dispatch(command("save-settings-stale-favorites", Command::SaveSettings {

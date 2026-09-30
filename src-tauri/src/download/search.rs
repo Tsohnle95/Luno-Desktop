@@ -17,8 +17,13 @@ use std::time::Duration;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
 const WEB_SEARCH_TIMEOUT: Duration = Duration::from_secs(7);
 const PLAYLIST_TIMEOUT: Duration = Duration::from_secs(60);
+pub const YTDLP_COOKIE_BROWSERS: &[&str] = &["brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi", "whale"];
 /// SoundCloud yields fewer relevant hits than YouTube; keep its cap modest.
 const SC_LIMIT: usize = 5;
+
+pub fn is_supported_ytdlp_cookie_browser(browser: &str) -> bool {
+    YTDLP_COOKIE_BROWSERS.contains(&browser)
+}
 
 /// Run one `ytsearchN:`/`scsearchN:` query through the bundled yt-dlp and
 /// return parsed results. Failures remain distinct from a legitimate empty
@@ -212,11 +217,19 @@ pub fn probe_media(ytdlp: &Path, url: &str) -> Result<MediaProbe, String> {
 /// Resolve the stable IDs, titles and watch URLs for an entire YouTube
 /// playlist without downloading media. The child is polled so cancelling the
 /// owning sync task also kills enumeration instead of leaving yt-dlp detached.
-pub fn playlist_entries(supervisor: &Supervisor, ytdlp: &Path, url: &str, token: &CancellationToken) -> Result<Vec<PlaylistEntry>, String> {
-    let mut spec = ProcessSpec::new(ytdlp, vec![
+pub fn playlist_entries(supervisor: &Supervisor, ytdlp: &Path, url: &str, cookies_browser: Option<&str>, token: &CancellationToken) -> Result<Vec<PlaylistEntry>, String> {
+    let mut args = vec!["--ignore-config".to_owned()];
+    if let Some(browser) = cookies_browser {
+        if !is_supported_ytdlp_cookie_browser(browser) {
+            return Err("unsupported browser for YouTube playlist sign-in".into());
+        }
+        args.extend(["--cookies-from-browser".to_owned(), browser.to_owned()]);
+    }
+    args.extend([
         "--dump-json".into(), "--flat-playlist".into(), "--no-warnings".into(),
         "--socket-timeout".into(), "15".into(), "--".into(), url.into(),
-    ], PLAYLIST_TIMEOUT);
+    ]);
+    let mut spec = ProcessSpec::new(ytdlp, args, PLAYLIST_TIMEOUT);
     spec.output_limit = 8 * 1024 * 1024;
     let output = supervisor.run_cancellable(spec, token).map_err(|error| match error {
         SuperviseError::Cancelled => "cancelled".into(),
@@ -226,6 +239,12 @@ pub fn playlist_entries(supervisor: &Supervisor, ytdlp: &Path, url: &str, token:
     })?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
+        if detail.contains("YouTube said: The playlist does not exist") {
+            return Err(match cookies_browser {
+                Some(browser) => format!("YouTube could not read this playlist using cookies from {browser}. Check that this browser is signed in to the account that owns the playlist and that the link is correct."),
+                None => "YouTube could not access this playlist. If it is an account-only list such as Liked videos (LL), choose a browser signed in to its owner in Settings → Downloads → YouTube Playlist Sync, then try again. Check the link if it is a public playlist.".into(),
+            });
+        }
         return Err(format!("playlist lookup exited {}: {}", output.status, detail.trim().chars().take(800).collect::<String>()));
     }
     let entries = parse_playlist_entries(&String::from_utf8_lossy(&output.stdout));

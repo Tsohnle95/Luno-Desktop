@@ -183,7 +183,13 @@ What it does not own: library snapshots and promotion targets
   Source mappings and pending selected-source retries survive restarts. A
   direct candidate-download failure leaves the source available for one
   explicit sync retry; sync consumes that retry authorization before starting
-  the helper.
+  the helper. Playlist lookup ignores yt-dlp user configuration and may use
+  browser cookies only when the user selects a signed-in browser in Settings.
+  The browser name is persisted, while yt-dlp reads the cookie store during
+  playlist enumeration; Luno does not export or persist a cookie file, and
+  per-song downloads continue through the existing helper path without
+  browser cookies. This supports account-only lists such as YouTube Liked
+  videos (`LL`) when the selected browser is signed into the owning account.
 - Playlist titles come from physical library folder names and do not establish
   where their songs came from. A linked sync URL and its log can show playlist
   sync history; ordinary search and direct-URL downloads do not keep a

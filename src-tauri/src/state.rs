@@ -2504,6 +2504,9 @@ pub struct AppState {
     /// Runtime home captured at load time so backend-side setting changes can
     /// persist immediately without an extra IPC round-trip.
     settings_home: Arc<Mutex<Option<PathBuf>>>,
+    /// Browser selected for account-only YouTube playlist enumeration. Only
+    /// the browser name is persisted; yt-dlp reads cookies from its profile.
+    youtube_cookies_browser: Arc<Mutex<Option<String>>>,
     /// Settings ▸ Playback "media keys" toggle, mirrored here so hardware
     /// key handlers can check it cheaply on every press. Defaults to TRUE —
     /// Luno must own the media keys unless the user opts out.
@@ -2783,6 +2786,7 @@ impl AppState {
             video_heavy_work: Arc::new(Mutex::new(())),
             video_upgrade_waiting: Arc::new(AtomicBool::new(false)),
             settings_home: Arc::new(Mutex::new(None)),
+            youtube_cookies_browser: Arc::new(Mutex::new(None)),
             media_keys_enabled: Arc::new(AtomicBool::new(true)),
             #[cfg(target_os = "macos")]
             now_playing_track: Arc::new(Mutex::new(None)),
@@ -3272,6 +3276,7 @@ impl AppState {
                 global_keys: None,
                 favorite_songs: self.favorites.lock().unwrap_or_else(|e| e.into_inner()).paths().map(str::to_owned).collect(),
                 video_mode: Some(enabled),
+                youtube_cookies_browser: None,
             };
             if let Err(error) = self.save_settings(home, settings) {
                 eprintln!("[luno-video] video_mode persistence failed: {:?}", error.message);
@@ -6278,6 +6283,9 @@ impl AppState {
                 return Err(ContractError::invalid("configuration music root is unsafe or unavailable"));
             }
         }
+        let youtube_cookies_browser = config.youtube_cookies_browser
+            .filter(|browser| crate::download::search::is_supported_ytdlp_cookie_browser(browser));
+        *self.youtube_cookies_browser.lock().unwrap_or_else(|e| e.into_inner()) = youtube_cookies_browser.clone();
         self.set_scan_roots(root.clone().into_iter().collect());
         // Apply the persisted master volume to engine state so the first track
         // after startup plays at the saved level before the user touches the
@@ -6314,12 +6322,14 @@ impl AppState {
             "sleep_timer": config.sleep_timer,
             "global_keys": config.global_keys,
             "video_mode": video_mode,
+            "youtube_cookies_browser": youtube_cookies_browser.as_deref().unwrap_or("none"),
             "favorite_songs": self.favorites.lock().unwrap_or_else(|e| e.into_inner()).paths().map(str::to_owned).collect::<Vec<_>>(),
         }))
     }
 
     fn save_settings(&self, home: PathBuf, settings: crate::contracts::types::SettingsInput) -> Result<Value, ContractError> {
         validate_home(&home)?;
+        let youtube_cookies_browser = settings.youtube_cookies_browser.clone();
         if home.as_os_str().is_empty()
             || settings.favorite_songs.iter().any(|path| path.is_empty() || path.contains('\0') || path.chars().any(char::is_control))
             || settings.volume.is_some_and(|volume| !volume.is_finite() || !(0.0..=1.0).contains(&volume))
@@ -6331,6 +6341,9 @@ impl AppState {
             if !root.is_absolute() || !root.is_dir() {
                 return Err(ContractError::invalid("music root must be an existing absolute directory"));
             }
+        }
+        if youtube_cookies_browser.as_deref().is_some_and(|browser| browser != "none" && !crate::download::search::is_supported_ytdlp_cookie_browser(browser)) {
+            return Err(ContractError::invalid("unsupported browser for YouTube playlist sign-in"));
         }
         // MERGE semantics: overlay only the fields this caller actually knows
         // about onto the existing file. Whole-file replacement here let any
@@ -6365,9 +6378,21 @@ impl AppState {
                 }
             }
         }
+        if let Some(browser) = youtube_cookies_browser.as_deref() {
+            if let Some(target) = merged.as_object_mut() {
+                if browser == "none" {
+                    target.remove("youtube_cookies_browser");
+                } else {
+                    target.insert("youtube_cookies_browser".into(), Value::String(browser.to_owned()));
+                }
+            }
+        }
         let bytes = serde_json::to_vec_pretty(&merged).map_err(|_| ContractError { code: ErrorCode::Internal, message: "settings could not be encoded".into(), retryable: false })?;
         let path = home.join(".luno_config.json");
         crate::persistence::atomic_write::write_atomic(&path, &bytes).map_err(|_| ContractError { code: ErrorCode::Internal, message: "settings could not be persisted".into(), retryable: true })?;
+        if let Some(browser) = youtube_cookies_browser {
+            *self.youtube_cookies_browser.lock().unwrap_or_else(|e| e.into_inner()) = (browser != "none").then_some(browser);
+        }
         // Live-apply the media-keys toggle so hardware keys follow immediately.
         if let Some(enabled) = settings.global_keys {
             self.media_keys_enabled.store(enabled, Ordering::Release);
@@ -6605,6 +6630,7 @@ impl AppState {
         let helper = self.bundle_helper.lock().unwrap_or_else(|e| e.into_inner()).clone()
             .ok_or_else(|| ContractError { code: ErrorCode::Unavailable, message: "bundled download helper is unavailable".into(), retryable: false })?;
         let ytdlp = self.discover_ytdlp().map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: false })?;
+        let cookies_browser = self.youtube_cookies_browser.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let _admission = self.media_download_admission.lock().unwrap_or_else(|e| e.into_inner());
         if self.downloads.is_busy() || self.playlist_sync_active.swap(true, Ordering::AcqRel) {
             return Err(ContractError { code: ErrorCode::Busy, message: "another download is already running".into(), retryable: true });
@@ -6620,7 +6646,7 @@ impl AppState {
             let _active = active;
             state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(0.0), None);
             let outcome = (|| -> Result<(usize, usize, Option<String>), String> {
-                let entries = crate::download::search::playlist_entries(&state.supervisor, &ytdlp, &url, &token)?;
+                let entries = crate::download::search::playlist_entries(&state.supervisor, &ytdlp, &url, cookies_browser.as_deref(), &token)?;
                 let mut sync_state = crate::download::sync::PlaylistSyncState::load(&destination)?;
                 let mut markers = crate::download::markers::Markers::load(&destination);
                 let migrated = sync_state.migrate_legacy_unavailable(&destination, &entries, &markers);
@@ -7095,6 +7121,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
             global_keys: None,
             favorite_songs: self.favorites.lock().unwrap_or_else(|e| e.into_inner()).paths().map(str::to_owned).collect(),
             video_mode: None,
+            youtube_cookies_browser: None,
         };
         let _ = self.save_settings(home, settings);
     }

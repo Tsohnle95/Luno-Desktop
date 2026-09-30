@@ -388,6 +388,10 @@ pub struct SettingsInput {
     /// pre-download the next five queue videos. Absent = off.
     #[serde(default)]
     pub video_mode: Option<bool>,
+    /// Browser whose signed-in YouTube cookies playlist lookup may use.
+    /// `"none"` explicitly clears the preference; absent/null leaves it alone.
+    #[serde(default)]
+    pub youtube_cookies_browser: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

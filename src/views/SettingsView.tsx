@@ -1,4 +1,5 @@
 import { useState, type ChangeEvent, type ReactNode } from "react";
+import { YTDLP_COOKIE_BROWSERS, type YtDlpCookieBrowser } from "../shared/contracts";
 
 export type SleepTimer = "Off" | "5 mins" | "15 mins" | "30 mins" | "60 mins";
 
@@ -16,6 +17,7 @@ export interface SettingsViewProps {
   autoDiscovery?: boolean;
   sleepTimer?: SleepTimer;
   mediaKeys?: boolean;
+  youtubeCookiesBrowser?: YtDlpCookieBrowser;
   loading?: boolean;
   error?: string | null;
   onLastfmKeyChange?: (value: string) => void;
@@ -23,6 +25,7 @@ export interface SettingsViewProps {
   onAutoDiscoveryChange?: (value: boolean) => void;
   onSleepTimerChange?: (value: SleepTimer) => void;
   onMediaKeysChange?: (value: boolean) => void;
+  onYoutubeCookiesBrowserChange?: (value: YtDlpCookieBrowser) => void;
   transferManifest?: string;
   transferDestination?: string;
   onTransferManifestChange?: (value: string) => void;
@@ -41,8 +44,19 @@ export interface SettingsViewProps {
   onScreenClosed?: () => void;
 }
 
-const CATEGORIES = ["Library", "Discovery", "Playback", "Transfer", "Troubleshooting"] as const;
+const CATEGORIES = ["Library", "Downloads", "Discovery", "Playback", "Transfer", "Troubleshooting"] as const;
 type Category = (typeof CATEGORIES)[number];
+const COOKIE_BROWSER_LABELS: Record<(typeof YTDLP_COOKIE_BROWSERS)[number], string> = {
+  brave: "Brave",
+  chrome: "Google Chrome",
+  chromium: "Chromium",
+  edge: "Microsoft Edge",
+  firefox: "Firefox",
+  opera: "Opera",
+  safari: "Safari",
+  vivaldi: "Vivaldi",
+  whale: "Naver Whale",
+};
 
 const inputStyle = { width: "100%", padding: "11px 12px", color: "var(--luno-text)", background: "var(--luno-bg-3)", border: "1px solid var(--luno-border)", borderRadius: "var(--luno-radius)" };
 const buttonStyle = { border: 0, borderRadius: "var(--luno-radius)", padding: "10px 14px", color: "var(--luno-bg)", background: "var(--luno-green)", fontWeight: 700, cursor: "pointer" };
@@ -55,8 +69,9 @@ const buttonsDisabledStyle = (disabled: boolean) => ({ ...buttonStyle, opacity: 
  */
 export function SettingsView({
   lastfmKey = "", keychainStatus = "available", musicRoot = "Not configured", autoDiscovery = false,
-  sleepTimer = "Off", mediaKeys = true, loading = false, error = null, onLastfmKeyChange, onSaveLastfmKey,
+  sleepTimer = "Off", mediaKeys = true, youtubeCookiesBrowser = "none", loading = false, error = null, onLastfmKeyChange, onSaveLastfmKey,
   libraryRootPath, onLibraryRootSubmit, onChooseMusicRoot, onAutoDiscoveryChange, onSleepTimerChange, onMediaKeysChange, onOpenErrorLog,
+  onYoutubeCookiesBrowserChange,
   transferManifest = "", transferDestination = "", transferResult = "", onTransferManifestChange, onTransferDestinationChange, onTransferPreview, onTransferApply, onTransferExport,
   onNavigate, screen = null, activeScreen = null, onScreenClosed,
 }: SettingsViewProps) {
@@ -87,6 +102,14 @@ export function SettingsView({
   </section>;
   const panels: Record<Category, ReactNode> = {
     Library: section("Storage & Library", onLibraryRootSubmit ? <div><label htmlFor="music-root">Music folder</label><div style={{ display: "flex", gap: 10, marginTop: 8 }}><input id="music-root" autoCorrect="off" spellCheck={false} value={rootInput} onChange={(e) => updateRoot(e.target.value)} placeholder="/Users/you/Music" aria-describedby="music-root-error" style={{ ...inputStyle, flex: 1 }} /><button type="button" disabled={rootInput.trim().length === 0 || rootError !== null} onClick={() => onLibraryRootSubmit(rootInput)} style={buttonsDisabledStyle(rootInput.trim().length === 0 || rootError !== null)}>Set folder</button></div>{rootError && <p id="music-root-error" role="alert" style={{ color: "var(--luno-red)", margin: "6px 0" }}>{rootError}</p>}<p style={{ color: "var(--luno-text-2)" }}>Enter an absolute folder path; Luno scans it as your music library and downloads land inside it.</p></div> : <div><label htmlFor="music-root">Music folder</label><div style={{ display: "flex", gap: 10, marginTop: 8 }}><input id="music-root" autoCorrect="off" spellCheck={false} readOnly value={musicRoot} style={{ ...inputStyle, flex: 1 }} /><button type="button" onClick={onChooseMusicRoot} style={buttonStyle}>Change</button></div><p style={{ color: "var(--luno-text-2)" }}>Library scanning and downloads use this folder.</p></div>),
+    Downloads: section("YouTube Playlist Sync", <>
+      <p id="youtube-cookies-browser-help" style={{ color: "var(--luno-text-2)", lineHeight: 1.5, marginTop: 0 }}>For account-only playlists such as Liked videos (LL), choose a browser signed in to the same YouTube account. Luno uses yt-dlp to read that browser’s YouTube cookies during playlist lookup. Luno stores the browser choice, not an exported cookie file.</p>
+      <label htmlFor="youtube-cookies-browser">Signed-in browser</label>
+      <select id="youtube-cookies-browser" value={youtubeCookiesBrowser} onChange={(event) => onYoutubeCookiesBrowserChange?.(event.target.value as YtDlpCookieBrowser)} disabled={!onYoutubeCookiesBrowserChange} aria-describedby="youtube-cookies-browser-help" style={{ ...inputStyle, marginTop: 8 }}>
+        <option value="none">Don’t use browser cookies</option>
+        {YTDLP_COOKIE_BROWSERS.map((browser) => <option key={browser} value={browser}>{COOKIE_BROWSER_LABELS[browser]}</option>)}
+      </select>
+    </>),
     Discovery: section("Discovery & Personalization", <>
       <div style={{ background: "var(--luno-bg)", padding: 18, borderRadius: 8, marginBottom: 18 }}><strong>Connect to Last.fm</strong><p style={{ color: "var(--luno-text-2)", lineHeight: 1.5, marginBottom: 0 }}>Create an API key at Last.fm, then enter it below. The key is stored privately in Luno's app data.</p></div>
       <label htmlFor="lastfm-key">Last.fm API key</label><div style={{ display: "flex", gap: 10, marginTop: 8 }}><input id="lastfm-key" type="password" autoComplete="off" autoCorrect="off" spellCheck={false} value={key} onChange={updateKey} aria-describedby="lastfm-status lastfm-error" style={{ ...inputStyle, flex: 1 }} /><button type="button" disabled={!onSaveLastfmKey || !key.trim() || keyError !== null} onClick={submitKey} style={buttonsDisabledStyle(!key.trim() || keyError !== null)}>Save key</button></div>
