@@ -4,6 +4,7 @@ import { previewKey as backendPreviewKey } from "../shared/contracts";
 import { RecommendationArtworkImage } from "./RecommendationArtwork";
 import { DownloadRing } from "./VideoStage";
 import { PlaylistPicker } from "./PlaylistPicker";
+import type { ArtworkFetcher } from "../state/track_artwork";
 
 export interface Recommendation {
   id?: string;
@@ -42,6 +43,8 @@ export interface RecommendationsProps {
   jobs?: Record<string, DownloadJob>;
   backendAvailable?: boolean;
   onCreatePlaylist?: (item: Recommendation) => void;
+  tracksById?: ReadonlyMap<string, Track>;
+  onArtwork?: ArtworkFetcher;
 }
 
 const legacyKey = (item: Recommendation) => item.id ?? `${item.artist}\u0000${item.title}`;
@@ -81,6 +84,8 @@ export function Recommendations({
   jobs = {},
   backendAvailable = true,
   onCreatePlaylist,
+  tracksById,
+  onArtwork,
 }: RecommendationsProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set());
@@ -312,6 +317,19 @@ export function Recommendations({
         <PlaylistPicker
           title={`Add “${pickerItem.title}” to playlist`}
           playlists={playlists}
+          selectedTracks={[{
+            id: safeKey(pickerItem),
+            path: null,
+            title: pickerItem.title,
+            artist: pickerItem.artist,
+            album: null,
+            duration_ms: null,
+            artwork_url: pickerItem.artwork_url ?? null,
+            favorite: false,
+            provider: null,
+          }]}
+          tracksById={tracksById}
+          onArtwork={onArtwork}
           onPick={handlePick}
           onDismiss={() => setPickerItem(null)}
           onCreateNew={

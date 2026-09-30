@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PlayerBar } from "../../components/PlayerBar";
 import { Queue, queueVirtualWindow } from "../../components/Queue";
-import { isMissingConfigurationError, isRetryableRuntimeCommandError, Shell, videoFullscreenClass } from "../../app/Shell";
+import { isBusyDownloadError, isMissingConfigurationError, isRetryableRuntimeCommandError, Shell, videoFullscreenClass } from "../../app/Shell";
 import type { BackendProjection } from "../../state/backend_projection";
 
 const projectionTrack = { id: "t1", path: null, title: "Aurora", artist: "Gate Six", album: "Chaos 93", duration_ms: 3000, artwork_url: null, favorite: false, provider: null };
@@ -28,6 +28,13 @@ describe("Gate 6 player bar", () => {
     expect(isRetryableRuntimeCommandError(new Error(JSON.stringify(busy)))).toBe(true);
     expect(isRetryableRuntimeCommandError({ ...busy, retryable: false })).toBe(false);
     expect(isRetryableRuntimeCommandError(new Error("command failed"))).toBe(false);
+  });
+
+  it("recognizes backend busy errors even when the message omits the code", () => {
+    expect(isBusyDownloadError({ code: "busy", message: "download could not start", retryable: true })).toBe(true);
+    expect(isBusyDownloadError(new Error(JSON.stringify({ code: "busy", message: "download could not start", retryable: true })))).toBe(true);
+    expect(isBusyDownloadError({ code: "invalid_request", message: "download could not start", retryable: false })).toBe(false);
+    expect(isBusyDownloadError(new Error("another download is already running"))).toBe(true);
   });
 
   it("uses an explicit shell state class for app fullscreen", () => {

@@ -3,7 +3,7 @@ import type { LibrarySnapshot, PlaybackSnapshot, Playlist, Track } from "../shar
 import { TrackRow } from "../components/TrackRow";
 import { IconClock, IconClose, IconPlay, IconRefresh, IconSearch, IconShuffle } from "../components/icons";
 import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
-import { RecommendationArtworkImage } from "../components/RecommendationArtwork";
+import { PlaylistArtwork } from "../components/PlaylistArtwork";
 
 export type LibraryScope = "all" | "unsorted" | "favorites" | string;
 export type LibrarySort = "A-Z" | "Z-A" | "Recently added" | "Duration";
@@ -272,18 +272,12 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
       <div ref={anchorRef}>
         <header className="luno-hero">
           <div className="luno-hero-row">
-            <div className="luno-hero-cover" aria-hidden="true">
-              {covers.length === 0
-                ? <span style={{ gridColumn: "1 / -1", gridRow: "1 / -1", display: "grid", placeItems: "center", fontSize: 48, color: "rgba(255,255,255,0.55)" }}>♫</span>
-                : covers.map((track, index) => {
-                  const src = coverArtwork[track.id] ?? track.artwork_url;
-                  // Mosaic spans: 1 artwork fills the tile, 2 split columns, 3 put one full-height lead column.
-                  const span = covers.length === 1 ? { gridColumn: "1 / -1", gridRow: "1 / -1" } : covers.length === 2 ? { gridRow: "1 / -1" } : covers.length === 3 && index === 0 ? { gridRow: "1 / -1" } : {};
-                  return <span key={track.id} style={span}>
-                    <RecommendationArtworkImage artworkUrl={src} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
-                  </span>;
-                })}
-            </div>
+            <PlaylistArtwork
+              className="luno-hero-cover"
+              tracks={covers}
+              artwork={coverArtwork}
+              emptyFallback={<span style={{ display: "grid", placeItems: "center", fontSize: 48, color: "rgba(255,255,255,0.55)" }}>♫</span>}
+            />
             <div className="luno-hero-info">
               <p className="luno-hero-eyebrow">{eyebrow}</p>
               <h1>{scopeName}</h1>

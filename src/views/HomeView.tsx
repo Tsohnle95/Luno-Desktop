@@ -1,6 +1,7 @@
 import { useEffect, useRef, type MouseEvent } from "react";
 import type { Playlist, Track } from "../shared/contracts";
 import { RecommendationArtworkImage } from "../components/RecommendationArtwork";
+import { PlaylistArtwork } from "../components/PlaylistArtwork";
 import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
 
 export interface PopularPlaylist { playlist: Playlist; plays: number }
@@ -25,22 +26,23 @@ export interface HomeArtworkInput {
  * sections are fetched once via the first section that claims them.
  */
 export const HOME_ARTWORK_SECTION_CAP = 30;
+export const HOME_ARTWORK_PLAYLIST_CAP = 40;
 export const HOME_ARTWORK_TOTAL_CAP = 180;
 export function homeArtworkIds(input: HomeArtworkInput): string[] {
-  const sections: string[][] = [
-    input.madeForYou.map((track) => track.id),
-    input.favorites.map((track) => track.id),
-    input.recentTracks.map((track) => track.id),
-    input.popularTracks.map((track) => track.id),
-    input.popularPlaylists.map((entry) => entry.playlist.ordered_track_ids[0]).filter((id): id is string => !!id),
-    input.recentlyDownloaded.map((track) => track.id),
+  const sections: Array<{ ids: string[]; cap: number }> = [
+    { ids: input.madeForYou.map((track) => track.id), cap: HOME_ARTWORK_SECTION_CAP },
+    { ids: input.favorites.map((track) => track.id), cap: HOME_ARTWORK_SECTION_CAP },
+    { ids: input.popularPlaylists.flatMap((entry) => entry.playlist.ordered_track_ids.slice(0, 4)), cap: HOME_ARTWORK_PLAYLIST_CAP },
+    { ids: input.recentTracks.map((track) => track.id), cap: HOME_ARTWORK_SECTION_CAP },
+    { ids: input.popularTracks.map((track) => track.id), cap: HOME_ARTWORK_SECTION_CAP },
+    { ids: input.recentlyDownloaded.map((track) => track.id), cap: HOME_ARTWORK_SECTION_CAP },
   ];
   const seen = new Set<string>();
   const out: string[] = [];
   for (const section of sections) {
     let taken = 0;
-    for (const id of section) {
-      if (taken >= HOME_ARTWORK_SECTION_CAP || out.length >= HOME_ARTWORK_TOTAL_CAP) break;
+    for (const id of section.ids) {
+      if (taken >= section.cap || out.length >= HOME_ARTWORK_TOTAL_CAP) break;
       if (!id || seen.has(id)) continue;
       seen.add(id);
       out.push(id);
@@ -175,11 +177,11 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
         ? <p className="luno-empty-note">Playlist popularity grows as their songs are played.</p>
         : <div className="luno-card-row luno-scroll">
           {popularPlaylists.map(({ playlist, plays }) => {
-            const artId = playlist.ordered_track_ids[0];
-            const art = artId ? artwork[artId] : undefined;
-            const firstTrack = artId ? tracksById?.get(artId) : undefined;
+            const playlistTracks = playlist.ordered_track_ids.slice(0, 4)
+              .map((id) => tracksById?.get(id))
+              .filter((track): track is Track => !!track);
             return <button className="luno-card" type="button" key={playlist.id} onClick={() => onOpenPlaylist?.(playlist.id)}>
-              <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={art ?? firstTrack?.artwork_url} artist={firstTrack?.artist ?? ""} title={firstTrack?.title ?? playlist.name} alt="" size="100%" />
+              <PlaylistArtwork className="luno-card-artwork" tracks={playlistTracks} artwork={artwork} emptyFallback={<RecommendationArtworkImage artworkUrl={null} artist="" title={playlist.name} alt="" size="100%" />} />
               <span className="luno-card-copy"><strong title={playlist.name}>{playlist.name}</strong><small>{plays} {plays === 1 ? "play" : "plays"}</small></span>
             </button>;
           })}

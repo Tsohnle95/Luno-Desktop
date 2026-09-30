@@ -51,7 +51,7 @@ playlist destinations.
 | Phase | Scope | Status | Validation | Commit |
 |---|---|---|---|---|
 | 1 | Worker-home placement/filtering and authoritative favorite persistence | complete | Scanner filtering, settings merge, favorite copy/persistence, and worker-home cleanup tests passed | |
-| 2 | Playlist membership indication, searchable destinations, and shared mosaics | pending | Targeted frontend checks | |
+| 2 | Playlist membership, shared mosaics, searchable destinations, and responsive multi-download UI | complete | 41 focused frontend tests passed | |
 | 3 | Bounded concurrent coordinator and shell job queue, including cancellation/recovery | pending | Focused coordinator/state/UI checks | |
 | 4 | Cumulative review and canonical validation | pending | `npm run verify`, Rust tests, `npm run build` | |
 

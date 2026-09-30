@@ -130,15 +130,20 @@ describe("home artwork fair-share budget", () => {
     expect(ids.filter((id) => id === "shared").length).toBe(1);
   });
 
-  it("covers playlist-cover ids from the first track of popular playlists", () => {
+  it("covers four member tracks for every popular playlist within its share", () => {
     const ids = homeArtworkIds({
       madeForYou: [],
       favorites: [],
       recentTracks: [],
       popularTracks: [],
-      popularPlaylists: [{ playlist: { id: "p1", name: "P", path: null, url: null, ordered_track_ids: ["cover-1"] }, plays: 3 }],
+      popularPlaylists: Array.from({ length: 10 }, (_, playlistIndex) => ({
+        playlist: { id: `p${playlistIndex}`, name: `P${playlistIndex}`, path: null, url: null, ordered_track_ids: Array.from({ length: 4 }, (_, trackIndex) => `cover-${playlistIndex}-${trackIndex}`) },
+        plays: 3,
+      })),
       recentlyDownloaded: [],
     });
-    expect(ids).toContain("cover-1");
+    expect(ids).toHaveLength(40);
+    expect(ids).toContain("cover-0-3");
+    expect(ids).toContain("cover-9-0");
   });
 });

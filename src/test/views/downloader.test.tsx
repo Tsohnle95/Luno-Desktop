@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DownloaderView } from "../../views/DownloaderView";
+import { DownloaderView, destinationName, filterDownloadDestinations } from "../../views/DownloaderView";
 import { LibraryView } from "../../views/LibraryView";
 
 const runningJob = { id: "job-1", kind: "single" as const, state: "running" as const, track_id: null, progress: 0.5, generation: 1 };
@@ -57,6 +57,22 @@ describe("Gate 6 downloader view", () => {
     expect(html).toContain("Downloading — Rick Astley — Never Gonna Give You Up — 50%");
   });
 
+  it("keeps search and result actions available while multiple transfers run", () => {
+    const html = renderToStaticMarkup(<DownloaderView
+      jobs={{
+        "job-1": runningJob,
+        "job-2": { ...runningJob, id: "job-2", progress: 0.25 },
+      }}
+      activeLabels={{ "job-1": "First song", "job-2": "Second song" }}
+      searchResults={[{ id: "next-song", title: "Next song", artist: "Artist" }]}
+    />);
+    expect(html).toContain("2 downloads active");
+    expect(html).toContain("First song");
+    expect(html).toContain("Second song");
+    expect(html).toMatch(/<input[^>]*aria-label="Search for music"(?![^>]*disabled)/);
+    expect(html).toContain('aria-label="Download Next song"');
+  });
+
   it("shows an indeterminate finalization phase after transfer reaches the handoff", () => {
     const finalizing = { ...runningJob, progress: 0.97, phase: "finalizing" as const };
     const html = renderToStaticMarkup(<DownloaderView jobs={{ "job-1": finalizing }} />);
@@ -81,6 +97,18 @@ describe("Gate 6 downloader view", () => {
     // opts out. Only the active tab's fields are server-rendered here.
     const html = renderToStaticMarkup(<DownloaderView />);
     expect(html).toMatch(/<input[^>]*aria-label="Search for music"[^>]*autocorrect="off"[^>]*spellcheck="false"/i);
+  });
+
+  it("offers a searchable destination field and filters playlist names", () => {
+    const html = renderToStaticMarkup(<DownloaderView
+      destinations={["/music/Unsorted", "/music/Live Shows", "/music/Favorites"]}
+      defaultDestination="/music/Unsorted"
+    />);
+    expect(html).toContain('role="combobox"');
+    expect(html).toContain('aria-label="Save to"');
+    expect(html).toContain('placeholder="Search playlists"');
+    expect(destinationName("/music/Live Shows")).toBe("Live Shows");
+    expect(filterDownloadDestinations(["/music/Unsorted", "/music/Live Shows", "/music/Favorites"], "live")).toEqual(["/music/Live Shows"]);
   });
 });
 describe("Gate 6 library view", () => {

@@ -30,7 +30,7 @@ envelope shapes (`docs/modules/contracts.md`).
   `libraryAlbums`, `playlistTracks` helpers), `RecentView`, `SongPageView`,
   `DiscoverView`, `DownloaderView`, `SettingsView`, `ErrorLogView`.
 - `src/components/` — `PlayerBar`, `Queue`, `TrackRow`, `Artwork`,
-  `RecommendationArtwork`, `Recommendations`, `DownloadTabs`,
+  `RecommendationArtwork`, `PlaylistArtwork`, `Recommendations`, `DownloadTabs`,
   `PlaylistDialogs`, `PlaylistPicker`, `EditTrackDialog`, `TransferDialogs`,
   `VideoStage`, `icons`.
 - `src/state/` — `backend_projection.ts` (snapshot store + subscriptions),
@@ -73,6 +73,15 @@ envelope shapes (`docs/modules/contracts.md`).
   a prepared file or starts the durable playlist download path. When a
   selected recommendation is stopped, the footer Play control retries it
   through the owning Discover or focused-preview command.
+- Playlist selection marks destinations that already contain any selected
+  track, matching by stable ID or normalized artist/title so physical copies
+  are recognized. Playlist destination fields in the add dialog and Downloader
+  both filter by playlist name. Sidebar, Unsorted, popular-playlist, and picker
+  covers share a four-track artwork mosaic.
+- Downloader search remains usable during transfers. Each clicked result
+  captures its source, metadata, and chosen destination before another search
+  can replace the results; up to three jobs run concurrently, each with its own
+  progress and cancellation control. Fresh sessions default to Unsorted.
 - "Recently added" sorts by `Track.added_ms` (portable first-added time,
   seeded from file mtime for existing files), not queue order; the library
   table shows that timestamp as Date added and derives playlist names from
@@ -114,8 +123,9 @@ envelope shapes (`docs/modules/contracts.md`).
 ```text
 backend-event → backend_projection.apply → subscribers → view re-render
 track visible → bridge.trackArtwork(id) → data URL → bounded LRU
-download click → DownloaderView queue → bridge.startDownload* → job events
-→ progress render → coalesced rescan → library snapshot
+download click → captured source/destination → bounded Downloader queue
+→ bridge.startDownload* → per-job events/progress/cancel → coalesced rescan
+→ library snapshot
 playlist context menu → set_playlist_url / sync_playlist → sync job events
 → status notice + refreshed library snapshot
 ```

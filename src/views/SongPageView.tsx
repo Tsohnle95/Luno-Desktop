@@ -3,6 +3,7 @@ import type { DownloadJob, Playlist, PreviewSnapshot, SaveState, Track } from ".
 import { Recommendations, type Recommendation, type RecommendationState } from "../components/Recommendations";
 import { VideoStage, type VideoStageProps } from "../components/VideoStage";
 import { isPlaceholderArtwork, RecommendationArtwork } from "../components/RecommendationArtwork";
+import type { ArtworkFetcher } from "../state/track_artwork";
 
 /** Pill toggle for song-page video mode (exported for direct testing). */
 export function VideoModePill({ enabled, onToggle }: { enabled: boolean; onToggle?: () => void }) {
@@ -39,6 +40,8 @@ export interface SongPageViewProps { track?: Track | null;
   playlists?: Playlist[];
   jobs?: Record<string, DownloadJob>;
   onCreatePlaylist?: (item: Recommendation) => void;
+  tracksById?: ReadonlyMap<string, Track>;
+  onArtwork?: ArtworkFetcher;
   video?: VideoStageProps;
   videoConnection?: "connected" | "loading" | "disconnected";
   /** Requests (or retries) the music video for the current track. */
@@ -48,7 +51,7 @@ export interface SongPageViewProps { track?: Track | null;
   onVideoModeChange?: (enabled: boolean) => void;
 }
 
-export function SongPageView({ track = null, nowPlaying = null, recommendations = [], recommendationState = "idle", recommendationError, recommendationLoadMoreError, recommendationsExhausted, recommendationsLoadingMore, hasApiKey = true, sessionActive = false, discoverMode = false, onToggleDiscoverMode, discoverHint, onRetryRecommendations, onRefreshRecommendations, onLoadMoreRecommendations, onPreviewRecommendation, onSaveRecommendation, onFavoriteToggle, backendAvailable = true, preview = null, saved = {}, playlists = [], jobs = {}, onCreatePlaylist, video, videoConnection = "disconnected", onLoadVideo, videoMode = false, onVideoModeChange }: SongPageViewProps) {
+export function SongPageView({ track = null, nowPlaying = null, recommendations = [], recommendationState = "idle", recommendationError, recommendationLoadMoreError, recommendationsExhausted, recommendationsLoadingMore, hasApiKey = true, sessionActive = false, discoverMode = false, onToggleDiscoverMode, discoverHint, onRetryRecommendations, onRefreshRecommendations, onLoadMoreRecommendations, onPreviewRecommendation, onSaveRecommendation, onFavoriteToggle, backendAvailable = true, preview = null, saved = {}, playlists = [], jobs = {}, onCreatePlaylist, tracksById, onArtwork, video, videoConnection = "disconnected", onLoadVideo, videoMode = false, onVideoModeChange }: SongPageViewProps) {
   const [lastTrack, setLastTrack] = useState<Track | null>(nowPlaying ?? track);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -117,7 +120,7 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
           <button type="button" aria-pressed={discoverMode} aria-label={discoverMode ? "Disable discovery mode" : "Enable discovery mode"} disabled={!backendAvailable} onClick={onToggleDiscoverMode}>{discoverMode ? "Discovery mode: On" : "Discovery mode: Off"}</button>
           <span role="status" style={{ fontSize: 13, color: "var(--luno-text-2)" }}>{discoverHint ?? (discoverMode ? "Autoplay follows recommendations; Next/Previous walk them. Turn off to restore your library queue." : "Turn on to pre-load the next recommendations and let autoplay follow them.")}</span>
         </div>}
-        <Recommendations seed={track ?? lastTrack} items={recommendations} state={recommendationState} error={recommendationError} loadMoreError={recommendationLoadMoreError} exhausted={recommendationsExhausted} loadingMore={recommendationsLoadingMore} hasApiKey={hasApiKey} sessionActive={sessionActive} discoverMode={discoverMode} onRetry={onRetryRecommendations} onRefresh={onRefreshRecommendations} onLoadMore={onLoadMoreRecommendations} onPreview={onPreviewRecommendation} onSave={onSaveRecommendation} preview={preview} saved={saved} playlists={playlists} jobs={jobs} backendAvailable={backendAvailable} onCreatePlaylist={onCreatePlaylist} />
+        <Recommendations seed={track ?? lastTrack} items={recommendations} state={recommendationState} error={recommendationError} loadMoreError={recommendationLoadMoreError} exhausted={recommendationsExhausted} loadingMore={recommendationsLoadingMore} hasApiKey={hasApiKey} sessionActive={sessionActive} discoverMode={discoverMode} onRetry={onRetryRecommendations} onRefresh={onRefreshRecommendations} onLoadMore={onLoadMoreRecommendations} onPreview={onPreviewRecommendation} onSave={onSaveRecommendation} preview={preview} saved={saved} playlists={playlists} jobs={jobs} backendAvailable={backendAvailable} onCreatePlaylist={onCreatePlaylist} tracksById={tracksById} onArtwork={onArtwork} />
       </main>
     </div>
   </div>;
