@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import type { PlaylistSyncCandidate, PlaylistSyncIssue } from "../shared/contracts";
+import { YTDLP_COOKIE_BROWSERS, type PlaylistSyncCandidate, type PlaylistSyncIssue, type YtDlpCookieBrowser } from "../shared/contracts";
 
 export type PlaylistAction = "create" | "delete" | "empty" | "dump" | "copy" | "smart";
 
@@ -36,7 +36,7 @@ function DialogFrame({ title, description, error, busy, focusFirstInput = false,
   const closeRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    const firstInput = focusFirstInput ? dialogRef.current?.querySelector<HTMLInputElement>("input") : null;
+    const firstInput = focusFirstInput ? dialogRef.current?.querySelector<HTMLElement>("input, select, textarea") : null;
     (firstInput ?? closeRef.current)?.focus();
   }, [focusFirstInput]);
   useEffect(() => {
@@ -199,6 +199,39 @@ export function PlaylistUrlDialog({ playlistName, initialUrl, busy = false, erro
         {initialUrl && <button className="is-danger" type="button" disabled={busy} onClick={() => onSubmit(null)}>Remove link</button>}
         <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
         <button type="submit" disabled={busy || !normalized}>{busy ? "Saving…" : "Save link"}</button>
+      </footer>
+    </form>
+  </DialogFrame>;
+}
+
+const cookieBrowserLabels: Record<Exclude<YtDlpCookieBrowser, "none">, string> = {
+  brave: "Brave",
+  chrome: "Google Chrome",
+  chromium: "Chromium",
+  edge: "Microsoft Edge",
+  firefox: "Firefox",
+  opera: "Opera",
+  safari: "Safari",
+  vivaldi: "Vivaldi",
+  whale: "Naver Whale",
+};
+
+export function PlaylistSyncAuthDialog({ playlistName, initialBrowser = "none", busy = false, error = null, onClose, onSubmit }: {
+  playlistName: string; initialBrowser?: YtDlpCookieBrowser; busy?: boolean; error?: string | null;
+  onClose: () => void; onSubmit: (browser: Exclude<YtDlpCookieBrowser, "none">) => void;
+}) {
+  const [browser, setBrowser] = useState<YtDlpCookieBrowser>(initialBrowser);
+  return <DialogFrame title="Sign in to sync this playlist" description={`“${playlistName}” needs a signed-in YouTube session. Choose a browser signed in to the account that owns this playlist.`} error={error} busy={busy} focusFirstInput onClose={onClose}>
+    <p style={{ color: "var(--luno-text-2)", lineHeight: 1.5 }}>Luno uses yt-dlp to read that browser’s cookies only while looking up the playlist. Luno saves the browser choice, not a cookie file.</p>
+    <form onSubmit={(event) => { event.preventDefault(); if (browser !== "none") onSubmit(browser); }}>
+      <label htmlFor="playlist-sync-browser">Signed-in browser</label>
+      <select id="playlist-sync-browser" autoFocus value={browser} onChange={(event) => setBrowser(event.target.value as YtDlpCookieBrowser)} disabled={busy} style={{ width: "100%", marginTop: 8, padding: "11px 12px", color: "var(--luno-text)", background: "var(--luno-bg-3)", border: "1px solid var(--luno-border)", borderRadius: "var(--luno-radius)" }}>
+        <option value="none">Choose a browser</option>
+        {YTDLP_COOKIE_BROWSERS.map((item) => <option key={item} value={item}>{cookieBrowserLabels[item]}</option>)}
+      </select>
+      <footer>
+        <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+        <button type="submit" disabled={busy || browser === "none"}>{busy ? "Saving and syncing…" : "Save browser and sync"}</button>
       </footer>
     </form>
   </DialogFrame>;

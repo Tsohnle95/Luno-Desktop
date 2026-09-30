@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DownloaderView, destinationName, filterDownloadDestinations } from "../../views/DownloaderView";
+import { DownloaderView, destinationName, filterDownloadDestinations, linkedPlaylistForDestination } from "../../views/DownloaderView";
 import { LibraryView } from "../../views/LibraryView";
 
 const runningJob = { id: "job-1", kind: "single" as const, state: "running" as const, track_id: null, progress: 0.5, generation: 1 };
@@ -109,6 +109,25 @@ describe("Gate 6 downloader view", () => {
     expect(html).toContain('placeholder="Search playlists"');
     expect(destinationName("/music/Live Shows")).toBe("Live Shows");
     expect(filterDownloadDestinations(["/music/Unsorted", "/music/Live Shows", "/music/Favorites"], "live")).toEqual(["/music/Live Shows"]);
+  });
+
+  it("resolves Save to to the linked physical playlist used by sync", () => {
+    const roadTrip = { id: "p1", name: "Road trip", path: "/music/Road trip", url: "https://www.youtube.com/playlist?list=PL123", ordered_track_ids: [] };
+    const unlinked = { id: "p2", name: "Unlinked", path: "/music/Unlinked", url: null, ordered_track_ids: [] };
+    expect(linkedPlaylistForDestination([roadTrip, unlinked], "/music/Road trip")).toBe(roadTrip);
+    expect(linkedPlaylistForDestination([roadTrip, unlinked], "/music/Unlinked")).toBeUndefined();
+  });
+
+  it("does not offer the single-download retry action for failed playlist sync jobs", () => {
+    const failedSync = { ...runningJob, id: "sync-1", kind: "sync" as const, state: "failed" as const };
+    const html = renderToStaticMarkup(<DownloaderView jobs={{ "sync-1": failedSync }} />);
+    expect(html).toContain("playlist sync: failed");
+    expect(html).not.toContain(">Retry</button>");
+  });
+
+  it("labels active playlist work as a sync", () => {
+    const html = renderToStaticMarkup(<DownloaderView jobs={{ sync: { ...runningJob, kind: "sync" } }} />);
+    expect(html).toContain("Syncing playlist — 50%");
   });
 });
 describe("Gate 6 library view", () => {

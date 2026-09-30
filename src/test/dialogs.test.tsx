@@ -5,7 +5,7 @@ import { SettingsView } from "../views/SettingsView";
 import { EditTrackDialog } from "../components/EditTrackDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PlayerBar } from "../components/PlayerBar";
-import { PlaylistUrlDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog } from "../components/PlaylistDialogs";
+import { PlaylistUrlDialog, PlaylistSyncAuthDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog } from "../components/PlaylistDialogs";
 
 describe("Gate 4 views", () => {
   it("renders downloader error, cancel, and retry controls", () => {
@@ -70,6 +70,16 @@ describe("YouTube playlist URL dialog", () => {
     expect(html).toContain("only songs Luno has not already seen");
     expect(html).toContain("Remove link");
     expect(html).toContain("PL123");
+  });
+
+  it("requests a signed-in browser inside the playlist sync flow", () => {
+    const html = renderToStaticMarkup(<PlaylistSyncAuthDialog playlistName="Liked songs" onClose={() => {}} onSubmit={() => {}} />);
+    expect(html).toContain("Sign in to sync this playlist");
+    expect(html).toContain("Choose a browser signed in to the account that owns this playlist");
+    expect(html).toContain('id="playlist-sync-browser"');
+    expect(html).toContain("Firefox");
+    expect(html).toContain("Save browser and sync");
+    expect(html).toContain("Luno saves the browser choice, not a cookie file.");
   });
 });
 

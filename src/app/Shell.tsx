@@ -17,7 +17,7 @@ import { useTrackArtwork } from "../state/track_artwork";
 import { bumpPlayCount, loadDownloadJournal, loadPlayCounts, madeForYouIds, popularTrackIds, recordDownloadCompletions, saveDownloadJournal, savePlayCounts, type DownloadEntry, type PlayCounts } from "../state/play_stats";
 import { downloadDisplayLabel, downloadFilename, type DownloadMetadata } from "../state/download_naming";
 import type { Bridge, MigrationStatus } from "./bridge";
-import { type Playlist, type PlaylistSyncCandidate, type PlaylistSyncIssue, type Recommendation, type SearchResult, type SettingsInput, type Track } from "../shared/contracts";
+import { type Playlist, type PlaylistSyncCandidate, type PlaylistSyncIssue, type Recommendation, type SearchResult, type SettingsInput, type Track, type YtDlpCookieBrowser } from "../shared/contracts";
 import { previewKey } from "../shared/contracts";
 import type { RecommendationState } from "../components/Recommendations";
 import { Queue } from "../components/Queue";
@@ -26,7 +26,7 @@ import { PlaylistPicker } from "../components/PlaylistPicker";
 import { PlaylistArtwork } from "../components/PlaylistArtwork";
 import { EditTrackDialog } from "../components/EditTrackDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { PlaylistDialog, PlaylistUrlDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog, type PlaylistSyncCandidateLookup, type PlaylistSyncLogEntry } from "../components/PlaylistDialogs";
+import { PlaylistDialog, PlaylistUrlDialog, PlaylistSyncAuthDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog, type PlaylistSyncCandidateLookup, type PlaylistSyncLogEntry } from "../components/PlaylistDialogs";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
 import { IconChevronLeft, IconChevronRight, IconClose, IconDownload, IconHeart, IconHome, IconLibrary, IconMusicNote, IconSearch, IconUser } from "../components/icons";
@@ -230,6 +230,9 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [playlistUrlRequest, setPlaylistUrlRequest] = useState<Playlist | null>(null);
   const [playlistUrlBusy, setPlaylistUrlBusy] = useState(false);
   const [playlistUrlError, setPlaylistUrlError] = useState<string | null>(null);
+  const [playlistSyncAuthRequest, setPlaylistSyncAuthRequest] = useState<Playlist | null>(null);
+  const [playlistSyncAuthBusy, setPlaylistSyncAuthBusy] = useState(false);
+  const [playlistSyncAuthError, setPlaylistSyncAuthError] = useState<string | null>(null);
   const [activePlaylistSync, setActivePlaylistSync] = useState<{ jobId: string; playlist: Playlist; startedAtMs: number; sequence: number } | null>(null);
   const playlistSyncSequence = useRef(0);
   const [lastFailedPlaylistSync, setLastFailedPlaylistSync] = useState<{ playlist: Playlist; startedAtMs: number } | null>(null);
@@ -389,7 +392,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       })
       .catch((error: unknown) => { setPlaylistUrlBusy(false); setPlaylistUrlError(normalizeRuntimeCommandError(error)); });
   };
-  const syncPlaylist = (playlist: Playlist) => {
+  const startPlaylistSync = (playlist: Playlist) => {
     if (!bridge || !available || !playlist.url) return;
     const sequence = ++playlistSyncSequence.current;
     setCommandError(null);
@@ -406,6 +409,33 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         setActivePlaylistSync({ jobId, playlist, startedAtMs, sequence });
       })
       .catch((error: unknown) => { setCommandNotice(null); setCommandError(normalizeRuntimeCommandError(error)); });
+  };
+  const syncPlaylist = (playlist: Playlist) => {
+    if (!bridge || !available || !playlist.url) return;
+    startPlaylistSync(playlist);
+  };
+  const submitPlaylistSyncAuth = (browser: Exclude<YtDlpCookieBrowser, "none">) => {
+    if (!bridge || !available || !playlistSyncAuthRequest || playlistSyncAuthBusy) return;
+    if (!settingsHome) { setPlaylistSyncAuthError("Browser choice cannot be saved until Luno finishes loading its settings."); return; }
+    const playlist = playlistSyncAuthRequest;
+    const nextSettings = { ...settings, youtube_cookies_browser: browser };
+    setPlaylistSyncAuthBusy(true);
+    setPlaylistSyncAuthError(null);
+    void bridge.saveSettings(settingsHome, nextSettings).then(() => {
+      setSettings(nextSettings);
+      setPlaylistSyncAuthRequest(null);
+      setPlaylistSyncAuthBusy(false);
+      startPlaylistSync(playlist);
+    }).catch((error: unknown) => {
+      setPlaylistSyncAuthBusy(false);
+      setPlaylistSyncAuthError(normalizeRuntimeCommandError(error));
+    });
+  };
+  const openPlaylistSyncAuth = (playlist: Playlist) => {
+    setCommandError(null);
+    backendProjection?.clearErrors?.();
+    setPlaylistSyncAuthError(null);
+    setPlaylistSyncAuthRequest(playlist);
   };
   const openPlaylistSyncLog = (playlist: Playlist) => {
     if (!bridge || !available) return;
@@ -1215,6 +1245,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const downloaderViewEl = <DownloaderView
     error={commandError}
     jobs={projection.jobs}
+    syncPlaylists={(projection.library?.playlists ?? []).filter((playlist) => !!playlist.path && !!playlist.url)}
     activeLabels={activeDownloadJobs}
     queuedDownloads={queuedDownloadCount}
     destinations={downloadDestinations}
@@ -1306,10 +1337,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         startNextDownload();
       });
     }}
-    onSync={(_, destination) => {
-      if (!destination.startsWith("/")) { setCommandError("Sync requires the configured library folder, not a playlist label."); return; }
-      runCommand(bridge?.syncMarkers(destination));
-    }}
+    onSync={syncPlaylist}
     onCancel={(jobId) => runCommand(bridge?.cancelJob(jobId))}
     onRetry={(jobId) => {
       if (!downloadHelperPath) { setCommandError("Download retry is unavailable until the download helper is configured."); return; }
@@ -1403,8 +1431,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
           return (!available || displayCommandError || backendError || commandNotice || activePlaylistSync || videoNotice || playlistSyncReviewOffer) && <div className="luno-runtime-status" role="status">
             {!available && <span data-state="backend-unavailable">Backend unavailable; runtime commands are unavailable.</span>}
             {displayCommandError && <span data-state="command-rejected">{displayCommandError} <button type="button" onClick={() => setCommandError(null)} aria-label="Dismiss error">Dismiss</button></span>}
-            {backendError && <span data-state="backend-error">{backendError} <button type="button" onClick={() => backendProjection?.clearErrors?.()} aria-label="Dismiss error">Dismiss</button>{backendError.startsWith("playlist sync") && lastFailedPlaylistSync && <button type="button" onClick={openPlaylistSyncErrors}>View sync errors</button>}</span>}
-            {activePlaylistSync && <span data-state="playlist-sync">{syncJob?.current_item ? `Downloading “${syncJob.current_item}”` : `Checking “${activePlaylistSync.playlist.name}”`} {syncJob?.progress != null && syncJob.current_item ? `· playlist ${Math.round(syncJob.progress * 100)}%` : ""}</span>}
+            {backendError && <span data-state="backend-error">{backendError} <button type="button" onClick={() => backendProjection?.clearErrors?.()} aria-label="Dismiss error">Dismiss</button>{backendError.startsWith("playlist sync") && lastFailedPlaylistSync && <button type="button" onClick={openPlaylistSyncErrors}>View sync errors</button>}{backendError.startsWith("YouTube could not access this playlist") && lastFailedPlaylistSync && <button type="button" onClick={() => openPlaylistSyncAuth(lastFailedPlaylistSync.playlist)}>Choose browser and retry</button>}</span>}
+            {activePlaylistSync && <span data-state="playlist-sync">{syncJob?.current_item ? `Syncing “${syncJob.current_item}”` : `Checking “${activePlaylistSync.playlist.name}”`} {syncJob?.progress != null && syncJob.current_item ? `· playlist ${Math.round(syncJob.progress * 100)}%` : ""}</span>}
             {commandNotice && <span data-state="command-notice">{commandNotice} <button type="button" onClick={() => setCommandNotice(null)} aria-label="Dismiss notice">Dismiss</button></span>}
             {playlistSyncReviewOffer && <span data-state="playlist-sync-review"><button type="button" onClick={() => openPlaylistSyncReview(playlistSyncReviewOffer.playlist)}>Review {playlistSyncReviewOffer.count} unavailable {playlistSyncReviewOffer.count === 1 ? "song" : "songs"}</button></span>}
             {videoNotice && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}
@@ -1453,6 +1481,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     {confirmDialog && <ConfirmDialog title={confirmDialog.title} message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} danger={confirmDialog.danger} busy={confirmBusy} error={confirmError} onClose={() => { if (!confirmBusy) { setConfirmDialog(null); setConfirmError(null); } }} onConfirm={() => { setConfirmBusy(true); setConfirmError(null); try { confirmDialog.onConfirm(); setConfirmBusy(false); setConfirmDialog(null); } catch (error) { setConfirmBusy(false); setConfirmError(normalizeRuntimeCommandError(error)); } }} />}
     {playlistCreateRequest && <PlaylistDialog action="create" busy={playlistCreateBusy} error={playlistCreateError} onClose={() => { if (!playlistCreateBusy) { setPlaylistCreateRequest(null); setPlaylistCreateError(null); } }} onSubmit={(value) => submitCreatePlaylist(value.name ?? "")} />}
     {playlistUrlRequest && <PlaylistUrlDialog playlistName={playlistUrlRequest.name} initialUrl={playlistUrlRequest.url} busy={playlistUrlBusy} error={playlistUrlError} onClose={() => { if (!playlistUrlBusy) { setPlaylistUrlRequest(null); setPlaylistUrlError(null); } }} onSubmit={submitPlaylistUrl} />}
+    {playlistSyncAuthRequest && <PlaylistSyncAuthDialog playlistName={playlistSyncAuthRequest.name} initialBrowser={settings.youtube_cookies_browser ?? "none"} busy={playlistSyncAuthBusy} error={playlistSyncAuthError} onClose={() => { if (!playlistSyncAuthBusy) { setPlaylistSyncAuthRequest(null); setPlaylistSyncAuthError(null); } }} onSubmit={submitPlaylistSyncAuth} />}
     {playlistSyncLog && <PlaylistSyncLogDialog playlistName={playlistSyncLog.name} entries={playlistSyncLog.entries} loading={playlistSyncLog.loading} error={playlistSyncLog.error} onClose={() => setPlaylistSyncLog(null)} />}
     {playlistSyncErrors && <PlaylistSyncErrorsDialog playlistName={playlistSyncErrors.name} entries={playlistSyncErrors.entries} loading={playlistSyncErrors.loading} error={playlistSyncErrors.error} onClose={() => setPlaylistSyncErrors(null)} />}
     {playlistSyncReview && <PlaylistSyncReviewDialog playlistName={playlistSyncReview.playlist.name} entries={playlistSyncReview.entries} loading={playlistSyncReview.loading} error={playlistSyncReview.error} candidateLookups={playlistSyncReview.candidateLookups} selectingVideoId={playlistSyncReview.selectingVideoId} downloadingVideoId={playlistSyncReviewDownloadingVideoId} onFindCandidates={findPlaylistSyncCandidates} onChooseCandidate={downloadPlaylistSyncCandidate} onRetryOriginal={retryOriginalPlaylistSource} onSyncSelected={syncSelectedPlaylistSources} onClose={() => { if (!playlistSyncReview.selectingVideoId && !playlistSyncReviewDownloadingVideoId) setPlaylistSyncReview(null); }} />}
