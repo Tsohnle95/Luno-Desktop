@@ -101,6 +101,7 @@ pub struct ScanError {
 }
 
 fn supported(path: &Path) -> bool {
+    if crate::download::workflows::is_intermediate_download(path) { return false; }
     path.extension()
         .and_then(|x| x.to_str())
         .map(|x| {
@@ -113,6 +114,7 @@ fn supported(path: &Path) -> bool {
 
 fn internal_dir(name: &str) -> bool {
     name == ".luno_previews"
+        || name == crate::download::workflows::DOWNLOAD_STAGING_DIR
         || name == crate::download::workflows::WORKER_HOME_DIR
         || name == crate::download::workflows::LEGACY_WORKER_HOME_DIR
 }

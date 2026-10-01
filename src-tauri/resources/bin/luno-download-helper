@@ -60,13 +60,42 @@ fi
 if [ -x "$HERE/ffmpeg" ]; then
   set -- "$@" --ffmpeg-location "$HERE"
 fi
-TMP="$TARGET.part"
+TARGET_DIR=$(dirname "$TARGET")
+TARGET_NAME=$(basename "$TARGET")
+STAGING_ROOT="$TARGET_DIR/.luno-download-staging"
+if [ -L "$STAGING_ROOT" ]; then
+  echo "download helper: staging path must not be a symlink" >&2
+  exit 1
+fi
+if [ ! -d "$STAGING_ROOT" ]; then
+  mkdir "$STAGING_ROOT" 2>/dev/null || {
+    if [ ! -d "$STAGING_ROOT" ] || [ -L "$STAGING_ROOT" ]; then
+      echo "download helper: staging directory is unavailable" >&2
+      exit 1
+    fi
+  }
+fi
+if [ -L "$STAGING_ROOT" ]; then
+  echo "download helper: staging path must not be a symlink" >&2
+  exit 1
+fi
+STAGING_DIR="$STAGING_ROOT/$TARGET_NAME.$$"
+if ! mkdir "$STAGING_DIR" 2>/dev/null; then
+  echo "download helper: per-download staging directory is unavailable" >&2
+  exit 1
+fi
+TMP="$STAGING_DIR/$TARGET_NAME.part"
+cleanup_staging() {
+  rm -f "$TMP".*
+  rmdir "$STAGING_DIR" 2>/dev/null || true
+  rmdir "$STAGING_ROOT" 2>/dev/null || true
+}
 rm -f "$TMP".*
 set -- "$@" -o "$TMP.%(ext)s" -- "$SOURCE"
 "$DOWNLOADER" "$@"
 status=$?
 if [ "$status" -ne 0 ]; then
-  rm -f "$TMP".*
+  cleanup_staging
   exit "$status"
 fi
 found=""
@@ -75,9 +104,9 @@ for f in "$TMP".*; do
 done
 if [ -z "$found" ]; then
   echo "download helper: download produced no output file" >&2
-  rm -f "$TMP".*
+  cleanup_staging
   exit 1
 fi
-mv "$found" "$TARGET" || { rm -f "$TMP".*; exit 1; }
-rm -f "$TMP".*
+mv "$found" "$TARGET" || { cleanup_staging; exit 1; }
+cleanup_staging
 exit 0

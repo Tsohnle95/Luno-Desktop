@@ -674,8 +674,9 @@ fn collect_audio(root: &Path, keys: &mut HashSet<String>, titles: &mut HashSet<S
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            if entry.file_name().to_str() == Some(crate::download::workflows::DOWNLOAD_STAGING_DIR) { continue; }
             collect_audio(&path, keys, titles);
-        } else if path
+        } else if !crate::download::workflows::is_intermediate_download(&path) && path
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| AUDIO_EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))

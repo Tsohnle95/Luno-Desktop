@@ -12,6 +12,13 @@ use std::time::Duration;
 
 pub const WORKER_HOME_DIR: &str = ".luno-download-worker-home";
 pub const LEGACY_WORKER_HOME_DIR: &str = ".luno-gate4-worker-home";
+pub const DOWNLOAD_STAGING_DIR: &str = ".luno-download-staging";
+
+pub fn is_intermediate_download(path: &Path) -> bool {
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase().contains(".part."))
+        .unwrap_or(false)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowError { InvalidUrl, EmptyUrl, EmptySearch, MissingDestination, Cancelled }

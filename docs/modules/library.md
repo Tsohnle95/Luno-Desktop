@@ -68,9 +68,11 @@ transfer manifests (`docs/modules/contracts.md`).
   must fail rather than guess.
 - Mutations are safe-root-contained and atomic; downloads promote only
   inside the configured library root and trigger a coalesced rescan.
-- The scanner excludes `.luno_previews`, the current temporary worker-home
-  folder name, and the legacy `.luno-gate4-worker-home` folder from playlist
-  discovery. The legacy folder is hidden but left intact for user review.
+- The scanner excludes `.luno_previews`, `.luno-download-staging`, the current
+  temporary worker-home folder name, and the legacy `.luno-gate4-worker-home`
+  folder from playlist discovery. It also ignores legacy `.part.<format>`
+  download outputs. The legacy worker folder is hidden but left intact for
+  user review.
 - Favorite paths in backend state are authoritative over stale preferences
   snapshots. When a track is copied into a playlist, a favorite source marks
   the successfully copied track as a favorite too; the original remains
