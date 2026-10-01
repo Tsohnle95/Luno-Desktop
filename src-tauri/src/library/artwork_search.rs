@@ -5,6 +5,7 @@
 //! remote match from changing a music file without a user decision.
 
 use reqwest::blocking::{Client, Response};
+use crate::contracts::types::SearchResult;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -19,7 +20,8 @@ const MAX_PROVIDER_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RESULTS: usize = 8;
 const MAX_RELEASE_GROUPS_TO_CHECK: usize = 8;
 const MAX_REVIEW_CANDIDATES: usize = 5;
-const MAX_YOUTUBE_CANDIDATES: usize = 3;
+const MAX_YOUTUBE_CANDIDATES: usize = 8;
+const MAX_YOUTUBE_SEARCH_RESULTS: usize = 30;
 const MAX_PENDING_CANDIDATES: usize = 40;
 const CANDIDATE_TTL: Duration = Duration::from_secs(10 * 60);
 
@@ -276,36 +278,33 @@ impl ArtworkSearchService {
             .youtube_thumbnail_client
             .as_ref()
             .ok_or_else(|| "YouTube thumbnail requests are unavailable on this device.".to_string())?;
-        // Match the visible track title exactly as entered in a YouTube search.
-        // The uploader is often a label, mix channel, or aggregator rather than
-        // the credited artist, so artist text must not narrow this first query.
-        let results = crate::download::search::search_youtube_web(title, 10)?;
-        let mut results = results
-            .into_iter()
-            .filter_map(|result| {
-                let exact_title = normalize(title) == normalize(&result.title);
-                let title_score = text_match_score(title, &result.title);
-                let searchable_artist = format!(
-                    "{} {}",
-                    result.title,
-                    result.artist.as_deref().unwrap_or("")
-                );
-                let artist_score = if artist.is_empty() {
-                    100
-                } else {
-                    text_match_score(artist, &searchable_artist)
-                };
-                let minimum_title_score = if artist.is_empty() { 60 } else { 40 };
-                let strong_title_match = exact_title || title_score >= 80;
-                if !strong_title_match
-                    && (title_score < minimum_title_score || artist_score < 50)
-                {
-                    return None;
-                }
-                let score = ((title_score as u16 * 80 + artist_score as u16 * 20) / 100) as u8;
-                Some((score, exact_title, result))
-            })
-            .collect::<Vec<_>>();
+        // Search the title alone for precise matches and the combined artist/title
+        // for long compilation names, then merge both ranked result sets.
+        let title_search = crate::download::search::search_youtube_web(
+            title,
+            MAX_YOUTUBE_SEARCH_RESULTS,
+        );
+        let mut results = match title_search {
+            Ok(results) => rank_youtube_results(title, artist, results),
+            Err(error) if artist.is_empty() => return Err(error),
+            Err(_) => Vec::new(),
+        };
+        if !artist.is_empty() && results.len() < MAX_YOUTUBE_CANDIDATES {
+            let combined_query = format!("{artist} {title}");
+            match crate::download::search::search_youtube_web(
+                &combined_query,
+                MAX_YOUTUBE_SEARCH_RESULTS,
+            ) {
+                Ok(additional) => results.extend(rank_youtube_results(title, artist, additional)),
+                Err(error) if results.is_empty() => return Err(error),
+                Err(_) => {}
+            }
+        }
+        let mut seen_results = std::collections::HashSet::new();
+        results.retain(|(_, _, result)| {
+            let key = result.url.as_deref().unwrap_or(&result.title).to_owned();
+            seen_results.insert(key)
+        });
         results.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
 
         let mut candidates = Vec::new();
@@ -481,6 +480,39 @@ fn text_match_score(query: &str, result: &str) -> u8 {
         .filter(|token| result_tokens.contains(*token))
         .count();
     ((matched * 100) / query_tokens.len()) as u8
+}
+
+fn rank_youtube_results(
+    title: &str,
+    artist: &str,
+    results: Vec<SearchResult>,
+) -> Vec<(u8, bool, SearchResult)> {
+    results
+        .into_iter()
+        .filter_map(|result| {
+            let exact_title = normalize(title) == normalize(&result.title);
+            let title_score = text_match_score(title, &result.title);
+            let searchable_artist = format!(
+                "{} {}",
+                result.title,
+                result.artist.as_deref().unwrap_or("")
+            );
+            let artist_score = if artist.is_empty() {
+                100
+            } else {
+                text_match_score(artist, &searchable_artist)
+            };
+            let minimum_title_score = if artist.is_empty() { 60 } else { 40 };
+            let strong_title_match = exact_title || title_score >= 80;
+            if !strong_title_match
+                && (title_score < minimum_title_score || artist_score < 50)
+            {
+                return None;
+            }
+            let score = ((title_score as u16 * 80 + artist_score as u16 * 20) / 100) as u8;
+            Some((score, exact_title, result))
+        })
+        .collect()
 }
 
 fn is_youtube_thumbnail_url(value: &str) -> bool {

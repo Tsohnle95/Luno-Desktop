@@ -136,8 +136,9 @@ transfer manifests (`docs/modules/contracts.md`).
   matching video thumbnails as a fallback. YouTube searches start with the
   track title; exact and strong title matches remain eligible when the
   channel/uploader differs, while weaker matches must also match the saved
-  artist. Those thumbnails may not
-  be album covers. Results from both providers are displayed for review, and no match is
+  artist. Title and combined artist/title YouTube queries are merged, ranked,
+  deduplicated, and can show up to eight candidates. Those thumbnails may not be
+  album covers. Results from both providers are displayed for review, and no match is
   written until the user applies one. YouTube thumbnail fetches are restricted
   to `i.ytimg.com`, bounded, and decoded through the same image normalizer.
   MusicBrainz permits free API use for
