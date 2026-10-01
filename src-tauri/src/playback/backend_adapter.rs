@@ -17,22 +17,35 @@ use cpal::{
 use std::collections::VecDeque;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use symphonia::core::{
-    audio::{AudioBufferRef, Signal},
-    codecs::DecoderOptions,
-    formats::{FormatOptions, FormatReader, SeekMode, SeekTo},
+    audio::GenericAudioBufferRef,
+    codecs::{
+        audio::{AudioDecoder, AudioDecoderOptions},
+        registry::CodecRegistry,
+        CodecParameters,
+    },
+    formats::{probe::Hint, FormatOptions, FormatReader, SeekMode, SeekTo},
     io::MediaSourceStream,
     meta::MetadataOptions,
-    probe::Hint,
 };
 
 /// How far ahead (in stereo frames, ~2 seconds at 44.1 kHz) the producer may
 /// decode while staying bounded.
 const BUFFER_CAPACITY_FRAMES: usize = SAMPLE_RATE as usize * 2;
+
+fn audio_codec_registry() -> &'static CodecRegistry {
+    static CODECS: OnceLock<CodecRegistry> = OnceLock::new();
+    CODECS.get_or_init(|| {
+        let mut codecs = CodecRegistry::new();
+        symphonia::default::register_enabled_codecs(&mut codecs);
+        codecs.register_audio_decoder::<super::opus::OpusAdapter>();
+        codecs
+    })
+}
 
 pub struct CpalSymphoniaBackend {
     track: Option<TrackInfo>,
@@ -94,33 +107,52 @@ impl CpalSymphoniaBackend {
             hint.with_extension(extension);
         }
         let source = MediaSourceStream::new(Box::new(file), Default::default());
-        let probed = symphonia::default::get_probe()
-            .format(
+        let format = symphonia::default::get_probe()
+            .probe(
                 &hint,
                 source,
-                &FormatOptions::default(),
-                &MetadataOptions::default(),
+                FormatOptions::default(),
+                MetadataOptions::default(),
             )
             .map_err(|e| BackendError::Decode(e.to_string()))?;
-        let track = probed
-            .format
+        let codecs = audio_codec_registry();
+        let track = format
             .tracks()
             .iter()
-            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-            .ok_or_else(|| BackendError::Decode("file has no audio track".into()))?
-            .id;
-        let duration = probed.format.tracks()[track as usize].codec_params.time_base.and_then(
-            |tb| {
-                probed.format.tracks()[track as usize]
+            .find(|track| {
+                track
                     .codec_params
-                    .n_frames
-                    .map(|frames| {
-                        let time = tb.calc_time(frames);
-                        Duration::from_secs_f64(time.seconds as f64 + time.frac)
-                    })
-            },
-        );
-        Ok((probed.format, track, duration))
+                    .as_ref()
+                    .and_then(CodecParameters::audio)
+                    .is_some_and(|params| codecs.get_audio_decoder(params.codec).is_some())
+            })
+            .ok_or_else(|| BackendError::Decode("file has no supported audio track".into()))?;
+        let track_id = track.id;
+        let duration = track
+            .time_base
+            .zip(track.duration)
+            .and_then(|(time_base, duration)| time_base.calc_duration(duration))
+            .and_then(|time| u64::try_from(time.as_nanos()).ok())
+            .map(Duration::from_nanos);
+        Ok((format, track_id, duration))
+    }
+
+    fn make_decoder(
+        format: &dyn FormatReader,
+        track_id: u32,
+    ) -> Result<Box<dyn AudioDecoder>, BackendError> {
+        let params = format
+            .tracks()
+            .iter()
+            .find(|track| track.id == track_id)
+            .and_then(|track| track.codec_params.as_ref())
+            .and_then(CodecParameters::audio)
+            .cloned()
+            .ok_or_else(|| BackendError::Decode("selected track is not an audio stream".into()))?;
+
+        audio_codec_registry()
+            .make_audio_decoder(&params, &AudioDecoderOptions::default())
+            .map_err(|error| BackendError::Decode(error.to_string()))
     }
 
     /// Probes a file's duration WITHOUT constructing or locking any backend
@@ -146,10 +178,7 @@ impl CpalSymphoniaBackend {
         if duration.is_some() {
             state.lock().unwrap_or_else(|e| e.into_inner()).duration = duration;
         }
-        let mut decoder = match symphonia::default::get_codecs().make(
-            &format.tracks()[track_id as usize].codec_params,
-            &DecoderOptions::default(),
-        ) {
+        let mut decoder = match Self::make_decoder(format.as_ref(), track_id) {
             Ok(decoder) => decoder,
             Err(error) => {
                 eprintln!("audio producer could not build decoder: {error}");
@@ -165,35 +194,22 @@ impl CpalSymphoniaBackend {
             let pending_seek = state.lock().unwrap_or_else(|e| e.into_inner()).seek_to;
             if let Some(target) = pending_seek {
                 state.lock().unwrap_or_else(|e| e.into_inner()).seek_to = None;
-                let seconds = (target / SAMPLE_RATE as u64) as u64;
+                let nanos = u128::from(target) * 1_000_000_000 / u128::from(SAMPLE_RATE);
+                let time = symphonia::core::units::Time::try_from_nanos_u128(nanos)
+                    .unwrap_or(symphonia::core::units::Time::MAX);
                 let to = SeekTo::Time {
-                    time: symphonia::core::units::Time::new(seconds, 0.0),
+                    time,
                     track_id: Some(track_id),
                 };
                 if let Err(error) = format.seek(SeekMode::Coarse, to) {
-                    eprintln!("audio seek failed at {seconds}s: {error}");
+                    eprintln!("audio seek failed at {time:?}: {error}");
                     continue;
                 }
-                match format.tracks().iter().find(|t| t.id == track_id) {
-                    Some(track) => match symphonia::default::get_codecs().make(
-                        &track.codec_params,
-                        &DecoderOptions::default(),
-                    ) {
-                        Ok(next) => {
-                            decoder = next;
-                            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-                            state.buffer.clear();
-                            state.played_frames = target;
-                            state.ended = false;
-                        }
-                        Err(error) => {
-                            eprintln!("audio seek: decoder rebuild failed: {error}");
-                        }
-                    },
-                    None => {
-                        eprintln!("audio seek: audio track vanished after seek");
-                    }
-                }
+                decoder.reset();
+                let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                state.buffer.clear();
+                state.played_frames = target;
+                state.ended = false;
                 continue;
             }
             let full = {
@@ -205,8 +221,8 @@ impl CpalSymphoniaBackend {
                 continue;
             }
             match format.next_packet() {
-                Ok(packet) => {
-                    if packet.track_id() != track_id {
+                Ok(Some(packet)) => {
+                    if packet.track_id != track_id {
                         continue;
                     }
                     match decoder.decode(&packet) {
@@ -225,9 +241,14 @@ impl CpalSymphoniaBackend {
                         }
                     }
                 }
-                Err(symphonia::core::errors::Error::IoError(_)) => {
+                Ok(None) => {
                     state.lock().unwrap_or_else(|e| e.into_inner()).ended = true;
                     break; // expected end of stream
+                }
+                Err(symphonia::core::errors::Error::ResetRequired) => {
+                    eprintln!("audio stream requires a decoder reset");
+                    state.lock().unwrap_or_else(|e| e.into_inner()).ended = true;
+                    break;
                 }
                 Err(error) => {
                     eprintln!("audio stream ended with error: {error}");
@@ -366,27 +387,13 @@ impl CpalSymphoniaBackend {
     }
 }
 
-fn append_stereo_44100(buffer: &AudioBufferRef<'_>, output: &mut Vec<f32>) {
+fn append_stereo_44100(buffer: &GenericAudioBufferRef<'_>, output: &mut Vec<f32>) {
     let spec = buffer.spec();
-    let channels = spec.channels.count().max(1);
-    let rate = spec.rate;
+    let channels = spec.channels().count().max(1);
+    let rate = spec.rate();
     let frames = buffer.frames();
     let mut samples = vec![0.0f32; frames * channels];
-    match buffer {
-        AudioBufferRef::F32(buffer) => {
-            for channel in 0..channels {
-                for frame in 0..frames {
-                    samples[frame * channels + channel] = buffer.chan(channel)[frame];
-                }
-            }
-        }
-        _ => {
-            let mut converted =
-                symphonia::core::audio::SampleBuffer::<f32>::new(frames as u64, *spec);
-            converted.copy_interleaved_ref(buffer.clone());
-            samples.copy_from_slice(converted.samples());
-        }
-    }
+    buffer.copy_to_vec_interleaved(&mut samples);
     let output_frames = ((frames as u64 * SAMPLE_RATE as u64) / rate as u64) as usize;
     for frame in 0..output_frames {
         let source = ((frame as u64 * rate as u64) / SAMPLE_RATE as u64) as usize;
@@ -414,7 +421,7 @@ impl AudioBackend for CpalSymphoniaBackend {
             .and_then(|x| x.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if !matches!(ext.as_str(), "mp3" | "m4a" | "mp4" | "aac" | "flac" | "wav") {
+        if !matches!(ext.as_str(), "mp3" | "m4a" | "mp4" | "aac" | "flac" | "wav" | "webm") {
             return Err(BackendError::UnsupportedFormat(ext));
         }
         self.stop_stream();

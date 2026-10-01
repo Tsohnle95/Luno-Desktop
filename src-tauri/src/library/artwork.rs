@@ -247,6 +247,13 @@ fn apply_embedded_artwork_macos(path: &Path, image: &[u8], mime: &str) -> Result
     if !matches!(mime, "image/jpeg" | "image/png") || image.is_empty() || image.len() > MAX_SINGLE_ARTWORK_BYTES {
         return Err("The selected image is not a supported, verified artwork file.".into());
     }
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("webm"))
+    {
+        return Err("Luno cannot safely embed artwork in WebM files. The music file was left unchanged.".into());
+    }
     let _mutation = crate::library::mutations::lock_library_file_mutations();
     let source_type = fs::symlink_metadata(path)
         .map_err(|error| format!("Could not inspect the music file: {error}"))?
@@ -414,9 +421,9 @@ fn downscaled_jpeg(data: &[u8]) -> Option<Vec<u8>> {
 #[cfg(target_os = "macos")]
 fn symphonia_artwork_data_url(path: &Path) -> Option<String> {
     use symphonia::core::formats::FormatOptions;
+    use symphonia::core::formats::probe::Hint;
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
-    use symphonia::core::probe::Hint;
 
     let file = File::open(path).ok()?;
     let mut hint = Hint::new();
@@ -424,26 +431,26 @@ fn symphonia_artwork_data_url(path: &Path) -> Option<String> {
         hint.with_extension(extension);
     }
     let source = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut probed = symphonia::default::get_probe()
-        .format(
+    let mut format = symphonia::default::get_probe()
+        .probe(
             &hint,
             source,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .ok()?;
-    let metadata = probed.format.metadata();
-    let visual = metadata.current()?.visuals().first()?;
+    let metadata = format.metadata();
+    let visual = metadata.current()?.media.visuals.first()?;
     let data: &[u8] = visual.data.as_ref();
     if data.is_empty() || data.len() > MAX_SINGLE_ARTWORK_BYTES {
         return None;
     }
-    let mime = if visual.media_type.starts_with("image/") {
-        visual.media_type.to_string()
-    } else {
-        guess_mime(data).to_string()
-    };
-    picture_data_url(&mime, data)
+    let mime = visual
+        .media_type
+        .as_deref()
+        .filter(|mime| mime.starts_with("image/"))
+        .unwrap_or_else(|| guess_mime(data));
+    picture_data_url(mime, data)
 }
 
 #[cfg(not(target_os = "macos"))]

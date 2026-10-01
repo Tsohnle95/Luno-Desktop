@@ -130,7 +130,7 @@ impl AudioBackend for FakeBackend {
             .map(|x| {
                 matches!(
                     x.to_ascii_lowercase().as_str(),
-                    "mp3" | "m4a" | "mp4" | "aac" | "flac" | "wav"
+                    "mp3" | "m4a" | "mp4" | "aac" | "flac" | "wav" | "webm"
                 )
             })
             .unwrap_or(false)

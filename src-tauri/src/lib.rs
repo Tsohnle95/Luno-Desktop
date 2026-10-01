@@ -61,6 +61,8 @@ pub mod transfer {
 pub mod playback {
     pub mod backend;
     pub mod backend_adapter;
+    #[cfg(target_os = "macos")]
+    pub mod opus;
     pub mod crossfade;
     pub mod clock;
     pub mod queue;

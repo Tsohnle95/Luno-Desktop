@@ -151,10 +151,12 @@ transfer manifests (`docs/modules/contracts.md`).
   and written only when the format's primary tag is writable. Luno stages a
   same-directory copy, preserves file permissions, verifies the source stamp
   and reads the resulting artwork back before atomic replacement under the
-  library file-mutation lock. Unsupported formats such as WebM remain intact.
-  The current `lofty` support table covers common tagged audio containers but
-  excludes WebM; a writable text tag alone does not guarantee artwork support,
-  so the staged read-back check is required.
+  library file-mutation lock. WebM is playable when its audio codec is
+  supported, but embedded artwork writing through `lofty` is unsupported; the
+  artwork command returns a format-specific refusal before staging, leaving
+  the music file unchanged. A writable text tag alone does not guarantee
+  artwork support, so the staged read-back check is required for formats that
+  can be safely tagged.
 - Frontend artwork requests have view-scoped demand leases: queued offscreen
   work is removed when no mounted view needs it, duplicate requests share one
   job, and the audible track and visible library rows receive higher queue

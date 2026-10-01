@@ -11,7 +11,7 @@ and what plays next.
 - Successful library playback-start counts, queue playlist origin, and durable
   listening-statistics publication.
 - Playback clock, seek, volume seeding, crossfade, sleep timer.
-- Audio backend lifecycle (macOS cpal/symphonia) and failure recovery.
+- Audio backend lifecycle (macOS cpal/Symphonia 0.6) and failure recovery.
 - Video mode, staging pipeline, prefetch, and the `luno-video://` stream.
 - Hardware media keys and Now Playing integration.
 
@@ -128,6 +128,11 @@ What it does not own: library snapshots and track identity
 - Master volume is shared atomically with the macOS output callback. Mute
   applies during a slow producer shutdown or track load, without waiting for
   the backend mutex, and survives each output-state replacement.
+- The macOS decoder supports WebM audio with Vorbis or mono/stereo
+  Opus alongside the existing M4A/AAC, MP3, FLAC, and WAV formats. It selects
+  a registered audio codec from the container's tracks, skips video tracks,
+  and keeps streaming output normalized to 44.1 kHz. Opus decoder state is
+  reset after seeks; start-of-stream pre-skip is not applied again.
 - Video responses are small ranged windows (stock asset protocol buffered
   whole files and froze the window on 100 MB+ MP4s).
 - Media keys control Luno via MPRemoteCommandCenter instead of falling
