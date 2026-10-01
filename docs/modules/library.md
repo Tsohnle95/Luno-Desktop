@@ -66,6 +66,14 @@ transfer manifests (`docs/modules/contracts.md`).
 - Clicks racing a rescan carry stale IDs: `PlayWithContext` heals every
   context entry onto the current map under one lock; ambiguous siblings
   must fail rather than guess.
+- Playlist additions are real `fs::copy` files, not playlist references. A
+  copy can be removed while an identical file remains in another playlist.
+  Track deletion, empty-playlist, and delete-playlist commands compare
+  same-name, same-size candidates byte by byte across configured roots. If no
+  identical copy remains, or a candidate cannot be checked, they return a
+  single-use review ID without deleting; the confirmed command recomputes the
+  result under the library file-mutation lock. Deletion is held while a
+  download or playlist sync is active.
 - Mutations are safe-root-contained and atomic; downloads promote only
   inside the configured library root and trigger a coalesced rescan.
 - The scanner excludes `.luno_previews`, `.luno-download-staging`, the current

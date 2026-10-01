@@ -6113,9 +6113,9 @@ impl AppState {
             Command::PlaylistSyncCandidates { playlist_id, video_id } => self.playlist_sync_candidates(&playlist_id, &video_id),
             Command::PlaylistSyncSelectSource { playlist_id, video_id, source_video_id } => self.playlist_sync_select_source(&playlist_id, &video_id, &source_video_id),
             Command::PlaylistSyncResolveIssue { playlist_id, video_id, replacement_track_id } => self.playlist_sync_resolve_issue(&playlist_id, &video_id, replacement_track_id.as_ref()),
-            Command::DeletePlaylist { playlist_id } => self.delete_playlist(&playlist_id),
+            Command::DeletePlaylist { playlist_id, final_copy_review_id } => self.delete_playlist(&playlist_id, final_copy_review_id.as_deref()),
             Command::AddTracksToPlaylist { track_ids, playlist_id } => self.add_tracks_to_playlist(&track_ids, &playlist_id),
-            Command::DeleteTracks { track_ids } => self.delete_tracks(&track_ids),
+            Command::DeleteTracks { track_ids, final_copy_review_id } => self.delete_tracks(&track_ids, final_copy_review_id.as_deref()),
             Command::EditTrackMetadata { track_id, artist, title } => self.edit_track_metadata(track_id, &artist, &title),
             Command::StartDownload { job_id, destination, helper, source } => self.start_download(job_id, PathBuf::from(destination), PathBuf::from(helper), source),
             Command::RetryDownload { job_id } => {
@@ -6978,10 +6978,18 @@ impl AppState {
         envelope.job_id = Some(job_id.clone()); self.publish(envelope);
     }
 
-    fn delete_playlist(&self, playlist_id: &PlaylistId) -> Result<Value, ContractError> {
-        let name = self.playlist_name(playlist_id)?; let service = crate::library::mutations::PlaylistService::new(self.playlist_mutation_root()?); let mut index = crate::library::index::LibraryIndex::default();
-        service.delete(&name, &mut index).map_err(playlist_mutation_error)?; let generation = self.schedule_mutation_scan()?;
-        Ok(serde_json::json!({ "deleted": name, "generation": generation }))
+    fn delete_playlist(&self, playlist_id: &PlaylistId, review_id: Option<&str>) -> Result<Value, ContractError> {
+        let _admission = self.media_download_admission.lock().unwrap_or_else(|error| error.into_inner());
+        if self.downloads.is_busy() || self.playlist_sync_active.load(Ordering::Acquire) {
+            return Err(ContractError { code: ErrorCode::Busy, message: "wait for active downloads or playlist syncs to finish before deleting music".into(), retryable: true });
+        }
+        let name = self.playlist_name(playlist_id)?;
+        let root = self.playlist_mutation_root()?;
+        let service = crate::library::mutations::PlaylistService::new(&root);
+        let result = service.delete_with_review(&name, &self.scan_roots(), review_id).map_err(playlist_mutation_error)?;
+        if result.needs_confirmation { return Ok(safe_delete_response(result, None)); }
+        let generation = self.schedule_mutation_scan()?;
+        Ok(safe_delete_response(result, Some(generation)))
     }
 
     fn add_tracks_to_playlist(&self, track_ids: &[TrackId], playlist_id: &PlaylistId) -> Result<Value, ContractError> {
@@ -7006,13 +7014,15 @@ impl AppState {
         Ok(serde_json::json!({ "playlist": name, "copied": result.value.copied, "failed": result.value.failed, "generation": generation }))
     }
 
-    fn delete_tracks(&self, track_ids: &[TrackId]) -> Result<Value, ContractError> {
+    fn delete_tracks(&self, track_ids: &[TrackId], review_id: Option<&str>) -> Result<Value, ContractError> {
         if track_ids.is_empty() { return Err(ContractError::invalid("choose at least one track")); }
-        let paths = { let map = self.track_paths.lock().unwrap_or_else(|e| e.into_inner()); track_ids.iter().map(|id| map.get(id).cloned().ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "one or more tracks are no longer in the library".into(), retryable: true })).collect::<Result<Vec<_>, _>>()? };
-        for path in &paths {
-            validate_library_path(self, path, true)?;
-            std::fs::remove_file(path).map_err(|error| ContractError { code: ErrorCode::Internal, message: format!("could not delete '{}': {error}", path.file_name().and_then(|name| name.to_str()).unwrap_or("track")), retryable: true })?;
+        let _admission = self.media_download_admission.lock().unwrap_or_else(|error| error.into_inner());
+        if self.downloads.is_busy() || self.playlist_sync_active.load(Ordering::Acquire) {
+            return Err(ContractError { code: ErrorCode::Busy, message: "wait for active downloads or playlist syncs to finish before deleting music".into(), retryable: true });
         }
+        let paths = { let map = self.track_paths.lock().unwrap_or_else(|e| e.into_inner()); track_ids.iter().map(|id| map.get(id).cloned().ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "one or more tracks are no longer in the library".into(), retryable: true })).collect::<Result<Vec<_>, _>>()? };
+        let result = crate::library::mutations::delete_files_safely(&paths, &self.scan_roots(), review_id).map_err(playlist_mutation_error)?;
+        if result.needs_confirmation { return Ok(safe_delete_response(result, None)); }
         // Optimistic snapshot so the rows disappear immediately in every view.
         // The follow-up scan reconciles playlist membership from disk; without
         // this the UI waited on a slow scan and reads as "delete did nothing".
@@ -7030,7 +7040,7 @@ impl AppState {
             self.publish(self.event(snapshot.generation, Event::LibrarySnapshot { snapshot }));
         }
         let generation = self.schedule_mutation_scan()?;
-        Ok(serde_json::json!({ "deleted": paths.len(), "generation": generation }))
+        Ok(safe_delete_response(result, Some(generation)))
     }
 
     /// Rename a library file so its filename metadata matches the user-edited
@@ -8415,6 +8425,17 @@ fn playlist_mutation_error(error: crate::library::mutations::MutationError) -> C
     use crate::library::mutations::MutationError;
     let code = match &error { MutationError::Io { .. } | MutationError::PartialCopy(_) => ErrorCode::Internal, MutationError::NotFound(_) => ErrorCode::NotFound, _ => ErrorCode::InvalidRequest };
     ContractError { code, message: error.to_string(), retryable: matches!(code, ErrorCode::Internal) }
+}
+
+fn safe_delete_response(result: crate::library::mutations::SafeDeleteResult, generation: Option<u64>) -> Value {
+    serde_json::json!({
+        "deleted": result.deleted,
+        "needs_confirmation": result.needs_confirmation,
+        "verification_incomplete": result.verification_incomplete,
+        "final_copy_review_id": result.final_copy_review_id,
+        "final_copies": result.final_copies,
+        "generation": generation,
+    })
 }
 
 fn validate_library_path(state: &AppState, path: &Path, allow_file: bool) -> Result<PathBuf, ContractError> {

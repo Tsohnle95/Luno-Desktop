@@ -21,11 +21,13 @@ import {
   type PlaylistSyncCandidate,
   type PlaylistSyncSelection,
   type PlaylistSyncReviewSummary,
+  type SafeDeleteResult,
   isPlaylistSyncIssues,
   isPlaylistSyncCandidates,
   isPlaylistSyncSelection,
   isPlaylistSyncReviewSummary,
   isPlaylistSyncSources,
+  isSafeDeleteResult,
 } from "../shared/contracts";
 import type { LibrarySnapshot } from "../shared/contracts";
 
@@ -121,9 +123,9 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
       playlistSyncCandidates: async (playlist_id: PlaylistId, video_id: string) => { const value = await send<unknown>({ type: "playlist_sync_candidates", payload: { playlist_id, video_id } }); if (!isPlaylistSyncCandidates(value)) throw new Error("invalid playlist sync candidates response"); return value as PlaylistSyncCandidate[]; },
       playlistSyncSelectSource: async (playlist_id: PlaylistId, video_id: string, source_video_id: string) => { const value = await send<unknown>({ type: "playlist_sync_select_source", payload: { playlist_id, video_id, source_video_id } }); if (!isPlaylistSyncSelection(value)) throw new Error("invalid playlist sync source response"); return value as PlaylistSyncSelection; },
       playlistSyncResolveIssue: (playlist_id: PlaylistId, video_id: string, replacement_track_id: TrackId | null) => send({ type: "playlist_sync_resolve_issue", payload: { playlist_id, video_id, replacement_track_id } }),
-      deletePlaylist: (playlist_id: PlaylistId) => send({ type: "delete_playlist", payload: { playlist_id } }),
+      deletePlaylist: async (playlist_id: PlaylistId, final_copy_review_id?: string): Promise<SafeDeleteResult> => { const value = await send<unknown>({ type: "delete_playlist", payload: final_copy_review_id ? { playlist_id, final_copy_review_id } : { playlist_id } }); if (!isSafeDeleteResult(value)) throw new Error("invalid delete playlist response"); return value; },
       addTracksToPlaylist: (track_ids: TrackId[], playlist_id: PlaylistId) => send({ type: "add_tracks_to_playlist", payload: { track_ids, playlist_id } }),
-      deleteTracks: (track_ids: TrackId[]) => send({ type: "delete_tracks", payload: { track_ids } }),
+      deleteTracks: async (track_ids: TrackId[], final_copy_review_id?: string): Promise<SafeDeleteResult> => { const value = await send<unknown>({ type: "delete_tracks", payload: final_copy_review_id ? { track_ids, final_copy_review_id } : { track_ids } }); if (!isSafeDeleteResult(value)) throw new Error("invalid delete tracks response"); return value; },
       editTrackMetadata: (track_id: TrackId, artist: string, title: string) => send({ type: "edit_track_metadata", payload: { track_id, artist, title } }),
      startDownload: (job_id: JobId, destination: string, helper: string, source = "") => send({ type: "start_download", payload: { job_id, destination, helper, source } }),
      bundleHelper: () => send({ type: "bundle_helper_path" }),

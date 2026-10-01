@@ -54,6 +54,12 @@ docs), release packaging (`docs/release/desktop.md`).
   strictness in Rust — an approved additive shape such as `phase` or
   `prepared` must be added to both validators together; arbitrary fields
   remain invalid.
+- `delete_tracks` and `delete_playlist` accept an optional
+  `final_copy_review_id`, preserving the original command shape for callers
+  that omit it. Their validated `SafeDeleteResult` either reports deletion or
+  returns the affected file labels and a single-use review ID without deleting.
+  The confirmed command recomputes the last-copy result before it can remove
+  files.
 - The optional `SettingsInput.youtube_cookies_browser` field is allowlisted
   on both sides. `"none"` explicitly clears the preference; omitted or null
   values preserve existing config under settings merge semantics.

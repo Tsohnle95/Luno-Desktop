@@ -109,6 +109,12 @@ envelope shapes (`docs/modules/contracts.md`).
   creation), so confirmations and name entry use the in-app
   `ConfirmDialog`/`PlaylistDialog`. `.luno-dialog*` styles own the fixed
   modal backdrop.
+- Track-copy, empty-playlist, and delete-playlist actions first use the normal
+  confirmation. If backend review finds that the requested operation would
+  remove a song's last byte-identical file copy, a higher-priority alert dialog
+  lists the affected files and requires a second confirmation. Removing one
+  physical copy while another identical copy remains proceeds without the
+  second warning; confirmation is rechecked at deletion time.
 - The track context menu is available from every track surface that shows a
   real library track: library/recent rows, the queue, home cards, and the
   footer now-playing track. Edit/delete are hidden for non-library

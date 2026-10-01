@@ -36,3 +36,35 @@ export function ConfirmDialog({ title, message, confirmLabel, danger = false, bu
     </section>
   </div>;
 }
+
+export function FinalCopyDeleteDialog({ files, verificationIncomplete = false, busy = false, error = null, onConfirm, onClose }: {
+  files: string[];
+  verificationIncomplete?: boolean;
+  busy?: boolean;
+  error?: string | null;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    closeRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) onClose(); };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [busy, onClose]);
+  return <div className="luno-dialog-backdrop luno-final-copy-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+    <section className="luno-dialog luno-final-copy-dialog" role="alertdialog" aria-modal="true" aria-labelledby="luno-final-copy-title" aria-describedby="luno-final-copy-description">
+      <header><h2 id="luno-final-copy-title">Delete the last copy?</h2><button ref={closeRef} type="button" aria-label="Close dialog" onClick={onClose} disabled={busy}>×</button></header>
+      <p id="luno-final-copy-description">{verificationIncomplete
+        ? "Luno could not check every playlist folder. These songs may have another copy, but continuing will permanently remove the listed files from your music folder."
+        : "Luno found no identical file copy elsewhere in your music folder. Continuing will permanently remove the listed audio files."}</p>
+      <ul className="luno-final-copy-files">{files.map((file, index) => <li key={`${file}-${index}`}>{file}</li>)}</ul>
+      <p className="luno-final-copy-explanation">Songs added to another playlist are separate file copies. Deleting one copy leaves any identical copy in another playlist available to play.</p>
+      {error && <p role="alert" className="luno-dialog-error">{error}</p>}
+      <footer>
+        <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+        <button type="button" className="is-danger" onClick={onConfirm} disabled={busy}>{busy ? "Deleting…" : "Delete permanently"}</button>
+      </footer>
+    </section>
+  </div>;
+}

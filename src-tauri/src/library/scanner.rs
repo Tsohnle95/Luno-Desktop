@@ -112,6 +112,8 @@ fn supported(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+pub fn is_scannable_audio(path: &Path) -> bool { supported(path) }
+
 fn internal_dir(name: &str) -> bool {
     name == ".luno_previews"
         || name == crate::download::workflows::DOWNLOAD_STAGING_DIR

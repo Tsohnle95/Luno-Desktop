@@ -30,6 +30,7 @@ export interface PlaylistSyncIssue { video_id: string; title: string; channel: s
 export interface PlaylistSyncCandidate { video_id: string; title: string; channel: string | null; duration: string | null; thumbnail_url: string | null; url: string }
 export interface PlaylistSyncSelection { video_id: string; source_video_id: string; url: string }
 export interface PlaylistSyncReviewSummary { playlist_id: PlaylistId; name: string; url: string | null; unresolved_count: number }
+export interface SafeDeleteResult { deleted: number; needs_confirmation: boolean; verification_incomplete: boolean; final_copy_review_id: string | null; final_copies: string[]; generation: number | null }
 
 export type Command =
   | { type: "get_library" } | { type: "scan_library" } | { type: "play"; payload: { track_id: TrackId } }
@@ -69,9 +70,9 @@ export type Command =
   | { type: "playlist_sync_candidates"; payload: { playlist_id: PlaylistId; video_id: string } }
   | { type: "playlist_sync_select_source"; payload: { playlist_id: PlaylistId; video_id: string; source_video_id: string } }
   | { type: "playlist_sync_resolve_issue"; payload: { playlist_id: PlaylistId; video_id: string; replacement_track_id: TrackId | null } }
-  | { type: "delete_playlist"; payload: { playlist_id: PlaylistId } }
+  | { type: "delete_playlist"; payload: { playlist_id: PlaylistId; final_copy_review_id?: string | null } }
   | { type: "add_tracks_to_playlist"; payload: { track_ids: TrackId[]; playlist_id: PlaylistId } }
-  | { type: "delete_tracks"; payload: { track_ids: TrackId[] } }
+  | { type: "delete_tracks"; payload: { track_ids: TrackId[]; final_copy_review_id?: string | null } }
   | { type: "edit_track_metadata"; payload: { track_id: TrackId; artist: string; title: string } }
   | { type: "start_download"; payload: { job_id: JobId; destination: string; helper: string; source: string } }
   | { type: "retry_download"; payload: { job_id: JobId } }
@@ -194,9 +195,9 @@ function isCommand(v: unknown): v is Command {
     if (v.type === "playlist_sync_candidates") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && nonEmptyId(v.payload.video_id) && Object.keys(v.payload).length === 2;
     if (v.type === "playlist_sync_select_source") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && nonEmptyId(v.payload.video_id) && nonEmptyId(v.payload.source_video_id) && Object.keys(v.payload).length === 3;
     if (v.type === "playlist_sync_resolve_issue") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && nonEmptyId(v.payload.video_id) && (v.payload.replacement_track_id === null || nonEmptyId(v.payload.replacement_track_id)) && Object.keys(v.payload).length === 3;
-    if (v.type === "delete_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 1;
+    if (v.type === "delete_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && (exact(v.payload, ["playlist_id"]) || exact(v.payload, ["playlist_id", "final_copy_review_id"])) && (v.payload.final_copy_review_id === undefined || v.payload.final_copy_review_id === null || nonEmptyId(v.payload.final_copy_review_id));
     if (v.type === "add_tracks_to_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.track_ids) && v.payload.track_ids.length > 0 && v.payload.track_ids.every(nonEmptyId) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 2;
-    if (v.type === "delete_tracks") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.track_ids) && v.payload.track_ids.length > 0 && v.payload.track_ids.every(nonEmptyId) && Object.keys(v.payload).length === 1;
+    if (v.type === "delete_tracks") return exact(v, ["type", "payload"]) && object(v.payload) && (exact(v.payload, ["track_ids"]) || exact(v.payload, ["track_ids", "final_copy_review_id"])) && Array.isArray(v.payload.track_ids) && v.payload.track_ids.length > 0 && v.payload.track_ids.every(nonEmptyId) && (v.payload.final_copy_review_id === undefined || v.payload.final_copy_review_id === null || nonEmptyId(v.payload.final_copy_review_id));
     if (v.type === "edit_track_metadata") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && typeof v.payload.artist === "string" && typeof v.payload.title === "string" && v.payload.title.trim().length > 0 && Object.keys(v.payload).length === 3;
     if (v.type === "start_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && typeof v.payload.helper === "string" && v.payload.helper.trim().length > 0 && typeof v.payload.source === "string" && Object.keys(v.payload).length === 4;
     if (v.type === "retry_download") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.job_id) && Object.keys(v.payload).length === 1;
@@ -309,6 +310,14 @@ export function isPlaylistSyncReviewSummary(value: unknown): value is { entries:
 }
 export function isPlaylistSyncSources(value: unknown): value is { urls: string[] } {
   return object(value) && exact(value, ["urls"]) && Array.isArray(value.urls) && value.urls.length <= 32 && value.urls.every(nonEmptyId);
+}
+export function isSafeDeleteResult(value: unknown): value is SafeDeleteResult {
+  return object(value) && exact(value, ["deleted", "needs_confirmation", "verification_incomplete", "final_copy_review_id", "final_copies", "generation"])
+    && safeInteger(value.deleted) && value.deleted >= 0 && typeof value.needs_confirmation === "boolean" && typeof value.verification_incomplete === "boolean"
+    && (value.final_copy_review_id === null || nonEmptyId(value.final_copy_review_id))
+    && Array.isArray(value.final_copies) && value.final_copies.every(nonEmptyId)
+    && (value.generation === null || (safeInteger(value.generation) && value.generation >= 0))
+    && (value.needs_confirmation ? value.final_copy_review_id !== null && value.final_copies.length > 0 && value.generation === null : value.final_copy_review_id === null && value.final_copies.length === 0 && !value.verification_incomplete && value.generation !== null);
 }
 export function isPlaylistSyncCandidates(value: unknown): value is PlaylistSyncCandidate[] {
   return Array.isArray(value) && value.every((candidate) => object(candidate)

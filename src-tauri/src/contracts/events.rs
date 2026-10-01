@@ -102,9 +102,9 @@ pub enum Command {
     PlaylistSyncCandidates { playlist_id: PlaylistId, video_id: String },
     PlaylistSyncSelectSource { playlist_id: PlaylistId, video_id: String, source_video_id: String },
     PlaylistSyncResolveIssue { playlist_id: PlaylistId, video_id: String, replacement_track_id: Option<TrackId> },
-    DeletePlaylist { playlist_id: PlaylistId },
+    DeletePlaylist { playlist_id: PlaylistId, #[serde(default)] final_copy_review_id: Option<String> },
     AddTracksToPlaylist { track_ids: Vec<TrackId>, playlist_id: PlaylistId },
-    DeleteTracks { track_ids: Vec<TrackId> },
+    DeleteTracks { track_ids: Vec<TrackId>, #[serde(default)] final_copy_review_id: Option<String> },
     EditTrackMetadata {
         track_id: TrackId,
         #[serde(default)]

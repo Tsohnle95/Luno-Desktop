@@ -18,7 +18,7 @@ import { useTrackArtwork } from "../state/track_artwork";
 import { bumpPlayCount, loadDownloadJournal, loadPlayCounts, madeForYouIds, popularTrackIds, recordDownloadCompletions, saveDownloadJournal, savePlayCounts, type DownloadEntry, type PlayCounts } from "../state/play_stats";
 import { downloadDisplayLabel, downloadFilename, type DownloadMetadata } from "../state/download_naming";
 import type { Bridge, MigrationStatus } from "./bridge";
-import { type Playlist, type PlaylistSyncCandidate, type PlaylistSyncIssue, type PlaylistSyncLocalMatch, type PlaylistSyncReviewSummary, type Recommendation, type SearchResult, type SettingsInput, type Track, type YtDlpCookieBrowser } from "../shared/contracts";
+import { type Playlist, type PlaylistSyncCandidate, type PlaylistSyncIssue, type PlaylistSyncLocalMatch, type PlaylistSyncReviewSummary, type Recommendation, type SafeDeleteResult, type SearchResult, type SettingsInput, type Track, type YtDlpCookieBrowser } from "../shared/contracts";
 import { previewKey } from "../shared/contracts";
 import type { RecommendationState } from "../components/Recommendations";
 import { Queue } from "../components/Queue";
@@ -26,7 +26,7 @@ import { PlayerBar } from "../components/PlayerBar";
 import { PlaylistPicker } from "../components/PlaylistPicker";
 import { PlaylistArtwork } from "../components/PlaylistArtwork";
 import { EditTrackDialog } from "../components/EditTrackDialog";
-import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ConfirmDialog, FinalCopyDeleteDialog } from "../components/ConfirmDialog";
 import { PlaylistDialog, PlaylistUrlDialog, PlaylistUrlLoadingDialog, PlaylistSyncAuthDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog, type PlaylistSyncCandidateLookup, type PlaylistSyncLogEntry } from "../components/PlaylistDialogs";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
@@ -215,9 +215,12 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [editTrack, setEditTrack] = useState<Track | null>(null);
   const [editTrackBusy, setEditTrackBusy] = useState(false);
   const [editTrackError, setEditTrackError] = useState<string | null>(null);
-  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void | Promise<void> } | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [finalCopyDelete, setFinalCopyDelete] = useState<{ files: string[]; reviewId: string; verificationIncomplete: boolean; confirm: (reviewId: string) => Promise<SafeDeleteResult>; onDeleted: (result: SafeDeleteResult) => void } | null>(null);
+  const [finalCopyDeleteBusy, setFinalCopyDeleteBusy] = useState(false);
+  const [finalCopyDeleteError, setFinalCopyDeleteError] = useState<string | null>(null);
   const [playlistCreateRequest, setPlaylistCreateRequest] = useState<{ tracks: Track[]; onCreated?: (name: string) => void } | null>(null);
   const [playlistCreateBusy, setPlaylistCreateBusy] = useState(false);
   const [playlistCreateError, setPlaylistCreateError] = useState<string | null>(null);
@@ -239,7 +242,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [playlistSyncReviewOffer, setPlaylistSyncReviewOffer] = useState<{ playlist: Playlist; count: number } | null>(null);
   const [playlistSyncReviewSummary, setPlaylistSyncReviewSummary] = useState<{ entries: PlaylistSyncReviewSummary[]; loading: boolean; error: string | null }>({ entries: [], loading: false, error: null });
   const [playlistSyncReviewSummaryRefresh, setPlaylistSyncReviewSummaryRefresh] = useState(0);
-  const askConfirm = (request: { title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }) => {
+  const askConfirm = (request: { title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void | Promise<void> }) => {
     setConfirmError(null);
     setConfirmDialog(request);
   };
@@ -333,6 +336,51 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const runCommand = (command: Promise<unknown> | null | undefined) => {
     if (!available || !command) return;
     void command.then(() => setCommandError(null)).catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
+  };
+  const showFinalCopyReview = (result: SafeDeleteResult, confirm: (reviewId: string) => Promise<SafeDeleteResult>, onDeleted: (result: SafeDeleteResult) => void) => {
+    if (!result.needs_confirmation) { onDeleted(result); return; }
+    if (!result.final_copy_review_id || result.final_copies.length === 0) throw new Error("The backend returned an incomplete final-copy review.");
+    setFinalCopyDeleteError(null);
+    setFinalCopyDelete({ files: result.final_copies, reviewId: result.final_copy_review_id, verificationIncomplete: result.verification_incomplete, confirm, onDeleted });
+  };
+  const deleteTracksWithReview = async (trackIds: string[], successNotice: (result: SafeDeleteResult) => string) => {
+    if (!bridge || !available) throw new Error("Deletion is unavailable until the backend is connected.");
+    const confirm = (reviewId: string) => bridge.deleteTracks(trackIds, reviewId);
+    const result = await bridge.deleteTracks(trackIds);
+    showFinalCopyReview(result, confirm, (deleted) => {
+      setCommandError(null);
+      setCommandNotice(successNotice(deleted));
+    });
+  };
+  const deletePlaylistWithReview = async (playlist: Playlist) => {
+    if (!bridge || !available) throw new Error("Deletion is unavailable until the backend is connected.");
+    const confirm = (reviewId: string) => bridge.deletePlaylist(playlist.id, reviewId);
+    const result = await bridge.deletePlaylist(playlist.id);
+    showFinalCopyReview(result, confirm, () => {
+      if (libraryScope === playlist.id) { setLibraryScope("all"); setLibraryHome(false); }
+      setCommandError(null);
+      setCommandNotice(`Deleted playlist “${playlist.name}” and its files.`);
+    });
+  };
+  const submitFinalCopyDelete = () => {
+    const review = finalCopyDelete;
+    if (!review || finalCopyDeleteBusy) return;
+    setFinalCopyDeleteBusy(true);
+    setFinalCopyDeleteError(null);
+    void review.confirm(review.reviewId)
+      .then((result) => {
+        if (result.needs_confirmation) {
+          if (!result.final_copy_review_id || result.final_copies.length === 0) throw new Error("The backend returned an incomplete updated delete review.");
+          setFinalCopyDelete({ ...review, files: result.final_copies, reviewId: result.final_copy_review_id, verificationIncomplete: result.verification_incomplete });
+          setFinalCopyDeleteError("The library changed during review. Check the updated file list before deleting.");
+          return;
+        }
+        setFinalCopyDelete(null);
+        setFinalCopyDeleteError(null);
+        review.onDeleted(result);
+      })
+      .catch((error: unknown) => setFinalCopyDeleteError(normalizeRuntimeCommandError(error)))
+      .finally(() => setFinalCopyDeleteBusy(false));
   };
   const openTrackMenu = (event: ReactMouseEvent, item: Track) => {
     event.preventDefault(); event.stopPropagation();
@@ -1516,7 +1564,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         {contextMenu.libraryTrack && <>
           <button role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setEditTrackError(null); setEditTrack(item); setContextMenu(null); }}>Edit song info…</button>
           <hr />
-          <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setContextMenu(null); askConfirm({ title: "Delete from library", message: `Permanently delete “${item.title}” from your library?`, confirmLabel: "Delete from library", danger: true, onConfirm: () => runCommand(bridge?.deleteTracks([item.id])) }); }}>Delete from library…</button>
+          <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setContextMenu(null); askConfirm({ title: "Delete this file copy", message: `Remove this copy of “${item.title}” from your library?`, confirmLabel: "Delete copy", danger: true, onConfirm: () => deleteTracksWithReview([item.id], () => `Deleted the file copy of “${item.title}”.`) }); }}>Delete from library…</button>
         </>}
       </> : contextMenu.playlist ? <>
         <button role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const items = playlistTracks(projection.library, contextMenu.playlist!); const first = items[0]; if (first) runCommand(bridge?.playWithContext(first.id, items.map((item) => item.id))); setContextMenu(null); }}>Play</button>
@@ -1531,13 +1579,14 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <button role="menuitem" type="button" disabled={!contextMenu.playlist.url || activePlaylistSync !== null} title={contextMenu.playlist.url ? undefined : "Add a YouTube playlist link first"} onClick={() => { openPlaylistSyncReview(contextMenu.playlist!); setContextMenu(null); }}>Review unavailable songs…</button>
         <button role="menuitem" type="button" onClick={() => { openPlaylistSyncLog(contextMenu.playlist!); setContextMenu(null); }}>Log</button>
         <hr />
-        <button className="is-danger" role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); askConfirm({ title: "Empty playlist", message: `Permanently delete every song in “${item.name}” but keep the playlist?`, confirmLabel: "Empty playlist", danger: true, onConfirm: () => runCommand(bridge?.deleteTracks(item.ordered_track_ids)) }); }}>Empty playlist…</button>
-        <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); askConfirm({ title: "Delete playlist", message: `Permanently delete the playlist “${item.name}” and all files inside it?`, confirmLabel: "Delete playlist", danger: true, onConfirm: () => { if (libraryScope === item.id) { setLibraryScope("all"); setLibraryHome(false); } runCommand(bridge?.deletePlaylist(item.id)); } }); }}>Delete playlist…</button>
+        <button className="is-danger" role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); askConfirm({ title: "Empty playlist", message: `Delete every song file in “${item.name}” but keep the playlist?`, confirmLabel: "Empty playlist", danger: true, onConfirm: () => deleteTracksWithReview(item.ordered_track_ids, (result) => `Removed ${result.deleted} ${result.deleted === 1 ? "song" : "songs"} from “${item.name}”.`) }); }}>Empty playlist…</button>
+        <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); askConfirm({ title: "Delete playlist", message: `Delete the playlist “${item.name}” and all files inside it?`, confirmLabel: "Delete playlist", danger: true, onConfirm: () => deletePlaylistWithReview(item) }); }}>Delete playlist…</button>
       </> : null}
     </div>}
     {playlistPickerSelection && <PlaylistPicker title={playlistPickerSelection.title} playlists={(projection.library?.playlists ?? []).filter((playlist) => playlist.name.toLowerCase() !== "unsorted")} selectedTracks={playlistPickerSelection.tracks} tracksById={tracksByIdForQueue} onArtwork={artworkFetcher} onPick={(playlist) => { const items = playlistPickerSelection.tracks; setPlaylistPickerSelection(null); addTracksToPlaylist(items, playlist); }} onCreateNew={() => { const items = playlistPickerSelection.tracks; setPlaylistPickerSelection(null); createPlaylist(items); }} onDismiss={() => setPlaylistPickerSelection(null)} />}
     {editTrack && <EditTrackDialog track={editTrack} busy={editTrackBusy} error={editTrackError} onClose={() => { if (!editTrackBusy) { setEditTrack(null); setEditTrackError(null); } }} onSubmit={(value) => { if (!bridge || !available) return; setEditTrackBusy(true); setEditTrackError(null); void bridge.editTrackMetadata(editTrack.id, value.artist, value.title).then(() => { setEditTrackBusy(false); setEditTrack(null); setCommandNotice(`Updated “${[value.artist, value.title].filter(Boolean).join(" — ")}”.`); }).catch((error: unknown) => { setEditTrackBusy(false); setEditTrackError(normalizeRuntimeCommandError(error)); }); }} />}
-    {confirmDialog && <ConfirmDialog title={confirmDialog.title} message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} danger={confirmDialog.danger} busy={confirmBusy} error={confirmError} onClose={() => { if (!confirmBusy) { setConfirmDialog(null); setConfirmError(null); } }} onConfirm={() => { setConfirmBusy(true); setConfirmError(null); try { confirmDialog.onConfirm(); setConfirmBusy(false); setConfirmDialog(null); } catch (error) { setConfirmBusy(false); setConfirmError(normalizeRuntimeCommandError(error)); } }} />}
+    {confirmDialog && <ConfirmDialog title={confirmDialog.title} message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} danger={confirmDialog.danger} busy={confirmBusy} error={confirmError} onClose={() => { if (!confirmBusy) { setConfirmDialog(null); setConfirmError(null); } }} onConfirm={() => { const request = confirmDialog; setConfirmBusy(true); setConfirmError(null); void Promise.resolve().then(() => request.onConfirm()).then(() => { setConfirmBusy(false); setConfirmDialog(null); }).catch((error: unknown) => { setConfirmBusy(false); setConfirmError(normalizeRuntimeCommandError(error)); }); }} />}
+    {finalCopyDelete && <FinalCopyDeleteDialog files={finalCopyDelete.files} verificationIncomplete={finalCopyDelete.verificationIncomplete} busy={finalCopyDeleteBusy} error={finalCopyDeleteError} onClose={() => { if (!finalCopyDeleteBusy) { setFinalCopyDelete(null); setFinalCopyDeleteError(null); } }} onConfirm={submitFinalCopyDelete} />}
     {playlistCreateRequest && <PlaylistDialog action="create" busy={playlistCreateBusy} error={playlistCreateError} onClose={() => { if (!playlistCreateBusy) { setPlaylistCreateRequest(null); setPlaylistCreateError(null); } }} onSubmit={(value) => submitCreatePlaylist(value.name ?? "")} />}
     {playlistUrlLoading && <PlaylistUrlLoadingDialog playlistName={playlistUrlLoading.name} onClose={() => { playlistUrlLoadSequence.current += 1; setPlaylistUrlLoading(null); }} />}
     {playlistUrlRequest && <PlaylistUrlDialog key={playlistUrlRequest.playlist.id} playlistName={playlistUrlRequest.playlist.name} initialUrls={playlistUrlRequest.urls} busy={playlistUrlBusy} error={playlistUrlError} onClose={() => { if (!playlistUrlBusy) { setPlaylistUrlRequest(null); setPlaylistUrlError(null); } }} onSubmit={submitPlaylistUrl} />}

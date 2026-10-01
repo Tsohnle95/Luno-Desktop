@@ -514,6 +514,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-dialog footer button.is-danger { background: var(--luno-red); color: #fff; }
 .luno-dialog footer button:disabled { opacity: .5; cursor: default; }
 .luno-dialog-error { color: #ff8b8b !important; }
+.luno-final-copy-backdrop { z-index: 2000; background: rgba(0,0,0,.82); }
+.luno-final-copy-dialog { width: min(560px, 100%); border: 2px solid var(--luno-red); box-shadow: 0 28px 90px rgba(0,0,0,.82); }
+.luno-final-copy-files { max-height: min(30vh, 240px); overflow: auto; margin: 12px 0; padding: 12px 12px 12px 32px; border-radius: 8px; background: rgba(0,0,0,.28); color: var(--luno-text); }
+.luno-final-copy-files li { padding: 3px 0; overflow-wrap: anywhere; }
+.luno-final-copy-explanation { padding-top: 10px; border-top: 1px solid var(--luno-border); }
+.luno-final-copy-dialog footer button:last-child { background: var(--luno-red); color: #fff; }
 .luno-dialog-check { display: flex !important; align-items: center; gap: 8px; color: var(--luno-text) !important; }
 .luno-dialog-check input { width: auto; margin: 0; }
 .luno-sync-log { max-height: min(55vh, 440px); overflow: auto; margin-top: 14px; }
