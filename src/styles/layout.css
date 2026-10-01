@@ -445,7 +445,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* NOTE: no transform on hover here — scaling promotes the button to its own
  * GPU compositing layer, which blanks sibling artwork in WKWebView. */
 .luno-transport button:hover:not(:disabled) { color: var(--luno-green-hover); }
+.luno-transport button[aria-pressed="false"] { color: var(--luno-text-2); }
 .luno-transport button[aria-pressed="true"] { color: var(--luno-green); }
+.luno-transport button:hover:not(:disabled)[aria-pressed="false"] { color: var(--luno-text); }
 .luno-transport .luno-transport-play {
   width: 44px; height: 44px; margin: 0 6px;
   display: inline-flex; align-items: center; justify-content: center;
