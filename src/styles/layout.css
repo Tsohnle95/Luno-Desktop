@@ -179,7 +179,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
  * child). Rubber-band overscroll is disabled so the list can never show
  * blank negative space. */
 .luno-track-scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: none; scrollbar-gutter: stable; position: relative; }
-.luno-hero { padding: 24px 28px 14px; background: linear-gradient(rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.42) 100%), var(--luno-scope-gradient); }
+.luno-hero { position: relative; padding: 24px 28px 14px; background: linear-gradient(rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.42) 100%), var(--luno-scope-gradient); }
 .luno-hero-row { display: flex; align-items: flex-end; gap: 20px; min-width: 0; }
 .luno-hero-cover {
   flex: 0 0 auto; width: clamp(110px, 15vw, 180px); aspect-ratio: 1 / 1;
@@ -191,15 +191,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-hero-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .luno-hero-cover > span > .luno-rec-art, .luno-hero-cover > span > .luno-artwork { width: 100%; height: 100%; }
 .luno-hero-cover-control { position: relative; flex: 0 0 auto; line-height: 0; }
+.luno-artwork-menu-control { position: absolute; z-index: 8; top: 14px; right: 20px; }
 .luno-artwork-menu-trigger {
-  position: absolute; z-index: 2; top: 7px; right: 7px; width: 30px; height: 30px;
-  display: grid; place-items: center; border: 0; border-radius: 7px; padding: 0;
+  display: grid; place-items: center; width: 34px; height: 34px;
+  border: 0; border-radius: 7px; padding: 0;
   color: var(--luno-text); background: rgba(0,0,0,.72); cursor: pointer;
-  opacity: 0; transition: opacity 120ms ease;
+  opacity: 0; pointer-events: none; transition: opacity 120ms ease;
 }
-.luno-hero-cover-control:hover .luno-artwork-menu-trigger,
-.luno-hero-cover-control:focus-within .luno-artwork-menu-trigger { opacity: 1; }
-.luno-artwork-menu { position: absolute; z-index: 5; top: 42px; right: 5px; width: max-content; max-width: 250px; padding: 5px; border: 1px solid var(--luno-border); border-radius: 8px; background: var(--luno-bg-3); box-shadow: 0 10px 30px rgba(0,0,0,.4); line-height: normal; }
+.luno-hero:hover .luno-artwork-menu-trigger,
+.luno-hero:focus-within .luno-artwork-menu-trigger,
+.luno-artwork-menu-control:focus-within .luno-artwork-menu-trigger { opacity: 1; pointer-events: auto; }
+.luno-artwork-menu { position: absolute; top: 40px; right: 0; width: max-content; max-width: 250px; padding: 5px; border: 1px solid var(--luno-border); border-radius: 8px; background: var(--luno-bg-3); box-shadow: 0 10px 30px rgba(0,0,0,.4); line-height: normal; }
 .luno-artwork-menu button { border: 0; border-radius: 5px; padding: 9px 11px; color: var(--luno-text); background: transparent; font-size: 12px; text-align: left; white-space: nowrap; cursor: pointer; }
 .luno-artwork-menu button:hover { background: var(--luno-bg-4); }
 .luno-hero-info { min-width: 0; padding-bottom: 4px; }
@@ -384,6 +386,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-artwork-scan { padding: 16px; border: 1px solid var(--luno-border); border-radius: 10px; background: var(--luno-bg-2); }
 .luno-artwork-scope-row { display: flex; align-items: center; gap: 10px; margin-top: 7px; }
 .luno-artwork-scope-row select { min-width: 0; flex: 1; }
+.luno-artwork-search-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; color: var(--luno-text-2); font-size: 12px; }
+.luno-artwork-search-actions > span { min-width: 0; overflow-wrap: anywhere; }
 .luno-artwork-note, .luno-artwork-source { margin: 10px 0 0; font-size: 12px; }
 .luno-artwork-status, .luno-artwork-error { margin: 14px 0; padding: 11px 13px; border-radius: 8px; background: var(--luno-bg-2); }
 .luno-artwork-error { color: var(--luno-red); }
@@ -410,6 +414,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (max-width: 760px) {
   .luno-artwork-workspace { grid-template-columns: minmax(0, 1fr); }
   .luno-artwork-scope-row { align-items: stretch; flex-direction: column; }
+  .luno-artwork-search-actions { align-items: stretch; flex-direction: column; }
+}
+@media (hover: none) {
+  .luno-artwork-menu-trigger { opacity: 1; pointer-events: auto; }
 }
 .luno-sync-review-settings-list article h3 { margin: 0 0 4px; font-size: 15px; }
 .luno-sync-review-settings-list article span { display: block; margin-top: 8px; font-size: 13px; }

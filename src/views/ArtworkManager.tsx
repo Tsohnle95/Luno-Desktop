@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ArtworkCandidate, LibrarySnapshot, Track } from "../shared/contracts";
 import type { Bridge } from "../app/bridge";
 
@@ -44,8 +44,15 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
   const [applying, setApplying] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const scanRequestId = useRef(0);
   const tracksById = useMemo(() => new Map((snapshot?.tracks ?? []).map((track) => [track.id, track])), [snapshot?.tracks]);
   const idsForScope = useMemo(() => [...new Set(playlistIds(snapshot, scope))], [snapshot, scope]);
+  const scopeTracks = useMemo(() => idsForScope.map((id) => tracksById.get(id)).filter((track): track is Track => !!track), [idsForScope, tracksById]);
+  const matchingScopeTracks = useMemo(() => {
+    const term = query.trim().toLocaleLowerCase();
+    if (!term) return scopeTracks;
+    return scopeTracks.filter((track) => `${track.artist ?? ""} ${track.title} ${track.album ?? ""}`.toLocaleLowerCase().includes(term));
+  }, [scopeTracks, query]);
   const missingTracks = useMemo(() => (missingIds ?? []).map((id) => tracksById.get(id)).filter((track): track is Track => !!track), [missingIds, tracksById]);
   const filteredMissing = useMemo(() => {
     const term = query.trim().toLocaleLowerCase();
@@ -54,38 +61,46 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
   }, [missingTracks, query]);
   const selectedTrack = selectedTrackId ? tracksById.get(selectedTrackId) : undefined;
 
-  useEffect(() => {
-    setScope(initialScope);
-    setMissingIds(null);
-    setSelectedTrackId(null);
-    selectedTrackIdRef.current = null;
-    setCandidates([]);
-    setSelectedCandidateId(null);
-    setQuery("");
-    setMessage(null);
-    setError(null);
-  }, [initialScope]);
-
-  const scan = async () => {
+  const scan = useCallback(async (trackIds: string[], label: string, replaceResults = false) => {
     if (!bridge) return;
+    const requestId = ++scanRequestId.current;
     setScanning(true);
     setError(null);
-    setMessage(null);
+    setMessage(`Checking ${trackIds.length} song${trackIds.length === 1 ? "" : "s"} in ${label}…`);
     setCandidates([]);
     setSelectedCandidateId(null);
     try {
-      const result = await bridge.missingArtworkTracks(idsForScope);
-      setMissingIds(result);
-      const nextTrackId = result.includes(selectedTrackIdRef.current ?? "") ? selectedTrackIdRef.current : result[0] ?? null;
+      const result = await bridge.missingArtworkTracks([...new Set(trackIds)]);
+      if (requestId !== scanRequestId.current) return;
+      const scannedIds = new Set(trackIds);
+      const nextMissingIds = replaceResults
+        ? result
+        : [...(missingIds ?? []).filter((id) => !scannedIds.has(id)), ...result];
+      setMissingIds(nextMissingIds);
+      const currentSelection = selectedTrackIdRef.current;
+      const nextTrackId = currentSelection && nextMissingIds.includes(currentSelection)
+        ? currentSelection
+        : nextMissingIds[0] ?? null;
       selectedTrackIdRef.current = nextTrackId;
       setSelectedTrackId(nextTrackId);
-      setMessage(result.length === 0 ? `No songs without embedded artwork in ${scopeName(snapshot, scope)}.` : `${result.length} song${result.length === 1 ? "" : "s"} without embedded artwork.`);
+      setMessage(result.length === 0
+        ? `No songs without embedded artwork among these ${trackIds.length} songs in ${label}.`
+        : `${result.length} song${result.length === 1 ? "" : "s"} without embedded artwork among these ${trackIds.length} scanned in ${label}.`);
     } catch (cause) {
+      if (requestId !== scanRequestId.current) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setScanning(false);
+      if (requestId === scanRequestId.current) setScanning(false);
     }
-  };
+  }, [bridge, missingIds]);
+
+  const autoScanKey = JSON.stringify([scope, idsForScope]);
+  const lastAutoScannedScope = useRef<string | null>(null);
+  useEffect(() => {
+    if (!bridge || !snapshot || snapshot.generation <= 0 || lastAutoScannedScope.current === autoScanKey) return;
+    lastAutoScannedScope.current = autoScanKey;
+    void scan(idsForScope, scopeName(snapshot, scope), true);
+  }, [autoScanKey, bridge, idsForScope, scan, scope, snapshot]);
 
   const search = async () => {
     if (!bridge || !selectedTrackId) return;
@@ -143,7 +158,7 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
       </div>
     </header>
     <section className="luno-artwork-scan" aria-label="Artwork scan">
-      <label htmlFor="artwork-scope">Scan</label>
+      <label htmlFor="artwork-scope">Artwork in</label>
       <div className="luno-artwork-scope-row">
         <select id="artwork-scope" value={scope} disabled={scanning || applying} onChange={(event) => {
           setScope(event.target.value);
@@ -160,9 +175,15 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
           {snapshot?.playlists.some((playlist) => playlist.name.toLowerCase() === "unsorted") && <option value="unsorted">Unsorted</option>}
           {selectablePlaylists.map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.name}</option>)}
         </select>
-        <button type="button" onClick={scan} disabled={!bridge || scanning || !snapshot} style={{ ...buttonStyle, opacity: !bridge || scanning || !snapshot ? 0.5 : 1 }}>{scanning ? "Scanning…" : "Scan for missing artwork"}</button>
+        <button type="button" onClick={() => scan(idsForScope, scopeName(snapshot, scope), true)} disabled={!bridge || scanning || !snapshot} style={{ ...secondaryButton, opacity: !bridge || scanning || !snapshot ? 0.5 : 1 }}>{scanning ? "Scanning…" : `Scan all ${idsForScope.length} songs`}</button>
       </div>
-      <p className="luno-artwork-note">The scan checks embedded audio artwork locally. Online search sends the selected song’s title and artist to MusicBrainz.</p>
+      <label htmlFor="artwork-filter" style={{ display: "block", marginTop: 16 }}>Find songs to scan</label>
+      <input id="artwork-filter" autoCorrect="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${scopeName(snapshot, scope)} by title or artist`} style={{ ...inputStyle, marginTop: 7 }} />
+      {query.trim() && <div className="luno-artwork-search-actions">
+        <span>{matchingScopeTracks.length} matching song{matchingScopeTracks.length === 1 ? "" : "s"}{matchingScopeTracks.length > 0 && matchingScopeTracks.length <= 3 ? ` · ${matchingScopeTracks.map((track) => track.title).join(", ")}` : ""}</span>
+        <button type="button" onClick={() => scan(matchingScopeTracks.map((track) => track.id), `search results in ${scopeName(snapshot, scope)}`)} disabled={!bridge || scanning || matchingScopeTracks.length === 0} style={{ ...buttonStyle, opacity: !bridge || scanning || matchingScopeTracks.length === 0 ? 0.5 : 1 }}>{scanning ? "Scanning…" : `Scan ${matchingScopeTracks.length} match${matchingScopeTracks.length === 1 ? "" : "es"}`}</button>
+      </div>}
+      <p className="luno-artwork-note">Opening this page scans the selected scope automatically. Search first to scan only matching songs, or rescan the whole scope. Artwork checks run locally; online search sends a selected song’s title and artist to MusicBrainz.</p>
     </section>
 
     {error && <p className="luno-artwork-error" role="alert">{error}</p>}
@@ -170,8 +191,7 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
 
     {missingIds !== null && missingTracks.length > 0 && <div className="luno-artwork-workspace">
       <section className="luno-artwork-missing-list" aria-label="Songs missing artwork">
-        <label htmlFor="artwork-filter">Find a song</label>
-        <input id="artwork-filter" autoCorrect="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Type a title or artist" style={inputStyle} />
+        <h2>Songs missing artwork <small>({filteredMissing.length} shown)</small></h2>
         <div role="listbox" aria-label="Missing artwork songs">
           {filteredMissing.map((track) => <button key={track.id} type="button" role="option" aria-selected={selectedTrackId === track.id} onClick={() => {
             selectedTrackIdRef.current = track.id;

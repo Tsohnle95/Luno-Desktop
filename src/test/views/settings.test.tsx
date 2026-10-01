@@ -32,23 +32,28 @@ describe("Settings library root", () => {
 });
 
 describe("Settings navigation rail", () => {
-  it("exposes home, app destinations, and every settings category as flat tabs", () => {
+  it("keeps the settings rail focused on settings and review destinations", () => {
     const html = renderToStaticMarkup(<SettingsView />);
     expect(html).toContain("Home");
-    expect(html).toContain("Recent Songs");
-    expect(html).toContain("Discover");
-    expect(html).toContain("Downloader");
-    expect(html).toContain("Error Log");
-    expect(html).toContain("Playback");
+    expect(html).toContain("Artwork");
+    expect(html).toContain("Sync Review");
+    expect(html).toContain("Library");
+    expect(html).toContain("Discovery");
     expect(html).toContain("Transfer");
-    expect(html).toContain("Troubleshooting");
+    expect(html).not.toContain("Recent Songs");
+    expect(html).not.toContain("Discover</button>");
+    expect(html).not.toContain("Downloader");
+    expect(html).not.toContain("Error Log");
+    expect(html).not.toContain("Playback");
+    expect(html).not.toContain("Downloads");
+    expect(html).not.toContain("Troubleshooting");
     expect(html).not.toContain("Go to");
     expect(html).not.toContain("Song Page");
     expect(html).toContain('aria-label="Settings"');
   });
 
   it("renders an embedded rail screen in place of the settings panels", () => {
-    const html = renderToStaticMarkup(<SettingsView screen={<div>Embedded screen</div>} activeScreen="recent" />);
+    const html = renderToStaticMarkup(<SettingsView screen={<div>Embedded screen</div>} activeScreen="artwork" />);
     expect(html).toContain("Embedded screen");
     expect(html).not.toContain("Storage &amp; Library");
     expect((html.match(/aria-current="true"/g) ?? []).length).toBe(1);

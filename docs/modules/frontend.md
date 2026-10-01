@@ -67,11 +67,12 @@ envelope shapes (`docs/modules/contracts.md`).
   `track_artwork` command as bounded data URLs; visible library rows request
   missing durations through `track_duration`, which probes on a blocking
   worker instead of extending every library scan.
-- ArtworkManager scans the selected local collection for missing embedded
-  covers and lets the user filter those tracks by title or artist. Provider
-  lookup is user-triggered for one selected track at a time; it renders
-  MusicBrainz/Cover Art Archive matches for explicit review before calling the
-  artwork-apply command. The playlist hero menu opens the manager at its scope.
+- ArtworkManager scans the selected local collection on entry and lists every
+  track without embedded artwork. Search filters that list and can scan only
+  matching tracks in the selected scope; provider lookup remains user-triggered
+  for one selected track and requires review before applying a
+  MusicBrainz/Cover Art Archive match. The playlist hero banner menu opens the
+  manager at its scope.
 - Favorite-only events update the matching projected track without advancing
   the scan generation, so visible rows keep valid duration probe results.
   Track maps depend on the current track array so favorites stay current in

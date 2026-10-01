@@ -320,18 +320,18 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
     <div ref={scrollRef} role="list" aria-label={`${scopeName} tracks`} className="luno-track-scroller" onScroll={handleScroll}>
       <div ref={anchorRef}>
         <header className="luno-hero">
+          {canOpenArtworkManager && <div className="luno-artwork-menu-control" ref={artworkMenuRef}>
+            <button className="luno-artwork-menu-trigger" type="button" aria-label="Artwork options" aria-expanded={artworkMenuOpen} title="Artwork options" onClick={() => setArtworkMenuOpen((open) => !open)}><IconMoreHorizontal size={18} /></button>
+            {artworkMenuOpen && <div className="luno-artwork-menu" role="menu"><button type="button" role="menuitem" onClick={() => { setArtworkMenuOpen(false); onOpenArtwork?.(selectedScope); }}>Find missing song artwork</button></div>}
+          </div>}
           <div className="luno-hero-row">
-            <div className="luno-hero-cover-control" ref={artworkMenuRef}>
+            <div className="luno-hero-cover-control">
               <PlaylistArtwork
                 className="luno-hero-cover"
                 tracks={covers}
                 artwork={coverArtwork}
                 emptyFallback={<span style={{ display: "grid", placeItems: "center", fontSize: 48, color: "rgba(255,255,255,0.55)" }}>♫</span>}
               />
-              {canOpenArtworkManager && <>
-                <button className="luno-artwork-menu-trigger" type="button" aria-label="Artwork options" aria-expanded={artworkMenuOpen} title="Artwork options" onClick={() => setArtworkMenuOpen((open) => !open)}><IconMoreHorizontal size={18} /></button>
-                {artworkMenuOpen && <div className="luno-artwork-menu" role="menu"><button type="button" role="menuitem" onClick={() => { setArtworkMenuOpen(false); onOpenArtwork?.(selectedScope); }}>Find missing song artwork</button></div>}
-              </>}
             </div>
             <div className="luno-hero-info">
               <p className="luno-hero-eyebrow">{eyebrow}</p>
