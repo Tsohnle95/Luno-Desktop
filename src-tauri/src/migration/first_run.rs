@@ -534,6 +534,7 @@ fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
         for name in [
             ".luno_config.json",
             ".luno_playlist_urls.json",
+            ".luno_playlist_sync_sources.json",
             ".luno_allowed_dups.json",
             ".luno_track_metadata.json",
             ".luno_video_index.json",
@@ -561,6 +562,7 @@ fn snapshot_legacy(p: &MigrationPaths) -> Result<PathBuf, MigrationError> {
         if let Some(root) = music_root.filter(|root| *root != p.legacy_root) {
             for name in [
                 ".luno_playlist_urls.json",
+                ".luno_playlist_sync_sources.json",
                 ".luno_allowed_dups.json",
                 ".luno_track_metadata.json",
                 ".luno_video_index.json",

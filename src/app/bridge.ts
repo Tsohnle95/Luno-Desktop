@@ -25,6 +25,7 @@ import {
   isPlaylistSyncCandidates,
   isPlaylistSyncSelection,
   isPlaylistSyncReviewSummary,
+  isPlaylistSyncSources,
 } from "../shared/contracts";
 import type { LibrarySnapshot } from "../shared/contracts";
 
@@ -111,7 +112,9 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
       selectLibraryRoot: (root: string) => send({ type: "select_library_root", payload: { root } }),
       createPlaylist: (name: string) => send({ type: "create_playlist", payload: { name } }),
       setPlaylistUrl: (playlist_id: PlaylistId, url: string | null) => send({ type: "set_playlist_url", payload: { playlist_id, url } }),
+      setPlaylistUrls: (playlist_id: PlaylistId, urls: string[]) => send({ type: "set_playlist_urls", payload: { playlist_id, urls } }),
       syncPlaylist: (playlist_id: PlaylistId) => send({ type: "sync_playlist", payload: { playlist_id } }),
+      playlistSyncSources: async (playlist_id: PlaylistId): Promise<string[]> => { const value = await send<unknown>({ type: "playlist_sync_sources", payload: { playlist_id } }); if (!isPlaylistSyncSources(value)) throw new Error("invalid playlist sync sources response"); return value.urls; },
       playlistSyncLog: (playlist_id: PlaylistId) => send<{ entries: { title: string; video_id: string | null; source_video_id?: string; at_ms: number; status: string; reason: string | null }[] }>({ type: "playlist_sync_log", payload: { playlist_id } }),
       playlistSyncReviewSummary: async (): Promise<PlaylistSyncReviewSummary[]> => { const value = await send<unknown>({ type: "playlist_sync_review_summary" }); if (!isPlaylistSyncReviewSummary(value)) throw new Error("invalid playlist sync review summary response"); return value.entries; },
       playlistSyncIssues: async (playlist_id: PlaylistId) => { const value = await send<unknown>({ type: "playlist_sync_issues", payload: { playlist_id } }); if (!isPlaylistSyncIssues(value)) throw new Error("invalid playlist sync issues response"); return value.entries as PlaylistSyncIssue[]; },

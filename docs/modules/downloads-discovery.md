@@ -152,9 +152,14 @@ What it does not own: library snapshots and promotion targets
   "Unknown artist". A failed probe degrades the filename only, never the
   download. `src/state/download_naming.ts` owns the shared naming/display
   policy.
-- A physical playlist may link to one canonical YouTube playlist URL. A sync
-  enumerates stable video IDs through the supervised yt-dlp boundary, skips
-  tracks already found anywhere under the library root, and also skips IDs in
+- A physical playlist may link to several canonical YouTube playlist URLs. A
+  sync enumerates each source in the saved order through the supervised yt-dlp
+  boundary, combines the entries, and keeps the first occurrence of each video
+  ID. It aborts before changing unresolved or review state if any source lookup
+  fails. The source list lives in the versioned
+  `.luno_playlist_sync_sources.json` sidecar; the legacy
+  `.luno_playlist_urls.json` map mirrors the first URL for older builds. Sync
+  skips tracks already found anywhere under the library root, and also skips IDs in
   that playlist's append-only `.downloaded_vids` success markers. Old
   `.sync_failed_vids` markers do not block an explicit retry. Each new item
   downloads sequentially as M4A into the selected playlist folder; its success

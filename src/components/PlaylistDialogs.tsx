@@ -198,25 +198,37 @@ export function PlaylistSyncReviewDialog({ playlistName, entries, loading, error
   </DialogFrame>;
 }
 
-export function PlaylistUrlDialog({ playlistName, initialUrl, busy = false, error = null, onClose, onSubmit }: {
+export function PlaylistUrlDialog({ playlistName, initialUrls, initialUrl, busy = false, error = null, onClose, onSubmit }: {
   playlistName: string;
+  initialUrls?: string[];
   initialUrl?: string | null;
   busy?: boolean;
   error?: string | null;
   onClose: () => void;
-  onSubmit: (url: string | null) => void;
+  onSubmit: (urls: string[]) => void;
 }) {
-  const [url, setUrl] = useState(initialUrl ?? "");
-  const normalized = url.trim();
-  return <DialogFrame title="YouTube playlist sync" description={`Link “${playlistName}” to a YouTube playlist. Sync downloads only songs Luno has not already seen.`} error={error} busy={busy} focusFirstInput onClose={onClose}>
-    <form onSubmit={(event) => { event.preventDefault(); if (normalized) onSubmit(normalized); }}>
-      <label>YouTube playlist URL<input autoFocus type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="https://www.youtube.com/playlist?list=…" value={url} onChange={(event) => setUrl(event.target.value)} required /></label>
+  const savedUrls = initialUrls ?? (initialUrl ? [initialUrl] : []);
+  const [urls, setUrls] = useState<string[]>(() => savedUrls.length > 0 ? [...savedUrls] : [""]);
+  const normalized = urls.map((url) => url.trim()).filter(Boolean);
+  return <DialogFrame title="YouTube playlist sync" description={`Add one or more YouTube playlists to “${playlistName}”. Sync combines their songs and skips duplicate video IDs.`} error={error} busy={busy} focusFirstInput onClose={onClose}>
+    <form onSubmit={(event) => { event.preventDefault(); if (normalized.length > 0) onSubmit(normalized); }}>
+      {urls.map((url, index) => <div className="luno-playlist-url-row" key={index}>
+        <label>YouTube playlist URL {urls.length > 1 ? index + 1 : ""}<input autoFocus={index === 0} type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="https://www.youtube.com/playlist?list=…" value={url} onChange={(event) => setUrls((current) => current.map((value, itemIndex) => itemIndex === index ? event.target.value : value))} /></label>
+        {urls.length > 1 && <button type="button" aria-label={`Remove playlist URL ${index + 1}`} title="Remove this link" disabled={busy} onClick={() => setUrls((current) => current.filter((_, itemIndex) => itemIndex !== index))}>×</button>}
+      </div>)}
+      <button type="button" className="luno-dialog-secondary" disabled={busy || urls.length >= 32} onClick={() => setUrls((current) => [...current, ""])}>Add another playlist link</button>
       <footer>
-        {initialUrl && <button className="is-danger" type="button" disabled={busy} onClick={() => onSubmit(null)}>Remove link</button>}
+        {savedUrls.length > 0 && <button className="is-danger" type="button" disabled={busy} onClick={() => onSubmit([])}>Remove all links</button>}
         <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
-        <button type="submit" disabled={busy || !normalized}>{busy ? "Saving…" : "Save link"}</button>
+        <button type="submit" disabled={busy || normalized.length === 0}>{busy ? "Saving…" : "Save links"}</button>
       </footer>
     </form>
+  </DialogFrame>;
+}
+
+export function PlaylistUrlLoadingDialog({ playlistName, onClose }: { playlistName: string; onClose: () => void }) {
+  return <DialogFrame title="YouTube playlist sync" description={`Loading saved links for “${playlistName}”…`} busy={false} onClose={onClose}>
+    <footer><button type="button" onClick={onClose}>Cancel</button></footer>
   </DialogFrame>;
 }
 

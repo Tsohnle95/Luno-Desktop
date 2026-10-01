@@ -60,7 +60,9 @@ export type Command =
   | { type: "select_library_root"; payload: { root: string } }
   | { type: "create_playlist"; payload: { name: string } }
   | { type: "set_playlist_url"; payload: { playlist_id: PlaylistId; url: string | null } }
+  | { type: "set_playlist_urls"; payload: { playlist_id: PlaylistId; urls: string[] } }
   | { type: "sync_playlist"; payload: { playlist_id: PlaylistId } }
+  | { type: "playlist_sync_sources"; payload: { playlist_id: PlaylistId } }
   | { type: "playlist_sync_log"; payload: { playlist_id: PlaylistId } }
   | { type: "playlist_sync_review_summary" }
   | { type: "playlist_sync_issues"; payload: { playlist_id: PlaylistId } }
@@ -184,7 +186,9 @@ function isCommand(v: unknown): v is Command {
     if (v.type === "select_library_root") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.root === "string" && v.payload.root.trim().length > 0 && Object.keys(v.payload).length === 1;
     if (v.type === "create_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.name) && Object.keys(v.payload).length === 1;
     if (v.type === "set_playlist_url") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && (v.payload.url === null || typeof v.payload.url === "string") && Object.keys(v.payload).length === 2;
+    if (v.type === "set_playlist_urls") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && Array.isArray(v.payload.urls) && v.payload.urls.length <= 32 && v.payload.urls.every((url) => nonEmptyId(url)) && Object.keys(v.payload).length === 2;
     if (v.type === "sync_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 1;
+    if (v.type === "playlist_sync_sources") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 1;
     if (v.type === "playlist_sync_log") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 1;
     if (v.type === "playlist_sync_issues") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 1;
     if (v.type === "playlist_sync_candidates") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.playlist_id) && nonEmptyId(v.payload.video_id) && Object.keys(v.payload).length === 2;
@@ -302,6 +306,9 @@ export function isPlaylistSyncReviewSummary(value: unknown): value is { entries:
   return object(value) && exact(value, ["entries"]) && Array.isArray(value.entries) && value.entries.every((entry) => object(entry)
     && exact(entry, ["playlist_id", "name", "url", "unresolved_count"]) && nonEmptyId(entry.playlist_id) && nonEmptyId(entry.name)
     && (entry.url === null || nonEmptyId(entry.url)) && safeInteger(entry.unresolved_count) && entry.unresolved_count >= 0);
+}
+export function isPlaylistSyncSources(value: unknown): value is { urls: string[] } {
+  return object(value) && exact(value, ["urls"]) && Array.isArray(value.urls) && value.urls.length <= 32 && value.urls.every(nonEmptyId);
 }
 export function isPlaylistSyncCandidates(value: unknown): value is PlaylistSyncCandidate[] {
   return Array.isArray(value) && value.every((candidate) => object(candidate)

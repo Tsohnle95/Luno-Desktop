@@ -76,10 +76,12 @@ transfer manifests (`docs/modules/contracts.md`).
   the successfully copied track as a favorite too; the original remains
   favorited.
 - Physical playlist-to-YouTube links are stored by `PlaylistService` in the
-  root-level `.luno_playlist_urls.json` map. Keys follow playlist names, writes
-  are atomic, rename/delete mutations keep the map aligned, and every scan
-  projects a stored link onto `Playlist.url`; URLs never determine filesystem
-  destinations.
+  versioned root-level `.luno_playlist_sync_sources.json` sidecar, keyed by
+  playlist name. `.luno_playlist_urls.json` remains an atomic first-link mirror
+  for older builds. Reads fall back to that legacy map for playlists not yet
+  present in the new sidecar; delete mutations clear both stores, and every
+  scan projects the first link onto `Playlist.url`. URLs never determine
+  filesystem destinations.
 - Track dates and persisted song metadata are stored in the root-level
   `.luno_track_metadata.json` sidecar, keyed by normalized paths relative to
   the music root. The first scan seeds `added_ms` from file mtime; later scans,

@@ -3,12 +3,24 @@
 use crate::library::index::{LibraryIndex, RefreshRequest};
 use crate::library::metadata::TrackMetadataStore;
 use crate::persistence::atomic_write::write_atomic;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 const URL_FILE: &str = ".luno_playlist_urls.json";
+const SYNC_SOURCES_FILE: &str = ".luno_playlist_sync_sources.json";
+const SYNC_SOURCES_VERSION: u8 = 1;
+static PLAYLIST_SOURCE_FILES_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlaylistSyncSourcesFile {
+    version: u8,
+    playlists: BTreeMap<String, Vec<String>>,
+}
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum MutationError {
@@ -50,18 +62,59 @@ impl PlaylistService {
     }
     pub fn delete(&self, name: &str, index: &mut LibraryIndex) -> Result<MutationResult<()>, MutationError> {
         let safe = sanitize_name(name).ok_or(MutationError::InvalidName)?;
+        let _sources_guard = PLAYLIST_SOURCE_FILES_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let path = self.playlist_path(&safe)?; fs::remove_dir_all(&path).map_err(|e| io_error(&path, e))?;
-        let mut urls = self.read_urls()?; if urls.remove(&safe).is_some() { self.write_urls(&urls)?; }
+        let mut sources = self.read_sync_sources()?;
+        let mut urls = self.read_urls()?;
+        if sources.playlists.remove(&safe).is_some() { self.write_sync_sources(&sources)?; }
+        if urls.remove(&safe).is_some() { self.write_urls(&urls)?; }
         Ok(self.result((), index))
     }
     pub fn set_url(&self, name: &str, url: Option<&str>, index: &mut LibraryIndex) -> Result<MutationResult<Option<String>>, MutationError> {
-        let safe = sanitize_name(name).ok_or(MutationError::InvalidName)?; self.check_name(&safe)?;
-        let value = url.map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
-        if let Some(ref value) = value { let Some((scheme, host)) = value.split_once("://") else { return Err(MutationError::InvalidUrl) }; if !matches!(scheme, "http" | "https") || host.is_empty() { return Err(MutationError::InvalidUrl); } }
-        let mut urls = self.read_urls()?; match &value { Some(v) => { urls.insert(safe, v.clone()); }, None => { urls.remove(&safe); } }
-        self.write_urls(&urls)?; Ok(self.result(value, index))
+        let values = url.map(str::trim).filter(|value| !value.is_empty()).map(|value| vec![value.to_owned()]).unwrap_or_default();
+        let result = self.set_urls(name, &values, index)?;
+        Ok(MutationResult { value: result.value.into_iter().next(), refresh: result.refresh, errors: result.errors })
     }
-    pub fn playlist_urls(&self) -> Result<BTreeMap<String, String>, MutationError> { self.read_urls() }
+    pub fn set_urls(&self, name: &str, values: &[String], index: &mut LibraryIndex) -> Result<MutationResult<Vec<String>>, MutationError> {
+        let safe = sanitize_name(name).ok_or(MutationError::InvalidName)?;
+        let _sources_guard = PLAYLIST_SOURCE_FILES_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        self.playlist_path(&safe)?;
+        let mut normalized = Vec::new();
+        for value in values.iter().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+            let Some((scheme, host)) = value.split_once("://") else { return Err(MutationError::InvalidUrl) };
+            if !matches!(scheme, "http" | "https") || host.is_empty() { return Err(MutationError::InvalidUrl); }
+            if !normalized.iter().any(|existing| existing == value) { normalized.push(value.to_owned()); }
+        }
+
+        let mut sources = self.read_sync_sources()?;
+        let mut legacy_urls = self.read_urls()?;
+        for (playlist, url) in legacy_urls.iter() {
+            sources.playlists.entry(playlist.clone()).or_insert_with(|| vec![url.clone()]);
+        }
+        sources.playlists.insert(safe.clone(), normalized.clone());
+        self.write_sync_sources(&sources)?;
+        match normalized.first() {
+            Some(first) => { legacy_urls.insert(safe, first.clone()); },
+            None => { legacy_urls.remove(&safe); },
+        }
+        self.write_urls(&legacy_urls)?;
+        Ok(self.result(normalized, index))
+    }
+    pub fn playlist_urls(&self) -> Result<BTreeMap<String, String>, MutationError> {
+        let mut urls = self.read_urls()?;
+        for (name, sources) in self.read_sync_sources()?.playlists {
+            match sources.first() {
+                Some(first) => { urls.insert(name, first.clone()); },
+                None => { urls.remove(&name); },
+            }
+        }
+        Ok(urls)
+    }
+    pub fn playlist_sync_sources(&self, name: &str) -> Result<Vec<String>, MutationError> {
+        let safe = sanitize_name(name).ok_or(MutationError::InvalidName)?; self.check_name(&safe)?;
+        if let Some(sources) = self.read_sync_sources()?.playlists.get(&safe) { return Ok(sources.clone()); }
+        Ok(self.read_urls()?.get(&safe).cloned().into_iter().collect())
+    }
     pub fn dump(&self, source: &str, destination: &str, index: &mut LibraryIndex) -> Result<MutationResult<CopyResult>, MutationError> {
         let source_path = self.playlist_path(source)?; let destination_path = self.playlist_path(destination)?;
         if source_path == destination_path { return Err(MutationError::Collision(destination.to_owned())); }
@@ -138,6 +191,19 @@ impl PlaylistService {
     fn result_with_errors<T>(&self, value: T, errors: Vec<MutationError>, index: &mut LibraryIndex) -> MutationResult<T> { MutationResult { value, errors, refresh: index.request_refresh() } }
     fn read_urls(&self) -> Result<BTreeMap<String, String>, MutationError> { let path = self.root.join(URL_FILE); if !path.exists() { return Ok(BTreeMap::new()); } serde_json::from_slice(&fs::read(&path).map_err(|e| io_error(&path, e))?).map_err(|e| io_error(&path, io::Error::other(e))) }
     fn write_urls(&self, urls: &BTreeMap<String, String>) -> Result<(), MutationError> { let path = self.root.join(URL_FILE); let bytes = serde_json::to_vec_pretty(urls).map_err(io::Error::other).map_err(|e| io_error(&path, e))?; write_atomic(&path, &bytes).map(|_| ()).map_err(|e| io_error(&path, e)) }
+    fn read_sync_sources(&self) -> Result<PlaylistSyncSourcesFile, MutationError> {
+        let path = self.root.join(SYNC_SOURCES_FILE);
+        if !path.exists() { return Ok(PlaylistSyncSourcesFile { version: SYNC_SOURCES_VERSION, playlists: BTreeMap::new() }); }
+        let value: PlaylistSyncSourcesFile = serde_json::from_slice(&fs::read(&path).map_err(|e| io_error(&path, e))?)
+            .map_err(|e| io_error(&path, io::Error::other(e)))?;
+        if value.version != SYNC_SOURCES_VERSION { return Err(io_error(&path, io::Error::other("unsupported playlist sync source file version"))); }
+        Ok(value)
+    }
+    fn write_sync_sources(&self, sources: &PlaylistSyncSourcesFile) -> Result<(), MutationError> {
+        let path = self.root.join(SYNC_SOURCES_FILE);
+        let bytes = serde_json::to_vec_pretty(sources).map_err(io::Error::other).map_err(|e| io_error(&path, e))?;
+        write_atomic(&path, &bytes).map(|_| ()).map_err(|e| io_error(&path, e))
+    }
 }
 
 fn sanitize_name(name: &str) -> Option<String> { let clean: String = name.chars().filter(|c| !c.is_control() && !"<>:\"/\\|?*".contains(*c)).collect(); let clean = clean.trim().trim_end_matches('.').trim().to_owned(); (!clean.is_empty() && clean != "." && clean != "..").then_some(clean) }

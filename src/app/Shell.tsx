@@ -27,7 +27,7 @@ import { PlaylistPicker } from "../components/PlaylistPicker";
 import { PlaylistArtwork } from "../components/PlaylistArtwork";
 import { EditTrackDialog } from "../components/EditTrackDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { PlaylistDialog, PlaylistUrlDialog, PlaylistSyncAuthDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog, type PlaylistSyncCandidateLookup, type PlaylistSyncLogEntry } from "../components/PlaylistDialogs";
+import { PlaylistDialog, PlaylistUrlDialog, PlaylistUrlLoadingDialog, PlaylistSyncAuthDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog, type PlaylistSyncCandidateLookup, type PlaylistSyncLogEntry } from "../components/PlaylistDialogs";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
 import { IconClose, IconDownload, IconHeart, IconHome, IconLibrary, IconMusicNote, IconPlus, IconSearch, IconUser } from "../components/icons";
@@ -221,7 +221,9 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [playlistCreateRequest, setPlaylistCreateRequest] = useState<{ tracks: Track[]; onCreated?: (name: string) => void } | null>(null);
   const [playlistCreateBusy, setPlaylistCreateBusy] = useState(false);
   const [playlistCreateError, setPlaylistCreateError] = useState<string | null>(null);
-  const [playlistUrlRequest, setPlaylistUrlRequest] = useState<Playlist | null>(null);
+  const [playlistUrlRequest, setPlaylistUrlRequest] = useState<{ playlist: Playlist; urls: string[] } | null>(null);
+  const [playlistUrlLoading, setPlaylistUrlLoading] = useState<Playlist | null>(null);
+  const playlistUrlLoadSequence = useRef(0);
   const [playlistUrlBusy, setPlaylistUrlBusy] = useState(false);
   const [playlistUrlError, setPlaylistUrlError] = useState<string | null>(null);
   const [playlistSyncAuthRequest, setPlaylistSyncAuthRequest] = useState<Playlist | null>(null);
@@ -390,17 +392,34 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       })
       .catch((error: unknown) => { setPlaylistCreateBusy(false); setPlaylistCreateError(normalizeRuntimeCommandError(error)); });
   };
-  const submitPlaylistUrl = (url: string | null) => {
+  const openPlaylistUrlEditor = (playlist: Playlist) => {
+    setContextMenu(null);
+    setPlaylistUrlError(null);
+    setPlaylistUrlRequest(null);
+    if (!bridge) {
+      setCommandNotice("Playlist links cannot be loaded until the backend is connected.");
+      return;
+    }
+    const sequence = ++playlistUrlLoadSequence.current;
+    setPlaylistUrlLoading(playlist);
+    void bridge.playlistSyncSources(playlist.id)
+      .then((urls) => { if (playlistUrlLoadSequence.current === sequence) setPlaylistUrlRequest({ playlist, urls }); })
+      .catch((error: unknown) => { if (playlistUrlLoadSequence.current === sequence) setCommandNotice(`Could not load playlist links: ${normalizeRuntimeCommandError(error)}`); })
+      .finally(() => { if (playlistUrlLoadSequence.current === sequence) setPlaylistUrlLoading(null); });
+  };
+  const submitPlaylistUrl = (urls: string[]) => {
     if (!bridge || !playlistUrlRequest) return;
-    const playlist = playlistUrlRequest;
+    const { playlist } = playlistUrlRequest;
     setPlaylistUrlBusy(true);
     setPlaylistUrlError(null);
-    void bridge.setPlaylistUrl(playlist.id, url)
+    void bridge.setPlaylistUrls(playlist.id, urls)
       .then(() => {
         setPlaylistUrlBusy(false);
         setPlaylistUrlRequest(null);
         setCommandError(null);
-        setCommandNotice(url ? `Linked “${playlist.name}” to YouTube.` : `Removed the YouTube link from “${playlist.name}”.`);
+        setCommandNotice(urls.length > 0
+          ? `Linked “${playlist.name}” to ${urls.length} YouTube ${urls.length === 1 ? "playlist" : "playlists"}.`
+          : `Removed all YouTube links from “${playlist.name}”.`);
       })
       .catch((error: unknown) => { setPlaylistUrlBusy(false); setPlaylistUrlError(normalizeRuntimeCommandError(error)); });
   };
@@ -1507,7 +1526,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <button role="menuitem" type="button" disabled={contextMenu.playlist.ordered_track_ids.length === 0} onClick={() => { createPlaylist(playlistTracks(projection.library, contextMenu.playlist!)); setContextMenu(null); }}>Add all to new playlist…</button>
         <button role="menuitem" type="button" onClick={() => { createPlaylist(); setContextMenu(null); }}>Create new playlist…</button>
         <hr />
-        <button role="menuitem" type="button" onClick={() => { setPlaylistUrlError(null); setPlaylistUrlRequest(contextMenu.playlist!); setContextMenu(null); }}>{contextMenu.playlist.url ? "Edit YouTube playlist link…" : "Add YouTube playlist link…"}</button>
+        <button role="menuitem" type="button" onClick={() => openPlaylistUrlEditor(contextMenu.playlist!)}>{contextMenu.playlist.url ? "Edit YouTube playlist links…" : "Add YouTube playlist links…"}</button>
         <button role="menuitem" type="button" disabled={!contextMenu.playlist.url || activePlaylistSync !== null} title={contextMenu.playlist.url ? undefined : "Add a YouTube playlist link first"} onClick={() => { syncPlaylist(contextMenu.playlist!); setContextMenu(null); }}>Sync playlist</button>
         <button role="menuitem" type="button" disabled={!contextMenu.playlist.url || activePlaylistSync !== null} title={contextMenu.playlist.url ? undefined : "Add a YouTube playlist link first"} onClick={() => { openPlaylistSyncReview(contextMenu.playlist!); setContextMenu(null); }}>Review unavailable songs…</button>
         <button role="menuitem" type="button" onClick={() => { openPlaylistSyncLog(contextMenu.playlist!); setContextMenu(null); }}>Log</button>
@@ -1520,7 +1539,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     {editTrack && <EditTrackDialog track={editTrack} busy={editTrackBusy} error={editTrackError} onClose={() => { if (!editTrackBusy) { setEditTrack(null); setEditTrackError(null); } }} onSubmit={(value) => { if (!bridge || !available) return; setEditTrackBusy(true); setEditTrackError(null); void bridge.editTrackMetadata(editTrack.id, value.artist, value.title).then(() => { setEditTrackBusy(false); setEditTrack(null); setCommandNotice(`Updated “${[value.artist, value.title].filter(Boolean).join(" — ")}”.`); }).catch((error: unknown) => { setEditTrackBusy(false); setEditTrackError(normalizeRuntimeCommandError(error)); }); }} />}
     {confirmDialog && <ConfirmDialog title={confirmDialog.title} message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} danger={confirmDialog.danger} busy={confirmBusy} error={confirmError} onClose={() => { if (!confirmBusy) { setConfirmDialog(null); setConfirmError(null); } }} onConfirm={() => { setConfirmBusy(true); setConfirmError(null); try { confirmDialog.onConfirm(); setConfirmBusy(false); setConfirmDialog(null); } catch (error) { setConfirmBusy(false); setConfirmError(normalizeRuntimeCommandError(error)); } }} />}
     {playlistCreateRequest && <PlaylistDialog action="create" busy={playlistCreateBusy} error={playlistCreateError} onClose={() => { if (!playlistCreateBusy) { setPlaylistCreateRequest(null); setPlaylistCreateError(null); } }} onSubmit={(value) => submitCreatePlaylist(value.name ?? "")} />}
-    {playlistUrlRequest && <PlaylistUrlDialog playlistName={playlistUrlRequest.name} initialUrl={playlistUrlRequest.url} busy={playlistUrlBusy} error={playlistUrlError} onClose={() => { if (!playlistUrlBusy) { setPlaylistUrlRequest(null); setPlaylistUrlError(null); } }} onSubmit={submitPlaylistUrl} />}
+    {playlistUrlLoading && <PlaylistUrlLoadingDialog playlistName={playlistUrlLoading.name} onClose={() => { playlistUrlLoadSequence.current += 1; setPlaylistUrlLoading(null); }} />}
+    {playlistUrlRequest && <PlaylistUrlDialog key={playlistUrlRequest.playlist.id} playlistName={playlistUrlRequest.playlist.name} initialUrls={playlistUrlRequest.urls} busy={playlistUrlBusy} error={playlistUrlError} onClose={() => { if (!playlistUrlBusy) { setPlaylistUrlRequest(null); setPlaylistUrlError(null); } }} onSubmit={submitPlaylistUrl} />}
     {playlistSyncAuthRequest && <PlaylistSyncAuthDialog playlistName={playlistSyncAuthRequest.name} initialBrowser={settings.youtube_cookies_browser ?? "none"} busy={playlistSyncAuthBusy} error={playlistSyncAuthError} onClose={() => { if (!playlistSyncAuthBusy) { setPlaylistSyncAuthRequest(null); setPlaylistSyncAuthError(null); } }} onSubmit={submitPlaylistSyncAuth} />}
     {playlistSyncLog && <PlaylistSyncLogDialog playlistName={playlistSyncLog.name} entries={playlistSyncLog.entries} loading={playlistSyncLog.loading} error={playlistSyncLog.error} onClose={() => setPlaylistSyncLog(null)} />}
     {playlistSyncErrors && <PlaylistSyncErrorsDialog playlistName={playlistSyncErrors.name} entries={playlistSyncErrors.entries} loading={playlistSyncErrors.loading} error={playlistSyncErrors.error} onClose={() => setPlaylistSyncErrors(null)} />}

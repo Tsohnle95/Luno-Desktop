@@ -493,6 +493,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .luno-dialog p { color: var(--luno-text-2); line-height: 1.5; }
 .luno-dialog label { display: block; margin: 12px 0; color: var(--luno-text-2); font-size: 13px; }
+.luno-playlist-url-row { display: flex; align-items: end; gap: 8px; }
+.luno-playlist-url-row label { flex: 1; min-width: 0; }
+.luno-playlist-url-row > button, .luno-dialog-secondary { border: 0; border-radius: var(--luno-radius); padding: 9px 12px; color: var(--luno-text); background: var(--luno-bg-3); cursor: pointer; }
+.luno-playlist-url-row > button { width: 34px; height: 36px; padding: 0; font-size: 18px; }
+.luno-dialog-secondary { margin-top: 2px; font-weight: 700; }
+.luno-playlist-url-row > button:hover, .luno-dialog-secondary:hover { background: var(--luno-bg-4); }
+.luno-playlist-url-row > button:disabled, .luno-dialog-secondary:disabled { opacity: .5; cursor: default; }
 .luno-dialog input:not([type="checkbox"]), .luno-dialog select {
   display: block; width: 100%; margin-top: 6px; padding: 10px 12px;
   color: var(--luno-text); background: var(--luno-bg-3);

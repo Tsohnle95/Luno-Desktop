@@ -272,7 +272,7 @@ fn safe_file(path: &Path) -> bool {
 }
 
 fn has_legacy_files(root: &Path, recursive: bool) -> bool {
-    if [".luno_config.json", ".luno_playlist_urls.json", ".luno_allowed_dups.json"].iter().any(|name| has_data_file(&root.join(name))) { return true; }
+    if [".luno_config.json", ".luno_playlist_urls.json", ".luno_playlist_sync_sources.json", ".luno_allowed_dups.json"].iter().any(|name| has_data_file(&root.join(name))) { return true; }
     if recursive { marker_files(root).map(|files| files.into_iter().any(|path| has_data_file(&path))).unwrap_or(true) }
     else { [".downloaded_vids", ".sync_failed_vids", ".downloaded.txt"].iter().any(|name| has_data_file(&root.join(name))) }
 }

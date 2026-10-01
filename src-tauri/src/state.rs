@@ -6104,7 +6104,9 @@ impl AppState {
             }
             Command::CreatePlaylist { name } => self.create_playlist(&name),
             Command::SetPlaylistUrl { playlist_id, url } => self.set_playlist_url(&playlist_id, url.as_deref()),
+            Command::SetPlaylistUrls { playlist_id, urls } => self.set_playlist_urls(&playlist_id, &urls),
             Command::SyncPlaylist { playlist_id } => self.sync_playlist(&playlist_id),
+            Command::PlaylistSyncSources { playlist_id } => self.playlist_sync_sources(&playlist_id),
             Command::PlaylistSyncLog { playlist_id } => self.playlist_sync_log(&playlist_id),
             Command::PlaylistSyncReviewSummary => self.playlist_sync_review_summary(),
             Command::PlaylistSyncIssues { playlist_id } => self.playlist_sync_issues(&playlist_id),
@@ -6640,13 +6642,32 @@ impl AppState {
         Ok(serde_json::json!({ "playlist_id": playlist_id, "url": normalized, "generation": generation }))
     }
 
+    fn set_playlist_urls(&self, playlist_id: &PlaylistId, urls: &[String]) -> Result<Value, ContractError> {
+        if urls.len() > 32 { return Err(ContractError::invalid("a playlist can have at most 32 YouTube sources")); }
+        let name = self.playlist_name(playlist_id)?;
+        let normalized = urls.iter().map(|url| {
+            crate::download::sync::playlist_url(url).ok_or_else(|| ContractError::invalid("enter a valid YouTube playlist URL"))
+        }).collect::<Result<Vec<_>, _>>()?;
+        let service = crate::library::mutations::PlaylistService::new(self.playlist_mutation_root()?);
+        let mut index = crate::library::index::LibraryIndex::default();
+        let sources = service.set_urls(&name, &normalized, &mut index).map_err(playlist_mutation_error)?.value;
+        let generation = self.schedule_mutation_scan()?;
+        Ok(serde_json::json!({ "playlist_id": playlist_id, "urls": sources, "generation": generation }))
+    }
+
+    fn playlist_sync_sources(&self, playlist_id: &PlaylistId) -> Result<Value, ContractError> {
+        let name = self.playlist_name(playlist_id)?;
+        let service = crate::library::mutations::PlaylistService::new(self.playlist_mutation_root()?);
+        let urls = service.playlist_sync_sources(&name).map_err(playlist_mutation_error)?;
+        Ok(serde_json::json!({ "urls": urls }))
+    }
+
     fn sync_playlist(&self, playlist_id: &PlaylistId) -> Result<Value, ContractError> {
-        let (name, url) = self.library.lock().unwrap_or_else(|e| e.into_inner()).playlists.iter()
-            .find(|playlist| &playlist.id == playlist_id)
-            .map(|playlist| (playlist.name.clone(), playlist.url.clone()))
-            .ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "playlist not found".into(), retryable: false })?;
-        let url = url.ok_or_else(|| ContractError::invalid("add a YouTube playlist URL before syncing"))?;
+        let name = self.playlist_name(playlist_id)?;
         let root = self.playlist_mutation_root()?;
+        let service = crate::library::mutations::PlaylistService::new(&root);
+        let urls = service.playlist_sync_sources(&name).map_err(playlist_mutation_error)?;
+        if urls.is_empty() { return Err(ContractError::invalid("add a YouTube playlist URL before syncing")); }
         let destination = std::fs::canonicalize(root.join(&name)).map_err(|_| ContractError { code: ErrorCode::NotFound, message: "playlist folder is unavailable".into(), retryable: false })?;
         if !destination.starts_with(&root) { return Err(ContractError::invalid("playlist destination is unsafe")); }
         let helper = self.bundle_helper.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -6668,7 +6689,20 @@ impl AppState {
             let _active = active;
             state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(0.0), None);
             let outcome = (|| -> Result<(usize, usize, Option<String>), String> {
-                let entries = crate::download::search::playlist_entries_with_browser_fallback(&state.supervisor, &ytdlp, &url, cookies_browser.as_deref(), &token)?;
+                let mut entries = Vec::new();
+                let mut seen_video_ids = std::collections::HashSet::new();
+                for (source_index, url) in urls.iter().enumerate() {
+                    let source_entries = crate::download::search::playlist_entries_with_browser_fallback(&state.supervisor, &ytdlp, url, cookies_browser.as_deref(), &token)
+                        .map_err(|error| if error.starts_with("YouTube could not access this playlist") {
+                            format!("{error} (source {})", source_index + 1)
+                        } else {
+                            format!("playlist source {} lookup failed: {error}", source_index + 1)
+                        })?;
+                    for entry in source_entries {
+                        if entry.id.as_ref().is_some_and(|id| !seen_video_ids.insert(id.clone())) { continue; }
+                        entries.push(entry);
+                    }
+                }
                 let mut sync_state = crate::download::sync::PlaylistSyncState::load(&destination)?;
                 let mut review_state = crate::download::sync::PlaylistSyncReviewState::load(&destination)?;
                 let mut markers = crate::download::markers::Markers::load(&destination);

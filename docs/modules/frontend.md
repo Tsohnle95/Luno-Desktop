@@ -98,6 +98,9 @@ envelope shapes (`docs/modules/contracts.md`).
   the former scan icon or selected-count badge.
 - The transient unavailable-playlist notice can be dismissed independently of
   the persistent Settings → Sync Review destination.
+- Playlist URL editing loads the saved source list before mounting the form and
+  submits the full list together, so adding or removing one link cannot
+  overwrite another link with stale UI state.
 - Video element behavior is CSS-driven; fullscreen toggles must not call
   `window.setFullscreen()` (blacks out WKWebView over the hide
   transition).
