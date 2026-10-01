@@ -74,12 +74,12 @@ describe("typed IPC bridge and projection", () => {
   });
 
   it("only targets the matching library snapshot track for footer favorites", () => {
-    const saved: Track = { id: "saved-track", path: "/music/Saved.mp3", title: "Saved", artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite: true, provider: null };
+    const saved: Track = { id: "saved-track", path: null, title: "Saved", artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite: true, provider: null };
     const preview: Track = { ...saved, id: previewKey("Artist", "Preview 🎵"), path: null, title: "Preview 🎵", favorite: false };
     const libraryTracks = new Map([[saved.id, saved]]);
     expect(libraryFavoriteTarget(saved, libraryTracks)).toBe(saved);
     expect(libraryFavoriteTarget(preview, libraryTracks)).toBeNull();
-    expect(libraryFavoriteTarget({ ...preview, id: saved.id }, libraryTracks)).toBeNull();
+    expect(libraryFavoriteTarget({ ...preview, id: saved.id }, libraryTracks)).toBe(saved);
   });
 
   it("passes Gate 5 fixture roots to the native command without changing no-arg calls", async () => {

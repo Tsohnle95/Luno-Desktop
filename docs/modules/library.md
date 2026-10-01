@@ -93,6 +93,10 @@ transfer manifests (`docs/modules/contracts.md`).
   snapshots. When a track is copied into a playlist, a favorite source marks
   the successfully copied track as a favorite too; the original remains
   favorited.
+- A favorite toggle publishes a targeted `track_favorite_changed` event at
+  the current library scan generation. It does not advance the scan epoch;
+  scans reconcile favorite flags from the latest path-based store before
+  replacing the snapshot.
 - Physical playlist-to-YouTube links are stored by `PlaylistService` in the
   versioned root-level `.luno_playlist_sync_sources.json` sidecar, keyed by
   playlist name. `.luno_playlist_urls.json` remains an atomic first-link mirror

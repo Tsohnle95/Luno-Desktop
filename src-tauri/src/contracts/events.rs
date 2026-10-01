@@ -327,6 +327,10 @@ pub enum Event {
         root_index: usize,
         status: RootStatus,
     },
+    TrackFavoriteChanged {
+        track_id: TrackId,
+        favorite: bool,
+    },
     PlaybackSnapshot {
         snapshot: PlaybackSnapshot,
     },

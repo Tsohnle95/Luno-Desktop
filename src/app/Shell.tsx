@@ -140,9 +140,8 @@ export function playbackDisplayTrack(discoverEnabled: boolean, discoverCurrent: 
 }
 
 export function libraryFavoriteTarget(displayed: Track | null, libraryTracks: ReadonlyMap<string, Track>): Track | null {
-  if (!displayed?.path) return null;
-  const libraryTrack = libraryTracks.get(displayed.id);
-  return libraryTrack?.path ? libraryTrack : null;
+  if (!displayed) return null;
+  return libraryTracks.get(displayed.id) ?? null;
 }
 
 export function recommendationTrackMap(items: Recommendation[]): Map<string, Track> {
@@ -418,7 +417,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     event.preventDefault(); event.stopPropagation();
     // Recommendation/preview rows live outside the library; edit/delete only
     // apply to real library files, so flag membership for the menu.
-    const libraryTrack = item.path ? projection.library?.tracks.find((track) => track.id === item.id) ?? null : null;
+    const libraryTrack = projection.library?.tracks.find((track) => track.id === item.id) ?? null;
     setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 350)), track: libraryTrack ?? item, libraryTrack: !!libraryTrack });
   };
   const cleanPlaylistName = (value: string) => value.trim().replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").slice(0, 96);
@@ -901,14 +900,13 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   if (track) lastLibraryTrackRef.current = track;
   const seedTrack = track ?? lastLibraryTrackRef.current;
   const tracks = projection.library?.tracks ?? [];
-  const tracksKey = `${projection.library?.generation ?? 0}`;
   // Fast O(1) track lookup — the previous `tracks.find` per queue entry was
   // O(Q·N) and caused jank with 4k-track queues on every queue change.
   const tracksByIdForQueue = useMemo(() => {
     const map = new Map<string, Track>();
     for (const t of tracks) map.set(t.id, t);
     return map;
-  }, [tracksKey]);
+  }, [tracks]);
   // Keep queue referentially stable across heartbeats: only recompute when the
   // actual queue content changes, not on every position tick. Avoid
   // `queue.join` for large queues (4k ids → ~150 KB string alloc per render).
@@ -1041,8 +1039,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // backend queue instead of shifting up.
   const queueTracks = useMemo(() => {
     const prev = queueVersion.current;
-    // Cache on BOTH the queue content AND the resolver maps: a library
-    // generation change (favorite/rescan) or recommendations arriving after
+    // Cache on BOTH the queue content AND the resolver maps: a library track
+    // update (favorite/rescan) or recommendations arriving after
     // the queue must recompute, or rows stay stale ("Unavailable track",
     // missing favorite star) until the queue itself changes.
     if (prev.queue.length === playbackQueue.length && prev.queue.every((v, i) => v === playbackQueue[i])
@@ -1259,12 +1257,12 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     const map: Record<string, Track> = {};
     for (const item of tracks) map[item.id] = item;
     return map;
-  }, [tracksKey]);
+  }, [tracks]);
   // Made-for-you: deterministic sample keyed to catalogue membership (same
   // policy as mobile) — stable across re-renders, reshuffled when tracks are
   // added or removed.
-  const madeForYouTracks = useMemo(() => madeForYouIds(Object.keys(tracksById), 50).map((id) => tracksById[id]).filter((item): item is Track => !!item), [tracksKey]);
-  const popularTracks = useMemo(() => popularTrackIds(playCounts, 20).map((id) => tracksById[id]).filter((item): item is Track => !!item), [playCounts, tracksKey]);
+  const madeForYouTracks = useMemo(() => madeForYouIds(Object.keys(tracksById), 50).map((id) => tracksById[id]).filter((item): item is Track => !!item), [tracksById]);
+  const popularTracks = useMemo(() => popularTrackIds(playCounts, 20).map((id) => tracksById[id]).filter((item): item is Track => !!item), [playCounts, tracksById]);
   const popularPlaylists = useMemo(() => (projection.library?.playlists ?? [])
     .map((playlist) => ({ playlist, plays: playlist.ordered_track_ids.reduce((sum, id) => sum + (playCounts[id] ?? 0), 0) }))
     .filter((entry) => entry.plays > 0)
@@ -1278,7 +1276,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       if (item && !seen.has(item.id)) { seen.add(item.id); resolved.push(item); }
     }
     return resolved.slice(0, 50);
-  }, [downloadJournal, tracksKey]);
+  }, [downloadJournal, tracksById]);
 
   // ---- Sidebar ("Your Library") ----
   const sidebarEntries = useMemo(() => buildSidebarEntries(projection.library, sidebarChip), [projection.library, sidebarChip]);

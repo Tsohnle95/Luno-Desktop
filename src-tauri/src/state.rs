@@ -5403,6 +5403,15 @@ impl AppState {
     fn publish_one_locked(&self, envelope: EventEnvelope) {
         if matches!(&envelope.event, Event::LibrarySnapshot { .. }) {
             *self.latest_snapshot.lock().unwrap_or_else(|e| e.into_inner()) = Some(envelope.clone());
+        } else if let Event::TrackFavoriteChanged { track_id, favorite } = &envelope.event {
+            let mut latest = self.latest_snapshot.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(snapshot_envelope) = latest.as_mut().filter(|snapshot| snapshot.generation == envelope.generation) {
+                if let Event::LibrarySnapshot { snapshot } = &mut snapshot_envelope.event {
+                    if let Some(track) = snapshot.tracks.iter_mut().find(|track| track.id == *track_id) {
+                        track.favorite = *favorite;
+                    }
+                }
+            }
         }
         if matches!(&envelope.event, Event::Shutdown { .. }) {
             *self.latest_control.lock().unwrap_or_else(|e| e.into_inner()) = Some(envelope.clone());
@@ -5648,8 +5657,13 @@ impl AppState {
             error.job_id = Some(JobId("library-scan".into()));
             self.publish(error);
         }
-        let snapshot = self.replace_library_with_metadata(generation, outcome.playlists, &complete_roots);
-        let mut event = self.event(generation, Event::LibrarySnapshot { snapshot });
+        let _ = self.replace_library_with_metadata(generation, outcome.playlists, &complete_roots);
+        // A favorite can change after the scan commits but before this event
+        // is queued. Read and publish the current snapshot while holding the
+        // library lock so the later event cannot restore an older favorite.
+        let library = self.library.lock().unwrap_or_else(|e| e.into_inner());
+        let snapshot = library.clone();
+        let mut event = self.event(snapshot.generation, Event::LibrarySnapshot { snapshot });
         event.job_id = Some(JobId("library-scan".into()));
         self.publish(event);
     }
@@ -5793,7 +5807,7 @@ impl AppState {
                 ordered_track_ids: ids,
             });
         }
-        let snapshot = LibrarySnapshot {
+        let mut snapshot = LibrarySnapshot {
             version: CONTRACT_VERSION,
             generation,
             tracks,
@@ -5810,17 +5824,20 @@ impl AppState {
                 }
             }
         }
+        // Reconcile favorite flags under the same lock used by favorite
+        // toggles. A scan that began before a toggle must publish the latest
+        // saved state, even if it read track metadata before the toggle.
+        let mut favorites = self.favorites.lock().unwrap_or_else(|e| e.into_inner());
+        for track in &mut snapshot.tracks {
+            if let Some(path) = rebuilt.get(&track.id) {
+                track.favorite = favorites.contains(path);
+            }
+        }
+        let scanned = rebuilt.values().cloned().collect::<Vec<_>>();
         *self.library.lock().unwrap_or_else(|e| e.into_inner()) = snapshot.clone();
         // Single atomic swap — see the comment at the top of this function.
         *self.track_paths.lock().unwrap_or_else(|e| e.into_inner()) = rebuilt;
-        let scanned = self
-            .track_paths
-            .lock()
-            .unwrap()
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        self.favorites.lock().unwrap_or_else(|e| e.into_inner()).project(scanned);
+        favorites.project(scanned);
         snapshot
     }
     pub fn submit<T, F>(&self, spec: TaskSpec, work: F) -> Result<TaskHandle<T>, SpawnError>
@@ -7252,20 +7269,17 @@ fn promotion_error(error: PromotionError) -> ContractError {
             favorites.set(&path, next);
             next
         };
-        // Publish the mutated snapshot so every view (playlist rows, search
-        // results, queue, footer) re-renders the star immediately. The old
-        // code mutated in-memory state but emitted no event, so the UI never
-        // updated until the next rescan.
-        let snapshot = {
+        // Favorite state is a track-level change, not a new library scan.
+        // Keeping the scan generation stable preserves visible row durations
+        // and avoids invalidating every list row for one star toggle.
+        {
             let mut library = self.library.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(track) = library.tracks.iter_mut().find(|track| track.id == track_id) {
                 track.favorite = favorite;
             }
-            let generation = self.next_generation();
-            library.generation = generation;
-            library.clone()
-        };
-        self.publish(self.event(snapshot.generation, Event::LibrarySnapshot { snapshot }));
+            let generation = library.generation;
+            self.publish(self.event(generation, Event::TrackFavoriteChanged { track_id: track_id.clone(), favorite }));
+        }
         // Persist so the choice survives restarts. Merge semantics keep other
         // prefs intact; failures are non-fatal (in-memory state already won).
         self.persist_favorites();

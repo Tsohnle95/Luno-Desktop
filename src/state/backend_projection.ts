@@ -27,7 +27,7 @@ const MAX_PROJECTED_ERRORS = 50;
 
 type Domain = keyof BackendProjection["generations"];
 function domainOf(type: EventEnvelope["event"]["type"]): Domain | "control" {
-  if (type === "library_snapshot" || type === "library_root_status") return "library";
+  if (type === "library_snapshot" || type === "library_root_status" || type === "track_favorite_changed") return "library";
   if (type === "playback_snapshot" || type === "track_started" || type === "queue_changed") return "playback";
   if (type === "preview_snapshot") return "preview";
   if (type === "discover_snapshot") return "discover";
@@ -56,11 +56,22 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
   // Generation 0 is reserved for shutdown control events. They are lifecycle
   // notifications, not work results, and must survive stale-work filtering.
   if (domain !== "control" && envelope.generation < state.generations[domain]) return state;
+  // An early favorite event cannot stand in for the initial full library
+  // snapshot; let that snapshot establish the library generation and rows.
+  if (envelope.event.type === "track_favorite_changed" && !state.library) return state;
   const next = { ...state, generations: domain === "control" ? state.generations : { ...state.generations, [domain]: Math.max(state.generations[domain], envelope.generation) }, lastEventIds: { ...state.lastEventIds, [domain]: envelope.event_id } };
   const event = envelope.event;
   switch (event.type) {
     case "library_snapshot": return { ...next, library: event.payload.snapshot };
     case "library_root_status": return next;
+    case "track_favorite_changed": {
+      if (!next.library) return state;
+      const index = next.library.tracks.findIndex((track) => track.id === event.payload.track_id);
+      if (index < 0 || next.library.tracks[index].favorite === event.payload.favorite) return next;
+      const tracks = next.library.tracks.slice();
+      tracks[index] = { ...tracks[index], favorite: event.payload.favorite };
+      return { ...next, library: { ...next.library, tracks } };
+    }
     case "playback_snapshot": return { ...next, playback: event.payload.snapshot };
     case "preview_snapshot": return { ...next, preview: event.payload.snapshot };
     case "discover_snapshot": return { ...next, discover: event.payload.snapshot };

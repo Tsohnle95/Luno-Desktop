@@ -94,6 +94,7 @@ export type RootStatus = "scanned" | "missing" | "inaccessible";
 export type Event =
   | { type: "library_snapshot"; payload: { snapshot: LibrarySnapshot } }
   | { type: "library_root_status"; payload: { root_index: number; status: RootStatus } }
+  | { type: "track_favorite_changed"; payload: { track_id: TrackId; favorite: boolean } }
   | { type: "playback_snapshot"; payload: { snapshot: PlaybackSnapshot } }
   | { type: "preview_snapshot"; payload: { snapshot: PreviewSnapshot } }
   | { type: "discover_snapshot"; payload: { snapshot: DiscoverSnapshot } }
@@ -261,6 +262,7 @@ function isEvent(v: unknown): v is Event {
     && Object.keys(value).every((key) => ["id", "kind", "state", "track_id", "progress", "phase", "current_item", "generation"].includes(key))
     && id(value.id) && ["single", "csv", "sync", "url_queue"].includes(String(value.kind)) && ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"].includes(String(value.state)) && (value.track_id === null || id(value.track_id)) && (value.progress === null || progress(value.progress)) && (value.phase === undefined || value.phase === null || value.phase === "finalizing") && (value.current_item === undefined || value.current_item === null || (typeof value.current_item === "string" && value.current_item.length > 0)) && generation(value.generation);
   if (v.type === "track_started") return exact(v.payload, ["track_id"]) && id(v.payload.track_id);
+  if (v.type === "track_favorite_changed") return exact(v.payload, ["track_id", "favorite"]) && id(v.payload.track_id) && typeof v.payload.favorite === "boolean";
   if (v.type === "queue_changed") return exact(v.payload, ["queue"]) && Array.isArray(v.payload.queue) && v.payload.queue.every(id);
    if (v.type === "library_root_status") return exact(v.payload, ["root_index", "status"]) && safeInteger(v.payload.root_index) && v.payload.root_index >= 0 && ["scanned", "missing", "inaccessible"].includes(String(v.payload.status));
   if (v.type === "library_snapshot") return exact(v.payload, ["snapshot"]) && library(v.payload.snapshot);

@@ -57,6 +57,10 @@ envelope shapes (`docs/modules/contracts.md`).
   `track_artwork` command as bounded data URLs; visible library rows request
   missing durations through `track_duration`, which probes on a blocking
   worker instead of extending every library scan.
+- Favorite-only events update the matching projected track without advancing
+  the scan generation, so visible rows keep valid duration probe results.
+  Track maps depend on the current track array so favorites stay current in
+  queue, footer, and home projections even when the scan epoch is unchanged.
 - Artwork requests hold per-view demand leases. Scrolling or unmounting drops
   queued requests no longer needed by that view; shared IDs stay queued while
   any view still needs them, and an in-flight extraction remains shared.
