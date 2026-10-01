@@ -23,13 +23,11 @@ export interface SongPageViewProps { track?: Track | null;
   recommendationLoadMoreError?: string | null;
   recommendationsExhausted?: boolean;
   recommendationsLoadingMore?: boolean;
-  hasApiKey?: boolean;
-  sessionActive?: boolean;
   discoverMode?: boolean;
   onToggleDiscoverMode?: () => void;
+  /** Deprecated compatibility prop; discovery guidance now lives in the info tip. */
   discoverHint?: string | null;
   onRetryRecommendations?: () => void;
-  onRefreshRecommendations?: () => void;
   onLoadMoreRecommendations?: () => void;
   onPreviewRecommendation?: (item: Recommendation) => void;
   onSaveRecommendation?: (item: Recommendation, playlistId?: string) => void;
@@ -51,7 +49,7 @@ export interface SongPageViewProps { track?: Track | null;
   onVideoModeChange?: (enabled: boolean) => void;
 }
 
-export function SongPageView({ track = null, nowPlaying = null, recommendations = [], recommendationState = "idle", recommendationError, recommendationLoadMoreError, recommendationsExhausted, recommendationsLoadingMore, hasApiKey = true, sessionActive = false, discoverMode = false, onToggleDiscoverMode, discoverHint, onRetryRecommendations, onRefreshRecommendations, onLoadMoreRecommendations, onPreviewRecommendation, onSaveRecommendation, onFavoriteToggle, backendAvailable = true, preview = null, saved = {}, playlists = [], jobs = {}, onCreatePlaylist, tracksById, onArtwork, video, videoConnection = "disconnected", onLoadVideo, videoMode = false, onVideoModeChange }: SongPageViewProps) {
+export function SongPageView({ track = null, nowPlaying = null, recommendations = [], recommendationState = "idle", recommendationError, recommendationLoadMoreError, recommendationsExhausted, recommendationsLoadingMore, discoverMode = false, onToggleDiscoverMode, onRetryRecommendations, onLoadMoreRecommendations, onPreviewRecommendation, onSaveRecommendation, onFavoriteToggle, backendAvailable = true, preview = null, saved = {}, playlists = [], jobs = {}, onCreatePlaylist, tracksById, onArtwork, video, videoConnection = "disconnected", onLoadVideo, videoMode = false, onVideoModeChange }: SongPageViewProps) {
   const [lastTrack, setLastTrack] = useState<Track | null>(nowPlaying ?? track);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -111,11 +109,13 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
       <main className="luno-song-page-content">
         <div className="luno-song-media-slot" data-video-slot="song-page"><VideoStage {...video} status={videoConnection === "loading" ? "loading" : videoConnection === "disconnected" ? "not-checked" : video?.status} artworkUrl={video?.artworkUrl ?? displayedTrack?.artwork_url} artworkAlt={displayedTrack ? `${displayedTrack.title} artwork` : "Artwork unavailable"} artworkArtist={displayedTrack?.artist} artworkTitle={displayedTrack?.title} videoModeEnabled={videoMode} onVideoModeChange={onVideoModeChange} onRetry={canRetryVideo ? onLoadVideo : undefined} /><span className="luno-video-connection" role="status">{videoConnection === "loading" ? "Connecting video preview..." : videoConnection === "disconnected" ? "Video preview unavailable; showing artwork." : null}</span></div>
         <div className="luno-song-meta">{displayedTrack ? <><h1>{displayedTrack.title}</h1><p>{displayedTrack.artist || "Unknown artist"}</p></> : <><h1>Nothing playing</h1><p>Play a song to open its page.</p></>}</div>
-        {onToggleDiscoverMode && <div className="luno-discover-toggle" style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "center", marginBottom: 16, flexWrap: "wrap" }}>
-          <button type="button" aria-pressed={discoverMode} aria-label={discoverMode ? "Disable discovery mode" : "Enable discovery mode"} disabled={!backendAvailable} onClick={onToggleDiscoverMode}>{discoverMode ? "Discovery mode: On" : "Discovery mode: Off"}</button>
-          <span role="status" style={{ fontSize: 13, color: "var(--luno-text-2)" }}>{discoverHint ?? (discoverMode ? "Autoplay follows recommendations; Next/Previous walk them. Turn off to restore your library queue." : "Turn on to pre-load the next recommendations and let autoplay follow them.")}</span>
+        {onToggleDiscoverMode && <div className="luno-discover-toggle">
+          <button type="button" className={`luno-discovery-switch${discoverMode ? " is-on" : ""}`} role="switch" aria-checked={discoverMode} aria-label={`Discovery ${discoverMode ? "on" : "off"}`} disabled={!backendAvailable} onClick={onToggleDiscoverMode}>
+            <span className="luno-discovery-switch-label">Discovery</span>
+            <span className="luno-discovery-switch-track" aria-hidden="true"><span /></span>
+          </button>
         </div>}
-        <Recommendations seed={track ?? lastTrack} items={recommendations} state={recommendationState} error={recommendationError} loadMoreError={recommendationLoadMoreError} exhausted={recommendationsExhausted} loadingMore={recommendationsLoadingMore} hasApiKey={hasApiKey} sessionActive={sessionActive} discoverMode={discoverMode} onRetry={onRetryRecommendations} onRefresh={onRefreshRecommendations} onLoadMore={onLoadMoreRecommendations} onPreview={onPreviewRecommendation} onSave={onSaveRecommendation} preview={preview} saved={saved} playlists={playlists} jobs={jobs} backendAvailable={backendAvailable} onCreatePlaylist={onCreatePlaylist} tracksById={tracksById} onArtwork={onArtwork} />
+        <Recommendations seed={track ?? lastTrack} items={recommendations} state={recommendationState} error={recommendationError} loadMoreError={recommendationLoadMoreError} exhausted={recommendationsExhausted} loadingMore={recommendationsLoadingMore} onRetry={onRetryRecommendations} onLoadMore={onLoadMoreRecommendations} onPreview={onPreviewRecommendation} onSave={onSaveRecommendation} preview={preview} saved={saved} playlists={playlists} jobs={jobs} backendAvailable={backendAvailable} onCreatePlaylist={onCreatePlaylist} tracksById={tracksById} onArtwork={onArtwork} />
       </main>
     </div>
   </div>;
@@ -161,11 +161,19 @@ const songPageStyles = `
 .luno-song-meta button, .luno-recommendations button { border:0; border-radius:999px; padding:8px 12px; color:var(--luno-text-2); background:var(--luno-bg-3); cursor:pointer; }
 .luno-song-meta button:hover, .luno-recommendations button:hover:not(:disabled) { color:var(--luno-text); background:var(--luno-bg-4); }
 .luno-recommendations { padding:22px 0; border-top:1px solid rgba(255,255,255,.1); }
-.luno-recommendations-header { display:flex; align-items:start; justify-content:space-between; gap:16px; }
+.luno-discover-toggle { display:flex; justify-content:center; margin:0 0 16px; }
+.luno-discovery-switch { display:inline-flex; align-items:center; gap:9px; padding:6px 10px !important; border-radius:999px !important; background:var(--luno-bg-3) !important; color:var(--luno-text-2) !important; font-size:12px; font-weight:650; }
+.luno-discovery-switch.is-on { color:var(--luno-green,#1db954) !important; }
+.luno-discovery-switch:disabled { opacity:.55; cursor:default; }
+.luno-discovery-switch-track { position:relative; width:30px; height:17px; border-radius:999px; background:rgba(255,255,255,.22); transition:background .15s ease; }
+.luno-discovery-switch-track span { position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%; background:white; transition:transform .15s ease; }
+.luno-discovery-switch.is-on .luno-discovery-switch-track { background:var(--luno-green,#1db954); }
+.luno-discovery-switch.is-on .luno-discovery-switch-track span { transform:translateX(13px); }
+.luno-recommendations-header { display:flex; align-items:center; gap:8px; }
+.luno-recommendations-title { display:flex; align-items:center; gap:7px; }
 .luno-recommendations-header h2 { margin:0; font-size:20px; }
-.luno-recommendations-header p, .luno-recommendations-hint { margin:6px 0 0; color:var(--luno-text-2); font-size:13px; }
-.luno-recommendations-header button { font-size:20px; padding:2px 10px; }
-.luno-recommendations-hint { color:var(--luno-green); }
+.luno-info-tip { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; padding:0 !important; color:var(--luno-text-2) !important; background:transparent !important; }
+.luno-info-tip:hover { color:var(--luno-text) !important; background:var(--luno-bg-3) !important; }
 .luno-recommendations-state { display:flex; gap:12px; align-items:center; padding:20px 0; color:var(--luno-text-2); }
 .luno-recommendations-state.is-error { color:#f08080; }
 .luno-recommendation-list { margin-top:12px; }

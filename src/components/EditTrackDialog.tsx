@@ -23,6 +23,8 @@ export function EditTrackDialog({ track, busy = false, error = null, onClose, on
   const artistRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     artistRef.current?.focus();
+  }, []);
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) onClose(); };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);

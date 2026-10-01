@@ -229,7 +229,7 @@ export function PlayerBar({ track = null, favoriteTrack: favoriteTrackProp, play
         <button type="button" aria-label="Previous track" disabled={!backendAvailable} onClick={onPrevious}><IconSkipBack size={18} /></button>
         <button className="luno-transport-play" type="button" aria-label={playing ? "Pause" : "Play"} disabled={!backendAvailable || !track} onClick={onPlayPause}>{playing ? <IconPause size={16} /> : <IconPlay size={16} />}</button>
         <button type="button" aria-label="Next track" disabled={!backendAvailable} onClick={onNext}><IconSkipForward size={18} /></button>
-        <button type="button" aria-label={`Repeat ${repeat}`} aria-pressed={repeat !== "off"} disabled={!backendAvailable || !onCycleRepeat} onClick={onCycleRepeat}>{repeat === "one" ? "①" : <IconRepeat size={16} />}</button>
+        <button type="button" aria-label={repeat === "one" ? "Repeat current song" : repeat === "all" ? "Repeat queue" : "Repeat off"} title={repeat === "one" ? "Repeat current song" : repeat === "all" ? "Repeat queue" : "Repeat off"} data-repeat-mode={repeat} aria-pressed={repeat !== "off"} disabled={!backendAvailable || !onCycleRepeat} onClick={onCycleRepeat}>{repeat === "one" ? <span className="luno-repeat-one-icon"><IconRepeat size={16} /><small aria-hidden="true">1</small></span> : <IconRepeat size={16} />}</button>
       </div>
       <div className="luno-player-actions">
         {onToggleQueue && <button type="button" aria-label={queueOpen ? "Close queue panel" : "Open queue panel"} aria-pressed={queueOpen} onClick={onToggleQueue}><IconQueueList size={17} /></button>}

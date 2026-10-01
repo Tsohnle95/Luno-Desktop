@@ -59,6 +59,7 @@ export const LibrarySidebar = memo(function LibrarySidebar({ snapshot, tracksByI
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (filterRef.current?.contains(target) || searchButtonRef.current?.contains(target)) return;
+      if (target instanceof Element && target.closest(".luno-playlist-card")) return;
       setSearchOpen(false);
       setQuery("");
     };
@@ -102,7 +103,13 @@ export const LibrarySidebar = memo(function LibrarySidebar({ snapshot, tracksByI
             const playlist = snapshot?.playlists.find((item) => item.id === entry.scope);
             if (playlist) onPlaylistContextMenu(event, playlist);
           }}
-          onClick={() => onSelectScope(entry.scope)}>
+          onClick={() => {
+            onSelectScope(entry.scope);
+            if (searchOpen) {
+              setSearchOpen(false);
+              setQuery("");
+            }
+          }}>
           {(entry.kind === "all" || entry.kind === "favorites" || entry.kind === "unsorted" || entry.kind === "playlist") && mosaicTracks.length > 0
             ? <PlaylistArtwork
                 className="luno-playlist-pin"

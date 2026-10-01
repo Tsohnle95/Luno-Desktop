@@ -10,7 +10,6 @@ export interface QueueProps {
   onPlay?: (track: Track, index: number) => void;
   onFavoriteToggle?: (track: Track) => void;
   onPlayNext?: (track: Track) => void;
-  onAddToQueue?: (track: Track) => void;
   onRemove?: (index: number) => void;
   onReorder?: (from: number, to: number) => void;
   onContextMenu?: (event: MouseEvent, track: Track) => void;
@@ -37,7 +36,7 @@ export function queueVirtualWindow(scrollTop: number, rowsTop: number, viewportH
   return { start, end: Math.min(count, start + visibleCount + overscan * 2) };
 }
 
-export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onFavoriteToggle, onPlayNext, onAddToQueue, onRemove, onReorder, onContextMenu, backendAvailable = true, recentLabel = null, onTabChange, nextFromLabel = null, onArtwork }: QueueProps) {
+export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onFavoriteToggle, onPlayNext, onRemove, onReorder, onContextMenu, backendAvailable = true, recentLabel = null, onTabChange, nextFromLabel = null, onArtwork }: QueueProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const rowsRef = useRef<HTMLDivElement>(null);
   const scrollTop = useRef(0);
@@ -125,7 +124,6 @@ export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onF
           {track.favorite && <span className="luno-queue-favorite" aria-label="Favorite">★</span>}
           {!recent && <span className="luno-queue-actions">
             <button type="button" aria-label={`Play ${track.title} next`} disabled={!backendAvailable} onClick={(event) => { event.stopPropagation(); onPlayNext?.(track); }}>▶</button>
-            <button type="button" aria-label={`Add ${track.title} to queue`} disabled={!backendAvailable} onClick={(event) => { event.stopPropagation(); onAddToQueue?.(track); }}>＋</button>
             <button type="button" aria-label={`Move ${track.title} up`} disabled={!backendAvailable || queueIndex === 0} onClick={(event) => { event.stopPropagation(); onReorder?.(queueIndex, queueIndex - 1); }}>↑</button>
             <button type="button" aria-label={`Move ${track.title} down`} disabled={!backendAvailable || queueIndex === tracks.length - 1} onClick={(event) => { event.stopPropagation(); onReorder?.(queueIndex, queueIndex + 1); }}>↓</button>
             <button type="button" aria-label={`Remove ${track.title} from queue`} disabled={!backendAvailable} onClick={(event) => { event.stopPropagation(); onRemove?.(queueIndex); }}>×</button>

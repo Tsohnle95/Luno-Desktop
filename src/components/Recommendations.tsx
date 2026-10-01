@@ -4,6 +4,7 @@ import { previewKey as backendPreviewKey } from "../shared/contracts";
 import { RecommendationArtworkImage } from "./RecommendationArtwork";
 import { DownloadRing } from "./VideoStage";
 import { PlaylistPicker } from "./PlaylistPicker";
+import { IconInfo } from "./icons";
 import type { ArtworkFetcher } from "../state/track_artwork";
 
 export interface Recommendation {
@@ -23,15 +24,13 @@ export interface RecommendationsProps {
   seed: Track | null;
   items: Recommendation[];
   state: RecommendationState;
-  hasApiKey?: boolean;
   error?: string | null;
   exhausted?: boolean;
   loadingMore?: boolean;
   loadMoreError?: string | null;
-  sessionActive?: boolean;
-  discoverMode?: boolean;
-  onRetry?: () => void;
+  /** Deprecated compatibility prop; recommendations no longer expose a refresh control. */
   onRefresh?: () => void;
+  onRetry?: () => void;
   onLoadMore?: () => void;
   onPreview?: (item: Recommendation) => void;
   onSave?: (item: Recommendation, playlistId?: string) => void;
@@ -65,19 +64,15 @@ export function Recommendations({
   seed,
   items,
   state,
-  hasApiKey = true,
   error,
   exhausted = false,
   loadingMore = false,
   loadMoreError,
-  sessionActive = false,
-  discoverMode = false,
   onRetry,
-  onRefresh,
   onLoadMore,
   onPreview,
   onSave,
-  emptyMessage = "No recommendations available for this song",
+  emptyMessage = "No recommended tunes returned for this song.",
   preview = null,
   saved = {},
   playlists = [],
@@ -90,25 +85,13 @@ export function Recommendations({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set());
   const [pickerItem, setPickerItem] = useState<Recommendation | null>(null);
-  const temporarySessionActive = sessionActive || discoverMode;
-  // Refresh re-runs the Last.fm lookup, which requires an artist: without one
-  // there is nothing to look up (the seed file carries no "Artist - Title"
-  // metadata), so the button stays disabled instead of spinning into idle.
-  const canRefresh = Boolean(seed?.artist && hasApiKey && !sessionActive);
-
-  const stateMessage = !seed
-    ? "Play a song to see recommendations"
-    : !seed.artist
-      ? `“${seed.title}” has no artist info — similar tracks need "Artist - Title" in the filename.`
-      : !hasApiKey
-        ? "Add a Last.fm API key in Settings to see recommendations"
-        : state === "loading"
-        ? "Finding similar songs..."
-        : state === "error"
-          ? error || "Could not load recommendations"
-          : state === "ready" && items.length === 0
-            ? emptyMessage
-            : null;
+  const stateMessage = state === "loading"
+    ? "Finding recommended songs…"
+    : state === "error"
+      ? error || "Could not load recommendations"
+      : items.length === 0
+        ? emptyMessage
+        : null;
 
   const handleAddClick = (item: Recommendation) => {
     if (!backendAvailable) return;
@@ -136,21 +119,11 @@ export function Recommendations({
   return (
     <section className="luno-recommendations" aria-labelledby="recommendations-title">
       <header className="luno-recommendations-header">
-        <div>
-          <h2 id="recommendations-title">Recommended for this song</h2>
-          <p>
-            {temporarySessionActive
-              ? discoverMode
-                ? "Temporary preview queue - tap a song to restart from there"
-                : "Temporary preview - Next returns to your library"
-              : `${items.length} similar songs - tap to preview`}
-          </p>
+        <div className="luno-recommendations-title">
+          <h2 id="recommendations-title">Recommended songs</h2>
+          {seed && !seed.artist && <button className="luno-info-tip" type="button" aria-label="Why recommendations are missing" title="This song has no artist in its filename. Similar songs work best when the filename is “Artist - Title”."><IconInfo size={14} /></button>}
         </div>
-        <button type="button" aria-label="Refresh recommendations" disabled={!canRefresh} onClick={onRefresh}>
-          ⟳
-        </button>
       </header>
-      {seed && hasApiKey && <p className="luno-recommendations-hint">↓ Scroll for recommendations</p>}
       {stateMessage && (
         <div className={`luno-recommendations-state ${state === "error" ? "is-error" : ""}`} role={state === "error" ? "alert" : undefined}>
           <span>{stateMessage}</span>
