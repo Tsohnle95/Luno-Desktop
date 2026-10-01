@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type UIEvent } from "react";
 import type { LibrarySnapshot, PlaybackSnapshot, Playlist, Track } from "../shared/contracts";
 import { TrackRow } from "../components/TrackRow";
-import { IconClock, IconClose, IconPlay, IconSearch, IconShuffle } from "../components/icons";
+import { IconClock, IconClose, IconMoreHorizontal, IconPlay, IconSearch, IconShuffle } from "../components/icons";
 import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
 import { PlaylistArtwork } from "../components/PlaylistArtwork";
 
@@ -82,13 +82,14 @@ export interface LibraryViewProps {
   /** Controlled filter text; falls back to internal state when omitted. */
   query?: string | null;
   onQueryChange?: (query: string) => void;
-  onPlay?: (track: Track, context: Track[]) => void;
+  onPlay?: (track: Track, context: Track[], sourcePlaylistId?: string) => void;
   onShuffle?: (tracks: Track[]) => void;
   onFavoriteToggle?: (track: Track) => void;
   onScan?: () => void;
   onProbeDuration?: (trackId: Track["id"]) => Promise<number | null>;
   onContextMenu?: (event: MouseEvent, track: Track) => void;
   onArtwork?: ArtworkFetcher;
+  onOpenArtwork?: (scope: LibraryScope) => void;
   backendAvailable?: boolean;
 }
 
@@ -155,7 +156,7 @@ function formatTotal(ms: number) {
  * song rows slide beneath it. The virtualization window therefore subtracts
  * the measured anchor height from the live scroll position.
  */
-export function LibraryView({ snapshot, playback, loading = false, error = null, selectedScope = "all", onScopeChange, query: externalQuery, onQueryChange, onPlay, onShuffle, onFavoriteToggle, onScan, onProbeDuration, onContextMenu, onArtwork, backendAvailable = true }: LibraryViewProps) {
+export function LibraryView({ snapshot, playback, loading = false, error = null, selectedScope = "all", onScopeChange, query: externalQuery, onQueryChange, onPlay, onShuffle, onFavoriteToggle, onScan, onProbeDuration, onContextMenu, onArtwork, onOpenArtwork, backendAvailable = true }: LibraryViewProps) {
   const [internalQuery, setInternalQuery] = useState("");
   const query = externalQuery != null ? externalQuery : internalQuery;
   const setQuery = (value: string) => { setInternalQuery(value); onQueryChange?.(value); };
@@ -166,6 +167,8 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
   const activeDurationGeneration = useRef(snapshot?.generation ?? null);
   const [scrollTop, setScrollTop] = useState(0);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [artworkMenuOpen, setArtworkMenuOpen] = useState(false);
+  const artworkMenuRef = useRef<HTMLDivElement | null>(null);
   // The in-view filter box opens ONLY via its own toggle button. Auto-mounting
   // it whenever the TOP search had text (`query !== ""`) spawned a phantom
   // focused input under the hero artwork and stole focus mid-typing.
@@ -207,6 +210,21 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
           : playlists.find((item) => item.id === selectedScope || item.name === selectedScope)?.name ?? String(selectedScope);
   const eyebrow = isAlbumScope ? "Album" : selectedScope === "all" || selectedScope === "unsorted" ? "Library" : "Playlist";
   const gradient = scopeGradient(scopeName);
+  const canOpenArtworkManager = !!onOpenArtwork && !isAlbumScope && (selectedScope === "all" || selectedScope === "favorites" || selectedScope === "unsorted" || !!snapshot?.playlists.some((playlist) => playlist.id === selectedScope));
+
+  useEffect(() => {
+    if (!artworkMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!artworkMenuRef.current?.contains(event.target as Node)) setArtworkMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setArtworkMenuOpen(false); };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [artworkMenuOpen]);
 
   // Track the live DOM scroll position so the virtualization window always
   // reflects where the scroller actually is, never a stale event-time capture.
@@ -290,7 +308,8 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
   }, [visible, onProbeDuration, snapshot?.generation]);
   const artwork = useTrackArtwork(visible.map((track) => track.id), onArtwork, 2);
   const coverArtwork = useTrackArtwork(tracks.slice(0, 8).map((track) => track.id), onArtwork);
-  const play = (track: Track) => { if (backendAvailable) onPlay?.(track, tracks); };
+  const sourcePlaylistId = snapshot?.playlists.find((playlist) => playlist.id === selectedScope)?.id;
+  const play = (track: Track) => { if (backendAvailable) onPlay?.(track, tracks, sourcePlaylistId); };
   const toggleSelection = (track: Track, event: MouseEvent) => {
     if (!event.shiftKey && !event.metaKey && !event.ctrlKey) return setSelected(new Set([track.id]));
     setSelected((current) => { const next = new Set(current); if (next.has(track.id)) next.delete(track.id); else next.add(track.id); return next; });
@@ -302,12 +321,18 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
       <div ref={anchorRef}>
         <header className="luno-hero">
           <div className="luno-hero-row">
-            <PlaylistArtwork
-              className="luno-hero-cover"
-              tracks={covers}
-              artwork={coverArtwork}
-              emptyFallback={<span style={{ display: "grid", placeItems: "center", fontSize: 48, color: "rgba(255,255,255,0.55)" }}>♫</span>}
-            />
+            <div className="luno-hero-cover-control" ref={artworkMenuRef}>
+              <PlaylistArtwork
+                className="luno-hero-cover"
+                tracks={covers}
+                artwork={coverArtwork}
+                emptyFallback={<span style={{ display: "grid", placeItems: "center", fontSize: 48, color: "rgba(255,255,255,0.55)" }}>♫</span>}
+              />
+              {canOpenArtworkManager && <>
+                <button className="luno-artwork-menu-trigger" type="button" aria-label="Artwork options" aria-expanded={artworkMenuOpen} title="Artwork options" onClick={() => setArtworkMenuOpen((open) => !open)}><IconMoreHorizontal size={18} /></button>
+                {artworkMenuOpen && <div className="luno-artwork-menu" role="menu"><button type="button" role="menuitem" onClick={() => { setArtworkMenuOpen(false); onOpenArtwork?.(selectedScope); }}>Find missing song artwork</button></div>}
+              </>}
+            </div>
             <div className="luno-hero-info">
               <p className="luno-hero-eyebrow">{eyebrow}</p>
               <h1>{scopeName}</h1>
@@ -315,7 +340,7 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
             </div>
           </div>
           <div className="luno-hero-actions">
-            <button className="luno-fab" type="button" aria-label={`Play ${scopeName}`} disabled={!backendAvailable || tracks.length === 0} onClick={() => { const first = playback?.shuffle ? shuffledFirstTrack(tracks) : tracks[0]; if (backendAvailable && first) onPlay?.(first, tracks); }}><IconPlay size={18} /></button>
+            <button className="luno-fab" type="button" aria-label={`Play ${scopeName}`} disabled={!backendAvailable || tracks.length === 0} onClick={() => { const first = playback?.shuffle ? shuffledFirstTrack(tracks) : tracks[0]; if (first) play(first); }}><IconPlay size={18} /></button>
             <button className="luno-action-toggle" type="button" aria-label={playback?.shuffle ? "Disable shuffle" : "Enable shuffle"} aria-pressed={!!playback?.shuffle} disabled={!backendAvailable || !onShuffle} onClick={() => onShuffle?.(tracks)}><IconShuffle size={17} /></button>
             <div className="luno-hero-right">
               <button className="luno-action-toggle" type="button" aria-label="Filter tracks" aria-expanded={showFilter} onClick={() => { setFilterOpen((open) => !open); }}>{showFilter ? <IconClose size={15} /> : <IconSearch size={15} />}</button>

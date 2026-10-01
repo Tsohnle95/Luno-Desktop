@@ -4,7 +4,7 @@ import { YTDLP_COOKIE_BROWSERS, type YtDlpCookieBrowser } from "../shared/contra
 export type SleepTimer = "Off" | "5 mins" | "15 mins" | "30 mins" | "60 mins";
 
 /** Destinations reachable from the settings rail. */
-export type SettingsNavLink = "home" | "recent" | "discover" | "downloader" | "sync_review" | "error_log";
+export type SettingsNavLink = "home" | "recent" | "discover" | "downloader" | "artwork" | "sync_review" | "error_log";
 
 export interface SettingsViewProps {
   lastfmKey?: string;
@@ -138,6 +138,7 @@ export function SettingsView({
       <button type="button" aria-current={activeScreen === "recent" ? "true" : undefined} onClick={() => onNavigate?.("recent")}>Recent Songs</button>
       <button type="button" aria-current={activeScreen === "discover" ? "true" : undefined} onClick={() => onNavigate?.("discover")}>Discover</button>
       <button type="button" aria-current={activeScreen === "downloader" ? "true" : undefined} onClick={() => onNavigate?.("downloader")}>Downloader</button>
+      <button type="button" aria-current={activeScreen === "artwork" ? "true" : undefined} onClick={() => onNavigate?.("artwork")}>Artwork</button>
       <button type="button" aria-current={activeScreen === "sync_review" ? "true" : undefined} onClick={() => onNavigate?.("sync_review")}>Sync Review</button>
       <button type="button" aria-current={activeScreen === "error_log" ? "true" : undefined} onClick={() => onNavigate?.("error_log")}>Error Log</button>
       {CATEGORIES.map((item) => <button key={item} type="button" aria-current={activeScreen == null && category === item ? "true" : undefined} onClick={() => { setCategory(item); onScreenClosed?.(); }}>{item}</button>)}

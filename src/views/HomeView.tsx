@@ -59,6 +59,7 @@ export interface HomeViewProps {
   favorites: Track[];
   recentTracks: Track[];
   popularTracks: Track[];
+  playCounts?: Readonly<Record<string, number>>;
   popularPlaylists: PopularPlaylist[];
   recentlyDownloaded: Track[];
   tracksById?: ReadonlyMap<string, Track>;
@@ -86,7 +87,7 @@ function greeting() {
  * Made for you → Recently played → Most popular songs → Favorite songs →
  * Most popular playlists → Recently downloaded.
  */
-export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, popularTracks, popularPlaylists, recentlyDownloaded, tracksById, onPlayTrack, onTrackContextMenu, onOpenLibrary, onOpenRecent, onOpenDownloader, onOpenPlaylist, onArtwork, backendAvailable = true }: HomeViewProps) {
+export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, popularTracks, playCounts = {}, popularPlaylists, recentlyDownloaded, tracksById, onPlayTrack, onTrackContextMenu, onOpenLibrary, onOpenRecent, onOpenDownloader, onOpenPlaylist, onArtwork, backendAvailable = true }: HomeViewProps) {
   // One lazy artwork pass for every card on the page, budgeted FAIRLY
   // across sections: previously the first 40 deduplicated ids (Made-for-you
   // order) consumed the whole budget, so Favorites / Recently played / Most
@@ -119,10 +120,10 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
   }, []);
 
 
-  const trackCard = (list: Track[]) => (track: Track) => (
+  const trackCard = (list: Track[], subtitle?: (track: Track) => string) => (track: Track) => (
     <button className="luno-card" type="button" key={track.id} onClick={() => playFrom(list)(track)} onContextMenu={(event) => onTrackContextMenu?.(event, track)} disabled={!backendAvailable}>
       <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
-      <span className="luno-card-copy"><strong title={track.title}>{track.title}</strong><small>{track.artist ?? "Unknown artist"}</small></span>
+      <span className="luno-card-copy"><strong title={track.title}>{track.title}</strong><small>{subtitle?.(track) ?? track.artist ?? "Unknown artist"}</small></span>
     </button>
   );
 
@@ -161,7 +162,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
       {sectionHead("Most popular songs")}
       {popularTracks.length === 0
         ? <p className="luno-empty-note">Play songs to build your local favorites.</p>
-        : <div className="luno-card-row luno-scroll">{popularTracks.map(trackCard(popularTracks))}</div>}
+        : <div className="luno-card-row luno-scroll">{popularTracks.map(trackCard(popularTracks, (track) => `${track.artist ?? "Unknown artist"} · ${playCounts[track.id] ?? 0} ${(playCounts[track.id] ?? 0) === 1 ? "play" : "plays"}`))}</div>}
     </section>
 
     <section className="luno-home-section" aria-label="Favorite songs">

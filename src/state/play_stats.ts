@@ -1,11 +1,10 @@
 /**
- * Client-side listening statistics that power the Home dashboard's
- * "Most popular" and "Recently downloaded" sections.
+ * Helpers for legacy listening-count migration and the Home dashboard's
+ * "Recently downloaded" section.
  *
- * The desktop backend keeps no play counters and completed download jobs do
- * not survive an app restart, so these lightweight, UI-level journals are
- * persisted in localStorage instead of expanding the versioned IPC contract.
- * Every reader tolerates missing storage (SSR/tests) and corrupt payloads.
+ * Listening counts now belong to the Rust backend and its runtime-home file.
+ * The old localStorage key is read once and imported for existing installs.
+ * Download completions remain a lightweight local journal.
  */
 
 export type PlayCounts = Record<string, number>;
@@ -38,6 +37,11 @@ export function loadPlayCounts(): PlayCounts {
 export function savePlayCounts(counts: PlayCounts): void {
   if (!hasStorage()) return;
   try { window.localStorage.setItem(PLAY_COUNTS_KEY, JSON.stringify(counts)); } catch { /* storage full or blocked */ }
+}
+
+export function clearPlayCounts(): void {
+  if (!hasStorage()) return;
+  try { window.localStorage.removeItem(PLAY_COUNTS_KEY); } catch { /* storage may be blocked */ }
 }
 
 /** Pure increment — returns a NEW counts object so React state updates compose. */

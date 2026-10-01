@@ -30,11 +30,16 @@ export interface PlaylistSyncIssue { video_id: string; title: string; channel: s
 export interface PlaylistSyncCandidate { video_id: string; title: string; channel: string | null; duration: string | null; thumbnail_url: string | null; url: string }
 export interface PlaylistSyncSelection { video_id: string; source_video_id: string; url: string }
 export interface PlaylistSyncReviewSummary { playlist_id: PlaylistId; name: string; url: string | null; unresolved_count: number }
+export interface TrackPlayCount { track_id: TrackId; plays: number }
+export interface PlaylistPlayCount { playlist_id: PlaylistId; plays: number }
+export interface PlayStatisticsSnapshot { generation: Generation; tracks: TrackPlayCount[]; playlists: PlaylistPlayCount[]; legacy_track_counts_imported: boolean }
+export interface ArtworkCandidate { candidate_id: string; release: string; artist: string; year: string | null; score: number; exact_match: boolean; artwork_data_url: string }
 export interface SafeDeleteResult { deleted: number; needs_confirmation: boolean; verification_incomplete: boolean; final_copy_review_id: string | null; final_copies: string[]; generation: number | null }
 
 export type Command =
   | { type: "get_library" } | { type: "scan_library" } | { type: "play"; payload: { track_id: TrackId } }
   | { type: "play_with_context"; payload: { track_id: TrackId; context: TrackId[] } }
+  | { type: "play_from_playlist"; payload: { track_id: TrackId; context: TrackId[]; playlist_id: PlaylistId } }
   | { type: "resume" }
   | { type: "next" } | { type: "previous" }
   | { type: "play_next"; payload: { track_ids: TrackId[] } } | { type: "add_to_queue"; payload: { track_ids: TrackId[] } }
@@ -82,6 +87,7 @@ export type Command =
   | { type: "transfer_export" }
   | { type: "transfer_apply"; payload: { manifest: string; destination: string; approvals: Record<string, string> } }
   | { type: "record_recent"; payload: { track_id: TrackId } } | { type: "get_recent" } | { type: "clear_recent" }
+  | { type: "import_legacy_play_counts"; payload: { track_plays: Record<string, number> } }
   | { type: "pause" } | { type: "seek"; payload: { position_ms: number } } | { type: "set_volume"; payload: { volume: number } }
   | { type: "video_source"; payload: { track_id: TrackId } } | { type: "video_stage"; payload: { track_id: TrackId } }
   | { type: "set_video_mode"; payload: { enabled: boolean } }
@@ -101,6 +107,7 @@ export type Event =
   | { type: "save_state"; payload: { state: SaveState } }
   | { type: "video_state"; payload: { state: VideoState } }
   | { type: "track_started"; payload: { track_id: TrackId } }
+  | { type: "play_statistics_snapshot"; payload: { snapshot: PlayStatisticsSnapshot } }
   | { type: "queue_changed"; payload: { queue: TrackId[] } }
   | { type: "job_updated"; payload: { job: DownloadJob } }
   | { type: "error"; payload: { error: ContractError } }
@@ -211,8 +218,10 @@ function isCommand(v: unknown): v is Command {
    if (v.type === "set_video_mode") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.enabled === "boolean" && Object.keys(v.payload).length === 1;
     if (["transfer_preview", "transfer_apply"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.manifest === "string" && v.payload.manifest.length <= 10_485_760 && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && (v.type === "transfer_preview" || (object(v.payload.approvals) && Object.keys(v.payload).length === 3)) && Object.keys(v.payload).length === (v.type === "transfer_preview" ? 2 : 3);
    if (["toggle_favorite", "record_recent"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && Object.keys(v.payload).length === 1;
+   if (v.type === "import_legacy_play_counts") return exact(v, ["type", "payload"]) && object(v.payload) && exact(v.payload, ["track_plays"]) && object(v.payload.track_plays) && Object.keys(v.payload.track_plays).length <= 100_000 && Object.entries(v.payload.track_plays).every(([id, plays]) => nonEmptyId(id) && safeInteger(plays) && plays > 0) && Object.keys(v.payload).length === 1;
    if (v.type === "play") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && Object.keys(v.payload).length === 1;
    if (v.type === "play_with_context") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && Array.isArray(v.payload.context) && v.payload.context.every(nonEmptyId) && Object.keys(v.payload).length === 2;
+   if (v.type === "play_from_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.track_id) && Array.isArray(v.payload.context) && v.payload.context.every(nonEmptyId) && nonEmptyId(v.payload.playlist_id) && Object.keys(v.payload).length === 3;
    if (["next", "previous", "clear_queue", "toggle_shuffle"].includes(v.type)) return Object.keys(v).length === 1;
    if (["play_next", "add_to_queue"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.track_ids) && v.payload.track_ids.every(nonEmptyId) && Object.keys(v.payload).length === 1;
    if (["remove_from_queue"].includes(v.type)) return exact(v, ["type", "payload"]) && object(v.payload) && safeInteger(v.payload.index) && v.payload.index >= 0 && Object.keys(v.payload).length === 1;
@@ -262,6 +271,14 @@ function isEvent(v: unknown): v is Event {
     && Object.keys(value).every((key) => ["id", "kind", "state", "track_id", "progress", "phase", "current_item", "generation"].includes(key))
     && id(value.id) && ["single", "csv", "sync", "url_queue"].includes(String(value.kind)) && ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"].includes(String(value.state)) && (value.track_id === null || id(value.track_id)) && (value.progress === null || progress(value.progress)) && (value.phase === undefined || value.phase === null || value.phase === "finalizing") && (value.current_item === undefined || value.current_item === null || (typeof value.current_item === "string" && value.current_item.length > 0)) && generation(value.generation);
   if (v.type === "track_started") return exact(v.payload, ["track_id"]) && id(v.payload.track_id);
+  if (v.type === "play_statistics_snapshot") {
+    const snapshot = v.payload.snapshot;
+    const count = (entry: unknown, key: "track_id" | "playlist_id") => object(entry) && exact(entry, [key, "plays"]) && id(entry[key]) && nonNegativeInt(entry.plays) && entry.plays > 0;
+    return exact(v.payload, ["snapshot"]) && object(snapshot) && exact(snapshot, ["generation", "tracks", "playlists", "legacy_track_counts_imported"])
+      && generation(snapshot.generation) && Array.isArray(snapshot.tracks) && snapshot.tracks.length <= 100_000 && snapshot.tracks.every((entry) => count(entry, "track_id"))
+      && Array.isArray(snapshot.playlists) && snapshot.playlists.length <= 100_000 && snapshot.playlists.every((entry) => count(entry, "playlist_id"))
+      && typeof snapshot.legacy_track_counts_imported === "boolean";
+  }
   if (v.type === "track_favorite_changed") return exact(v.payload, ["track_id", "favorite"]) && id(v.payload.track_id) && typeof v.payload.favorite === "boolean";
   if (v.type === "queue_changed") return exact(v.payload, ["queue"]) && Array.isArray(v.payload.queue) && v.payload.queue.every(id);
    if (v.type === "library_root_status") return exact(v.payload, ["root_index", "status"]) && safeInteger(v.payload.root_index) && v.payload.root_index >= 0 && ["scanned", "missing", "inaccessible"].includes(String(v.payload.status));
@@ -292,6 +309,14 @@ export function isEventEnvelope(v: unknown): v is EventEnvelope { return exact(v
 export function parseCommandEnvelope(json: string): CommandEnvelope { const value: unknown = JSON.parse(json); if (!isCommandEnvelope(value)) throw new Error("invalid or unsupported command envelope"); return value; }
 export function parseEventEnvelope(json: string): EventEnvelope { const value: unknown = JSON.parse(json); if (!isEventEnvelope(value)) throw new Error("invalid or unsupported event envelope"); return value; }
 export function isSearchResults(value: unknown): value is SearchResult[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["provider", "query", "title", "artist", "duration", "thumbnail_url", "url"]) && nonEmptyId(item.provider) && nonEmptyId(item.query) && nonEmptyId(item.title) && (item.artist === null || nonEmptyId(item.artist)) && (item.duration === null || typeof item.duration === "string") && (item.thumbnail_url === null || nonEmptyId(item.thumbnail_url)) && (item.url === null || nonEmptyId(item.url))); }
+export function isArtworkCandidates(value: unknown): value is ArtworkCandidate[] {
+  return Array.isArray(value) && value.length <= 5 && value.every((candidate) => object(candidate)
+    && exact(candidate, ["candidate_id", "release", "artist", "year", "score", "exact_match", "artwork_data_url"])
+    && nonEmptyId(candidate.candidate_id) && nonEmptyId(candidate.release) && typeof candidate.artist === "string"
+    && (candidate.year === null || typeof candidate.year === "string") && safeInteger(candidate.score) && candidate.score >= 0 && candidate.score <= 100
+    && typeof candidate.exact_match === "boolean" && typeof candidate.artwork_data_url === "string"
+    && candidate.artwork_data_url.startsWith("data:image/jpeg;base64,") && candidate.artwork_data_url.length <= 1_500_000);
+}
 function isCanonicalYouTubeWatchUrl(value: unknown): value is string { return typeof value === "string" && /^https:\/\/www\.youtube\.com\/watch\?v=[A-Za-z0-9_-]{11}$/.test(value); }
 export function isPlaylistSyncIssues(value: unknown): value is { entries: PlaylistSyncIssue[] } {
   return object(value) && exact(value, ["entries"]) && Array.isArray(value.entries) && value.entries.every((issue) => object(issue)

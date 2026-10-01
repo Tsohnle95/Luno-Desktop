@@ -12,6 +12,9 @@ policy.
 - Shared components, artwork fetching/caching, and the 56 px virtual-list
   contract.
 - Frontend projections over backend snapshots and bounded caches.
+- Home's listening-count display and one-time import of the former browser
+  play-count journal; authoritative counts and playlist attribution remain
+  backend-owned.
 
 What it does not own: command semantics and queue/scan/job policy (Rust);
 envelope shapes (`docs/modules/contracts.md`).
@@ -29,7 +32,7 @@ envelope shapes (`docs/modules/contracts.md`).
 - `src/views/` — `HomeView`, `LibraryView` (+ `libraryPlaylists`,
   `libraryAlbums`, `playlistTracks` helpers), `RecentView`, `SongPageView`,
   `DiscoverView`, `DownloaderView`, `PlaylistSyncReviewView`, `SettingsView`,
-  `ErrorLogView`.
+  `ArtworkManager`, `ErrorLogView`.
 - `src/components/` — `PlayerBar`, `Queue`, `LibrarySidebar`, `TrackRow`,
   `Artwork`, `RecommendationArtwork`, `PlaylistArtwork`, `Recommendations`, `DownloadTabs`,
   `PlaylistDialogs`, `PlaylistPicker`, `EditTrackDialog`, `TransferDialogs`,
@@ -56,11 +59,19 @@ envelope shapes (`docs/modules/contracts.md`).
   outside both the filter and its trigger.
 - The home dashboard orders its sections as Made for you, Recently played,
   Most popular songs, Favorite songs, Most popular playlists, and Recently
-  downloaded.
+  downloaded. Popular song cards show backend successful-start counts.
+  Playlist counts include only starts attributed to that playlist; track
+  counts are never summed into every playlist containing a song. The old
+  localStorage counts are imported once and removed after the backend save.
 - Heavy work stays off the UI thread: artwork arrives via the
   `track_artwork` command as bounded data URLs; visible library rows request
   missing durations through `track_duration`, which probes on a blocking
   worker instead of extending every library scan.
+- ArtworkManager scans the selected local collection for missing embedded
+  covers and lets the user filter those tracks by title or artist. Provider
+  lookup is user-triggered for one selected track at a time; it renders
+  MusicBrainz/Cover Art Archive matches for explicit review before calling the
+  artwork-apply command. The playlist hero menu opens the manager at its scope.
 - Favorite-only events update the matching projected track without advancing
   the scan generation, so visible rows keep valid duration probe results.
   Track maps depend on the current track array so favorites stay current in

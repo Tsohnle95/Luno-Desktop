@@ -37,6 +37,7 @@ let nextQueueOrder = 0;
 const pendingQueue = new Map<string, { id: string; fetcher: ArtworkFetcher; priority: number; order: number }>();
 const demandOwners = new Map<symbol, { ids: Set<string>; fetcher: ArtworkFetcher; priority: number; requested: Set<string> }>();
 const requestedOwners = new Map<string, Set<Set<string>>>();
+const artworkRevision = new Map<string, number>();
 
 /**
  * Components subscribe to cache resolutions. Without this, only the fetches
@@ -142,6 +143,7 @@ function scheduleNext(): void {
     pendingQueue.delete(job.id);
     const { id, fetcher } = job;
     if (resolvedCache.has(id) || inFlight.has(id)) continue;
+    const revision = artworkRevision.get(id) ?? 0;
     activeCount += 1;
     const promise = fetcher(id).finally(() => {
       activeCount -= 1;
@@ -151,6 +153,7 @@ function scheduleNext(): void {
     });
     inFlight.set(id, promise);
     promise.then((url) => {
+      if ((artworkRevision.get(id) ?? 0) !== revision) return url;
       if (url === null || url.length <= MAX_CACHED_BYTES) remember(id, url);
       else {
         // Large results may be shown to current demand owners without being
@@ -165,9 +168,20 @@ function scheduleNext(): void {
       }
       return url;
     }).catch(() => {
-      remember(id, null);
+      if ((artworkRevision.get(id) ?? 0) === revision) remember(id, null);
     });
   }
+}
+
+/** Replaces the cache value after a reviewed metadata write and updates every
+ * mounted view. A revision prevents an older in-flight extraction from
+ * overwriting the newly written cover when it completes later. */
+export function storeTrackArtwork(trackId: string, artworkUrl: string): void {
+  artworkRevision.set(trackId, (artworkRevision.get(trackId) ?? 0) + 1);
+  pendingQueue.delete(trackId);
+  for (const owners of requestedOwners.get(trackId) ?? []) owners.delete(trackId);
+  requestedOwners.delete(trackId);
+  remember(trackId, artworkUrl);
 }
 
 function updateQueuedDemand(id: string): void {

@@ -21,6 +21,7 @@ import {
   type PlaylistSyncCandidate,
   type PlaylistSyncSelection,
   type PlaylistSyncReviewSummary,
+  type ArtworkCandidate,
   type SafeDeleteResult,
   isPlaylistSyncIssues,
   isPlaylistSyncCandidates,
@@ -28,6 +29,7 @@ import {
   isPlaylistSyncReviewSummary,
   isPlaylistSyncSources,
   isSafeDeleteResult,
+  isArtworkCandidates,
 } from "../shared/contracts";
 import type { LibrarySnapshot } from "../shared/contracts";
 
@@ -140,8 +142,10 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
     recordRecent: (track_id: TrackId) => send({ type: "record_recent", payload: { track_id } }),
     getRecent: () => send("get_recent"),
     clearRecent: () => send("clear_recent"),
+    importLegacyPlayCounts: (track_plays: Record<string, number>) => send({ type: "import_legacy_play_counts", payload: { track_plays } }),
     play: (track_id: string) => send({ type: "play", payload: { track_id } }),
     playWithContext: (track_id: TrackId, context: TrackId[]) => send({ type: "play_with_context", payload: { track_id, context } }),
+    playFromPlaylist: (track_id: TrackId, context: TrackId[], playlist_id: PlaylistId) => send({ type: "play_from_playlist", payload: { track_id, context, playlist_id } }),
     next: () => send("next"),
     previous: () => send("previous"),
     playNext: (track_ids: TrackId[]) => send({ type: "play_next", payload: { track_ids } }),
@@ -176,6 +180,24 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
     trackArtwork: async (trackId: TrackId): Promise<string | null> => {
       const value = await transport.invoke<unknown>("track_artwork", { trackId });
       return typeof value === "string" && value.startsWith("data:") ? value : null;
+    },
+    missingArtworkTracks: async (trackIds: TrackId[]): Promise<TrackId[]> => {
+      if (trackIds.length > 100_000 || trackIds.some((id) => typeof id !== "string" || id.trim().length === 0)) {
+        throw new Error("invalid artwork scan selection");
+      }
+      const value = await transport.invoke<unknown>("missing_artwork_tracks", { trackIds });
+      if (!Array.isArray(value) || !value.every((id) => typeof id === "string" && id.trim().length > 0)) {
+        throw new Error("invalid missing artwork response");
+      }
+      return value as TrackId[];
+    },
+    searchArtworkCandidates: async (trackId: TrackId): Promise<ArtworkCandidate[]> => {
+      const value = await transport.invoke<unknown>("search_artwork_candidates", { trackId });
+      if (!isArtworkCandidates(value)) throw new Error("invalid artwork matches response");
+      return value;
+    },
+    applyArtworkCandidate: async (trackId: TrackId, candidateId: string): Promise<void> => {
+      await transport.invoke<void>("apply_artwork_candidate", { trackId, candidateId });
     },
     trackDuration: async (trackId: TrackId): Promise<number | null> => {
       const value = await transport.invoke<unknown>("track_duration", { trackId });
