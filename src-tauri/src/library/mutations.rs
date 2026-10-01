@@ -4,18 +4,19 @@ use crate::library::index::{LibraryIndex, RefreshRequest};
 use crate::library::metadata::TrackMetadataStore;
 use crate::persistence::atomic_write::write_atomic;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 const URL_FILE: &str = ".luno_playlist_urls.json";
 const SYNC_SOURCES_FILE: &str = ".luno_playlist_sync_sources.json";
 const SYNC_SOURCES_VERSION: u8 = 1;
 static PLAYLIST_SOURCE_FILES_LOCK: Mutex<()> = Mutex::new(());
-static LIBRARY_FILE_DELETE_LOCK: Mutex<()> = Mutex::new(());
+static LIBRARY_FILE_MUTATION_LOCK: Mutex<()> = Mutex::new(());
 static DELETE_REVIEW_CACHE: OnceLock<Mutex<HashMap<String, PendingDeleteReview>>> = OnceLock::new();
 const DELETE_REVIEW_TTL: Duration = Duration::from_secs(600);
 const DELETE_REVIEW_LIMIT: usize = 64;
@@ -56,7 +57,7 @@ pub struct SafeDeleteResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct FinalCopyStamp { path: PathBuf, length: u64, modified: Option<SystemTime> }
+struct FinalCopyStamp { path: PathBuf, length: u64, modified: Option<SystemTime>, sha256: [u8; 32] }
 
 #[derive(Debug, Clone)]
 struct PendingDeleteReview {
@@ -70,9 +71,15 @@ struct PendingDeleteReview {
 #[derive(Debug, Clone)]
 pub struct PlaylistService { root: PathBuf }
 
+/// Serializes Luno-owned media file changes with last-copy analysis and deletion.
+pub fn lock_library_file_mutations() -> MutexGuard<'static, ()> {
+    LIBRARY_FILE_MUTATION_LOCK.lock().unwrap_or_else(|error| error.into_inner())
+}
+
 impl PlaylistService {
     pub fn new(root: impl Into<PathBuf>) -> Self { Self { root: root.into() } }
     pub fn create(&self, name: &str, index: &mut LibraryIndex) -> Result<MutationResult<PathBuf>, MutationError> {
+        let _mutation_guard = lock_library_file_mutations();
         let safe = sanitize_name(name).ok_or(MutationError::InvalidName)?; self.check_name(&safe)?;
         fs::create_dir_all(&self.root).map_err(|e| io_error(&self.root, e))?;
         let path = self.root.join(&safe);
@@ -91,14 +98,14 @@ impl PlaylistService {
         Ok(self.result((), index))
     }
     pub fn empty_with_review(&self, name: &str, roots: &[PathBuf], review_id: Option<&str>) -> Result<SafeDeleteResult, MutationError> {
-        let _delete_guard = LIBRARY_FILE_DELETE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _mutation_guard = lock_library_file_mutations();
         let path = self.playlist_path(name)?;
         let files = playlist_audio_files(&path)?;
         delete_files_locked(&files, roots, review_id)
     }
     pub fn delete_with_review(&self, name: &str, roots: &[PathBuf], review_id: Option<&str>) -> Result<SafeDeleteResult, MutationError> {
         let safe = sanitize_name(name).ok_or(MutationError::InvalidName)?;
-        let _delete_guard = LIBRARY_FILE_DELETE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _mutation_guard = lock_library_file_mutations();
         let _sources_guard = PLAYLIST_SOURCE_FILES_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let path = self.playlist_path(&safe)?;
         let files = playlist_audio_files(&path)?;
@@ -158,7 +165,7 @@ impl PlaylistService {
         Ok(self.read_urls()?.get(&safe).cloned().into_iter().collect())
     }
     pub fn dump(&self, source: &str, destination: &str, index: &mut LibraryIndex) -> Result<MutationResult<CopyResult>, MutationError> {
-        let _delete_guard = LIBRARY_FILE_DELETE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _mutation_guard = lock_library_file_mutations();
         let source_path = self.playlist_path(source)?; let destination_path = self.playlist_path(destination)?;
         if source_path == destination_path { return Err(MutationError::Collision(destination.to_owned())); }
         let mut copied = 0; let mut errors = Vec::new(); let mut copied_paths = Vec::new();
@@ -197,7 +204,7 @@ impl PlaylistService {
     /// Copy selected library files into a physical playlist folder without
     /// overwriting same-named audio that is already there.
     pub fn add_files(&self, files: &[PathBuf], destination: &str, index: &mut LibraryIndex) -> Result<MutationResult<CopyResult>, MutationError> {
-        let _delete_guard = LIBRARY_FILE_DELETE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _mutation_guard = lock_library_file_mutations();
         let destination_path = self.playlist_path(destination)?; let mut copied = 0; let mut errors = Vec::new(); let mut copied_paths = Vec::new();
         let mut metadata = match TrackMetadataStore::load(&self.root) {
             Ok(store) => Some(store),
@@ -262,7 +269,7 @@ impl PlaylistService {
 }
 
 pub fn delete_files_safely(paths: &[PathBuf], roots: &[PathBuf], review_id: Option<&str>) -> Result<SafeDeleteResult, MutationError> {
-    let _delete_guard = LIBRARY_FILE_DELETE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _mutation_guard = lock_library_file_mutations();
     delete_files_locked(paths, roots, review_id)
 }
 
@@ -291,10 +298,9 @@ fn delete_files_locked(paths: &[PathBuf], roots: &[PathBuf], review_id: Option<&
     let mut final_copies = Vec::new();
     for path in &requested {
         let metadata = fs::metadata(path).map_err(|error| io_error(path, error))?;
-        let file_name = path.file_name().ok_or(MutationError::UnsafePath)?;
         let mut has_identical_copy_outside_request = false;
         for candidate in &library_files {
-            if candidate == path || requested_set.contains(candidate) || candidate.file_name() != Some(file_name) { continue; }
+            if candidate == path || requested_set.contains(candidate) { continue; }
             let candidate_metadata = match fs::metadata(candidate) {
                 Ok(metadata) => metadata,
                 Err(_) => { verification_incomplete = true; continue; }
@@ -307,8 +313,8 @@ fn delete_files_locked(paths: &[PathBuf], roots: &[PathBuf], review_id: Option<&
             }
         }
         if !has_identical_copy_outside_request {
-            final_copies.push(FinalCopyStamp { path: path.clone(), length: metadata.len(), modified: metadata.modified().ok() });
-            if final_copies.last().is_some_and(|copy| copy.modified.is_none()) { verification_incomplete = true; }
+            let (length, modified, sha256) = stable_file_stamp(path).map_err(|error| io_error(path, error))?;
+            final_copies.push(FinalCopyStamp { path: path.clone(), length, modified, sha256 });
         }
     }
 
@@ -373,14 +379,51 @@ fn playlist_audio_files(folder: &Path) -> Result<Vec<PathBuf>, MutationError> {
 fn same_file_contents(left: &Path, right: &Path) -> io::Result<bool> {
     let mut left = File::open(left)?;
     let mut right = File::open(right)?;
+    let left_before = left.metadata()?;
+    let right_before = right.metadata()?;
     let mut left_buffer = [0_u8; 64 * 1024];
     let mut right_buffer = [0_u8; 64 * 1024];
     loop {
         let left_count = left.read(&mut left_buffer)?;
         let right_count = right.read(&mut right_buffer)?;
         if left_count != right_count || left_buffer[..left_count] != right_buffer[..right_count] { return Ok(false); }
-        if left_count == 0 { return Ok(true); }
+        if left_count == 0 {
+            let left_after = left.metadata()?;
+            let right_after = right.metadata()?;
+            if left_before.len() != left_after.len()
+                || right_before.len() != right_after.len()
+                || left_before.modified().ok() != left_after.modified().ok()
+                || right_before.modified().ok() != right_after.modified().ok()
+            {
+                return Err(io::Error::other("file changed while comparing copies"));
+            }
+            return Ok(true);
+        }
     }
+}
+
+fn stable_file_stamp(path: &Path) -> io::Result<(u64, Option<SystemTime>, [u8; 32])> {
+    let before = fs::metadata(path)?;
+    let sha256 = sha256_file(path)?;
+    let after = fs::metadata(path)?;
+    let before_modified = before.modified().ok();
+    let modified = after.modified().ok();
+    if before.len() != after.len() || before_modified != modified {
+        return Err(io::Error::other("file changed while preparing delete review"));
+    }
+    Ok((after.len(), modified, sha256))
+}
+
+fn sha256_file(path: &Path) -> io::Result<[u8; 32]> {
+    let mut file = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 { break; }
+        digest.update(&buffer[..count]);
+    }
+    Ok(digest.finalize().into())
 }
 
 fn relative_file_label(path: &Path, roots: &[PathBuf]) -> String {
@@ -411,3 +454,137 @@ fn store_delete_review(review: PendingDeleteReview) -> Result<String, MutationEr
 
 fn sanitize_name(name: &str) -> Option<String> { let clean: String = name.chars().filter(|c| !c.is_control() && !"<>:\"/\\|?*".contains(*c)).collect(); let clean = clean.trim().trim_end_matches('.').trim().to_owned(); (!clean.is_empty() && clean != "." && clean != "..").then_some(clean) }
 fn io_error(path: &Path, error: io::Error) -> MutationError { MutationError::Io { path: path.to_path_buf(), message: error.to_string() } }
+
+#[cfg(test)]
+mod delete_review_tests {
+    use super::*;
+    use std::fs::{FileTimes, OpenOptions};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+
+    struct TempLibrary(PathBuf);
+
+    impl TempLibrary {
+        fn new() -> Self {
+            let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!("luno-delete-review-{}-{id}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).unwrap();
+            Self(root)
+        }
+
+        fn audio(&self, playlist: &str, name: &str, bytes: &[u8]) -> PathBuf {
+            let folder = self.0.join(playlist);
+            fs::create_dir_all(&folder).unwrap();
+            let path = folder.join(name);
+            fs::write(&path, bytes).unwrap();
+            path
+        }
+    }
+
+    impl Drop for TempLibrary {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn renamed_identical_copy_prevents_a_last_copy_warning() {
+        let library = TempLibrary::new();
+        let original = library.audio("Unsorted", "Original Name.mp3", b"same encoded audio");
+        let renamed_copy = library.audio("Favorites", "Edited Name.mp3", b"same encoded audio");
+
+        let result = delete_files_safely(&[original.clone()], std::slice::from_ref(&library.0), None).unwrap();
+
+        assert_eq!(result.deleted, 1);
+        assert!(!result.needs_confirmation);
+        assert!(!original.exists());
+        assert_eq!(fs::read(renamed_copy).unwrap(), b"same encoded audio");
+    }
+
+    #[test]
+    fn final_copy_stays_until_confirmed_and_changed_content_needs_a_new_review() {
+        let library = TempLibrary::new();
+        let path = library.audio("Road trip", "Only Copy.mp3", b"audio one");
+        let initial_modified = fs::metadata(&path).unwrap().modified().unwrap();
+
+        let first_review = delete_files_safely(&[path.clone()], std::slice::from_ref(&library.0), None).unwrap();
+        assert!(first_review.needs_confirmation);
+        assert_eq!(first_review.deleted, 0);
+        assert!(path.exists());
+
+        fs::write(&path, b"audio two").unwrap();
+        OpenOptions::new().write(true).open(&path).unwrap()
+            .set_times(FileTimes::new().set_modified(initial_modified)).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), initial_modified);
+
+        let changed_review = delete_files_safely(
+            &[path.clone()],
+            std::slice::from_ref(&library.0),
+            first_review.final_copy_review_id.as_deref(),
+        ).unwrap();
+        assert!(changed_review.needs_confirmation, "same-size content replacement must invalidate the old review");
+        assert_eq!(changed_review.deleted, 0);
+        assert!(path.exists());
+
+        let confirmed = delete_files_safely(
+            &[path.clone()],
+            std::slice::from_ref(&library.0),
+            changed_review.final_copy_review_id.as_deref(),
+        ).unwrap();
+        assert_eq!(confirmed.deleted, 1);
+        assert!(!confirmed.needs_confirmation);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn incomplete_root_scan_requires_an_explicit_warning_confirmation() {
+        let library = TempLibrary::new();
+        let path = library.audio("Road trip", "Only Copy.mp3", b"audio one");
+        let missing_root = library.0.join("unavailable-library");
+        let roots = [library.0.clone(), missing_root];
+
+        let review = delete_files_safely(&[path.clone()], &roots, None).unwrap();
+        assert!(review.needs_confirmation);
+        assert!(review.verification_incomplete);
+        assert_eq!(review.deleted, 0);
+        assert!(path.exists());
+
+        let confirmed = delete_files_safely(
+            &[path.clone()],
+            &roots,
+            review.final_copy_review_id.as_deref(),
+        ).unwrap();
+        assert_eq!(confirmed.deleted, 1);
+        assert!(!confirmed.needs_confirmation);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn empty_and_delete_playlist_share_the_last_copy_review() {
+        let library = TempLibrary::new();
+        let first = library.audio("Playlist A", "Mix.mp3", b"same audio");
+        let second = library.audio("Playlist B", "Mix.mp3", b"same audio");
+        let service = PlaylistService::new(&library.0);
+
+        let emptied = service.empty_with_review("Playlist A", std::slice::from_ref(&library.0), None).unwrap();
+        assert!(!emptied.needs_confirmation);
+        assert_eq!(emptied.deleted, 1);
+        assert!(library.0.join("Playlist A").is_dir());
+        assert!(!first.exists());
+        assert!(second.exists());
+
+        let last_copy = service.delete_with_review("Playlist B", std::slice::from_ref(&library.0), None).unwrap();
+        assert!(last_copy.needs_confirmation);
+        assert!(library.0.join("Playlist B").is_dir());
+        assert!(second.exists());
+
+        let deleted = service.delete_with_review(
+            "Playlist B",
+            std::slice::from_ref(&library.0),
+            last_copy.final_copy_review_id.as_deref(),
+        ).unwrap();
+        assert!(!deleted.needs_confirmation);
+        assert!(!library.0.join("Playlist B").exists());
+        assert!(!second.exists());
+    }
+}

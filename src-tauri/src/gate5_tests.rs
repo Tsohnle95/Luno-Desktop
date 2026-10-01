@@ -353,6 +353,7 @@ fn ref_preview_save_requires_destination_validates_duplicate_and_promotes_once()
         directory: library_root.join("playlist-a"),
         ..destination
     };
+    fs::create_dir_all(&destination.directory).unwrap();
     assert!(matches!(
         promote_to_playlist(&staged, "../escape.mp3", Some(&destination)),
         Err(SaveError::InvalidDestination)
@@ -371,6 +372,25 @@ fn ref_preview_save_requires_destination_validates_duplicate_and_promotes_once()
         promote_to_playlist(&staged, "bad.mp3", Some(&destination)),
         Err(SaveError::Promotion(_))
     ));
+}
+
+#[test]
+fn preview_save_does_not_recreate_a_deleted_playlist_folder() {
+    let root = fixture("save-deleted-destination");
+    let staged = root.join("staged.mp3");
+    fs::write(&staged, b"ID3 synthetic preview").unwrap();
+    let directory = root.join("Road trip");
+    fs::create_dir_all(&directory).unwrap();
+    fs::remove_dir_all(&directory).unwrap();
+
+    let result = promote_to_playlist(
+        &staged,
+        "track.mp3",
+        Some(&PlaylistDestination { playlist_id: "road-trip".into(), directory: directory.clone() }),
+    );
+
+    assert!(matches!(result, Err(SaveError::InvalidDestination)));
+    assert!(!directory.exists());
 }
 
 #[test]

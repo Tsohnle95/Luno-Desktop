@@ -1,6 +1,7 @@
 //! Explicit promotion of a staged recommendation into a physical playlist.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -53,8 +54,16 @@ fn destination_target(
     {
         return Err(SaveError::InvalidDestination);
     }
-    fs::create_dir_all(&destination.directory)
-        .map_err(|e| SaveError::Promotion(PromotionError::Io(e)))?;
+    let directory = fs::symlink_metadata(&destination.directory).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            SaveError::InvalidDestination
+        } else {
+            SaveError::Promotion(PromotionError::Io(error))
+        }
+    })?;
+    if directory.file_type().is_symlink() || !directory.is_dir() {
+        return Err(SaveError::InvalidDestination);
+    }
     let target = destination.directory.join(filename);
     if target.exists() {
         crate::download::promotion::validate_output(&target, Validation::audio())?;
@@ -87,6 +96,9 @@ pub fn remux_and_promote(
     destination: Option<&PlaylistDestination>,
     ffmpeg: Option<&Path>,
 ) -> Result<SaveReceipt, SaveError> {
+    // Keep destination checks and publication serialized with deletion so a
+    // playlist cannot disappear mid-save and receive a stale promotion.
+    let _mutation_guard = crate::library::mutations::lock_library_file_mutations();
     let (destination, target) = destination_target(destination, filename)?;
     if target.exists() {
         return Ok(SaveReceipt {
@@ -120,6 +132,7 @@ pub fn promote_to_playlist(
     filename: &str,
     destination: Option<&PlaylistDestination>,
 ) -> Result<SaveReceipt, SaveError> {
+    let _mutation_guard = crate::library::mutations::lock_library_file_mutations();
     let (destination, target) = destination_target(destination, filename)?;
     if target.exists() {
         return Ok(SaveReceipt {

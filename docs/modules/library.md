@@ -68,12 +68,20 @@ transfer manifests (`docs/modules/contracts.md`).
   must fail rather than guess.
 - Playlist additions are real `fs::copy` files, not playlist references. A
   copy can be removed while an identical file remains in another playlist.
-  Track deletion, empty-playlist, and delete-playlist commands compare
-  same-name, same-size candidates byte by byte across configured roots. If no
-  identical copy remains, or a candidate cannot be checked, they return a
-  single-use review ID without deleting; the confirmed command recomputes the
-  result under the library file-mutation lock. Deletion is held while a
-  download or playlist sync is active.
+  Track deletion, empty-playlist, and delete-playlist commands compare every
+  same-size regular audio candidate byte by byte across scanned configured
+  roots, regardless of filename. If no identical copy remains, or any root or
+  candidate cannot be checked, they return a single-use review ID without
+  deleting; the confirmed command recomputes the result under the library
+  file-mutation lock and checks a SHA-256 stamp of each requested last copy.
+  Playlist creation/copies, staged recommendation promotions, transfer
+  imports, direct promotions, deletes, and metadata renames serialize through
+  the Luno file-mutation lock. Download and sync jobs also block deletion
+  through media admission and take the same lock when promoting their final
+  file. A staged recommendation save
+  requires its existing playlist directory and cannot recreate a playlist
+  deleted before its worker begins. A separate external process can still
+  change files between Luno's final check and unlink.
 - Mutations are safe-root-contained and atomic; downloads promote only
   inside the configured library root and trigger a coalesced rescan.
 - The scanner excludes `.luno_previews`, `.luno-download-staging`, the current

@@ -118,6 +118,7 @@ impl DownloadCoordinator {
                 match result {
                     Ok(()) => {
                         emit(DownloadEvent::Finalizing { job_id: job_id.clone() });
+                        let _mutation_guard = crate::library::mutations::lock_library_file_mutations();
                         match promote_output(&temporary, &destination, Validation::audio(), CollisionPolicy::Reject, None) {
                             Ok(receipt) => DownloadEvent::Succeeded { job_id: job_id.clone(), path: receipt.path, bytes: receipt.bytes },
                             Err(error) => DownloadEvent::Failed { job_id: job_id.clone(), error: promotion_error(error) },

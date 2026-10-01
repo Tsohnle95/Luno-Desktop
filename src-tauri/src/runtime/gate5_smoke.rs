@@ -153,6 +153,7 @@ pub fn run(
         .any(|path| path == &preview);
 
     let playlist = root.join("Fixture Playlist");
+    std::fs::create_dir_all(&playlist).map_err(|_| "fixture playlist folder could not be created")?;
     let saved = promote_to_playlist(
         &preview,
         "fixture-artist - fixture-track.mp3",

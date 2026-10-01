@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { DownloaderView } from "../views/DownloaderView";
 import { SettingsView } from "../views/SettingsView";
 import { EditTrackDialog } from "../components/EditTrackDialog";
-import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ConfirmDialog, FinalCopyDeleteDialog } from "../components/ConfirmDialog";
 import { PlayerBar } from "../components/PlayerBar";
 import { PlaylistUrlDialog, PlaylistSyncAuthDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog } from "../components/PlaylistDialogs";
 
@@ -52,6 +52,19 @@ describe("Confirm dialog", () => {
     // last-child footer button carries the danger class (styled red)
     expect(html).toMatch(/class="is-danger"[^>]*>Delete from library</);
   });
+
+  it("states the permanent last-copy consequence concisely", () => {
+    const html = renderToStaticMarkup(<FinalCopyDeleteDialog files={["Road trip/Song.mp3"]} onClose={() => {}} onConfirm={() => {}} />);
+    expect(html).toContain("Delete the last copy?");
+    expect(html).toContain("No identical copies remain in your music folder. These files will be permanently deleted.");
+    expect(html).toContain("Road trip/Song.mp3");
+    expect(html).not.toContain("Songs added to another playlist");
+  });
+
+  it("makes incomplete folder verification clear", () => {
+    const html = renderToStaticMarkup(<FinalCopyDeleteDialog files={["Road trip/Song.mp3"]} verificationIncomplete onClose={() => {}} onConfirm={() => {}} />);
+    expect(html).toContain("Luno could not check every folder. Other copies may exist; these files will be permanently deleted.");
+  });
 });
 
 describe("Player bar context menu", () => {
@@ -64,11 +77,12 @@ describe("Player bar context menu", () => {
 });
 
 describe("YouTube playlist URL dialog", () => {
-  it("explains new-only sync and offers removal for an existing link", () => {
+  it("explains multi-link sync and offers link management", () => {
     const html = renderToStaticMarkup(<PlaylistUrlDialog playlistName="Road trip" initialUrl="https://www.youtube.com/playlist?list=PL123" onClose={() => {}} onSubmit={() => {}} />);
     expect(html).toContain("YouTube playlist sync");
-    expect(html).toContain("only songs Luno has not already seen");
-    expect(html).toContain("Remove link");
+    expect(html).toContain("Sync combines their songs and skips duplicate video IDs.");
+    expect(html).toContain("Add another playlist link");
+    expect(html).toContain("Remove all links");
     expect(html).toContain("PL123");
   });
 

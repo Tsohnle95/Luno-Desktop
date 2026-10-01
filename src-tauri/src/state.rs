@@ -6598,6 +6598,8 @@ impl AppState {
     fn transfer_apply(&self, manifest: &str, destination: PathBuf, approvals: std::collections::BTreeMap<String, String>) -> Result<Value, ContractError> {
         self.validate_transfer_destination(&destination)?;
         let manifest = crate::transfer::codec::decode(manifest).map_err(|error| ContractError::invalid(error.to_string()))?;
+        // An import can create byte-identical copies in the music root.
+        let _mutation_guard = crate::library::mutations::lock_library_file_mutations();
         let plan = crate::transfer::planner::plan_import(&manifest, &self.transfer_index(), &destination);
         let approvals = approvals.into_iter().map(|(key, value)| (key, PathBuf::from(value))).collect();
         let result = crate::transfer::planner::apply_import_plan(&plan, &approvals);
@@ -7100,6 +7102,7 @@ impl AppState {
         // case-insensitive filesystem, so it must not be rejected as a collision.
         let case_only = new_path.to_string_lossy().to_lowercase() == path.to_string_lossy().to_lowercase();
         if new_path != path {
+            let _mutation_guard = crate::library::mutations::lock_library_file_mutations();
             if new_path.exists() && !case_only {
                 return Err(ContractError::invalid("a file with that name already exists"));
             }
@@ -7192,6 +7195,9 @@ impl AppState {
                 "promotion destination is outside the configured library",
             ));
         }
+        // This command promotes into the scanned library, so serialize its
+        // final rename with duplicate checks and other library mutations.
+        let _mutation_guard = crate::library::mutations::lock_library_file_mutations();
         promote_output(
             &temporary,
             &destination,
