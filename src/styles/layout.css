@@ -133,7 +133,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .luno-chip:hover { background: var(--luno-bg-4); }
 .luno-chip[aria-pressed="true"] { background: var(--luno-green); color: #000; }
-.luno-sidebar-filter { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.luno-sidebar-filter {
+  max-height: 0; overflow: hidden; padding: 0 16px; border-bottom: 1px solid transparent;
+  opacity: 0; transform: translateY(-3px); pointer-events: none;
+  transition: max-height .15s ease, padding .15s ease, border-color .15s ease, opacity .12s ease, transform .15s ease;
+}
+.luno-sidebar-filter.is-open { max-height: 64px; padding: 14px 16px; border-bottom-color: rgba(255,255,255,0.06); opacity: 1; transform: translateY(0); pointer-events: auto; }
+.luno-sidebar-filter .luno-lib-filter { width: 100%; }
+@media (prefers-reduced-motion: reduce) { .luno-sidebar-filter { transition: none; } }
 .luno-lib-filter { flex: 1; min-width: 0; height: 34px; padding: 0 12px; border: 0; border-radius: 17px; background: var(--luno-bg-3); color: var(--luno-text); }
 .luno-lib-filter::placeholder { color: var(--luno-text-2); }
 .luno-playlist-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: none; scrollbar-gutter: stable; padding: 12px 10px 10px; display: flex; flex-direction: column; gap: 6px; }

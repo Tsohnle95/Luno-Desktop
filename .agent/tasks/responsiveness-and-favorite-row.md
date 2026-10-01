@@ -45,8 +45,8 @@ Keep library interactions responsive by separating favorite updates from scan ge
 | Phase | Scope | Status | Validation | Commit |
 |---|---|---|---|---|
 | 1 | Favorite-only event contract, latest-snapshot recovery, track-map dependencies, and stable-ID local track resolution | complete | `npm run typecheck`, `cargo check --manifest-path src-tauri/Cargo.toml`, `git diff --check` | `abca98a6` |
-| 2 | Footer shuffle state styling | complete | `git diff --check`; state source confirmed to be shared with playlist control | pending |
-| 3 | Sidebar filter render isolation and interaction | pending | Type/build validation and direct UI inspection if available | — |
+| 2 | Footer shuffle state styling | complete | `git diff --check`; state source confirmed to be shared with playlist control | `dc001388` |
+| 3 | Sidebar filter render isolation and interaction | complete | `npm run typecheck`, `git diff --check` | pending |
 | 4 | Single-scroller song-page path and video wheel handling | pending | Type/build validation and runtime process inspection; no active media helpers at initial inspection | — |
 
 ## Validation plan

@@ -46,6 +46,10 @@ envelope shapes (`docs/modules/contracts.md`).
 - The shell topbar has no Back/Forward chevrons. Playlist creation is
   available directly from the Your Library heading; the Playlists/Albums,
   filter, and list areas keep clear vertical spacing.
+- The memoized Your Library sidebar owns its filter and category state, so
+  opening, closing, or typing in its filter does not rerender route content.
+  The filter stays mounted for a short opacity/height transition, and its
+  pointer-outside dismissal clears the query.
 - All Music, Favorites, Unsorted, and physical playlist entries use the same
   four-track split-artwork tile, with their normal icon when no artwork tracks
   are available. The sidebar filter closes and clears when a pointer lands

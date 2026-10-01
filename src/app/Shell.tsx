@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "../styles/tokens.css";
@@ -6,7 +6,7 @@ import "../styles/layout.css";
 import { SettingsView } from "../views/SettingsView";
 import { ErrorLogView } from "../views/ErrorLogView";
 import { HomeView } from "../views/HomeView";
-import { LibraryView, libraryPlaylists, libraryAlbums, playlistTracks, shuffledFirstTrack, albumScope, type LibraryScope } from "../views/LibraryView";
+import { LibraryView, playlistTracks, shuffledFirstTrack, type LibraryScope } from "../views/LibraryView";
 import { RecentView } from "../views/RecentView";
 import { SongPageView } from "../views/SongPageView";
 import { DownloaderView } from "../views/DownloaderView";
@@ -24,13 +24,13 @@ import type { RecommendationState } from "../components/Recommendations";
 import { Queue } from "../components/Queue";
 import { PlayerBar } from "../components/PlayerBar";
 import { PlaylistPicker } from "../components/PlaylistPicker";
-import { PlaylistArtwork } from "../components/PlaylistArtwork";
+import { LibrarySidebar } from "../components/LibrarySidebar";
 import { EditTrackDialog } from "../components/EditTrackDialog";
 import { ConfirmDialog, FinalCopyDeleteDialog } from "../components/ConfirmDialog";
 import { PlaylistDialog, PlaylistUrlDialog, PlaylistUrlLoadingDialog, PlaylistSyncAuthDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog, type PlaylistSyncCandidateLookup, type PlaylistSyncLogEntry } from "../components/PlaylistDialogs";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
-import { IconClose, IconDownload, IconHeart, IconHome, IconLibrary, IconMusicNote, IconPlus, IconSearch, IconUser } from "../components/icons";
+import { IconClose, IconHome, IconSearch, IconUser } from "../components/icons";
 
 export const ROUTES = ["library", "recent", "discover", "downloader", "settings", "song_page", "error_log"] as const;
 export type Route = (typeof ROUTES)[number];
@@ -182,36 +182,12 @@ export function videoFullscreenClass(fullscreen: boolean): string {
   return fullscreen ? " video-fullscreen" : "";
 }
 
-interface SidebarEntry { key: string; label: string; subtitle: string; scope: LibraryScope; kind: "all" | "favorites" | "unsorted" | "playlist" | "album"; artId?: string; artIds?: string[] }
-
-const songs = (count: number) => `${count} ${count === 1 ? "song" : "songs"}`;
-
-function buildSidebarEntries(snapshot: BackendProjection["library"], chip: "playlists" | "albums"): SidebarEntry[] {
-  const unsorted = snapshot?.playlists.find((playlist) => playlist.name.toLowerCase() === "unsorted");
-  const entries: SidebarEntry[] = [
-    { key: "pin-all", label: "All Music", subtitle: songs(snapshot?.tracks.length ?? 0), scope: "all", kind: "all", artIds: snapshot?.tracks.slice(0, 4).map((track) => track.id) ?? [] },
-    { key: "pin-favorites", label: "Favorites", subtitle: songs(snapshot?.tracks.filter((track) => track.favorite).length ?? 0), scope: "favorites", kind: "favorites", artIds: snapshot?.tracks.filter((track) => track.favorite).slice(0, 4).map((track) => track.id) ?? [] },
-    { key: "pin-unsorted", label: "Unsorted", subtitle: songs(unsorted?.ordered_track_ids.length ?? 0), scope: "unsorted", kind: "unsorted", artIds: unsorted?.ordered_track_ids.slice(0, 4) ?? [] },
-  ];
-  if (chip === "playlists") {
-    for (const playlist of libraryPlaylists(snapshot)) entries.push({ key: playlist.id, label: playlist.name, subtitle: songs(playlistTracks(snapshot, playlist).length), scope: playlist.id, kind: "playlist", artIds: playlist.ordered_track_ids.slice(0, 4) });
-  } else {
-    for (const album of libraryAlbums(snapshot)) entries.push({ key: albumScope(album.name), label: album.name, subtitle: songs(album.tracks.length), scope: albumScope(album.name), kind: "album", artId: album.tracks[0].id });
-  }
-  return entries;
-}
-
 export function Shell({ views = {}, queue, player, bridge, backendProjection, backendAvailable, videoConnected }: ShellProps) {
   const [route, setRoute] = useState<Route>("library");
   const navigate = (next: Route) => setRoute(next);
   const [queueOpen, setQueueOpen] = useState(true);
   const [panelRecent, setPanelRecent] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [sidebarChip, setSidebarChip] = useState<"playlists" | "albums">("playlists");
-  const [sidebarQuery, setSidebarQuery] = useState("");
-  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
-  const sidebarSearchButtonRef = useRef<HTMLButtonElement | null>(null);
-  const sidebarFilterRef = useRef<HTMLDivElement | null>(null);
   const [libraryQuery, setLibraryQuery] = useState("");
   const [videoMode, setVideoMode] = useState(false);
   const [videoFullscreen, setVideoFullscreen] = useState(false);
@@ -265,18 +241,6 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     setConfirmError(null);
     setConfirmDialog(request);
   };
-  useEffect(() => {
-    if (!sidebarSearchOpen) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (sidebarFilterRef.current?.contains(target) || sidebarSearchButtonRef.current?.contains(target)) return;
-      setSidebarSearchOpen(false);
-      setSidebarQuery("");
-    };
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, [sidebarSearchOpen]);
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
@@ -447,12 +411,12 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       })
       .catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
   };
-  const createPlaylist = (tracksToAdd: Track[] = [], onCreated?: (name: string) => void) => {
+  const createPlaylist = useCallback((tracksToAdd: Track[] = [], onCreated?: (name: string) => void) => {
     if (!bridge || !available) return;
     // Tauri's webview has no native window.prompt; collect the name in-app.
     setPlaylistCreateError(null);
     setPlaylistCreateRequest({ tracks: tracksToAdd, onCreated });
-  };
+  }, [bridge, available]);
   const submitCreatePlaylist = (rawName: string) => {
     if (!bridge) return;
     const name = cleanPlaylistName(rawName);
@@ -900,6 +864,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   if (track) lastLibraryTrackRef.current = track;
   const seedTrack = track ?? lastLibraryTrackRef.current;
   const tracks = projection.library?.tracks ?? [];
+  const artworkFetcher = useCallback((id: string) => bridge ? bridge.trackArtwork(id) : Promise.resolve(null), [bridge]);
   // Fast O(1) track lookup — the previous `tracks.find` per queue entry was
   // O(Q·N) and caused jank with 4k-track queues on every queue change.
   const tracksByIdForQueue = useMemo(() => {
@@ -1278,14 +1243,6 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     return resolved.slice(0, 50);
   }, [downloadJournal, tracksById]);
 
-  // ---- Sidebar ("Your Library") ----
-  const sidebarEntries = useMemo(() => buildSidebarEntries(projection.library, sidebarChip), [projection.library, sidebarChip]);
-  const visibleSidebarEntries = useMemo(() => {
-    const needle = sidebarQuery.trim().toLocaleLowerCase();
-    return needle ? sidebarEntries.filter((entry) => entry.label.toLocaleLowerCase().includes(needle)) : sidebarEntries;
-  }, [sidebarEntries, sidebarQuery]);
-  const artworkFetcher = bridge ? (id: string) => bridge.trackArtwork(id) : undefined;
-  const sidebarArtwork = useTrackArtwork(visibleSidebarEntries.flatMap((entry) => entry.artIds ?? (entry.artId ? [entry.artId] : [])), artworkFetcher, 0);
   const nextFromLabel = useMemo(() => {
     if (!seedTrack || !projection.library) return null;
     const owner = projection.library.playlists.find((playlist) => playlist.ordered_track_ids.includes(seedTrack.id));
@@ -1499,6 +1456,16 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const narrowViewport = shellWidth > 0 && shellWidth < 1100;
   const showQueue = queueOpen && route !== "settings" && !narrowViewport;
   const focusMode = route === "settings";
+  const selectLibraryScope = useCallback((scope: LibraryScope) => {
+    setLibraryScope(scope);
+    setLibraryHome(false);
+    setRoute("library");
+  }, []);
+  const openSidebarPlaylistMenu = useCallback((event: ReactMouseEvent<HTMLButtonElement>, playlist: Playlist) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 470)), playlist });
+  }, []);
 
   return <div ref={shellRef} className={`luno-shell${queueOpen ? "" : " no-queue"}${sidebarCollapsed ? " no-sidebar" : ""}${focusMode ? " focus-mode" : ""}${videoFullscreenClass(videoFullscreen)}`} style={{ gridTemplateColumns: `${showSidebar ? sidebarWidth : 0}px minmax(0, 1fr) ${showQueue ? queueWidth : 0}px` }} data-route={route} data-backend-state={available ? "available" : "unavailable"} data-video-state={connectedVideo ? "connected" : "unconnected"} data-video-fullscreen={videoFullscreen ? "true" : "false"} data-migration-state={migrationStatus?.status ?? "unknown"}>
     <header className="luno-topbar" data-tauri-drag-region onPointerDown={startWindowDrag}>
@@ -1515,47 +1482,16 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       </nav>}
       <button className="luno-user-avatar" type="button" aria-label={route === "settings" ? "Close settings" : "Open settings"} title={route === "settings" ? "Close settings" : "Settings"} aria-current={route === "settings" ? "page" : undefined} onClick={toggleSettings}><IconUser size={16} /></button>
     </header>
-    <aside className="luno-sidebar" data-slot="sidebar">
-      <div className="luno-lib-head">
-        <h2 className="luno-lib-head-title">Your Library</h2>
-        <button className="luno-lib-create" type="button" aria-label="Create playlist" title="Create playlist" disabled={!available} onClick={() => createPlaylist()}><IconPlus size={16} /></button>
-      </div>
-      <div className="luno-lib-tools">
-        <button className="luno-chip" type="button" aria-label="Show playlists" aria-pressed={sidebarChip === "playlists"} onClick={() => setSidebarChip("playlists")}>Playlists</button>
-        <button className="luno-chip" type="button" aria-label="Show albums" aria-pressed={sidebarChip === "albums"} onClick={() => setSidebarChip("albums")}>Albums</button>
-        <button ref={sidebarSearchButtonRef} className="luno-icon-button" type="button" style={{ marginLeft: "auto" }} aria-label="Filter your library" aria-expanded={sidebarSearchOpen} onClick={() => { setSidebarSearchOpen((open) => !open); setSidebarQuery(""); }}><IconSearch size={13} /></button>
-      </div>
-      {sidebarSearchOpen && <div ref={sidebarFilterRef} className="luno-sidebar-filter"><input className="luno-lib-filter" autoFocus autoCorrect="off" spellCheck={false} aria-label="Filter playlists" placeholder="Filter…" value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} /></div>}
-      <div className="luno-playlist-list luno-scroll" data-slot="playlists" aria-label="Playlists">
-        {visibleSidebarEntries.map((entry) => {
-          const active = libraryScope === entry.scope;
-          const art = entry.artId ? sidebarArtwork[entry.artId] : undefined;
-          const mosaicTracks = (entry.artIds ?? []).map((id) => tracksByIdForQueue.get(id)).filter((item): item is Track => !!item);
-          return <button className="luno-playlist-card" type="button" key={`${entry.kind}-${entry.key}`} aria-current={active ? "page" : undefined}
-            onContextMenu={(event) => { if (entry.kind !== "playlist") return; event.preventDefault(); event.stopPropagation(); const playlist = projection.library?.playlists.find((item) => item.id === entry.scope); if (playlist) setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 470)), playlist }); }}
-            onClick={() => { setLibraryScope(entry.scope); setLibraryHome(false); navigate("library"); }}>
-            {(entry.kind === "all" || entry.kind === "favorites" || entry.kind === "unsorted" || entry.kind === "playlist") && mosaicTracks.length > 0
-              ? <PlaylistArtwork
-                  className="luno-playlist-pin"
-                  tracks={mosaicTracks}
-                  artwork={sidebarArtwork}
-                  emptyFallback={entry.kind === "unsorted" ? <IconDownload size={16} /> : entry.kind === "favorites" ? <IconHeart size={18} /> : entry.kind === "all" ? <IconMusicNote size={18} /> : "♫"}
-                />
-              : entry.kind === "favorites"
-                ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #4c8bf5, #b3b3b3)" }}><IconHeart size={18} /></span>
-                : entry.kind === "all"
-                  ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #1db954, #158a3e)" }}><IconMusicNote size={18} /></span>
-                  : entry.kind === "unsorted"
-                    ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #3e3e3e, #181818)" }}><IconDownload size={16} /></span>
-                    : art
-                      ? <span className="luno-artwork" style={{ width: 48, height: 48, flex: "0 0 48px", borderRadius: 5 }}><img src={art} alt="" decoding="async" /></span>
-                      : <span className="luno-playlist-pin" style={{ fontSize: 20 }}>♫</span>}
-            <span className="luno-playlist-copy"><strong>{entry.label}</strong><small>{entry.subtitle}</small></span>
-          </button>;
-        })}
-        {visibleSidebarEntries.length === 0 && <p style={{ padding: "8px 10px", color: "var(--luno-text-2)", fontSize: 13 }}>{sidebarChip === "albums" ? "No albums with metadata yet." : sidebarQuery ? "No matching playlists." : "No playlists yet."}</p>}
-      </div>
-    </aside>
+    <LibrarySidebar
+      snapshot={projection.library}
+      tracksById={tracksByIdForQueue}
+      selectedScope={libraryScope}
+      available={available}
+      onArtwork={bridge ? artworkFetcher : undefined}
+      onCreatePlaylist={createPlaylist}
+      onSelectScope={selectLibraryScope}
+      onPlaylistContextMenu={openSidebarPlaylistMenu}
+    />
         <main className="luno-main" data-slot="main" aria-disabled={!available}>{(() => { const backendError = projection.errors.length ? projection.errors[projection.errors.length - 1].message : null; const displayCommandError = commandError && (commandError.includes("PoisonError") || commandError.includes("poison recovered") || commandError.includes("command worker failed"))
               ? "A background task hit an internal error and was recovered. If this repeats, restart the app."
               : commandError;
