@@ -311,7 +311,7 @@ export function parseCommandEnvelope(json: string): CommandEnvelope { const valu
 export function parseEventEnvelope(json: string): EventEnvelope { const value: unknown = JSON.parse(json); if (!isEventEnvelope(value)) throw new Error("invalid or unsupported event envelope"); return value; }
 export function isSearchResults(value: unknown): value is SearchResult[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["provider", "query", "title", "artist", "duration", "thumbnail_url", "url"]) && nonEmptyId(item.provider) && nonEmptyId(item.query) && nonEmptyId(item.title) && (item.artist === null || nonEmptyId(item.artist)) && (item.duration === null || typeof item.duration === "string") && (item.thumbnail_url === null || nonEmptyId(item.thumbnail_url)) && (item.url === null || nonEmptyId(item.url))); }
 export function isArtworkCandidates(value: unknown): value is ArtworkCandidate[] {
-  return Array.isArray(value) && value.length <= 8 && value.every((candidate) => object(candidate)
+  return Array.isArray(value) && value.length <= 12 && value.every((candidate) => object(candidate)
     && exact(candidate, ["candidate_id", "source", "release", "artist", "year", "score", "exact_match", "artwork_data_url"])
     && nonEmptyId(candidate.candidate_id) && (candidate.source === "musicbrainz" || candidate.source === "youtube") && nonEmptyId(candidate.release) && typeof candidate.artist === "string"
     && (candidate.year === null || typeof candidate.year === "string") && safeInteger(candidate.score) && candidate.score >= 0 && candidate.score <= 100

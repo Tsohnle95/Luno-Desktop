@@ -133,13 +133,16 @@ transfer manifests (`docs/modules/contracts.md`).
   MusicBrainz. If the artist is missing, it searches by title alone. It searches
   recordings, filters low-scoring matches, then checks linked release groups in
   Cover Art Archive. A separate user-triggered YouTube search offers closely
-  matching video thumbnails as a fallback. YouTube searches start with the
-  track title; exact and strong title matches remain eligible when the
-  channel/uploader differs, while weaker matches must also match the saved
-  artist. Title and combined artist/title YouTube queries are merged, ranked,
-  deduplicated, and can show up to eight candidates. Those thumbnails may not be
-  album covers. Results from both providers are displayed for review, and no match is
-  written until the user applies one. YouTube thumbnail fetches are restricted
+  matching video thumbnails as a fallback. YouTube searches the title and
+  combined artist/title every time, then ranks and deduplicates up to twelve
+  close matches. It uses the managed yt-dlp search if the results page cannot
+  be parsed or the automatic results do not align with the saved artist.
+  Exact and strong title matches remain eligible when the channel/uploader
+  differs, while weaker matches must also match the saved artist. The artwork
+  picker also provides a manual YouTube search that preserves YouTube's result
+  order and shows up to twelve thumbnail candidates in a scrollable list. Those
+  thumbnails may not be album covers. Results from both providers are displayed
+  for review, and no match is written until the user applies one. YouTube thumbnail fetches are restricted
   to `i.ytimg.com`, bounded, and decoded through the same image normalizer.
   MusicBrainz permits free API use for
   non-commercial applications; a commercial Luno distribution needs an

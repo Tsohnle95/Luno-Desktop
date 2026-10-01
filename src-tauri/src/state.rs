@@ -2869,11 +2869,56 @@ impl AppState {
                 artist,
                 track.album.as_deref(),
             ),
-            "youtube" => self
-                .artwork_search
-                .search_youtube(track_id, &track.title, artist),
+            "youtube" => {
+                let ytdlp_fallback = self.artwork_ytdlp_fallback();
+                self.artwork_search.search_youtube(
+                    track_id,
+                    &track.title,
+                    artist,
+                    ytdlp_fallback.as_deref(),
+                )
+            }
             _ => Err("Choose MusicBrainz or YouTube as the artwork search source.".into()),
         }
+    }
+
+    /// Searches YouTube with terms edited by the user for an alternate
+    /// thumbnail. Search results remain staged until explicitly applied.
+    pub fn search_youtube_artwork_candidates(
+        &self,
+        track_id: &str,
+        query: &str,
+    ) -> Result<Vec<ArtworkCandidate>, String> {
+        let id = TrackId(track_id.to_owned());
+        let track_exists = self.library().tracks.iter().any(|track| track.id == id);
+        if !track_exists {
+            return Err("That song is no longer in the library.".into());
+        }
+        if !self
+            .track_paths
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&id)
+        {
+            return Err("That song is no longer available on disk.".into());
+        }
+        let ytdlp_fallback = self.artwork_ytdlp_fallback();
+        self.artwork_search
+            .search_youtube_manually(track_id, query, ytdlp_fallback.as_deref())
+    }
+
+    fn artwork_ytdlp_fallback(&self) -> Option<PathBuf> {
+        let helper = self
+            .bundle_helper
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()?;
+        let managed_dir = helper.parent().map(PathBuf::from);
+        crate::process::executables::discover(
+            crate::process::executables::ExecutableKind::YtDlp,
+            managed_dir.as_deref(),
+        )
+        .ok()
     }
 
     /// Applies one review-selected candidate to the staged local audio file.

@@ -209,6 +209,20 @@ async fn search_artwork_candidates(
 }
 
 #[tauri::command]
+async fn search_youtube_artwork_candidates(
+    state: tauri::State<'_, AppState>,
+    track_id: String,
+    query: String,
+) -> Result<Vec<luno_desktop_lib::library::artwork_search::ArtworkCandidate>, String> {
+    let app = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        app.search_youtube_artwork_candidates(&track_id, &query)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn apply_artwork_candidate(
     state: tauri::State<'_, AppState>,
     track_id: String,
@@ -468,9 +482,9 @@ fn main() {
             },
         );
     #[cfg(debug_assertions)]
-    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, missing_artwork_tracks, search_artwork_candidates, apply_artwork_candidate, track_duration, discovery_key_status, save_discovery_key, gate5_smoke]);
+    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, missing_artwork_tracks, search_artwork_candidates, search_youtube_artwork_candidates, apply_artwork_candidate, track_duration, discovery_key_status, save_discovery_key, gate5_smoke]);
     #[cfg(not(debug_assertions))]
-    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, missing_artwork_tracks, search_artwork_candidates, apply_artwork_candidate, track_duration, discovery_key_status, save_discovery_key]);
+    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, missing_artwork_tracks, search_artwork_candidates, search_youtube_artwork_candidates, apply_artwork_candidate, track_duration, discovery_key_status, save_discovery_key]);
     builder
         .setup(|app| {
             let handle = app.handle().clone();

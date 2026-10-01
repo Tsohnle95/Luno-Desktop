@@ -1,4 +1,4 @@
-//! User-triggered artwork lookup using MusicBrainz and Cover Art Archive.
+//! User-triggered artwork lookup using MusicBrainz, Cover Art Archive, and YouTube.
 //!
 //! Candidate images stay in memory until explicitly applied. This keeps
 //! provider lookup separate from the local missing-art scan and prevents any
@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::thread;
@@ -20,8 +21,9 @@ const MAX_PROVIDER_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RESULTS: usize = 8;
 const MAX_RELEASE_GROUPS_TO_CHECK: usize = 8;
 const MAX_REVIEW_CANDIDATES: usize = 5;
-const MAX_YOUTUBE_CANDIDATES: usize = 8;
-const MAX_YOUTUBE_SEARCH_RESULTS: usize = 30;
+const MAX_YOUTUBE_CANDIDATES: usize = 12;
+const MAX_MANUAL_YOUTUBE_CANDIDATES: usize = 12;
+const MAX_YOUTUBE_SEARCH_RESULTS: usize = 50;
 const MAX_PENDING_CANDIDATES: usize = 40;
 const CANDIDATE_TTL: Duration = Duration::from_secs(10 * 60);
 
@@ -263,6 +265,7 @@ impl ArtworkSearchService {
         track_id: &str,
         title: &str,
         artist: &str,
+        ytdlp_fallback: Option<&Path>,
     ) -> Result<Vec<ArtworkCandidate>, String> {
         let title = title.trim();
         let artist = artist.trim();
@@ -274,30 +277,38 @@ impl ArtworkSearchService {
         }
 
         self.expire_candidates_for_search(track_id);
-        let thumbnail_client = self
-            .youtube_thumbnail_client
+        self.youtube_thumbnail_client
             .as_ref()
             .ok_or_else(|| "YouTube thumbnail requests are unavailable on this device.".to_string())?;
-        // Search the title alone for precise matches and the combined artist/title
-        // for long compilation names, then merge both ranked result sets.
-        let title_search = crate::download::search::search_youtube_web(
-            title,
-            MAX_YOUTUBE_SEARCH_RESULTS,
-        );
+        // Always run both queries. A generic title can fill the first result set
+        // with unrelated videos, which must not prevent the artist query from
+        // finding a more relevant result farther down YouTube's ranking.
+        let title_search = search_youtube_results(title, ytdlp_fallback);
         let mut results = match title_search {
             Ok(results) => rank_youtube_results(title, artist, results),
             Err(error) if artist.is_empty() => return Err(error),
             Err(_) => Vec::new(),
         };
-        if !artist.is_empty() && results.len() < MAX_YOUTUBE_CANDIDATES {
+        if !artist.is_empty() {
             let combined_query = format!("{artist} {title}");
-            match crate::download::search::search_youtube_web(
-                &combined_query,
-                MAX_YOUTUBE_SEARCH_RESULTS,
-            ) {
+            match search_youtube_results(&combined_query, ytdlp_fallback) {
                 Ok(additional) => results.extend(rank_youtube_results(title, artist, additional)),
                 Err(error) if results.is_empty() => return Err(error),
                 Err(_) => {}
+            }
+            if !results.iter().any(|(score, _, _)| *score >= 90) {
+                if let Some(ytdlp) = ytdlp_fallback {
+                    match crate::download::search::search_provider(
+                        ytdlp,
+                        "youtube",
+                        &combined_query,
+                        MAX_YOUTUBE_SEARCH_RESULTS,
+                    ) {
+                        Ok(additional) => results.extend(rank_youtube_results(title, artist, additional)),
+                        Err(error) if results.is_empty() => return Err(error),
+                        Err(_) => {}
+                    }
+                }
             }
         }
         let mut seen_results = std::collections::HashSet::new();
@@ -312,27 +323,9 @@ impl ArtworkSearchService {
             if candidates.len() >= MAX_YOUTUBE_CANDIDATES {
                 break;
             }
-            let thumbnail_urls = youtube_thumbnail_urls(
-                result.thumbnail_url.as_deref(),
-                result.url.as_deref(),
-            );
-            let Some((bytes, mime, artwork_data_url)) = thumbnail_urls
-                .iter()
-                .find_map(|url| fetch_youtube_thumbnail(thumbnail_client, &self.user_agent, url))
-            else {
-                continue;
-            };
-            let candidate_id = self.remember_candidate(track_id, bytes, mime);
-            candidates.push(ArtworkCandidate {
-                candidate_id,
-                source: "youtube".into(),
-                release: result.title.clone(),
-                artist: result.artist.clone().unwrap_or_default(),
-                year: None,
-                score: *score,
-                exact_match: *exact_match,
-                artwork_data_url,
-            });
+            if let Some(candidate) = self.youtube_candidate(track_id, result, *score, *exact_match) {
+                candidates.push(candidate);
+            }
         }
         if candidates.is_empty() && !results.is_empty() {
             return Err(
@@ -341,6 +334,73 @@ impl ArtworkSearchService {
             );
         }
         Ok(candidates)
+    }
+
+    /// Searches YouTube with the user's own query and preserves provider order.
+    /// Manual results deliberately bypass the automatic title/artist relevance
+    /// gate so a user can select a plausible alternate upload or music video.
+    pub fn search_youtube_manually(
+        &self,
+        track_id: &str,
+        query: &str,
+        ytdlp_fallback: Option<&Path>,
+    ) -> Result<Vec<ArtworkCandidate>, String> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err("Enter a title, artist, or other YouTube search terms.".into());
+        }
+        if query.chars().count() > 512 {
+            return Err("The YouTube search must be 512 characters or fewer.".into());
+        }
+
+        self.expire_candidates_for_search(track_id);
+        self.youtube_thumbnail_client
+            .as_ref()
+            .ok_or_else(|| "YouTube thumbnail requests are unavailable on this device.".to_string())?;
+        let results = search_youtube_results(query, ytdlp_fallback)?;
+        let mut seen_results = std::collections::HashSet::new();
+        let mut candidates = Vec::new();
+        for result in results {
+            let key = result.url.as_deref().unwrap_or(&result.title).to_owned();
+            if !seen_results.insert(key) {
+                continue;
+            }
+            if let Some(candidate) = self.youtube_candidate(track_id, &result, 0, false) {
+                candidates.push(candidate);
+                if candidates.len() >= MAX_MANUAL_YOUTUBE_CANDIDATES {
+                    break;
+                }
+            }
+        }
+        Ok(candidates)
+    }
+
+    fn youtube_candidate(
+        &self,
+        track_id: &str,
+        result: &SearchResult,
+        score: u8,
+        exact_match: bool,
+    ) -> Option<ArtworkCandidate> {
+        let thumbnail_client = self.youtube_thumbnail_client.as_ref()?;
+        let thumbnail_urls = youtube_thumbnail_urls(
+            result.thumbnail_url.as_deref(),
+            result.url.as_deref(),
+        );
+        let (bytes, mime, artwork_data_url) = thumbnail_urls
+            .iter()
+            .find_map(|url| fetch_youtube_thumbnail(thumbnail_client, &self.user_agent, url))?;
+        let candidate_id = self.remember_candidate(track_id, bytes, mime);
+        Some(ArtworkCandidate {
+            candidate_id,
+            source: "youtube".into(),
+            release: result.title.clone(),
+            artist: result.artist.clone().unwrap_or_default(),
+            year: None,
+            score,
+            exact_match,
+            artwork_data_url,
+        })
     }
 
     fn expire_candidates_for_search(&self, track_id: &str) {
@@ -422,6 +482,37 @@ fn read_limited(mut response: Response, limit: usize) -> Result<Vec<u8>, String>
         return Err("The artwork provider returned an oversized response.".into());
     }
     Ok(bytes)
+}
+
+fn search_youtube_results(query: &str, ytdlp_fallback: Option<&Path>) -> Result<Vec<SearchResult>, String> {
+    match crate::download::search::search_youtube_web(query, MAX_YOUTUBE_SEARCH_RESULTS) {
+        Ok(results) if !results.is_empty() => Ok(results),
+        Ok(results) => match ytdlp_fallback {
+            Some(ytdlp) => match crate::download::search::search_provider(
+                ytdlp,
+                "youtube",
+                query,
+                MAX_YOUTUBE_SEARCH_RESULTS,
+            ) {
+                Ok(fallback) if !fallback.is_empty() => Ok(fallback),
+                Ok(_) => Ok(results),
+                Err(error) => Err(error),
+            },
+            None => Ok(results),
+        },
+        Err(web_error) => match ytdlp_fallback {
+            Some(ytdlp) => crate::download::search::search_provider(
+                ytdlp,
+                "youtube",
+                query,
+                MAX_YOUTUBE_SEARCH_RESULTS,
+            )
+            .map_err(|fallback_error| {
+                format!("YouTube search failed: {web_error}; yt-dlp fallback failed: {fallback_error}")
+            }),
+            None => Err(web_error),
+        },
+    }
 }
 
 fn escape_query(value: &str) -> String {

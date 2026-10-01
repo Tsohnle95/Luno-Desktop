@@ -197,6 +197,11 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
       if (!isArtworkCandidates(value)) throw new Error("invalid artwork matches response");
       return value;
     },
+    searchYouTubeArtworkCandidates: async (trackId: TrackId, query: string): Promise<ArtworkCandidate[]> => {
+      const value = await transport.invoke<unknown>("search_youtube_artwork_candidates", { trackId, query });
+      if (!isArtworkCandidates(value)) throw new Error("invalid YouTube artwork search response");
+      return value;
+    },
     applyArtworkCandidate: async (trackId: TrackId, candidateId: string): Promise<void> => {
       await transport.invoke<void>("apply_artwork_candidate", { trackId, candidateId });
     },

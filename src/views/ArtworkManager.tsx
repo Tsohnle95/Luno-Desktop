@@ -3,7 +3,7 @@ import type { ArtworkCandidate, ArtworkSearchSource, LibrarySnapshot, Track } fr
 import type { Bridge } from "../app/bridge";
 
 type ArtworkScope = "all" | "favorites" | "unsorted" | string;
-type ArtworkBridge = Pick<Bridge, "missingArtworkTracks" | "searchArtworkCandidates" | "applyArtworkCandidate">;
+type ArtworkBridge = Pick<Bridge, "missingArtworkTracks" | "searchArtworkCandidates" | "searchYouTubeArtworkCandidates" | "applyArtworkCandidate">;
 
 export interface ArtworkManagerProps {
   snapshot?: LibrarySnapshot | null;
@@ -34,10 +34,12 @@ function scopeName(snapshot: LibrarySnapshot | null | undefined, scope: ArtworkS
 export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtworkApplied }: ArtworkManagerProps) {
   const [scope, setScope] = useState<ArtworkScope>(initialScope);
   const [query, setQuery] = useState("");
+  const [youtubeQuery, setYoutubeQuery] = useState("");
   const [missingIds, setMissingIds] = useState<string[] | null>(null);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const selectedTrackIdRef = useRef<string | null>(null);
   const [candidates, setCandidates] = useState<ArtworkCandidate[]>([]);
+  const [candidateSearchMode, setCandidateSearchMode] = useState<"automatic" | "manual" | null>(null);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [searching, setSearching] = useState(false);
@@ -61,6 +63,12 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
   }, [missingTracks, query]);
   const selectedTrack = selectedTrackId ? tracksById.get(selectedTrackId) : undefined;
 
+  useEffect(() => {
+    setYoutubeQuery(selectedTrack
+      ? [selectedTrack.artist, selectedTrack.title].filter((part) => part?.trim()).join(" ")
+      : "");
+  }, [selectedTrackId, selectedTrack?.artist, selectedTrack?.title]);
+
   const scan = useCallback(async (trackIds: string[], label: string, replaceResults = false) => {
     if (!bridge) return;
     const requestId = ++scanRequestId.current;
@@ -68,6 +76,7 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
     setError(null);
     setMessage(`Checking ${trackIds.length} song${trackIds.length === 1 ? "" : "s"} in ${label}…`);
     setCandidates([]);
+    setCandidateSearchMode(null);
     setSelectedCandidateId(null);
     try {
       const result = await bridge.missingArtworkTracks([...new Set(trackIds)]);
@@ -109,6 +118,7 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
     setError(null);
     setMessage(null);
     setCandidates([]);
+    setCandidateSearchMode("automatic");
     setSelectedCandidateId(null);
     try {
       const result = await bridge.searchArtworkCandidates(requestedTrackId, source);
@@ -116,8 +126,32 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
       setCandidates(result);
       setSelectedCandidateId(result[0]?.candidate_id ?? null);
       if (result.length === 0) setMessage(source === "youtube"
-        ? "No closely matching YouTube thumbnails were found. Check the title and artist, then try again."
+        ? "No close YouTube matches were found. Try a manual search below with different or shorter terms."
         : "No usable release covers were found. Check the song title and artist, then try again.");
+    } catch (cause) {
+      if (requestedTrackId === selectedTrackIdRef.current) setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const searchYouTubeManually = async () => {
+    if (!bridge || !selectedTrackId || !youtubeQuery.trim()) return;
+    const requestedTrackId = selectedTrackId;
+    setSearching(true);
+    setError(null);
+    setMessage(null);
+    setCandidates([]);
+    setCandidateSearchMode("manual");
+    setSelectedCandidateId(null);
+    try {
+      const result = await bridge.searchYouTubeArtworkCandidates(requestedTrackId, youtubeQuery.trim());
+      if (requestedTrackId !== selectedTrackIdRef.current) return;
+      setCandidates(result);
+      setSelectedCandidateId(result[0]?.candidate_id ?? null);
+      setMessage(result.length === 0
+        ? "No YouTube video thumbnails were found for that search. Try different or shorter terms."
+        : `Showing ${result.length} YouTube video${result.length === 1 ? "" : "s"} in YouTube search order.`);
     } catch (cause) {
       if (requestedTrackId === selectedTrackIdRef.current) setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -140,6 +174,7 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
       selectedTrackIdRef.current = nextTrackId;
       setSelectedTrackId(nextTrackId);
       setCandidates([]);
+      setCandidateSearchMode(null);
       setSelectedCandidateId(null);
       setMessage(`Artwork saved to “${selectedTrack?.title ?? "song"}”.`);
     } catch (cause) {
@@ -166,6 +201,7 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
           setSelectedTrackId(null);
           selectedTrackIdRef.current = null;
           setCandidates([]);
+          setCandidateSearchMode(null);
           setSelectedCandidateId(null);
           setMessage(null);
           setError(null);
@@ -183,7 +219,7 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
         <span>{matchingScopeTracks.length} matching song{matchingScopeTracks.length === 1 ? "" : "s"}{matchingScopeTracks.length > 0 && matchingScopeTracks.length <= 3 ? ` · ${matchingScopeTracks.map((track) => track.title).join(", ")}` : ""}</span>
         <button type="button" onClick={() => scan(matchingScopeTracks.map((track) => track.id), `search results in ${scopeName(snapshot, scope)}`)} disabled={!bridge || scanning || matchingScopeTracks.length === 0} style={{ ...buttonStyle, opacity: !bridge || scanning || matchingScopeTracks.length === 0 ? 0.5 : 1 }}>{scanning ? "Scanning…" : `Scan ${matchingScopeTracks.length} match${matchingScopeTracks.length === 1 ? "" : "es"}`}</button>
       </div>}
-      <p className="luno-artwork-note">Opening this page scans the selected scope automatically. Search first to scan only matching songs, or rescan the whole scope. MusicBrainz searches use the saved title and artist; YouTube searches use the title, with the artist helping rank similar results.</p>
+      <p className="luno-artwork-note">Opening this page scans the selected scope automatically. Search first to scan only matching songs, or rescan the whole scope. YouTube's close-match search uses the saved title and artist; use the manual search to choose your own terms and browse video thumbnails.</p>
     </section>
 
     {error && <p className="luno-artwork-error" role="alert">{error}</p>}
@@ -197,6 +233,7 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
             selectedTrackIdRef.current = track.id;
             setSelectedTrackId(track.id);
             setCandidates([]);
+            setCandidateSearchMode(null);
             setSelectedCandidateId(null);
             setMessage(null);
             setError(null);
@@ -215,22 +252,31 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
               {searching ? "Searching…" : "Find artwork matches"}
             </button>
             <button type="button" onClick={() => search("youtube")} disabled={!bridge || searching || applying} style={{ ...secondaryButton, opacity: !bridge || searching || applying ? 0.5 : 1 }}>
-              {searching ? "Searching…" : "Try YouTube thumbnails"}
+              {searching ? "Searching…" : "Find close YouTube matches"}
             </button>
           </div>
+          <form className="luno-artwork-youtube-search" onSubmit={(event) => { event.preventDefault(); void searchYouTubeManually(); }}>
+            <label htmlFor="artwork-youtube-query">Search YouTube videos</label>
+            <div>
+              <input id="artwork-youtube-query" value={youtubeQuery} onChange={(event) => setYoutubeQuery(event.target.value)} maxLength={512} placeholder="Search by song, artist, or video title" style={inputStyle} />
+              <button type="submit" disabled={!bridge || searching || applying || !youtubeQuery.trim()} style={{ ...secondaryButton, opacity: !bridge || searching || applying || !youtubeQuery.trim() ? 0.5 : 1 }}>{searching ? "Searching…" : "Search YouTube"}</button>
+            </div>
+          </form>
           {!selectedTrack.artist?.trim() && <p className="luno-artwork-note">No artist name is saved, so searches use the title only. Review matches carefully.</p>}
         </>}
         {candidates.length > 0 && <>
           <p className="luno-artwork-note">{candidates[0]?.source === "youtube"
-            ? "These are video thumbnails and may not be the album cover. Choose a close match and review it before applying."
+            ? candidateSearchMode === "manual"
+              ? "Select the video whose thumbnail you want, then use it for this song. Results follow YouTube's search order."
+              : "These are video thumbnails and may not be the album cover. Choose a close match and review it before applying."
             : "Choose the cover that matches this recording. MusicBrainz scores sort results; check the artist and release before applying."}</p>
-          <div className="luno-artwork-candidates" role="radiogroup" aria-label="Artwork matches">
+          <div className={`luno-artwork-candidates${candidates[0]?.source === "youtube" ? " luno-artwork-candidates-youtube" : ""}`} role="radiogroup" aria-label="Artwork matches">
             {candidates.map((candidate) => <button key={candidate.candidate_id} type="button" role="radio" aria-checked={selectedCandidateId === candidate.candidate_id} onClick={() => setSelectedCandidateId(candidate.candidate_id)}>
               <img src={candidate.artwork_data_url} alt="" />
               <span><strong>{candidate.release}</strong><small>{candidate.artist || "Unknown artist"}{candidate.year ? ` · ${candidate.year}` : ""}</small><small>{candidate.source === "youtube" ? "YouTube video thumbnail" : candidate.exact_match ? "Track title and artist match" : `MusicBrainz score ${candidate.score}`}</small></span>
             </button>)}
           </div>
-          <button type="button" onClick={apply} disabled={!selectedCandidateId || applying} style={{ ...buttonStyle, marginTop: 12, opacity: !selectedCandidateId || applying ? 0.5 : 1 }}>{applying ? "Saving artwork…" : "Apply selected artwork"}</button>
+          <button type="button" onClick={apply} disabled={!selectedCandidateId || applying} style={{ ...buttonStyle, marginTop: 12, opacity: !selectedCandidateId || applying ? 0.5 : 1 }}>{applying ? "Saving artwork…" : candidateSearchMode === "manual" ? "Use this thumbnail" : "Apply selected artwork"}</button>
         </>}
         <p className="luno-artwork-source">Release covers come from MusicBrainz and Cover Art Archive. YouTube results are video thumbnails, which may not be album art. Review every image before embedding. Unsupported formats stay unchanged.</p>
       </section>

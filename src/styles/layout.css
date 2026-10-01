@@ -402,10 +402,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-artwork-missing-list [role="option"] span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--luno-text-2); font-size: 11px; }
 .luno-artwork-missing-list [role="listbox"] > p { padding: 8px; color: var(--luno-text-2); font-size: 12px; }
 .luno-artwork-review > button { margin-top: 2px; }
-.luno-artwork-candidates { display: grid; gap: 8px; margin-top: 14px; }
+.luno-artwork-youtube-search { display: grid; gap: 7px; margin-top: 16px; }
+.luno-artwork-youtube-search > label { font-size: 13px; font-weight: 600; }
+.luno-artwork-youtube-search > div { display: flex; align-items: center; gap: 8px; }
+.luno-artwork-youtube-search input { min-width: 0; flex: 1; }
+.luno-artwork-youtube-search button { flex: 0 0 auto; }
+.luno-artwork-candidates { display: grid; align-content: start; gap: 8px; max-height: 410px; margin-top: 14px; padding-right: 4px; overflow-y: auto; overscroll-behavior: contain; }
 .luno-artwork-candidates [role="radio"] { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px; border: 1px solid var(--luno-border); border-radius: 8px; color: var(--luno-text); background: var(--luno-bg); text-align: left; cursor: pointer; }
 .luno-artwork-candidates [role="radio"][aria-checked="true"] { border-color: var(--luno-green); box-shadow: 0 0 0 1px var(--luno-green); }
 .luno-artwork-candidates img { flex: 0 0 64px; width: 64px; height: 64px; border-radius: 5px; object-fit: cover; }
+.luno-artwork-candidates-youtube img { flex-basis: 128px; width: 128px; height: 72px; }
 .luno-artwork-candidates span { display: grid; min-width: 0; gap: 4px; }
 .luno-artwork-candidates strong, .luno-artwork-candidates small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .luno-artwork-candidates strong { font-size: 13px; }
@@ -415,6 +421,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .luno-artwork-workspace { grid-template-columns: minmax(0, 1fr); }
   .luno-artwork-scope-row { align-items: stretch; flex-direction: column; }
   .luno-artwork-search-actions { align-items: stretch; flex-direction: column; }
+  .luno-artwork-youtube-search > div { align-items: stretch; flex-direction: column; }
 }
 @media (hover: none) {
   .luno-artwork-menu-trigger { opacity: 1; pointer-events: auto; }
