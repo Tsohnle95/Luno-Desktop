@@ -21,7 +21,9 @@ export type ArtworkFetcher = (trackId: string) => Promise<string | null>;
  * a new id list). An earlier version re-requested evicted ids immediately,
  * which looped forever once the mounted working set exceeded the cap — every
  * fetch evicted another visible id, which instantly re-fetched, churning
- * gigabytes through the JS heap in the background (2026-09-09).
+ * gigabytes through the JS heap in the background (2026-09-09). Queued jobs
+ * hold view-scoped demand too: leaving the viewport cancels queued work when
+ * no other current view still needs that id.
  */
 const CAP = 240;
 const MAX_CACHE_BYTES = 24 * 1024 * 1024;
@@ -31,7 +33,10 @@ const resolvedCache = new Map<string, { url: string | null; bytes: number }>();
 const inFlight = new Map<string, Promise<string | null>>();
 let activeCount = 0;
 let cachedBytes = 0;
-const pendingQueue: Array<{ id: string; fetcher: ArtworkFetcher }> = [];
+let nextQueueOrder = 0;
+const pendingQueue = new Map<string, { id: string; fetcher: ArtworkFetcher; priority: number; order: number }>();
+const demandOwners = new Map<symbol, { ids: Set<string>; fetcher: ArtworkFetcher; priority: number; requested: Set<string> }>();
+const requestedOwners = new Map<string, Set<Set<string>>>();
 
 /**
  * Components subscribe to cache resolutions. Without this, only the fetches
@@ -43,7 +48,7 @@ const pendingQueue: Array<{ id: string; fetcher: ArtworkFetcher }> = [];
  *
  * A second event — eviction — lets components forget the per-instance
  * "requested" marker for ids the bounded module cache dropped. Without it,
- * scrolling a large library evicts older rows' data URLs (CAP is 80), and
+ * scrolling a large library evicts older rows' data URLs (CAP is 240), and
  * the requested set then blocks re-requesting those rows forever: artwork
  * that was visible moments earlier stayed blank for the whole session
  * (single-song-page art survived because its one-id request is prioritized
@@ -51,6 +56,11 @@ const pendingQueue: Array<{ id: string; fetcher: ArtworkFetcher }> = [];
  */
 type Listener = (event: { type: "resolved"; urls: Record<string, string> } | { type: "evicted"; id: string }) => void;
 const listeners = new Set<Listener>();
+
+function publishResolved(id: string, url: string): void {
+  const urls = { [id]: url };
+  for (const listener of listeners) listener({ type: "resolved", urls });
+}
 
 function remember(id: string, url: string | null): void {
   // Delete-then-set keeps insertion order reflecting recency for LRU eviction.
@@ -60,10 +70,8 @@ function remember(id: string, url: string | null): void {
   resolvedCache.delete(id);
   resolvedCache.set(id, { url, bytes });
   cachedBytes += bytes;
-  if (url) {
-    const urls = { [id]: url };
-    for (const listener of listeners) listener({ type: "resolved", urls });
-  }
+  if (url) publishResolved(id, url);
+  requestedOwners.delete(id);
   while (resolvedCache.size > CAP || cachedBytes > MAX_CACHE_BYTES) {
     const oldest = resolvedCache.keys().next().value;
     if (oldest === undefined) break;
@@ -82,6 +90,14 @@ function remember(id: string, url: string | null): void {
       for (const listener of listeners) listener({ type: "evicted", id: oldest });
     }
   }
+}
+
+function cached(id: string): string | null | undefined {
+  const entry = resolvedCache.get(id);
+  if (!entry) return undefined;
+  resolvedCache.delete(id);
+  resolvedCache.set(id, entry);
+  return entry.url;
 }
 
 /** Cap-trim a component-state map to the most-recent CAP entries. */
@@ -117,9 +133,13 @@ export function needsArtworkRequest(
 }
 
 function scheduleNext(): void {
-  while (activeCount < MAX_CONCURRENT && pendingQueue.length > 0) {
-    const job = pendingQueue.shift();
+  while (activeCount < MAX_CONCURRENT && pendingQueue.size > 0) {
+    let job: { id: string; fetcher: ArtworkFetcher; priority: number; order: number } | undefined;
+    for (const queued of pendingQueue.values()) {
+      if (!job || queued.priority > job.priority || (queued.priority === job.priority && queued.order < job.order)) job = queued;
+    }
     if (!job) break;
+    pendingQueue.delete(job.id);
     const { id, fetcher } = job;
     if (resolvedCache.has(id) || inFlight.has(id)) continue;
     activeCount += 1;
@@ -132,6 +152,17 @@ function scheduleNext(): void {
     inFlight.set(id, promise);
     promise.then((url) => {
       if (url === null || url.length <= MAX_CACHED_BYTES) remember(id, url);
+      else {
+        // Large results may be shown to current demand owners without being
+        // retained in either bounded cache. Clear stale owners so a view that
+        // was offscreen when this completed can request it when it returns.
+        for (const owner of requestedOwners.get(id) ?? []) {
+          const stillDemanded = [...demandOwners.values()].some((demand) => demand.requested === owner && demand.ids.has(id));
+          if (!stillDemanded) owner.delete(id);
+        }
+        requestedOwners.delete(id);
+        publishResolved(id, url);
+      }
       return url;
     }).catch(() => {
       remember(id, null);
@@ -139,11 +170,60 @@ function scheduleNext(): void {
   }
 }
 
-export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | undefined): Record<string, string> {
+function updateQueuedDemand(id: string): void {
+  const current = pendingQueue.get(id);
+  if (!current) return;
+  let best: { fetcher: ArtworkFetcher; priority: number } | null = null;
+  for (const demand of demandOwners.values()) {
+    if (!demand.ids.has(id)) continue;
+    if (!best || demand.priority > best.priority) best = { fetcher: demand.fetcher, priority: demand.priority };
+  }
+  if (!best) {
+    pendingQueue.delete(id);
+    for (const owner of requestedOwners.get(id) ?? []) owner.delete(id);
+    requestedOwners.delete(id);
+    return;
+  }
+  current.fetcher = best.fetcher;
+  current.priority = best.priority;
+}
+
+function requestForDemand(id: string, demand: { fetcher: ArtworkFetcher; priority: number; requested: Set<string> }): void {
+  if (resolvedCache.has(id) || inFlight.has(id) || demand.requested.has(id)) return;
+  demand.requested.add(id);
+  let owners = requestedOwners.get(id);
+  if (!owners) requestedOwners.set(id, owners = new Set());
+  owners.add(demand.requested);
+  const queued = pendingQueue.get(id);
+  if (queued) {
+    if (demand.priority > queued.priority) {
+      queued.priority = demand.priority;
+      queued.fetcher = demand.fetcher;
+    }
+    return;
+  }
+  pendingQueue.set(id, { id, fetcher: demand.fetcher, priority: demand.priority, order: nextQueueOrder++ });
+}
+
+function registerDemand(ids: string[], fetcher: ArtworkFetcher, priority: number, requested: Set<string>): () => void {
+  const token = Symbol("artwork-demand");
+  const demand = { ids: new Set(ids), fetcher, priority, requested };
+  demandOwners.set(token, demand);
+  for (const id of demand.ids) requestForDemand(id, demand);
+  scheduleNext();
+  return () => {
+    demandOwners.delete(token);
+    for (const id of demand.ids) updateQueuedDemand(id);
+    scheduleNext();
+  };
+}
+
+export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | undefined, priority = 1): Record<string, string> {
   const [art, setArt] = useState<Record<string, string>>({});
   const requested = useRef<Set<string>>(new Set());
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
+  const fetchArtwork = useRef<ArtworkFetcher>((id) => fetcherRef.current?.(id) ?? Promise.resolve(null)).current;
   const idsRef = useRef(trackIds);
   idsRef.current = trackIds;
   // Artwork id lists are already windowed by callers (library visible ~20,
@@ -153,9 +233,9 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
   // ♫ while the footer — a single-id request — loaded fine).
   const idsKey = trackIds.join("\0");
   useEffect(() => {
-    const fetchArt = fetcherRef.current;
-    const ids = idsRef.current;
-    if (!fetchArt) return;
+    if (!fetcherRef.current) return;
+    const fetchArt = fetchArtwork;
+    const ids = [...new Set(idsRef.current)];
     // Prune component state to only keep ids that are still visible.
     // Without this, HomeView holding 300 artwork URLs (each 1–2 MB) would keep
     // 300–600 MB in this component alone, plus module cache.
@@ -169,41 +249,33 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
       }
       // Also pull in any newly cached visible ids
       for (const id of ids) {
-        const cached = resolvedCache.get(id)?.url;
-        if (cached && !prev[id]) {
+        const cachedUrl = cached(id);
+        if (cachedUrl && !prev[id]) {
           if (!next) next = { ...prev };
-          next[id] = cached;
+          next[id] = cachedUrl;
         }
       }
       return next ? capTrimmed(next) : prev;
     });
 
-    const inFlightIds = new Set(inFlight.keys());
     for (const id of ids) {
-      const cached = resolvedCache.get(id)?.url;
-      if (cached !== undefined) {
-        if (cached) {
+      const cachedUrl = cached(id);
+      if (cachedUrl !== undefined) {
+        if (cachedUrl) {
           setArt((prev) => {
-            if (prev[id] === cached) return prev;
-            return capTrimmed({ ...prev, [id]: cached });
+            if (prev[id] === cachedUrl) return prev;
+            return capTrimmed({ ...prev, [id]: cachedUrl });
           });
         }
-        continue;
-      }
-      if (!needsArtworkRequest(requested.current, resolvedCache, inFlightIds, id)) continue;
-      requested.current.add(id);
-      // Prioritize single-track requests (e.g., footer now-playing) over
-      // bulk HomeView/Queue bursts so playing a song never waits behind 80
-      // background fetches.
-      if (ids.length === 1) pendingQueue.unshift({ id, fetcher: fetchArt });
-      else pendingQueue.push({ id, fetcher: fetchArt });
-      if (requested.current.size > 1000) {
-        // Prune oldest half to keep the set bounded
-        const vals = [...requested.current];
-        requested.current = new Set(vals.slice(vals.length / 2));
       }
     }
-    scheduleNext();
+    const releaseDemand = registerDemand(ids, fetchArt, priority, requested.current);
+    if (requested.current.size > 1000) {
+      // Prune old completed requests, retaining active visible ids.
+      const activeIds = new Set(ids);
+      const removable = [...requested.current].filter((id) => !activeIds.has(id) && !inFlight.has(id) && !pendingQueue.has(id));
+      for (const id of removable.slice(0, Math.max(0, requested.current.size - 1000))) requested.current.delete(id);
+    }
 
     // Subscribe to module-cache resolutions: fetches queued behind
     // MAX_CONCURRENT resolve into the cache long after this effect ran, and a
@@ -250,7 +322,7 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
         });
       }).catch(() => {});
     }
-    return () => { listeners.delete(onCacheEvent); };
-  }, [idsKey]);
+    return () => { listeners.delete(onCacheEvent); releaseDemand(); };
+  }, [idsKey, priority, fetcher !== undefined]);
   return art;
 }

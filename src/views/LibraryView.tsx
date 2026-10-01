@@ -288,7 +288,7 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
       });
     }
   }, [visible, onProbeDuration, snapshot?.generation]);
-  const artwork = useTrackArtwork(visible.map((track) => track.id), onArtwork);
+  const artwork = useTrackArtwork(visible.map((track) => track.id), onArtwork, 2);
   const coverArtwork = useTrackArtwork(tracks.slice(0, 8).map((track) => track.id), onArtwork);
   const play = (track: Track) => { if (backendAvailable) onPlay?.(track, tracks); };
   const toggleSelection = (track: Track, event: MouseEvent) => {

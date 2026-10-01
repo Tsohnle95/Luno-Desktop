@@ -1005,7 +1005,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // (song page, video slot, queue Now playing) must reflect.
   const displayTrack = playbackDisplayTrack(!!projection.discover?.enabled, discoverCurrentTrack, audibleTrack, previewDisplayTrack, track);
   const displayedLibraryTrack = displayTrack ? tracksByIdForQueue.get(displayTrack.id) : null;
-  const displayedArtwork = useTrackArtwork(displayedLibraryTrack ? [displayedLibraryTrack.id] : [], bridge ? (id) => bridge.trackArtwork(id) : undefined);
+  const displayedArtwork = useTrackArtwork(displayedLibraryTrack ? [displayedLibraryTrack.id] : [], bridge ? (id) => bridge.trackArtwork(id) : undefined, 3);
   const audibleArtwork = displayTrack ? (displayedArtwork[displayTrack.id] ?? displayTrack.artwork_url) : null;
   // Keep queue referentially stable across heartbeats: only recompute when the
   // actual queue content changes, not on every position tick. Unresolvable ids
@@ -1259,7 +1259,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     return needle ? sidebarEntries.filter((entry) => entry.label.toLocaleLowerCase().includes(needle)) : sidebarEntries;
   }, [sidebarEntries, sidebarQuery]);
   const artworkFetcher = bridge ? (id: string) => bridge.trackArtwork(id) : undefined;
-  const sidebarArtwork = useTrackArtwork(visibleSidebarEntries.flatMap((entry) => entry.artIds ?? (entry.artId ? [entry.artId] : [])), artworkFetcher);
+  const sidebarArtwork = useTrackArtwork(visibleSidebarEntries.flatMap((entry) => entry.artIds ?? (entry.artId ? [entry.artId] : [])), artworkFetcher, 0);
   const nextFromLabel = useMemo(() => {
     if (!seedTrack || !projection.library) return null;
     const owner = projection.library.playlists.find((playlist) => playlist.ordered_track_ids.includes(seedTrack.id));

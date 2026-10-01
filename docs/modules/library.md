@@ -110,6 +110,11 @@ transfer manifests (`docs/modules/contracts.md`).
   count and byte budget and retries evicted entries lazily on the next
   visible pass — never eagerly from the eviction event (fetch-evict-refetch
   loop, 2026-09-09).
+- Frontend artwork requests have view-scoped demand leases: queued offscreen
+  work is removed when no mounted view needs it, duplicate requests share one
+  job, and the audible track and visible library rows receive higher queue
+  priority than static sidebar mosaics. Concurrency and cache budgets are
+  unchanged.
 - Missing table durations are probed lazily for virtualized visible rows
   through `track_duration`, on a blocking worker. Probed values stay in the
   current frontend view cache; they do not change filename-derived IDs or the

@@ -50,6 +50,11 @@ envelope shapes (`docs/modules/contracts.md`).
   `track_artwork` command as bounded data URLs; visible library rows request
   missing durations through `track_duration`, which probes on a blocking
   worker instead of extending every library scan.
+- Artwork requests hold per-view demand leases. Scrolling or unmounting drops
+  queued requests no longer needed by that view; shared IDs stay queued while
+  any view still needs them, and an in-flight extraction remains shared.
+  Audible-track art outranks virtualized library rows, which outrank static
+  sidebar art. The six-request limit and cache budgets stay fixed.
 - UI mutations from backend events are scheduled via `.after(0, callback)`.
 - Virtual-list rows are 56 px with scroll-region clamping where the
   library list applies — preserve both when touching list rendering.
