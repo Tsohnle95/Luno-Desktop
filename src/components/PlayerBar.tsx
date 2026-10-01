@@ -19,6 +19,8 @@ export interface PlayerBarProps {
   /** Final commit on release (also persists the setting). */
   onVolumeCommit?: (volume: number) => void;
   onFavoriteToggle?: (track: Track) => void;
+  /** The matching library track; null disables favorites for unsaved previews. */
+  favoriteTrack?: Track | null;
   onOpenTrack?: (track: Track) => void;
   /** Right-click on the now-playing track (opens the shared track menu). */
   onTrackContextMenu?: (event: MouseEvent, track: Track) => void;
@@ -50,7 +52,8 @@ const clamp = (value: number, min: number, max: number) => Math.min(Math.max(min
  * the committed position until the backend catches up (no snap-back). The
  * volume slider mirrors the persisted volume value when idle.
  */
-export function PlayerBar({ track = null, playback = null, artwork = null, volume = 1, accent = "var(--luno-green)", onPlayPause, onNext, onPrevious, onSeek, onVolume, onVolumeCommit, onFavoriteToggle, onOpenTrack, onTrackContextMenu, backendAvailable = true, shuffle = false, repeat = "off", onToggleShuffle, onCycleRepeat, queueOpen = true, onToggleQueue }: PlayerBarProps) {
+export function PlayerBar({ track = null, favoriteTrack: favoriteTrackProp, playback = null, artwork = null, volume = 1, accent = "var(--luno-green)", onPlayPause, onNext, onPrevious, onSeek, onVolume, onVolumeCommit, onFavoriteToggle, onOpenTrack, onTrackContextMenu, backendAvailable = true, shuffle = false, repeat = "off", onToggleShuffle, onCycleRepeat, queueOpen = true, onToggleQueue }: PlayerBarProps) {
+  const favoriteTrack = favoriteTrackProp === undefined ? (track?.path ? track : null) : favoriteTrackProp;
   const position = playback?.position_ms ?? 0;
   const duration = playback?.duration_ms ?? 0;
   const playing = playback?.status === "playing";
@@ -230,7 +233,7 @@ export function PlayerBar({ track = null, playback = null, artwork = null, volum
       </div>
       <div className="luno-player-actions">
         {onToggleQueue && <button type="button" aria-label={queueOpen ? "Close queue panel" : "Open queue panel"} aria-pressed={queueOpen} onClick={onToggleQueue}><IconQueueList size={17} /></button>}
-        <button type="button" className={`luno-favorite${track?.favorite ? " is-on" : ""}`} aria-label={track?.favorite ? "Remove from favorites" : "Add to favorites"} disabled={!backendAvailable || !track} onClick={() => track && onFavoriteToggle?.(track)}>{track?.favorite ? "★" : "☆"}</button>
+        <button type="button" className={`luno-favorite${favoriteTrack?.favorite ? " is-on" : ""}`} aria-label={favoriteTrack ? (favoriteTrack.favorite ? "Remove from favorites" : "Add to favorites") : track ? "Save this song to favorite it" : "No song to favorite"} title={!favoriteTrack && track ? "Save this song to your library to favorite it" : undefined} disabled={!backendAvailable || !favoriteTrack || !onFavoriteToggle} onClick={() => favoriteTrack && onFavoriteToggle?.(favoriteTrack)}>{favoriteTrack?.favorite ? "★" : "☆"}</button>
         <button type="button" aria-label={muted || volume <= 0 ? "Unmute" : "Mute"} aria-pressed={muted || volume <= 0} disabled={!backendAvailable} onClick={toggleMute}><IconVolume size={16} /></button>
         <label className="luno-volume"><span className="sr-only">Volume</span><input ref={volumeRef} defaultValue={clamp(volume, 0, 1)} aria-label="Volume" type="range" min="0" max="1" step="0.01" disabled={!backendAvailable} onChange={(event) => previewVolume(Number(event.currentTarget.value))} onPointerDown={startVolumeDrag} onPointerUp={commitVolume} onPointerCancel={commitVolume} onKeyUp={commitVolumeKeyboard} /></label>
       </div>

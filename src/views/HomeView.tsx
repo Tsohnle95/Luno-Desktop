@@ -83,7 +83,7 @@ function greeting() {
 
 /**
  * Spotify-style home dashboard mirroring the mobile app's categories:
- * Made for you → Favorites → Recently played → Most popular songs →
+ * Made for you → Recently played → Most popular songs → Favorite songs →
  * Most popular playlists → Recently downloaded.
  */
 export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, popularTracks, popularPlaylists, recentlyDownloaded, tracksById, onPlayTrack, onTrackContextMenu, onOpenLibrary, onOpenRecent, onOpenDownloader, onOpenPlaylist, onArtwork, backendAvailable = true }: HomeViewProps) {
@@ -144,13 +144,6 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
         : <div className="luno-card-row luno-scroll">{madeForYou.map(trackCard(madeForYou))}</div>}
     </section>
 
-    <section className="luno-home-section" aria-label="Favorited songs">
-      {sectionHead("Favorited songs", favorites.length > 0 ? { label: "Show all", onAction: () => onOpenLibrary?.() } : undefined)}
-      {favorites.length === 0
-        ? <p className="luno-empty-note">No favorites yet — tap the ☆ on any track to keep it here.</p>
-        : <div className="luno-card-row luno-scroll">{favorites.map(trackCard(favorites))}</div>}
-    </section>
-
     <section className="luno-home-section" aria-label="Recently played">
       {sectionHead("Recently played", recentTracks.length > 0 ? { label: "Show all", onAction: () => onOpenRecent?.() } : undefined)}
       {recentTracks.length === 0
@@ -169,6 +162,13 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
       {popularTracks.length === 0
         ? <p className="luno-empty-note">Play songs to build your local favorites.</p>
         : <div className="luno-card-row luno-scroll">{popularTracks.map(trackCard(popularTracks))}</div>}
+    </section>
+
+    <section className="luno-home-section" aria-label="Favorite songs">
+      {sectionHead("Favorite songs", favorites.length > 0 ? { label: "Show all", onAction: () => onOpenLibrary?.() } : undefined)}
+      {favorites.length === 0
+        ? <p className="luno-empty-note">No favorites yet — tap the ☆ on any track to keep it here.</p>
+        : <div className="luno-card-row luno-scroll">{favorites.map(trackCard(favorites))}</div>}
     </section>
 
     <section className="luno-home-section" aria-label="Most popular playlists">

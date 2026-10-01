@@ -69,6 +69,10 @@ What it does not own: library snapshots and track identity
   never re-derives it from `track_started` (duplicate ids made first-occurrence
   `indexOf` regress the queue panel). `audible_track_id` is separately
   authoritative for the sounding item when it is outside the physical queue.
+- Focused and Discover recommendation IDs are temporary keys derived from the
+  trimmed artist/title pair. Frontend key sanitization follows Rust's Unicode
+  code-point `safe_key`, so queue IDs resolve to the matching recommendation
+  metadata in every playback surface.
 - An explicit library queue edit while Discover is active ends the temporary
   projection before applying the edit to the physical queue. Projected
   recommendation rows cannot be removed or reordered as physical tracks.

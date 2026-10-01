@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { backendCommandArgs, createBridge, isValidLibraryResponse, parseMigrationStatus, tauriTransport } from "../app/bridge";
 import { createBackendProjection, mergeVideoSnapshot } from "../state/backend_projection";
-import { currentVideoForTrack, focusedQueueProjection, playbackDisplayTrack, playRecentTrack, runBridgeCommand, safeVideoSource, stoppedPlaybackCommand, videoCommandsEnabled, videoSurfaceActive } from "../app/Shell";
+import { currentVideoForTrack, focusedQueueProjection, libraryFavoriteTarget, playbackDisplayTrack, playRecentTrack, recommendationTrackMap, runBridgeCommand, safeVideoSource, stoppedPlaybackCommand, videoCommandsEnabled, videoSurfaceActive } from "../app/Shell";
 import type { Bridge, BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope, PlaybackSnapshot } from "../shared/contracts";
 import type { SaveState } from "../shared/contracts";
@@ -60,6 +60,26 @@ describe("typed IPC bridge and projection", () => {
     expect(previewTap).toHaveBeenCalledWith(recommendations.slice(50).map(({ artist, title }) => ({ artist, title })), selected.id);
     await stoppedPlaybackCommand(bridge, library, library, false, recommendations, [library]);
     expect(playWithContext).toHaveBeenCalledWith(library.id, [library.id]);
+  });
+
+  it("keeps Rust and TypeScript recommendation IDs aligned for non-BMP characters", () => {
+    const recommendation = { artist: "Björk", title: "Track 🎵", match_score: 1, artwork_url: null };
+    const key = previewKey(recommendation.artist, recommendation.title);
+    expect(key).toBe("Bj_rk-Track__");
+    expect(recommendationTrackMap([recommendation]).get(key)).toMatchObject({
+      id: key,
+      artist: "Björk",
+      title: "Track 🎵",
+    });
+  });
+
+  it("only targets the matching library snapshot track for footer favorites", () => {
+    const saved: Track = { id: "saved-track", path: "/music/Saved.mp3", title: "Saved", artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite: true, provider: null };
+    const preview: Track = { ...saved, id: previewKey("Artist", "Preview 🎵"), path: null, title: "Preview 🎵", favorite: false };
+    const libraryTracks = new Map([[saved.id, saved]]);
+    expect(libraryFavoriteTarget(saved, libraryTracks)).toBe(saved);
+    expect(libraryFavoriteTarget(preview, libraryTracks)).toBeNull();
+    expect(libraryFavoriteTarget({ ...preview, id: saved.id }, libraryTracks)).toBeNull();
   });
 
   it("passes Gate 5 fixture roots to the native command without changing no-arg calls", async () => {
@@ -169,7 +189,7 @@ describe("typed IPC bridge and projection", () => {
 
   it("uses the backend source review commands and validates their responses", async () => {
     const calls: unknown[] = [];
-    const issue = { video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "aPSOTX5AkiY", selected_source_id: null, retry_pending: false, updated_at_ms: 1 };
+    const issue = { video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "aPSOTX5AkiY", selected_source_id: null, retry_pending: false, updated_at_ms: 1, local_matches: [] };
     const candidate = { video_id: "6U7_Qy5c_uc", title: "Get What You Give", channel: "Boogie T - Topic", duration: "4:51", thumbnail_url: null, url: "https://www.youtube.com/watch?v=6U7_Qy5c_uc" };
     const selection = { video_id: issue.video_id, source_video_id: candidate.video_id, url: candidate.url };
     const transport: BridgeTransport = {

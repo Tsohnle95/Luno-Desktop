@@ -139,6 +139,24 @@ export function playbackDisplayTrack(discoverEnabled: boolean, discoverCurrent: 
     : audible ?? previewCurrent ?? libraryCurrent;
 }
 
+export function libraryFavoriteTarget(displayed: Track | null, libraryTracks: ReadonlyMap<string, Track>): Track | null {
+  if (!displayed?.path) return null;
+  const libraryTrack = libraryTracks.get(displayed.id);
+  return libraryTrack?.path ? libraryTrack : null;
+}
+
+export function recommendationTrackMap(items: Recommendation[]): Map<string, Track> {
+  const tracks = new Map<string, Track>();
+  for (const item of items) {
+    const id = previewKey(item.artist, item.title);
+    if (!tracks.has(id)) tracks.set(id, {
+      id, path: null, title: item.title, artist: item.artist, album: null,
+      duration_ms: null, artwork_url: item.artwork_url ?? null, favorite: false, provider: null,
+    });
+  }
+  return tracks;
+}
+
 export function stoppedPlaybackCommand(bridge: Pick<Bridge, "discoverSelect" | "previewTap" | "playWithContext"> | undefined, selected: Track | null, libraryCurrent: Track | null, discoverEnabled: boolean, recommendations: Recommendation[], queue: Track[]): Promise<unknown> | undefined {
   if (!bridge || !selected) return;
   const index = recommendations.findIndex((item) => previewKey(item.artist, item.title) === selected.id);
@@ -172,8 +190,8 @@ const songs = (count: number) => `${count} ${count === 1 ? "song" : "songs"}`;
 function buildSidebarEntries(snapshot: BackendProjection["library"], chip: "playlists" | "albums"): SidebarEntry[] {
   const unsorted = snapshot?.playlists.find((playlist) => playlist.name.toLowerCase() === "unsorted");
   const entries: SidebarEntry[] = [
-    { key: "pin-all", label: "All Music", subtitle: songs(snapshot?.tracks.length ?? 0), scope: "all", kind: "all" },
-    { key: "pin-favorites", label: "Favorites", subtitle: songs(snapshot?.tracks.filter((track) => track.favorite).length ?? 0), scope: "favorites", kind: "favorites" },
+    { key: "pin-all", label: "All Music", subtitle: songs(snapshot?.tracks.length ?? 0), scope: "all", kind: "all", artIds: snapshot?.tracks.slice(0, 4).map((track) => track.id) ?? [] },
+    { key: "pin-favorites", label: "Favorites", subtitle: songs(snapshot?.tracks.filter((track) => track.favorite).length ?? 0), scope: "favorites", kind: "favorites", artIds: snapshot?.tracks.filter((track) => track.favorite).slice(0, 4).map((track) => track.id) ?? [] },
     { key: "pin-unsorted", label: "Unsorted", subtitle: songs(unsorted?.ordered_track_ids.length ?? 0), scope: "unsorted", kind: "unsorted", artIds: unsorted?.ordered_track_ids.slice(0, 4) ?? [] },
   ];
   if (chip === "playlists") {
@@ -193,6 +211,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [sidebarChip, setSidebarChip] = useState<"playlists" | "albums">("playlists");
   const [sidebarQuery, setSidebarQuery] = useState("");
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
+  const sidebarSearchButtonRef = useRef<HTMLButtonElement | null>(null);
+  const sidebarFilterRef = useRef<HTMLDivElement | null>(null);
   const [libraryQuery, setLibraryQuery] = useState("");
   const [videoMode, setVideoMode] = useState(false);
   const [videoFullscreen, setVideoFullscreen] = useState(false);
@@ -246,6 +266,18 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     setConfirmError(null);
     setConfirmDialog(request);
   };
+  useEffect(() => {
+    if (!sidebarSearchOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (sidebarFilterRef.current?.contains(target) || sidebarSearchButtonRef.current?.contains(target)) return;
+      setSidebarSearchOpen(false);
+      setSidebarQuery("");
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [sidebarSearchOpen]);
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
@@ -386,8 +418,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     event.preventDefault(); event.stopPropagation();
     // Recommendation/preview rows live outside the library; edit/delete only
     // apply to real library files, so flag membership for the menu.
-    const libraryTrack = (projection.library?.tracks ?? []).some((track) => track.id === item.id);
-    setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 350)), track: item, libraryTrack });
+    const libraryTrack = item.path ? projection.library?.tracks.find((track) => track.id === item.id) ?? null : null;
+    setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 350)), track: libraryTrack ?? item, libraryTrack: !!libraryTrack });
   };
   const cleanPlaylistName = (value: string) => value.trim().replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").slice(0, 96);
   // Copying into a playlist folder is asynchronous (the scanner rebuilds
@@ -952,14 +984,10 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // their keys after the current track). Without resolving them here, they were
   // silently dropped from the queue array while the raw backend index was still
   // applied — shifting Now playing / Next up onto the wrong rows.
-  const recommendationTracks = useMemo(() => {
-    const map = new Map<string, Track>();
-    for (const item of [...songRecs.items, ...discover.items]) {
-      const id = previewKey(item.artist, item.title);
-      if (!map.has(id)) map.set(id, { id, path: null, title: item.title, artist: item.artist, album: null, duration_ms: null, artwork_url: item.artwork_url ?? null, favorite: false, provider: null });
-    }
-    return map;
-  }, [songRecs.items, discover.items]);
+  const recommendationTracks = useMemo(
+    () => recommendationTrackMap([...songRecs.items, ...discover.items]),
+    [songRecs.items, discover.items],
+  );
   // Discover mode's current queue entry may be a recommendation key; resolve it
   // to its metadata so the song page, player bar, and video slot show the
   // recommendation instead of the library track behind it (or "Nothing playing").
@@ -1004,7 +1032,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // The track whose identity the AUDIBLE output and every correlated surface
   // (song page, video slot, queue Now playing) must reflect.
   const displayTrack = playbackDisplayTrack(!!projection.discover?.enabled, discoverCurrentTrack, audibleTrack, previewDisplayTrack, track);
-  const displayedLibraryTrack = displayTrack ? tracksByIdForQueue.get(displayTrack.id) : null;
+  const displayedLibraryTrack = libraryFavoriteTarget(displayTrack, tracksByIdForQueue);
   const displayedArtwork = useTrackArtwork(displayedLibraryTrack ? [displayedLibraryTrack.id] : [], bridge ? (id) => bridge.trackArtwork(id) : undefined, 3);
   const audibleArtwork = displayTrack ? (displayedArtwork[displayTrack.id] ?? displayTrack.artwork_url) : null;
   // Keep queue referentially stable across heartbeats: only recompute when the
@@ -1497,9 +1525,9 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       <div className="luno-lib-tools">
         <button className="luno-chip" type="button" aria-label="Show playlists" aria-pressed={sidebarChip === "playlists"} onClick={() => setSidebarChip("playlists")}>Playlists</button>
         <button className="luno-chip" type="button" aria-label="Show albums" aria-pressed={sidebarChip === "albums"} onClick={() => setSidebarChip("albums")}>Albums</button>
-        <button className="luno-icon-button" type="button" style={{ marginLeft: "auto" }} aria-label="Filter your library" aria-expanded={sidebarSearchOpen} onClick={() => { setSidebarSearchOpen((open) => !open); setSidebarQuery(""); }}><IconSearch size={13} /></button>
+        <button ref={sidebarSearchButtonRef} className="luno-icon-button" type="button" style={{ marginLeft: "auto" }} aria-label="Filter your library" aria-expanded={sidebarSearchOpen} onClick={() => { setSidebarSearchOpen((open) => !open); setSidebarQuery(""); }}><IconSearch size={13} /></button>
       </div>
-      {sidebarSearchOpen && <div className="luno-sidebar-filter"><input className="luno-lib-filter" autoFocus autoCorrect="off" spellCheck={false} aria-label="Filter playlists" placeholder="Filter…" value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} /></div>}
+      {sidebarSearchOpen && <div ref={sidebarFilterRef} className="luno-sidebar-filter"><input className="luno-lib-filter" autoFocus autoCorrect="off" spellCheck={false} aria-label="Filter playlists" placeholder="Filter…" value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} /></div>}
       <div className="luno-playlist-list luno-scroll" data-slot="playlists" aria-label="Playlists">
         {visibleSidebarEntries.map((entry) => {
           const active = libraryScope === entry.scope;
@@ -1508,22 +1536,22 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
           return <button className="luno-playlist-card" type="button" key={`${entry.kind}-${entry.key}`} aria-current={active ? "page" : undefined}
             onContextMenu={(event) => { if (entry.kind !== "playlist") return; event.preventDefault(); event.stopPropagation(); const playlist = projection.library?.playlists.find((item) => item.id === entry.scope); if (playlist) setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 470)), playlist }); }}
             onClick={() => { setLibraryScope(entry.scope); setLibraryHome(false); navigate("library"); }}>
-            {entry.kind === "favorites"
-              ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #4c8bf5, #b3b3b3)" }}><IconHeart size={18} /></span>
-              : entry.kind === "all"
-                ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #1db954, #158a3e)" }}><IconMusicNote size={18} /></span>
-                : (entry.kind === "unsorted" || entry.kind === "playlist") && mosaicTracks.length > 0
-                  ? <PlaylistArtwork
-                      className="luno-playlist-pin"
-                      tracks={mosaicTracks}
-                      artwork={sidebarArtwork}
-                      emptyFallback={entry.kind === "unsorted" ? <IconDownload size={16} /> : "♫"}
-                    />
+            {(entry.kind === "all" || entry.kind === "favorites" || entry.kind === "unsorted" || entry.kind === "playlist") && mosaicTracks.length > 0
+              ? <PlaylistArtwork
+                  className="luno-playlist-pin"
+                  tracks={mosaicTracks}
+                  artwork={sidebarArtwork}
+                  emptyFallback={entry.kind === "unsorted" ? <IconDownload size={16} /> : entry.kind === "favorites" ? <IconHeart size={18} /> : entry.kind === "all" ? <IconMusicNote size={18} /> : "♫"}
+                />
+              : entry.kind === "favorites"
+                ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #4c8bf5, #b3b3b3)" }}><IconHeart size={18} /></span>
+                : entry.kind === "all"
+                  ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #1db954, #158a3e)" }}><IconMusicNote size={18} /></span>
                   : entry.kind === "unsorted"
-                  ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #3e3e3e, #181818)" }}><IconDownload size={16} /></span>
-                  : art
-                    ? <span className="luno-artwork" style={{ width: 48, height: 48, flex: "0 0 48px", borderRadius: 5 }}><img src={art} alt="" decoding="async" /></span>
-                    : <span className="luno-playlist-pin" style={{ fontSize: 20 }}>♫</span>}
+                    ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #3e3e3e, #181818)" }}><IconDownload size={16} /></span>
+                    : art
+                      ? <span className="luno-artwork" style={{ width: 48, height: 48, flex: "0 0 48px", borderRadius: 5 }}><img src={art} alt="" decoding="async" /></span>
+                      : <span className="luno-playlist-pin" style={{ fontSize: 20 }}>♫</span>}
             <span className="luno-playlist-copy"><strong>{entry.label}</strong><small>{entry.subtitle}</small></span>
           </button>;
         })}
@@ -1545,7 +1573,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
             {videoNotice && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}
           </div>; })()}<div className="luno-main-content luno-scroll">{content}</div></main>
         <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : panelQueueTracks} currentIndex={panelRecent ? null : panelQueueIndex} recent={panelRecent} backendAvailable={available} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => playQueueEntry(item, panelRecent ? recentTracks : panelQueueTracks)} onPlayNext={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.playNext([item.id])) : setCommandNotice("Only library tracks can be queued."))} onAddToQueue={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.addToQueue([item.id])) : setCommandNotice("Only library tracks can be queued."))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} onContextMenu={openTrackMenu} />}</aside>
-        <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={displayTrack} playback={projection.playback} artwork={audibleArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => {
+        <footer className="luno-player" data-slot="player" aria-label="Player">{player ?? <PlayerBar track={displayTrack} favoriteTrack={displayedLibraryTrack} playback={projection.playback} artwork={audibleArtwork} volume={settings.volume ?? 1} backendAvailable={available} shuffle={!!projection.playback?.shuffle} repeat={projection.playback?.repeat ?? "off"} onToggleShuffle={() => runCommand(bridge?.toggleShuffle())} onCycleRepeat={() => runCommand(bridge?.setRepeat((projection.playback?.repeat ?? "off") === "off" ? "all" : projection.playback?.repeat === "all" ? "one" : "off"))} onPlayPause={() => {
           if (projection.playback?.status === "playing") { runCommand(bridge?.pause()); return; }
           if (projection.playback?.status === "paused") { runCommand(bridge?.resume()); return; }
           runCommand(stoppedPlaybackCommand(bridge, displayTrack, track, !!projection.discover?.enabled, [...songRecs.items, ...discover.items], queueTracks));
@@ -1554,13 +1582,13 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     {route !== "settings" && !narrowViewport && <div className="luno-resize-handle" style={{ left: showQueue ? Math.max(0, shellWidth - 8 - queueWidth - 4) : Math.max(2, shellWidth - 6) }} role="separator" aria-orientation="vertical" aria-label="Resize queue panel width" onPointerDown={startPanelDrag("queue")} />}
     {contextMenu && <div className="luno-context-menu" role="menu" aria-label={contextMenu.track ? `${contextMenu.track.title} actions` : `${contextMenu.playlist?.name ?? "Playlist"} actions`} style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
       {contextMenu.track ? <>
-        <button role="menuitem" type="button" onClick={() => { runCommand(bridge?.playWithContext(contextMenu.track!.id, [contextMenu.track!.id])); setContextMenu(null); }}>Play now</button>
-        <button role="menuitem" type="button" onClick={() => { runCommand(bridge?.playNext([contextMenu.track!.id])); setContextMenu(null); }}>Play next</button>
-        <button role="menuitem" type="button" onClick={() => { runCommand(bridge?.addToQueue([contextMenu.track!.id])); setContextMenu(null); }}>Add to queue</button>
+        <button role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; if (contextMenu.libraryTrack) runCommand(bridge?.playWithContext(item.id, [item.id])); else playQueueEntry(item, queueTracks); setContextMenu(null); }}>Play now</button>
+        <button role="menuitem" type="button" disabled={!contextMenu.libraryTrack} onClick={() => { runCommand(bridge?.playNext([contextMenu.track!.id])); setContextMenu(null); }}>Play next</button>
+        <button role="menuitem" type="button" disabled={!contextMenu.libraryTrack} onClick={() => { runCommand(bridge?.addToQueue([contextMenu.track!.id])); setContextMenu(null); }}>Add to queue</button>
         <hr />
-        <button role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setPlaylistPickerSelection({ tracks: [item], title: `Add “${item.title}” to playlist` }); setContextMenu(null); }}>Add to playlist…</button>
-        <button role="menuitem" type="button" onClick={() => { createPlaylist([contextMenu.track!]); setContextMenu(null); }}>Add to new playlist…</button>
-        <button role="menuitem" type="button" onClick={() => { runCommand(bridge?.toggleFavorite(contextMenu.track!.id)); setContextMenu(null); }}>{contextMenu.track.favorite ? "Remove from favorites" : "Add to favorites"}</button>
+        <button role="menuitem" type="button" disabled={!contextMenu.libraryTrack} onClick={() => { const item = contextMenu.track!; setPlaylistPickerSelection({ tracks: [item], title: `Add “${item.title}” to playlist` }); setContextMenu(null); }}>Add to playlist…</button>
+        <button role="menuitem" type="button" disabled={!contextMenu.libraryTrack} onClick={() => { createPlaylist([contextMenu.track!]); setContextMenu(null); }}>Add to new playlist…</button>
+        {contextMenu.libraryTrack && <button role="menuitem" type="button" onClick={() => { runCommand(bridge?.toggleFavorite(contextMenu.track!.id)); setContextMenu(null); }}>{contextMenu.track.favorite ? "Remove from favorites" : "Add to favorites"}</button>}
         {contextMenu.libraryTrack && <>
           <button role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setEditTrackError(null); setEditTrack(item); setContextMenu(null); }}>Edit song info…</button>
           <hr />

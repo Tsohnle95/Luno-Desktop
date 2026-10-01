@@ -10,8 +10,26 @@ const projection = {
   getSnapshot: (): BackendProjection => ({ library: { version: 1, generation: 1, tracks: [projectionTrack], playlists: [{ id: "p1", name: "Rap", path: null, url: null, ordered_track_ids: ["t1"] }] }, playback: { queue: ["t1"], current_index: 0, shuffle: false, repeat: "off", status: "playing", position_ms: 1250, duration_ms: 3000, generation: 1 }, preview: null, discover: null, video: null, jobs: {}, saved: {}, errors: [], recentHistory: [], shutdown: null, generations: { library: 1, playback: 1, preview: -1, discover: -1, video: -1, jobs: -1, errors: -1 }, lastEventIds: {} }),
   subscribe: () => () => {},
 };
+const favoritesProjection = {
+  getSnapshot: (): BackendProjection => {
+    const snapshot = projection.getSnapshot();
+    return { ...snapshot, library: { ...snapshot.library!, tracks: snapshot.library!.tracks.map((track) => ({ ...track, favorite: true })) } };
+  },
+  subscribe: () => () => {},
+};
 
 describe("Gate 6 player bar", () => {
+  it("uses the current library favorite and disables the action for unsaved previews", () => {
+    const local = { ...projectionTrack, path: "/music/Aurora.mp3", favorite: true };
+    const preview = { ...projectionTrack, id: "Artist-Preview", path: null, title: "Preview", favorite: false };
+    const localHtml = renderToStaticMarkup(<PlayerBar track={preview} favoriteTrack={local} onFavoriteToggle={() => {}} />);
+    expect(localHtml).toContain('aria-label="Remove from favorites"');
+    expect(localHtml).not.toMatch(/aria-label="Remove from favorites"[^>]*disabled=""/);
+
+    const previewHtml = renderToStaticMarkup(<PlayerBar track={preview} favoriteTrack={null} onFavoriteToggle={() => {}} />);
+    expect(previewHtml).toMatch(/aria-label="Save this song to favorite it"[^>]*disabled=""/);
+  });
+
   it("treats a missing settings file as first-run but surfaces other errors", () => {
     const missingConfig = { code: "not_found", message: "configuration is missing", retryable: false };
     expect(isMissingConfigurationError(missingConfig)).toBe(true);
@@ -96,15 +114,23 @@ describe("Gate 6 player bar", () => {
     const html = renderToStaticMarkup(<Shell backendProjection={projection} backendAvailable={false} />);
     expect(html).not.toContain("Migration completed");
     expect(html).toContain("Made for you");
-    expect(html).toContain("Favorited songs");
     expect(html).toContain("Recently played");
     expect(html).toContain("Most popular songs");
+    expect(html).toContain("Favorite songs");
     expect(html).toContain("Most popular playlists");
     expect(html).toContain("Recently downloaded");
+    expect(html.indexOf('aria-label="Recently played"')).toBeLessThan(html.indexOf('aria-label="Most popular songs"'));
+    expect(html.indexOf('aria-label="Most popular songs"')).toBeLessThan(html.indexOf('aria-label="Favorite songs"'));
+    expect(html.indexOf('aria-label="Favorite songs"')).toBeLessThan(html.indexOf('aria-label="Most popular playlists"'));
     // Profile avatar sits at the FAR top-right, after the primary nav, and
     // opens the dedicated settings page (no dropdown).
     expect(html.indexOf('aria-label="Primary navigation"')).toBeLessThan(html.indexOf('aria-label="Open settings"'));
     expect(html).not.toContain("aria-haspopup");
+  });
+
+  it("uses split artwork for All Music and Favorites sidebar entries", () => {
+    const html = renderToStaticMarkup(<Shell backendProjection={favoritesProjection} backendAvailable={false} />);
+    expect(html.match(/class="luno-playlist-mosaic luno-playlist-pin"/g) ?? []).toHaveLength(3);
   });
 
   it("exposes exactly one current navigation entry across the primary nav", () => {

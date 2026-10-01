@@ -163,7 +163,7 @@ export interface DiscoverSnapshot {
  * everything else collapses to `_`.  This is the session key shared between
  * the discover rows, the preview session, and the asset store. */
 export const previewKey = (artist: string, title: string): string =>
-  `${artist.trim()}-${title.trim()}`.replace(/[^a-zA-Z0-9\-_]/g, "_");
+  `${artist.trim()}-${title.trim()}`.replace(/[^a-zA-Z0-9\-_]/gu, "_");
 
 export function isContractVersion(v: unknown): v is ContractVersion { return v === CONTRACT_VERSION; }
 function isCommand(v: unknown): v is Command {

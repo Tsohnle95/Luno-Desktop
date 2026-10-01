@@ -143,7 +143,7 @@ describe("Gate 6 library view", () => {
     expect(html).toContain("2 songs");
     expect(html).toContain('aria-label="Play All Music"');
     expect(html).toContain('aria-label="Enable shuffle"');
-    expect(html).toContain('aria-label="Scan library for changes"');
+    expect(html).not.toContain('aria-label="Scan library for changes"');
     expect(html).toContain('aria-label="Sort tracks"');
     expect(html).toContain("luno-table-head");
   });

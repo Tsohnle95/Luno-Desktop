@@ -46,6 +46,13 @@ envelope shapes (`docs/modules/contracts.md`).
 - The shell topbar has no Back/Forward chevrons. Playlist creation is
   available directly from the Your Library heading; the Playlists/Albums,
   filter, and list areas keep clear vertical spacing.
+- All Music, Favorites, Unsorted, and physical playlist entries use the same
+  four-track split-artwork tile, with their normal icon when no artwork tracks
+  are available. The sidebar filter closes and clears when a pointer lands
+  outside both the filter and its trigger.
+- The home dashboard orders its sections as Made for you, Recently played,
+  Most popular songs, Favorite songs, Most popular playlists, and Recently
+  downloaded.
 - Heavy work stays off the UI thread: artwork arrives via the
   `track_artwork` command as bounded data URLs; visible library rows request
   missing durations through `track_duration`, which probes on a blocking
@@ -64,6 +71,11 @@ envelope shapes (`docs/modules/contracts.md`).
   Retryable backend task-capacity errors keep retrying with backoff while that
   seed remains current; an active preview projection always has a backend
   completion driver.
+- Temporary recommendation IDs mirror Rust's `safe_key` over Unicode code
+  points. The shell resolves queue and audible IDs back to current
+  recommendation metadata before rendering the footer or song page, and only
+  a matching local library track can be favorited; preview-only tracks become
+  eligible after they are saved into the library.
 - The song page, player bar, queue, and video correlation follow Discover's
   projected selection while that mode is enabled, including a pending item;
   otherwise `PlaybackSnapshot.audible_track_id` identifies a sounding focused
