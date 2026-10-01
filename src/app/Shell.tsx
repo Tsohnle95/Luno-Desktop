@@ -30,7 +30,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PlaylistDialog, PlaylistUrlDialog, PlaylistSyncAuthDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog, type PlaylistSyncCandidateLookup, type PlaylistSyncLogEntry } from "../components/PlaylistDialogs";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
-import { IconChevronLeft, IconChevronRight, IconClose, IconDownload, IconHeart, IconHome, IconLibrary, IconMusicNote, IconSearch, IconUser } from "../components/icons";
+import { IconClose, IconDownload, IconHeart, IconHome, IconLibrary, IconMusicNote, IconPlus, IconSearch, IconUser } from "../components/icons";
 
 export const ROUTES = ["library", "recent", "discover", "downloader", "settings", "song_page", "error_log"] as const;
 export type Route = (typeof ROUTES)[number];
@@ -185,15 +185,8 @@ function buildSidebarEntries(snapshot: BackendProjection["library"], chip: "play
 }
 
 export function Shell({ views = {}, queue, player, bridge, backendProjection, backendAvailable, videoConnected }: ShellProps) {
-  const [history, setHistory] = useState<{ stack: Route[]; index: number }>({ stack: ["library"], index: 0 });
-  const route = history.stack[history.index];
-  const navigate = (next: Route) => setHistory((current) => {
-    if (current.stack[current.index] === next) return current;
-    const stack = [...current.stack.slice(0, current.index + 1), next];
-    return { stack, index: stack.length - 1 };
-  });
-  const goBack = () => setHistory((current) => ({ ...current, index: Math.max(0, current.index - 1) }));
-  const goForward = () => setHistory((current) => ({ ...current, index: Math.min(current.stack.length - 1, current.index + 1) }));
+  const [route, setRoute] = useState<Route>("library");
+  const navigate = (next: Route) => setRoute(next);
   const [queueOpen, setQueueOpen] = useState(true);
   const [panelRecent, setPanelRecent] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -1417,10 +1410,6 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   return <div ref={shellRef} className={`luno-shell${queueOpen ? "" : " no-queue"}${sidebarCollapsed ? " no-sidebar" : ""}${focusMode ? " focus-mode" : ""}${videoFullscreenClass(videoFullscreen)}`} style={{ gridTemplateColumns: `${showSidebar ? sidebarWidth : 0}px minmax(0, 1fr) ${showQueue ? queueWidth : 0}px` }} data-route={route} data-backend-state={available ? "available" : "unavailable"} data-video-state={connectedVideo ? "connected" : "unconnected"} data-video-fullscreen={videoFullscreen ? "true" : "false"} data-migration-state={migrationStatus?.status ?? "unknown"}>
     <header className="luno-topbar" data-tauri-drag-region onPointerDown={startWindowDrag}>
 
-      <div className="luno-history">
-        <button className="luno-icon-button" type="button" aria-label="Go back" disabled={history.index === 0} onClick={goBack}><IconChevronLeft size={16} /></button>
-        <button className="luno-icon-button" type="button" aria-label="Go forward" disabled={history.index >= history.stack.length - 1} onClick={goForward}><IconChevronRight size={16} /></button>
-      </div>
       {route !== "settings" && <nav className="luno-top-nav" aria-label="Primary navigation">
         <div className="luno-top-center">
           <button className="luno-home-button" type="button" aria-label="Home" aria-current={route === "library" ? "page" : undefined} title="Home" onClick={() => { navigate("library"); setLibraryHome(true); }}><IconHome size={16} /></button>
@@ -1436,13 +1425,14 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     <aside className="luno-sidebar" data-slot="sidebar">
       <div className="luno-lib-head">
         <h2 className="luno-lib-head-title">Your Library</h2>
+        <button className="luno-lib-create" type="button" aria-label="Create playlist" title="Create playlist" disabled={!available} onClick={() => createPlaylist()}><IconPlus size={16} /></button>
       </div>
       <div className="luno-lib-tools">
         <button className="luno-chip" type="button" aria-label="Show playlists" aria-pressed={sidebarChip === "playlists"} onClick={() => setSidebarChip("playlists")}>Playlists</button>
         <button className="luno-chip" type="button" aria-label="Show albums" aria-pressed={sidebarChip === "albums"} onClick={() => setSidebarChip("albums")}>Albums</button>
         <button className="luno-icon-button" type="button" style={{ marginLeft: "auto" }} aria-label="Filter your library" aria-expanded={sidebarSearchOpen} onClick={() => { setSidebarSearchOpen((open) => !open); setSidebarQuery(""); }}><IconSearch size={13} /></button>
       </div>
-      {sidebarSearchOpen && <div style={{ padding: "0 16px 10px" }}><input className="luno-lib-filter" autoFocus autoCorrect="off" spellCheck={false} aria-label="Filter playlists" placeholder="Filter…" value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} /></div>}
+      {sidebarSearchOpen && <div className="luno-sidebar-filter"><input className="luno-lib-filter" autoFocus autoCorrect="off" spellCheck={false} aria-label="Filter playlists" placeholder="Filter…" value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} /></div>}
       <div className="luno-playlist-list luno-scroll" data-slot="playlists" aria-label="Playlists">
         {visibleSidebarEntries.map((entry) => {
           const active = libraryScope === entry.scope;
@@ -1484,7 +1474,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
             {backendError && <span data-state="backend-error">{backendError} <button type="button" onClick={() => backendProjection?.clearErrors?.()} aria-label="Dismiss error">Dismiss</button>{backendError.startsWith("playlist sync") && lastFailedPlaylistSync && <button type="button" onClick={openPlaylistSyncErrors}>View sync errors</button>}{backendError.startsWith("YouTube could not access this playlist") && lastFailedPlaylistSync && <button type="button" onClick={() => openPlaylistSyncAuth(lastFailedPlaylistSync.playlist)}>Choose browser and retry</button>}</span>}
             {activePlaylistSync && <span data-state="playlist-sync">{syncJob?.current_item ? `Syncing “${syncJob.current_item}”` : `Checking “${activePlaylistSync.playlist.name}”`} {syncJob?.progress != null && syncJob.current_item ? `· playlist ${Math.round(syncJob.progress * 100)}%` : ""}</span>}
             {commandNotice && <span data-state="command-notice">{commandNotice} <button type="button" onClick={() => setCommandNotice(null)} aria-label="Dismiss notice">Dismiss</button></span>}
-            {playlistSyncReviewOffer && <span data-state="playlist-sync-review"><button type="button" onClick={() => openPlaylistSyncReview(playlistSyncReviewOffer.playlist)}>Review {playlistSyncReviewOffer.count} unavailable {playlistSyncReviewOffer.count === 1 ? "song" : "songs"}</button></span>}
+            {playlistSyncReviewOffer && <span data-state="playlist-sync-review"><button type="button" onClick={() => openPlaylistSyncReview(playlistSyncReviewOffer.playlist)}>Review {playlistSyncReviewOffer.count} unavailable {playlistSyncReviewOffer.count === 1 ? "song" : "songs"}</button><button type="button" aria-label="Dismiss playlist review notice" onClick={() => setPlaylistSyncReviewOffer(null)}>Dismiss</button></span>}
             {videoNotice && <span data-state="video-unconnected">Video preview unavailable; artwork fallback is active.</span>}
           </div>; })()}<div className="luno-main-content luno-scroll">{content}</div></main>
         <aside className="luno-queue" data-slot="queue" aria-label="Queue">{queue ?? <Queue tracks={panelRecent ? recentTracks : panelQueueTracks} currentIndex={panelRecent ? null : panelQueueIndex} recent={panelRecent} backendAvailable={available} onTabChange={(recent) => setPanelRecent(recent)} nextFromLabel={nextFromLabel} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onPlay={(item) => playQueueEntry(item, panelRecent ? recentTracks : panelQueueTracks)} onPlayNext={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.playNext([item.id])) : setCommandNotice("Only library tracks can be queued."))} onAddToQueue={(item) => (tracksByIdForQueue.has(item.id) ? runCommand(bridge?.addToQueue([item.id])) : setCommandNotice("Only library tracks can be queued."))} onRemove={(index) => runCommand(bridge?.removeFromQueue(index))} onReorder={(from, to) => runCommand(bridge?.reorderQueue(from, to))} onContextMenu={openTrackMenu} />}</aside>

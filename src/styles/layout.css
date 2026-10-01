@@ -75,10 +75,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   background: linear-gradient(135deg, var(--luno-green), #12813c); color: #001a08;
 }
 .luno-user-avatar:hover, .luno-user-avatar[aria-current="page"] { transform: scale(1.06); }
-/* The webview now extends under the macOS titlebar (Overlay), so the traffic
- * lights float over our bar — keep the history arrows clear of them and let
- * the empty header strip act as a drag region. */
-.luno-history { display: flex; gap: 4px; margin-left: 72px; }
 .luno-icon-button {
   width: 28px; height: 28px; flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center;
@@ -115,8 +111,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-search input:focus-visible { outline: none; box-shadow: none; }
 .luno-search .luno-icon-button { width: 22px; height: 22px; }
 .luno-top-icons { display: flex; gap: 5px; margin-left: auto; }
-@media (max-width: 1100px) { .luno-history { display: none; } }
-
 /* ---- Panels ---- */
 .luno-sidebar, .luno-main, .luno-queue {
   min-width: 0; min-height: 0; overflow: hidden;
@@ -127,18 +121,22 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* ---- Your Library sidebar ---- */
 .luno-sidebar { display: flex; flex-direction: column; }
-.luno-lib-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 18px 24px 10px 24px; }
+.luno-lib-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 18px 16px 14px; }
 .luno-lib-head-title { margin: 0; font-size: 15px; font-weight: 700; color: var(--luno-text); }
-.luno-lib-tools { display: flex; align-items: center; gap: 8px; padding: 0 16px 10px; }
+.luno-lib-create { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; padding: 0; color: var(--luno-text); background: var(--luno-bg-3); cursor: pointer; }
+.luno-lib-create:hover:not(:disabled) { background: var(--luno-bg-4); }
+.luno-lib-create:disabled { opacity: .45; cursor: not-allowed; }
+.luno-lib-tools { display: flex; align-items: center; gap: 10px; padding: 0 16px 14px; border-bottom: 1px solid rgba(255,255,255,0.06); }
 .luno-chip {
   border: 0; border-radius: 999px; padding: 7px 13px;
   color: var(--luno-text); background: var(--luno-bg-3); cursor: pointer; font-size: 13px;
 }
 .luno-chip:hover { background: var(--luno-bg-4); }
 .luno-chip[aria-pressed="true"] { background: var(--luno-green); color: #000; }
+.luno-sidebar-filter { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
 .luno-lib-filter { flex: 1; min-width: 0; height: 34px; padding: 0 12px; border: 0; border-radius: 17px; background: var(--luno-bg-3); color: var(--luno-text); }
 .luno-lib-filter::placeholder { color: var(--luno-text-2); }
-.luno-playlist-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: none; scrollbar-gutter: stable; padding: 4px 10px 10px; display: flex; flex-direction: column; gap: 2px; }
+.luno-playlist-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: none; scrollbar-gutter: stable; padding: 12px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
 .luno-playlist-card {
   width: 100%; display: flex; align-items: center; gap: 12px;
   border: 0; border-radius: 6px; padding: 7px 10px;

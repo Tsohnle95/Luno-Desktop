@@ -7,7 +7,7 @@ policy.
 
 ## What this owns
 
-- `Shell.tsx` routing, navigation history, and command orchestration.
+- `Shell.tsx` route selection and command orchestration.
 - Route-level views in `src/views/` and their unique responsibilities.
 - Shared components, artwork fetching/caching, and the 56 px virtual-list
   contract.
@@ -19,7 +19,7 @@ envelope shapes (`docs/modules/contracts.md`).
 ## Entry points
 
 - `src/main.tsx` — app bootstrap.
-- `src/app/Shell.tsx` — route stack (`library` default), settings overlay,
+- `src/app/Shell.tsx` — route state (`library` default), settings overlay,
   download queue orchestration, discover/refresh effects, video element
   wiring. `ROUTES`, `routeLabels`.
 - `src/app/bridge.ts` — command sender + `backend-event` subscriber (see
@@ -43,6 +43,9 @@ envelope shapes (`docs/modules/contracts.md`).
 
 - Views render backend snapshots; they must not reimplement queue order,
   scan results, or job state. All mutations go through bridge commands.
+- The shell topbar has no Back/Forward chevrons. Playlist creation is
+  available directly from the Your Library heading; the Playlists/Albums,
+  filter, and list areas keep clear vertical spacing.
 - Heavy work stays off the UI thread: artwork arrives via the
   `track_artwork` command as bounded data URLs; visible library rows request
   missing durations through `track_duration`, which probes on a blocking
@@ -93,6 +96,8 @@ envelope shapes (`docs/modules/contracts.md`).
   results in the Duration column. These reads do not change track identity or
   persist metadata. The library hero keeps Play and Shuffle controls without
   the former scan icon or selected-count badge.
+- The transient unavailable-playlist notice can be dismissed independently of
+  the persistent Settings → Sync Review destination.
 - Video element behavior is CSS-driven; fullscreen toggles must not call
   `window.setFullscreen()` (blacks out WKWebView over the hide
   transition).

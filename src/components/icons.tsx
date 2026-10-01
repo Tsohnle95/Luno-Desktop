@@ -18,6 +18,7 @@ export const IconSliders = (p: IconProps) => <Svg {...p}><line x1="4" y1="21" x2
 export const IconAlert = (p: IconProps) => <Svg {...p}><circle cx="12" cy="12" r="9" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></Svg>;
 export const IconMusicNote = (p: IconProps) => <Svg {...p}><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></Svg>;
 export const IconSearch = (p: IconProps) => <Svg {...p}><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></Svg>;
+export const IconPlus = (p: IconProps) => <Svg {...p}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></Svg>;
 export const IconChevronLeft = (p: IconProps) => <Svg {...p}><polyline points="15 18 9 12 15 6" /></Svg>;
 export const IconChevronRight = (p: IconProps) => <Svg {...p}><polyline points="9 18 15 12 9 6" /></Svg>;
 export const IconPlay = (p: IconProps) => <Filled {...p}><path d="M7 4.5a.8.8 0 0 1 1.22-.68l11 6.86a.8.8 0 0 1 0 1.36l-11 6.86A.8.8 0 0 1 7 19.5z" /></Filled>;
