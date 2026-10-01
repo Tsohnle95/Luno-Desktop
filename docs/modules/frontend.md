@@ -105,7 +105,12 @@ envelope shapes (`docs/modules/contracts.md`).
   `Sync playlist`, `Review unavailable songs`, and `Log` actions. Sync stays
   disabled until a link is present; React sends only the playlist ID, then
   reflects backend-owned job progress, completion, cancellation, and errors.
-  Active sync status names the current song until the job ends. If unresolved
+  The Downloader Sync tab lists linked physical playlists; its `Save to`
+  destination selects the playlist to sync through the same command and into
+  the same folder. Both sync actions first try playlist lookup without browser
+  cookies. If YouTube reports an account-access error, the status strip offers
+  browser selection and retry. Playlist sync jobs never use the single-download Retry
+  action. Active sync status names the current song until the job ends. If unresolved
   entries remain after a completed sync, the status offers a review action
   instead of claiming the playlist is up to date. The review dialog shows the
   original title, channel, duration, and unavailable reason, then displays

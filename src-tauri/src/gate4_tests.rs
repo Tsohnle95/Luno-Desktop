@@ -114,7 +114,7 @@ fn fake_helper(root: &std::path::Path) -> PathBuf {
     let ytdlp = root.join("yt-dlp");
     fs::write(
         &ytdlp,
-        "#!/bin/sh\nif [ \"$1\" = \"--dump-json\" ]; then\n  printf '%s\\n' '{\"id\":\"fixture-video\",\"title\":\"Fixture Track\",\"uploader\":\"Fixture Artist\",\"webpage_url\":\"https://example.test/watch?v=fixture-video\",\"duration\":268}'\n  exit 0\nfi\nexit 1\n",
+        "#!/bin/sh\nif [ \"$1\" = \"--ignore-config\" ]; then\n  printf '%s\\n' '{\"id\":\"fixture-video\",\"title\":\"Fixture Track\",\"channel\":\"Fixture Artist\",\"url\":\"https://www.youtube.com/watch?v=fixture-video\"}'\n  exit 0\nfi\nif [ \"$1\" = \"--dump-json\" ]; then\n  printf '%s\\n' '{\"id\":\"fixture-video\",\"title\":\"Fixture Track\",\"uploader\":\"Fixture Artist\",\"webpage_url\":\"https://example.test/watch?v=fixture-video\",\"duration\":268}'\n  exit 0\nfi\nexit 1\n",
     )
     .unwrap();
     let mut permissions = fs::metadata(&ytdlp).unwrap().permissions();

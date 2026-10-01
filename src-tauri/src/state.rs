@@ -6646,7 +6646,7 @@ impl AppState {
             let _active = active;
             state.publish_sync_job(&worker_job, generation, crate::contracts::types::JobState::Running, Some(0.0), None);
             let outcome = (|| -> Result<(usize, usize, Option<String>), String> {
-                let entries = crate::download::search::playlist_entries(&state.supervisor, &ytdlp, &url, cookies_browser.as_deref(), &token)?;
+                let entries = crate::download::search::playlist_entries_with_browser_fallback(&state.supervisor, &ytdlp, &url, cookies_browser.as_deref(), &token)?;
                 let mut sync_state = crate::download::sync::PlaylistSyncState::load(&destination)?;
                 let mut markers = crate::download::markers::Markers::load(&destination);
                 let migrated = sync_state.migrate_legacy_unavailable(&destination, &entries, &markers);

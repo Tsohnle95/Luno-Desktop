@@ -25,6 +25,13 @@ pub fn is_supported_ytdlp_cookie_browser(browser: &str) -> bool {
     YTDLP_COOKIE_BROWSERS.contains(&browser)
 }
 
+fn playlist_access_error(cookies_browser: Option<&str>) -> String {
+    match cookies_browser {
+        Some(browser) => format!("YouTube could not access this playlist using cookies from {browser}. Check that this browser is signed in to the account that owns the playlist, then choose another browser and retry if needed."),
+        None => "YouTube could not access this playlist. Choose a browser signed in to the account that owns it in the sync prompt, then retry. If this playlist should be public, check that the link is correct.".into(),
+    }
+}
+
 /// Run one `ytsearchN:`/`scsearchN:` query through the bundled yt-dlp and
 /// return parsed results. Failures remain distinct from a legitimate empty
 /// result so the UI never mislabels a provider outage as "no matches".
@@ -240,15 +247,26 @@ pub fn playlist_entries(supervisor: &Supervisor, ytdlp: &Path, url: &str, cookie
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
         if detail.contains("YouTube said: The playlist does not exist") {
-            return Err(match cookies_browser {
-                Some(browser) => format!("YouTube could not read this playlist using cookies from {browser}. Check that this browser is signed in to the account that owns the playlist and that the link is correct."),
-                None => "YouTube could not access this playlist. If it is an account-only list such as Liked videos (LL), choose a browser signed in to its owner in Settings → Downloads → YouTube Playlist Sync, then try again. Check the link if it is a public playlist.".into(),
-            });
+            return Err(playlist_access_error(cookies_browser));
         }
         return Err(format!("playlist lookup exited {}: {}", output.status, detail.trim().chars().take(800).collect::<String>()));
     }
     let entries = parse_playlist_entries(&String::from_utf8_lossy(&output.stdout));
     if entries.is_empty() { Err("playlist contains no downloadable videos".into()) } else { Ok(entries) }
+}
+
+pub fn playlist_entries_with_browser_fallback(supervisor: &Supervisor, ytdlp: &Path, url: &str, cookies_browser: Option<&str>, token: &CancellationToken) -> Result<Vec<PlaylistEntry>, String> {
+    with_playlist_cookie_fallback(cookies_browser, |browser| playlist_entries(supervisor, ytdlp, url, browser, token))
+}
+
+fn with_playlist_cookie_fallback<T>(cookies_browser: Option<&str>, mut lookup: impl FnMut(Option<&str>) -> Result<T, String>) -> Result<T, String> {
+    match lookup(None) {
+        Err(error) if error.starts_with("YouTube could not access this playlist") => match cookies_browser {
+            Some(browser) => lookup(Some(browser)),
+            None => Err(error),
+        },
+        result => result,
+    }
 }
 
 fn parse_playlist_entries(output: &str) -> Vec<PlaylistEntry> {
@@ -387,6 +405,53 @@ fn format_duration(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playlist_access_errors_direct_users_to_in_place_browser_selection() {
+        let without_browser = playlist_access_error(None);
+        assert!(without_browser.starts_with("YouTube could not access this playlist"));
+        assert!(without_browser.contains("in the sync prompt"));
+        assert!(!without_browser.contains("Settings"));
+
+        let with_browser = playlist_access_error(Some("firefox"));
+        assert!(with_browser.starts_with("YouTube could not access this playlist"));
+        assert!(with_browser.contains("cookies from firefox"));
+        assert!(with_browser.contains("choose another browser and retry"));
+    }
+
+    #[test]
+    fn configured_browser_is_used_only_after_anonymous_playlist_access_fails() {
+        let mut calls = Vec::new();
+        let public = with_playlist_cookie_fallback(Some("firefox"), |browser| {
+            calls.push(browser.map(str::to_owned));
+            Ok::<_, String>("public playlist")
+        });
+        assert_eq!(public.unwrap(), "public playlist");
+        assert_eq!(calls, vec![None]);
+
+        calls.clear();
+        let private = with_playlist_cookie_fallback(Some("firefox"), |browser| {
+            calls.push(browser.map(str::to_owned));
+            match browser {
+                None => Err(playlist_access_error(None)),
+                Some("firefox") => Ok("account playlist"),
+                Some(_) => unreachable!(),
+            }
+        });
+        assert_eq!(private.unwrap(), "account playlist");
+        assert_eq!(calls, vec![None, Some("firefox".into())]);
+    }
+
+    #[test]
+    fn non_access_playlist_errors_do_not_retry_with_browser_cookies() {
+        let mut calls = Vec::new();
+        let result = with_playlist_cookie_fallback(Some("firefox"), |browser| {
+            calls.push(browser.map(str::to_owned));
+            Err::<(), _>("playlist lookup timed out".into())
+        });
+        assert_eq!(result.unwrap_err(), "playlist lookup timed out");
+        assert_eq!(calls, vec![None]);
+    }
 
     #[test]
     fn formats_durations_like_the_legacy_ui() {
