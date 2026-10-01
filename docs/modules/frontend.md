@@ -30,8 +30,8 @@ envelope shapes (`docs/modules/contracts.md`).
   `libraryAlbums`, `playlistTracks` helpers), `RecentView`, `SongPageView`,
   `DiscoverView`, `DownloaderView`, `PlaylistSyncReviewView`, `SettingsView`,
   `ErrorLogView`.
-- `src/components/` — `PlayerBar`, `Queue`, `TrackRow`, `Artwork`,
-  `RecommendationArtwork`, `PlaylistArtwork`, `Recommendations`, `DownloadTabs`,
+- `src/components/` — `PlayerBar`, `Queue`, `LibrarySidebar`, `TrackRow`,
+  `Artwork`, `RecommendationArtwork`, `PlaylistArtwork`, `Recommendations`, `DownloadTabs`,
   `PlaylistDialogs`, `PlaylistPicker`, `EditTrackDialog`, `TransferDialogs`,
   `VideoStage`, `icons`.
 - `src/state/` — `backend_projection.ts` (snapshot store + subscriptions),
@@ -129,6 +129,9 @@ envelope shapes (`docs/modules/contracts.md`).
 - Video element behavior is CSS-driven; fullscreen toggles must not call
   `window.setFullscreen()` (blacks out WKWebView over the hide
   transition).
+- The single-song route owns one vertical scroller inside its page host. The
+  host clips overflow; only wheel input over a native video uses a
+  frame-batched fallback to the page scroller.
 - Tauri's WKWebView implements no native `window.confirm`/`window.prompt`
   (they returned false/undefined and silently dropped deletes and playlist
   creation), so confirmations and name entry use the in-app

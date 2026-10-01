@@ -68,36 +68,31 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
     return () => { document.removeEventListener("pointerdown", onPointerDown); document.removeEventListener("keydown", onKeyDown); };
   }, [menuOpen]);
   const displayedTrack = nowPlaying ?? track ?? lastTrack;
-  // SCROLL FIX (v2): the page has TWO nested scrollers (.luno-song-page-scroll
-  // inner, .luno-main-content outer) and rich children (playing <video>) can
-  // swallow vertical wheel deltas in WKWebView. The first version pinned all
-  // wheels to the INNER scroller — which often isn't the scrollable one — so
-  // scrolling stayed dead. Now: find the closest scroller that can actually
-  // absorb the delta in its direction; only preventDefault when we scroll it.
+  // The page has one native scroller. WKWebView video elements can swallow
+  // wheel input, so only wheels over a video use this frame-batched fallback.
   const pageRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const root = pageRef.current;
-    if (!root) return;
+    const scroller = root?.querySelector<HTMLElement>(".luno-song-page-scroll");
+    if (!root || !scroller) return;
+    let pendingDelta = 0;
+    let frame = 0;
     const onWheel = (event: WheelEvent) => {
-      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-      const goingDown = event.deltaY > 0;
-      const candidates = [
-        root.querySelector(".luno-song-page-scroll"),
-        root.closest(".luno-main-content"),
-      ].filter((el): el is HTMLElement => !!el);
-      for (const el of candidates) {
-        const scrollable = el.scrollHeight - el.clientHeight > 2;
-        if (!scrollable) continue;
-        const atEnd = goingDown ? el.scrollTop + el.clientHeight >= el.scrollHeight - 1 : el.scrollTop <= 0;
-        if (atEnd) continue;
-        event.preventDefault();
-        el.scrollTop += event.deltaY;
-        return;
-      }
-      // Every scroller is at its edge: nothing to do; keep the event default.
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || !(event.target instanceof Element) || !event.target.closest("video")) return;
+      event.preventDefault();
+      pendingDelta += event.deltaY;
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        scroller.scrollTop += pendingDelta;
+        pendingDelta = 0;
+        frame = 0;
+      });
     };
     root.addEventListener("wheel", onWheel, { passive: false });
-    return () => root.removeEventListener("wheel", onWheel);
+    return () => {
+      root.removeEventListener("wheel", onWheel);
+      if (frame) cancelAnimationFrame(frame);
+    };
   }, []);
   // Favorites toggle lives in the footer PlayerBar; the song page keeps only
   // title/artist here (see onFavoriteToggle prop retained for API compat).
@@ -127,7 +122,7 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
 }
 
 const songPageStyles = `
-.luno-song-page { position:relative; min-height:100%; overflow:hidden; background:rgba(18,18,18,.78); }
+.luno-song-page { position:relative; height:100%; min-height:100%; overflow:hidden; background:rgba(18,18,18,.78); }
 .luno-song-page-backdrop { position:absolute; inset:-8%; background-position:center; background-size:cover; filter:blur(42px); opacity:.22; transform:scale(1.08); overflow:hidden; }
 .luno-song-page-backdrop .luno-rec-art { width:100% !important; height:100% !important; border-radius:0 !important; }
 .luno-video-mode-pill { display:flex; align-items:center; gap:8px; width:100%; border:0; border-radius:999px; padding:4px 4px 4px 4px; background:rgba(255,255,255,.09); cursor:pointer; }
@@ -138,7 +133,7 @@ const songPageStyles = `
 .luno-video-mode-label { font-size:12px; font-weight:700; color:var(--luno-text-2); }
 .luno-video-mode-pill.is-on .luno-video-mode-label { color:var(--luno-green,#1db954); }
 .luno-song-page-backdrop { position:absolute; inset:-8%; background-position:center; background-size:cover; filter:blur(42px); opacity:.22; transform:scale(1.08); }
-.luno-song-page-scroll { position:relative; height:100%; overflow:auto; overscroll-behavior:contain; }
+.luno-song-page-scroll { position:relative; height:100%; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
 .luno-song-page-content { width:100%; margin:0 auto; padding:0 0 64px; }
 .luno-song-media-slot { position:relative; width:100%; aspect-ratio:16 / 9; margin:0 0 24px; overflow:hidden; border:0; border-radius:0; background:var(--luno-bg-3); box-shadow:none; }
 .luno-song-media-slot .luno-artwork { width:100% !important; height:100% !important; }
