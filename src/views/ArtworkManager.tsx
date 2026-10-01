@@ -183,7 +183,7 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
         <span>{matchingScopeTracks.length} matching song{matchingScopeTracks.length === 1 ? "" : "s"}{matchingScopeTracks.length > 0 && matchingScopeTracks.length <= 3 ? ` · ${matchingScopeTracks.map((track) => track.title).join(", ")}` : ""}</span>
         <button type="button" onClick={() => scan(matchingScopeTracks.map((track) => track.id), `search results in ${scopeName(snapshot, scope)}`)} disabled={!bridge || scanning || matchingScopeTracks.length === 0} style={{ ...buttonStyle, opacity: !bridge || scanning || matchingScopeTracks.length === 0 ? 0.5 : 1 }}>{scanning ? "Scanning…" : `Scan ${matchingScopeTracks.length} match${matchingScopeTracks.length === 1 ? "" : "es"}`}</button>
       </div>}
-      <p className="luno-artwork-note">Opening this page scans the selected scope automatically. Search first to scan only matching songs, or rescan the whole scope. Online searches send the selected song’s title and artist to MusicBrainz or YouTube.</p>
+      <p className="luno-artwork-note">Opening this page scans the selected scope automatically. Search first to scan only matching songs, or rescan the whole scope. MusicBrainz searches use the saved title and artist; YouTube searches use the title, with the artist helping rank similar results.</p>
     </section>
 
     {error && <p className="luno-artwork-error" role="alert">{error}</p>}

@@ -276,16 +276,14 @@ impl ArtworkSearchService {
             .youtube_thumbnail_client
             .as_ref()
             .ok_or_else(|| "YouTube thumbnail requests are unavailable on this device.".to_string())?;
-        let query = if artist.is_empty() {
-            title.to_owned()
-        } else {
-            format!("{artist} {title}")
-        };
-        let results = crate::download::search::search_youtube_web(&query, 10)?;
+        // Match the visible track title exactly as entered in a YouTube search.
+        // The uploader is often a label, mix channel, or aggregator rather than
+        // the credited artist, so artist text must not narrow this first query.
+        let results = crate::download::search::search_youtube_web(title, 10)?;
         let mut results = results
             .into_iter()
             .filter_map(|result| {
-                let thumbnail = result.thumbnail_url.clone()?;
+                let exact_title = normalize(title) == normalize(&result.title);
                 let title_score = text_match_score(title, &result.title);
                 let searchable_artist = format!(
                     "{} {}",
@@ -298,39 +296,30 @@ impl ArtworkSearchService {
                     text_match_score(artist, &searchable_artist)
                 };
                 let minimum_title_score = if artist.is_empty() { 60 } else { 40 };
-                if title_score < minimum_title_score || artist_score < 50 {
+                let strong_title_match = exact_title || title_score >= 80;
+                if !strong_title_match
+                    && (title_score < minimum_title_score || artist_score < 50)
+                {
                     return None;
                 }
                 let score = ((title_score as u16 * 80 + artist_score as u16 * 20) / 100) as u8;
-                let exact_match = title_score == 100 && (artist.is_empty() || artist_score == 100);
-                Some((score, exact_match, result, thumbnail))
+                Some((score, exact_title, result))
             })
             .collect::<Vec<_>>();
-        results.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+        results.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
 
         let mut candidates = Vec::new();
-        for (score, exact_match, result, thumbnail_url) in results {
+        for (score, exact_match, result) in &results {
             if candidates.len() >= MAX_YOUTUBE_CANDIDATES {
                 break;
             }
-            if !is_youtube_thumbnail_url(&thumbnail_url) {
-                continue;
-            }
-            let Ok(response) = thumbnail_client
-                .get(&thumbnail_url)
-                .header(reqwest::header::USER_AGENT, &self.user_agent)
-                .send()
-            else {
-                continue;
-            };
-            if !response.status().is_success() || !is_youtube_thumbnail_url(response.url().as_str()) {
-                continue;
-            }
-            let Ok(bytes) = read_limited(response, MAX_PROVIDER_IMAGE_BYTES) else {
-                continue;
-            };
-            let Ok((bytes, mime, artwork_data_url)) =
-                super::artwork::normalize_provider_image(&bytes)
+            let thumbnail_urls = youtube_thumbnail_urls(
+                result.thumbnail_url.as_deref(),
+                result.url.as_deref(),
+            );
+            let Some((bytes, mime, artwork_data_url)) = thumbnail_urls
+                .iter()
+                .find_map(|url| fetch_youtube_thumbnail(thumbnail_client, &self.user_agent, url))
             else {
                 continue;
             };
@@ -338,13 +327,19 @@ impl ArtworkSearchService {
             candidates.push(ArtworkCandidate {
                 candidate_id,
                 source: "youtube".into(),
-                release: result.title,
-                artist: result.artist.unwrap_or_default(),
+                release: result.title.clone(),
+                artist: result.artist.clone().unwrap_or_default(),
                 year: None,
-                score,
-                exact_match,
+                score: *score,
+                exact_match: *exact_match,
                 artwork_data_url,
             });
+        }
+        if candidates.is_empty() && !results.is_empty() {
+            return Err(
+                "YouTube found matching video titles, but their thumbnails could not be retrieved or decoded."
+                    .into(),
+            );
         }
         Ok(candidates)
     }
@@ -496,6 +491,40 @@ fn is_youtube_thumbnail_url(value: &str) -> bool {
             && url.password().is_none()
             && url.port_or_known_default() == Some(443)
     })
+}
+
+fn youtube_thumbnail_urls(primary: Option<&str>, video_url: Option<&str>) -> Vec<String> {
+    let mut urls = Vec::with_capacity(2);
+    if let Some(primary) = primary.filter(|url| is_youtube_thumbnail_url(url)) {
+        urls.push(primary.to_owned());
+    }
+    if let Some(video_id) = video_url.and_then(crate::download::search::youtube_video_id) {
+        let fallback = format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg");
+        if !urls.contains(&fallback) {
+            urls.push(fallback);
+        }
+    }
+    urls
+}
+
+fn fetch_youtube_thumbnail(
+    client: &Client,
+    user_agent: &str,
+    url: &str,
+) -> Option<(Vec<u8>, &'static str, String)> {
+    if !is_youtube_thumbnail_url(url) {
+        return None;
+    }
+    let response = client
+        .get(url)
+        .header(reqwest::header::USER_AGENT, user_agent)
+        .send()
+        .ok()?;
+    if !response.status().is_success() || !is_youtube_thumbnail_url(response.url().as_str()) {
+        return None;
+    }
+    let bytes = read_limited(response, MAX_PROVIDER_IMAGE_BYTES).ok()?;
+    super::artwork::normalize_provider_image(&bytes).ok()
 }
 
 fn valid_musicbrainz_id(value: &str) -> bool {
