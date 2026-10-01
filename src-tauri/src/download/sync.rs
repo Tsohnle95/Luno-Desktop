@@ -7,7 +7,6 @@ use crate::runtime::task_registry::CancellationToken;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::fs::OpenOptions;
@@ -53,7 +52,6 @@ pub fn append_log_with_source(folder: &Path, entry: &PlaylistEntry, source_video
         ItemOutcome::Downloaded => ("downloaded", None),
         ItemOutcome::Unavailable(reason) => ("unavailable", Some(reason.clone())),
         ItemOutcome::Failed(reason) | ItemOutcome::PermanentFailure(reason) => ("failed", Some(reason.clone())),
-        ItemOutcome::TimedOut => ("failed", Some("download timed out".into())),
         ItemOutcome::Cancelled => ("cancelled", None),
         ItemOutcome::Matched => return Ok(()),
     };
@@ -70,7 +68,6 @@ pub fn append_log_with_source(folder: &Path, entry: &PlaylistEntry, source_video
     file.sync_data().map_err(|error| format!("sync log could not be saved: {error}"))
 }
 
-pub const ITEM_TIMEOUT: Duration = Duration::from_secs(120);
 const AUDIO_EXTENSIONS: &[&str] = &["mp3", "m4a", "wav", "flac", "webm"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistEntry {
@@ -277,7 +274,6 @@ pub enum ItemOutcome {
     Unavailable(String),
     PermanentFailure(String),
     Failed(String),
-    TimedOut,
     Cancelled,
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -443,10 +439,8 @@ where
             result.outcomes.push((label, outcome));
             continue;
         }
-        let started = Instant::now();
         let outcome = match download(item, token) {
             Ok(()) if token.is_cancelled() => ItemOutcome::Cancelled,
-            Ok(()) if started.elapsed() > ITEM_TIMEOUT => ItemOutcome::TimedOut,
             Ok(()) if validate_output(&item.destination, Validation::audio()).is_err() => {
                 ItemOutcome::Failed("validated audio output is missing or invalid".into())
             }
@@ -466,7 +460,6 @@ where
                 }
             }
             Err(_) if token.is_cancelled() => ItemOutcome::Cancelled,
-            Err(_) if started.elapsed() > ITEM_TIMEOUT => ItemOutcome::TimedOut,
             Err(error) if unavailable_failure(&error) => {
                 state.record_unavailable(&item.entry, item.source_override.as_ref().map(|source| source.video_id.as_str()).or(item.entry.id.as_deref()), &error);
                 match state.save(folder) {

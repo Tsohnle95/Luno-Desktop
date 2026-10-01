@@ -6691,10 +6691,9 @@ impl AppState {
                     if downloaded > 0 { let _ = state.scan_async(); }
                     return Err(error);
                 }
-                let failed = result.outcomes.iter().filter(|(_, item)| matches!(item, crate::download::sync::ItemOutcome::Failed(_) | crate::download::sync::ItemOutcome::PermanentFailure(_) | crate::download::sync::ItemOutcome::TimedOut)).count();
+                let failed = result.outcomes.iter().filter(|(_, item)| matches!(item, crate::download::sync::ItemOutcome::Failed(_) | crate::download::sync::ItemOutcome::PermanentFailure(_))).count();
                 let first_failure = result.outcomes.iter().find_map(|(id, item)| match item {
                     crate::download::sync::ItemOutcome::Failed(reason) | crate::download::sync::ItemOutcome::PermanentFailure(reason) => Some(format!("{}: {}", entries.iter().find(|entry| entry.id.as_deref() == Some(id)).map_or(id.as_str(), |entry| entry.title.as_str()), sanitize_download_error(reason))),
-                    crate::download::sync::ItemOutcome::TimedOut => Some(format!("{}: download timed out", entries.iter().find(|entry| entry.id.as_deref() == Some(id)).map_or(id.as_str(), |entry| entry.title.as_str()))),
                     _ => None,
                 });
                 if result.cancelled || token.is_cancelled() { Err("cancelled".into()) } else { Ok((downloaded, failed, first_failure)) }

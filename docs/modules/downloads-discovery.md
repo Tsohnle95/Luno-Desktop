@@ -158,9 +158,11 @@ What it does not own: library snapshots and promotion targets
   that playlist's append-only `.downloaded_vids` success markers. Old
   `.sync_failed_vids` markers do not block an explicit retry. Each new item
   downloads sequentially as M4A into the selected playlist folder; its success
-  marker is persisted before the sync advances. Sync and single downloads share
-  one admission gate, publish normal `sync` job events, support process-group
-  cancellation, and trigger a coalesced scan after new files arrive.
+  marker is persisted before the sync advances. Each item may take as long as
+  its helper needs to finish; successful long-form audio is not failed by a
+  fixed wall-clock cutoff. Sync and single downloads share one admission gate,
+  publish normal `sync` job events, support process-group cancellation, and
+  trigger a coalesced scan after new files arrive.
   Flat enumeration is not evidence of availability. A concrete unavailable
   extraction is recorded in the playlist-scoped atomic
   `.luno-sync-source-state.json` with the original ID, title, channel, duration,
