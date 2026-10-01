@@ -4,6 +4,7 @@ pub const CONTRACT_VERSION: u16 = 1;
 pub const MAX_SAFE_EVENT_ID: u64 = 9_007_199_254_740_991;
 pub const MAX_DISCOVER_LIMIT: usize = 20;
 pub const MAX_PREVIEW_SEEDS: usize = 50;
+pub const MAX_PLAY_COUNT_ENTRIES: usize = 100_000;
 /// Downloader search result cap per provider (YouTube). The frontend "Load
 /// More" grows the cap; legacy parity capped at 10.
 pub const MAX_DOWNLOADER_SEARCH_LIMIT: usize = 50;
@@ -63,6 +64,19 @@ where
             ))
         }
     })
+}
+
+pub(crate) fn play_count_map<'de, D>(deserializer: D) -> Result<std::collections::BTreeMap<String, u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = std::collections::BTreeMap::<String, u64>::deserialize(deserializer)?;
+    if values.len() > MAX_PLAY_COUNT_ENTRIES
+        || values.iter().any(|(id, count)| id.trim().is_empty() || *count == 0 || *count > MAX_SAFE_EVENT_ID)
+    {
+        return Err(serde::de::Error::custom("invalid or oversized play count map"));
+    }
+    Ok(values)
 }
 
 pub(crate) fn progress<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
@@ -191,6 +205,33 @@ pub struct Playlist {
     pub path: Option<String>,
     pub url: Option<String>,
     pub ordered_track_ids: Vec<TrackId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrackPlayCount {
+    #[serde(deserialize_with = "non_empty_string")]
+    pub track_id: String,
+    #[serde(deserialize_with = "safe_u64")]
+    pub plays: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaylistPlayCount {
+    #[serde(deserialize_with = "non_empty_string")]
+    pub playlist_id: String,
+    #[serde(deserialize_with = "safe_u64")]
+    pub plays: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlayStatisticsSnapshot {
+    pub generation: Generation,
+    pub tracks: Vec<TrackPlayCount>,
+    pub playlists: Vec<PlaylistPlayCount>,
+    pub legacy_track_counts_imported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

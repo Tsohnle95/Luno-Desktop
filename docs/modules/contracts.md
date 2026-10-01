@@ -33,10 +33,15 @@ docs), release packaging (`docs/release/desktop.md`).
   entry point all Tauri commands funnel through.
 - `src-tauri/src/main.rs` — Tauri command wiring (`backend_command`,
   `downloader_search`, `settings_load`, `transfer_preview`,
-  `migration_status`, `track_artwork`, `track_duration`, discovery-key commands),
-  `spawn_blocking` dispatch, pending-event drain, `luno-video://` scheme.
+  `migration_status`, `track_artwork`, `missing_artwork_tracks`,
+  `search_artwork_candidates`, `apply_artwork_candidate`, `track_duration`,
+  discovery-key commands), `spawn_blocking` dispatch, pending-event drain,
+  `luno-video://` scheme.
 - `src-tauri/src/transfer/` — `codec.rs`, `planner.rs`,
   `provider_index.rs`: export/import of the v1 manifest.
+- Playback uses `play_from_playlist` to carry explicit playlist origin,
+  `import_legacy_play_counts` for the one-time browser-count migration, and
+  `play_statistics_snapshot` to publish durable Home metrics.
 - `contracts/library-export/v1/` — `schema.json`, `README.md`, `valid.json`,
   `invalid-unknown-field.json`.
 
@@ -85,6 +90,15 @@ docs), release packaging (`docs/release/desktop.md`).
   paused. It can differ from `queue[current_index]` while a focused preview is
   sounding over a physical queue, including after Discover is disabled.
   Older snapshots without the field remain accepted by the frontend.
+- `play_statistics_snapshot` carries track and playlist counts plus the
+  one-time import marker. `play_from_playlist` supplies a source that ordinary
+  `play_with_context` clears. Rust records a play only after successful audio
+  start and persists counts under the runtime home; React projects the result.
+- Artwork maintenance uses direct blocking-worker Tauri commands outside the
+  versioned envelope: scans accept only current library track IDs, candidate
+  searches resolve title/artist from the backend snapshot, and apply accepts a
+  short-lived candidate token bound to the same track. The v1 event and command
+  envelope shapes remain unchanged.
 - Transfer manifests are metadata-only: no local paths, secrets, audio
   bytes, queue state, favorites, or history. Imports are additive —
   consumers never delete existing library content. A track without

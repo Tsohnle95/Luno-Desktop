@@ -18,6 +18,7 @@ use crate::download::coordinator::DownloadCoordinator;
 use crate::download::markers::Markers;
 use crate::download::promotion::{promote_output, CollisionPolicy, PromotionError, Validation};
 use crate::library::artwork::TrackArtwork;
+use crate::library::artwork_search::{ArtworkCandidate, ArtworkSearchService};
 use crate::library::favorites::Favorites;
 use crate::library::scanner::{OsFileSystem, ScanOutcome};
 use crate::preview::assets::PreviewAssetStore;
@@ -2452,8 +2453,10 @@ pub struct AppState {
     provider_metadata: Arc<Mutex<BTreeMap<PathBuf, TrackMetadata>>>,
     track_paths: Arc<Mutex<BTreeMap<TrackId, PathBuf>>>,
     artwork: Arc<TrackArtwork>,
+    artwork_search: Arc<ArtworkSearchService>,
     current_track: Arc<Mutex<Option<TrackId>>>,
     playback: Arc<Mutex<QueueState>>,
+    play_statistics: Arc<Mutex<crate::playback::statistics::PlayStatistics>>,
     clock: Arc<Mutex<Option<PlaybackClock>>>,
     recovery: Arc<Mutex<FailureRecovery>>,
     favorites: Arc<Mutex<Favorites>>,
@@ -2751,8 +2754,10 @@ impl AppState {
             provider_metadata: Arc::new(Mutex::new(BTreeMap::new())),
             track_paths: track_paths.clone(),
             artwork: Arc::new(TrackArtwork::new(artwork_resolver)),
+            artwork_search: Arc::new(ArtworkSearchService::default()),
             current_track: Arc::new(Mutex::new(None)),
             playback: Arc::new(Mutex::new(QueueState::new())),
+            play_statistics: Arc::new(Mutex::new(crate::playback::statistics::PlayStatistics::default())),
             clock: Arc::new(Mutex::new(None)),
             recovery: Arc::new(Mutex::new(FailureRecovery::new())),
             favorites: Arc::new(Mutex::new(Favorites::default())),
@@ -2801,6 +2806,67 @@ impl AppState {
     /// without embedded art; extraction failures are silent by design.
     pub fn track_artwork(&self, track_id: &str) -> Result<Option<String>, String> {
         Ok(self.artwork.artwork(track_id))
+    }
+
+    /// Returns current library ids that have no readable embedded picture.
+    /// The scan avoids constructing webview data URLs and caps untrusted IPC
+    /// input before touching the filesystem.
+    pub fn missing_artwork_tracks(&self, track_ids: &[String]) -> Result<Vec<String>, String> {
+        if track_ids.len() > 100_000 {
+            return Err("The artwork scan selection is too large.".into());
+        }
+        let existing = self.library().tracks.into_iter().map(|track| track.id).collect::<std::collections::HashSet<_>>();
+        let paths = {
+            let paths = self.track_paths.lock().unwrap_or_else(|error| error.into_inner());
+            let mut seen = std::collections::HashSet::new();
+            track_ids
+                .iter()
+                .filter_map(|raw_id| {
+                    let id = TrackId(raw_id.clone());
+                    if !seen.insert(id.clone()) || !existing.contains(&id) {
+                        return None;
+                    }
+                    paths.get(&id).map(|path| (raw_id.clone(), path.clone()))
+                })
+                .collect::<Vec<_>>()
+        };
+        let missing = paths
+            .into_iter()
+            .filter_map(|(track_id, path)| {
+                (!crate::library::artwork::has_embedded_artwork(&path)).then_some(track_id)
+            })
+            .collect();
+        Ok(missing)
+    }
+
+    /// Searches MusicBrainz and Cover Art Archive for a user-selected track.
+    /// Network work is called from Tauri's blocking worker command.
+    pub fn search_artwork_candidates(&self, track_id: &str) -> Result<Vec<ArtworkCandidate>, String> {
+        let id = TrackId(track_id.to_owned());
+        let track = self.library().tracks.into_iter().find(|track| track.id == id)
+            .ok_or_else(|| "That song is no longer in the library.".to_string())?;
+        let artist = track.artist.as_deref().filter(|artist| !artist.trim().is_empty())
+            .ok_or_else(|| "Add an artist name before searching for artwork.".to_string())?;
+        if !self.track_paths.lock().unwrap_or_else(|error| error.into_inner()).contains_key(&id) {
+            return Err("That song is no longer available on disk.".into());
+        }
+        self.artwork_search.search(track_id, &track.title, artist, track.album.as_deref())
+    }
+
+    /// Applies one review-selected candidate to the staged local audio file.
+    /// The candidate token is bound to its track and expires after ten minutes.
+    pub fn apply_artwork_candidate(&self, track_id: &str, candidate_id: &str) -> Result<(), String> {
+        let id = TrackId(track_id.to_owned());
+        let path = self.track_paths.lock().unwrap_or_else(|error| error.into_inner()).get(&id).cloned()
+            .ok_or_else(|| "That song is no longer available on disk.".to_string())?;
+        if !self.library().tracks.iter().any(|track| track.id == id) {
+            return Err("That song is no longer in the library.".into());
+        }
+        let artwork = self.artwork_search.candidate(track_id, candidate_id)?;
+        crate::library::artwork::apply_embedded_artwork(&path, &artwork.bytes, artwork.mime)?;
+        self.artwork_search.forget_candidate(candidate_id);
+        self.artwork.invalidate(track_id);
+        Ok(())
     }
 
     /// Reads a local file's container duration for the visible library row.
@@ -6177,6 +6243,7 @@ impl AppState {
                 self.recent.lock().unwrap_or_else(|e| e.into_inner()).clear();
                 Ok(Value::Null)
             }
+            Command::ImportLegacyPlayCounts { track_plays } => self.import_legacy_play_counts(&track_plays),
             Command::PlayNext { track_ids } => self.queue_insert(track_ids, true),
             Command::AddToQueue { track_ids } => self.queue_insert(track_ids, false),
             Command::RemoveFromQueue { index } => self.queue_remove(index),
@@ -6233,7 +6300,7 @@ impl AppState {
                 }
             }
             #[cfg(not(target_os = "macos"))]
-            Command::Play { .. } | Command::PlayWithContext { .. } | Command::Resume | Command::Next | Command::Previous | Command::Pause | Command::Seek { .. } | Command::SetVolume { .. } => Err(ContractError {
+            Command::Play { .. } | Command::PlayWithContext { .. } | Command::PlayFromPlaylist { .. } | Command::Resume | Command::Next | Command::Previous | Command::Pause | Command::Seek { .. } | Command::SetVolume { .. } => Err(ContractError {
                 code: ErrorCode::Unavailable,
                 message: "audio backend unavailable on this platform".into(),
                 retryable: false,
@@ -6242,6 +6309,8 @@ impl AppState {
             Command::Play { track_id } => self.play_track(track_id),
             #[cfg(target_os = "macos")]
             Command::PlayWithContext { track_id, context } => self.play_with_context(track_id, context),
+            #[cfg(target_os = "macos")]
+            Command::PlayFromPlaylist { track_id, context, playlist_id } => self.play_from_playlist(track_id, context, playlist_id),
             #[cfg(target_os = "macos")]
             Command::Next => self.next_track(),
             #[cfg(target_os = "macos")]
@@ -6289,6 +6358,7 @@ impl AppState {
         // Remember where settings live so backend-originated changes
         // (video-mode toggle) can persist immediately.
         *self.settings_home.lock().unwrap_or_else(|e| e.into_inner()) = Some(home.clone());
+        *self.play_statistics.lock().unwrap_or_else(|e| e.into_inner()) = crate::playback::statistics::PlayStatistics::load(&home);
         let path = home.join(".luno_config.json");
         let config = match crate::persistence::legacy::read_config(&path) {
             Ok(config) => config,
@@ -6356,6 +6426,7 @@ impl AppState {
         } else {
             crate::media_keys::clear_now_playing();
         }
+        self.publish_play_statistics_snapshot();
         Ok(serde_json::json!({
             "music_root": root.map(|path| path.display().to_string()),
             "auto_discovery": config.auto_discovery,
@@ -7392,6 +7463,76 @@ fn promotion_error(error: PromotionError) -> ContractError {
         }
     }
 
+    fn play_statistics_snapshot(&self) -> crate::contracts::types::PlayStatisticsSnapshot {
+        let mut snapshot = crate::contracts::types::PlayStatisticsSnapshot {
+            generation: self.next_generation(),
+            tracks: Vec::new(),
+            playlists: Vec::new(),
+            legacy_track_counts_imported: false,
+        };
+        let stats = self.play_statistics.lock().unwrap_or_else(|e| e.into_inner());
+        snapshot.tracks = stats.track_plays.iter().map(|(track_id, plays)| crate::contracts::types::TrackPlayCount {
+            track_id: track_id.clone(), plays: *plays,
+        }).collect();
+        snapshot.playlists = stats.playlist_plays.iter().map(|(playlist_id, plays)| crate::contracts::types::PlaylistPlayCount {
+            playlist_id: playlist_id.clone(), plays: *plays,
+        }).collect();
+        snapshot.legacy_track_counts_imported = stats.legacy_track_counts_imported;
+        snapshot
+    }
+
+    fn publish_play_statistics_snapshot(&self) {
+        let snapshot = self.play_statistics_snapshot();
+        self.publish(self.event(snapshot.generation, Event::PlayStatisticsSnapshot { snapshot }));
+    }
+
+    fn record_successful_track_start(&self, track_id: &TrackId, source_playlist_id: Option<&PlaylistId>) {
+        let playlist_id = source_playlist_id.filter(|playlist_id| {
+            self.library().playlists.iter().any(|playlist| {
+                playlist.id == **playlist_id
+                    && !playlist.name.eq_ignore_ascii_case("unsorted")
+                    && playlist.ordered_track_ids.contains(track_id)
+            })
+        });
+        let home = self.settings_home.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut stats = self.play_statistics.lock().unwrap_or_else(|e| e.into_inner());
+        stats.record_track(&track_id.0);
+        if let Some(playlist_id) = playlist_id { stats.record_playlist(&playlist_id.0); }
+        if let Some(home) = home {
+            if let Err(error) = stats.save(&home) {
+                eprintln!("[luno-stats] could not persist listening counts: {error}");
+                self.publish(self.event(self.next_generation(), Event::Error { error: ContractError {
+                    code: ErrorCode::Internal,
+                    message: "Listening counts could not be saved and may not survive restart.".into(),
+                    retryable: true,
+                }}));
+            }
+        }
+        drop(stats);
+        self.publish_play_statistics_snapshot();
+    }
+
+    fn import_legacy_play_counts(&self, counts: &BTreeMap<String, u64>) -> Result<Value, ContractError> {
+        let home = self.settings_home.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or_else(|| ContractError {
+            code: ErrorCode::Unavailable,
+            message: "listening counts are unavailable until Luno finishes loading settings".into(),
+            retryable: true,
+        })?;
+        let mut stats = self.play_statistics.lock().unwrap_or_else(|e| e.into_inner());
+        if stats.legacy_track_counts_imported { return Ok(Value::Null); }
+        let mut updated = stats.clone();
+        updated.import_legacy_track_counts(counts);
+        updated.save(&home).map_err(|_| ContractError {
+            code: ErrorCode::Internal,
+            message: "legacy listening counts could not be imported".into(),
+            retryable: true,
+        })?;
+        *stats = updated;
+        drop(stats);
+        self.publish_play_statistics_snapshot();
+        Ok(Value::Null)
+    }
+
     /// Publishes a selected track while its asynchronous load is pending.
     /// Keep OS metadata aligned with the selection, but only emit TrackStarted
     /// after the output backend actually begins playing it.
@@ -7552,6 +7693,30 @@ fn promotion_error(error: PromotionError) -> ContractError {
 
     #[cfg(target_os = "macos")]
     fn play_with_context(&self, track_id: TrackId, context: Vec<TrackId>) -> Result<Value, ContractError> {
+        self.play_with_context_from(track_id, context, None)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn play_from_playlist(&self, track_id: TrackId, context: Vec<TrackId>, playlist_id: PlaylistId) -> Result<Value, ContractError> {
+        let library = self.library();
+        let playlist = library.playlists.iter().find(|playlist| playlist.id == playlist_id).ok_or_else(|| ContractError {
+            code: ErrorCode::NotFound,
+            message: "playlist is no longer available".into(),
+            retryable: false,
+        })?;
+        if playlist.name.eq_ignore_ascii_case("unsorted")
+            || !playlist.ordered_track_ids.contains(&track_id)
+            || context.is_empty()
+            || !context.contains(&track_id)
+            || context.iter().any(|id| !playlist.ordered_track_ids.contains(id))
+        {
+            return Err(ContractError::invalid("playback context is not from the selected playlist"));
+        }
+        self.play_with_context_from(track_id, context, Some(playlist_id))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn play_with_context_from(&self, track_id: TrackId, context: Vec<TrackId>, source_playlist_id: Option<PlaylistId>) -> Result<Value, ContractError> {
         eprintln!("[luno-play] request {track_id:?} context_len={}", context.len());
         if context.is_empty() || !context.iter().any(|id| id == &track_id) {
             eprintln!("[luno-play] rejected: context must contain the selected track");
@@ -7621,7 +7786,11 @@ fn promotion_error(error: PromotionError) -> ContractError {
             self.end_discover(false);
         }
         self.tasks.cancel_key("preview-heartbeat");
-        self.playback.lock().unwrap_or_else(|e| e.into_inner()).play_with_context(track_id.clone(), context);
+        {
+            let mut queue = self.playback.lock().unwrap_or_else(|e| e.into_inner());
+            queue.play_with_context(track_id.clone(), context);
+            queue.set_source_playlist_id(source_playlist_id.clone());
+        }
         // NOTE: video mode is NOT kicked here on purpose — `start_selected_track`
         // kicks it once the track actually starts playing (and auto-advance funnels
         // through the same path). Kicking in BOTH places spawned two prefetch passes
@@ -7639,7 +7808,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         let load_state = self.clone();
         let generation = ack.generation;
         self.submit(self.generation("playback-load", generation), move |token| {
-            load_state.start_selected_track(track_id, path, token);
+            load_state.start_selected_track(track_id, path, source_playlist_id, token);
         })
         .map_err(|_| ContractError {
             code: ErrorCode::Busy,
@@ -7662,6 +7831,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         &self,
         track_id: TrackId,
         path: PathBuf,
+        source_playlist_id: Option<PlaylistId>,
         token: crate::runtime::task_registry::CancellationToken,
     ) {
         if token.is_cancelled() || self.is_closing() {
@@ -7718,6 +7888,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         self.playback.lock().unwrap_or_else(|e| e.into_inner()).record_started(track_id.clone(), false);
         self.discover_track_started(&track_id);
         self.record_recent(track_id.clone());
+        self.record_successful_track_start(&track_id, source_playlist_id.as_ref());
         // Auto-advance reached a new track: keep video mode in lockstep
         // (stage the new current, prefetch its successors).
         if self.video_mode_enabled() {
@@ -7769,7 +7940,10 @@ fn promotion_error(error: PromotionError) -> ContractError {
         // The old track's heartbeat must not keep publishing or attempt a
         // second advance while this selection loads asynchronously.
         self.tasks.cancel_key("playback-heartbeat");
-        let Some(track_id) = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned() else {
+        let (Some(track_id), source_playlist_id) = ({
+            let queue = self.playback.lock().unwrap_or_else(|e| e.into_inner());
+            (queue.current().cloned(), queue.source_playlist_id().cloned())
+        }) else {
             return Ok(Value::Null);
         };
         if let Some(generation) = self.preview_session.lock().unwrap_or_else(|e| e.into_inner())
@@ -7839,7 +8013,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         let load_state = self.clone();
         let generation = ack.generation;
         self.submit(self.generation("playback-load", generation), move |token| {
-            load_state.start_selected_track(track_id, path, token);
+            load_state.start_selected_track(track_id, path, source_playlist_id, token);
         })
         .map_err(|_| ContractError {
             code: ErrorCode::Busy,

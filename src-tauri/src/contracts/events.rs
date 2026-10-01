@@ -149,12 +149,21 @@ pub enum Command {
     },
     GetRecent,
     ClearRecent,
+    ImportLegacyPlayCounts {
+        #[serde(deserialize_with = "super::types::play_count_map")]
+        track_plays: std::collections::BTreeMap<String, u64>,
+    },
     Play {
         track_id: TrackId,
     },
     PlayWithContext {
         track_id: TrackId,
         context: Vec<TrackId>,
+    },
+    PlayFromPlaylist {
+        track_id: TrackId,
+        context: Vec<TrackId>,
+        playlist_id: PlaylistId,
     },
     Next,
     Previous,
@@ -348,6 +357,9 @@ pub enum Event {
     },
     TrackStarted {
         track_id: TrackId,
+    },
+    PlayStatisticsSnapshot {
+        snapshot: PlayStatisticsSnapshot,
     },
     QueueChanged {
         queue: Vec<TrackId>,

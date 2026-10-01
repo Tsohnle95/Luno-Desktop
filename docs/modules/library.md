@@ -32,7 +32,12 @@ transfer manifests (`docs/modules/contracts.md`).
 - `src-tauri/src/library/metadata.rs` — versioned portable per-track metadata
   in `.luno_track_metadata.json` at the music root.
 - `src-tauri/src/library/artwork.rs` — bounded embedded-artwork extraction
-  served as data URLs over the `track_artwork` command.
+  served as data URLs over the `track_artwork` command, missing-art detection,
+  cache invalidation, and staged metadata writes.
+- `src-tauri/src/library/artwork_search.rs` — user-triggered MusicBrainz
+  recording search, linked release-group lookup, and Cover Art Archive candidate images. It applies an
+  identified User-Agent, spaces provider requests by at least one second, and
+  keeps a bounded, expiring set of review candidates in memory.
 - `src-tauri/src/playback/backend_adapter.rs::probe_duration` — container
   duration probing served through the blocking `track_duration` Tauri command
   for visible library rows.
@@ -122,6 +127,22 @@ transfer manifests (`docs/modules/contracts.md`).
   count and byte budget and retries evicted entries lazily on the next
   visible pass — never eagerly from the eviction event (fetch-evict-refetch
   loop, 2026-09-09).
+- Artwork maintenance is initiated from the playlist cover menu or Settings.
+  Local scans check embedded tags without building data URLs; provider search
+  only runs for a selected missing-art track and sends its title and artist to
+  MusicBrainz. It searches recordings, then checks linked release groups in
+  Cover Art Archive; results are displayed for review, and no match is written
+  until the user applies one. MusicBrainz permits free API use for
+  non-commercial applications; a commercial Luno distribution needs an
+  appropriate plan or arrangement.
+  Candidate images are byte- and dimension-bounded, decoded, resized to 512 px,
+  and written only when the format's primary tag is writable. Luno stages a
+  same-directory copy, preserves file permissions, verifies the source stamp
+  and reads the resulting artwork back before atomic replacement under the
+  library file-mutation lock. Unsupported formats such as WebM remain intact.
+  The current `lofty` support table covers common tagged audio containers but
+  excludes WebM; a writable text tag alone does not guarantee artwork support,
+  so the staged read-back check is required.
 - Frontend artwork requests have view-scoped demand leases: queued offscreen
   work is removed when no mounted view needs it, duplicate requests share one
   job, and the audible track and visible library rows receive higher queue
@@ -153,6 +174,8 @@ event when all roots unreadable)
 play_with_context → heal ids vs current map → queue → playback
 visible row → track_artwork command → bounded extract → data URL
 visible library row → track_duration command → blocking container probe
+playlist artwork menu/Settings → local missing-art scan → selected song
+→ MusicBrainz/CAA candidate review → staged tag write → atomic replace
 set_playlist_url → validated YouTube URL → atomic URL map → rescan → snapshot
 startup → has_legacy_data → validated_music_root → migrate → status
 ```

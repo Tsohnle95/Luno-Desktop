@@ -8,6 +8,8 @@ and what plays next.
 ## What this owns
 
 - Queue policy: order, shuffle, repeat, next/previous, mutations.
+- Successful library playback-start counts, queue playlist origin, and durable
+  listening-statistics publication.
 - Playback clock, seek, volume seeding, crossfade, sleep timer.
 - Audio backend lifecycle (macOS cpal/symphonia) and failure recovery.
 - Video mode, staging pipeline, prefetch, and the `luno-video://` stream.
@@ -21,6 +23,8 @@ What it does not own: library snapshots and track identity
 
 - `src-tauri/src/playback/queue.rs` — `QueueState`: authoritative order,
   shuffle, repeat, index.
+- `src-tauri/src/playback/statistics.rs` — listening counts persisted under
+  the stable runtime home with atomic replacement.
 - `src-tauri/src/playback/clock.rs` — `PlaybackClock`.
 - `src-tauri/src/playback/backend.rs` — `AudioBackend` trait (+
   `FakeBackend` under test); `backend_adapter.rs` (`CpalSymphoniaBackend`,
@@ -139,6 +143,13 @@ What it does not own: library snapshots and track identity
   history only after the backend starts output. Streaming EOF advances as soon
   as the decoded output buffer drains; the multi-second stall watchdog remains
   a recovery path for a dead stream, not normal track completion.
+- Track counts increment at that successful audio-start edge: repeated starts
+  count separately, while pause/resume and failed loads do not. A queue started
+  with `play_from_playlist` retains that source through next and repeat; a
+  playlist count increments only if the started local track is still a member.
+  Counts are atomically saved in `.luno_play_statistics.json` under the runtime
+  home and survive app rebuilds. Historical playlist-origin counts are not
+  inferred from per-track totals.
 
 ## Core flows
 

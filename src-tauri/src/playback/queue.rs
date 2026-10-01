@@ -1,4 +1,4 @@
-use crate::contracts::TrackId;
+use crate::contracts::{PlaylistId, TrackId};
 
 pub const HISTORY_LIMIT: usize = 100;
 
@@ -46,12 +46,12 @@ pub enum RepeatMode { Off, One, All }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueState {
     physical: Vec<TrackId>, original: Vec<TrackId>, current_index: Option<usize>,
-    user_queue_count: usize, shuffle: bool, repeat: RepeatMode,
+    user_queue_count: usize, shuffle: bool, repeat: RepeatMode, source_playlist_id: Option<PlaylistId>,
     history: Vec<TrackId>, previews: Vec<TrackId>,
 }
 
 impl Default for QueueState {
-    fn default() -> Self { Self { physical: vec![], original: vec![], current_index: None, user_queue_count: 0, shuffle: false, repeat: RepeatMode::Off, history: vec![], previews: vec![] } }
+    fn default() -> Self { Self { physical: vec![], original: vec![], current_index: None, user_queue_count: 0, shuffle: false, repeat: RepeatMode::Off, source_playlist_id: None, history: vec![], previews: vec![] } }
 }
 
 impl QueueState {
@@ -64,8 +64,11 @@ impl QueueState {
     pub fn previews(&self) -> &[TrackId] { &self.previews }
     pub fn shuffle(&self) -> bool { self.shuffle }
     pub fn repeat(&self) -> RepeatMode { self.repeat }
+    pub fn source_playlist_id(&self) -> Option<&PlaylistId> { self.source_playlist_id.as_ref() }
+    pub fn set_source_playlist_id(&mut self, playlist_id: Option<PlaylistId>) { self.source_playlist_id = playlist_id; }
 
     pub fn play_with_context(&mut self, track: TrackId, context: Vec<TrackId>) {
+        self.source_playlist_id = None;
         self.physical = context; self.original = self.physical.clone(); self.user_queue_count = 0;
         self.current_index = self.physical.iter().position(|id| id == &track).or_else(|| (!self.physical.is_empty()).then_some(0));
         if self.shuffle { self.shuffle_current_first(); }
@@ -155,7 +158,7 @@ impl QueueState {
 
     pub fn record_started(&mut self, track: TrackId, transient: bool) { if transient { return; } self.history.retain(|id| id != &track); self.history.insert(0, track); self.history.truncate(HISTORY_LIMIT); }
     pub fn clear_history(&mut self) { self.history.clear(); }
-    pub fn clear(&mut self) { self.physical.clear(); self.original.clear(); self.current_index = None; self.user_queue_count = 0; self.previews.clear(); }
+    pub fn clear(&mut self) { self.physical.clear(); self.original.clear(); self.current_index = None; self.user_queue_count = 0; self.source_playlist_id = None; self.previews.clear(); }
     pub fn start_preview<I: IntoIterator<Item = TrackId>>(&mut self, tracks: I) { self.previews = tracks.into_iter().collect(); }
     pub fn end_preview(&mut self) { self.previews.clear(); }
 }

@@ -186,6 +186,42 @@ async fn track_artwork(
 }
 
 #[tauri::command]
+async fn missing_artwork_tracks(
+    state: tauri::State<'_, AppState>,
+    track_ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let app = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || app.missing_artwork_tracks(&track_ids))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn search_artwork_candidates(
+    state: tauri::State<'_, AppState>,
+    track_id: String,
+) -> Result<Vec<luno_desktop_lib::library::artwork_search::ArtworkCandidate>, String> {
+    let app = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || app.search_artwork_candidates(&track_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn apply_artwork_candidate(
+    state: tauri::State<'_, AppState>,
+    track_id: String,
+    candidate_id: String,
+) -> Result<(), String> {
+    let app = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        app.apply_artwork_candidate(&track_id, &candidate_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn track_duration(
     state: tauri::State<'_, AppState>,
     track_id: String,
@@ -431,9 +467,9 @@ fn main() {
             },
         );
     #[cfg(debug_assertions)]
-    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, track_duration, discovery_key_status, save_discovery_key, gate5_smoke]);
+    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, missing_artwork_tracks, search_artwork_candidates, apply_artwork_candidate, track_duration, discovery_key_status, save_discovery_key, gate5_smoke]);
     #[cfg(not(debug_assertions))]
-    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, track_duration, discovery_key_status, save_discovery_key]);
+    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, missing_artwork_tracks, search_artwork_candidates, apply_artwork_candidate, track_duration, discovery_key_status, save_discovery_key]);
     builder
         .setup(|app| {
             let handle = app.handle().clone();

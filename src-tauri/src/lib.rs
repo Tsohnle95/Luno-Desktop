@@ -42,6 +42,7 @@ pub mod state;
 pub mod media_keys;
 pub mod library {
     pub mod artwork;
+    pub mod artwork_search;
     pub mod favorites;
     pub mod duplicates;
     pub mod index;
@@ -63,6 +64,7 @@ pub mod playback {
     pub mod crossfade;
     pub mod clock;
     pub mod queue;
+    pub mod statistics;
     pub mod recovery;
     pub mod sleep_timer;
 }

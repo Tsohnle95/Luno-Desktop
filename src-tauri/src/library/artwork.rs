@@ -7,9 +7,11 @@
 //! `covr`, FLAC `PICTURE`), and served to the webview as a `data:` URL.
 
 use std::collections::{HashMap, VecDeque};
-use std::fs::File;
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Bounded in-memory cache of extracted artwork `data:` URLs, keyed by track
 /// id. Entries are evicted oldest-first once the total payload exceeds
@@ -18,6 +20,7 @@ pub const ARTWORK_CACHE_BYTES: usize = 32 * 1024 * 1024;
 /// Single artwork larger than this is rejected to avoid a single 10 MB JPEG
 /// becoming a 14 MB base64 string and spiking the WebView heap.
 pub const MAX_SINGLE_ARTWORK_BYTES: usize = 2 * 1024 * 1024;
+static NEXT_ARTWORK_STAGE: AtomicU64 = AtomicU64::new(1);
 /// Display size served to the webview. Embedded covers are routinely
 /// 1400–3000 px, and every rendered row decodes its own bitmap (a 3000 px
 /// cover is ~36 MB decoded); a 4k-song Home view therefore put gigabytes
@@ -40,8 +43,11 @@ pub struct ArtworkCache {
 }
 
 impl ArtworkCache {
-    pub fn get(&self, track_id: &str) -> Option<String> {
-        self.entries.get(track_id).map(|(_, url)| url.clone())
+    pub fn get(&mut self, track_id: &str) -> Option<String> {
+        let url = self.entries.get(track_id).map(|(_, url)| url.clone())?;
+        self.order.retain(|id| id != track_id);
+        self.order.push_back(track_id.to_owned());
+        Some(url)
     }
 
     pub fn insert(&mut self, track_id: String, url: String) {
@@ -50,6 +56,7 @@ impl ArtworkCache {
             self.total_bytes = self.total_bytes.saturating_sub(previous);
         }
         self.total_bytes += bytes;
+        self.order.retain(|id| id != &track_id);
         self.order.push_back(track_id);
         while self.total_bytes > ARTWORK_CACHE_BYTES {
             match self.order.pop_front() {
@@ -61,6 +68,13 @@ impl ArtworkCache {
                 None => break,
             }
         }
+    }
+
+    pub fn invalidate(&mut self, track_id: &str) {
+        if let Some((bytes, _)) = self.entries.remove(track_id) {
+            self.total_bytes = self.total_bytes.saturating_sub(bytes);
+        }
+        self.order.retain(|id| id != track_id);
     }
 }
 
@@ -135,6 +149,250 @@ fn picture_data_url(declared_mime: &str, data: &[u8]) -> Option<String> {
     Some(format!("data:{mime};base64,{encoded}"))
 }
 
+/// Validates a provider image with bounded decoding, then stores a small JPEG
+/// suitable for both the embedded tag and the WebView. The source is already
+/// byte-capped by the provider client; dimension and decoder limits protect
+/// against compressed image bombs.
+#[cfg(target_os = "macos")]
+pub fn normalize_provider_image(data: &[u8]) -> Result<(Vec<u8>, &'static str, String), String> {
+    use base64::Engine;
+    use std::io::Cursor;
+
+    if data.is_empty() || data.len() > MAX_SINGLE_ARTWORK_BYTES {
+        return Err("The selected image is empty or too large.".into());
+    }
+    let mut reader = image::ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .map_err(|error| format!("Could not inspect the artwork image: {error}"))?;
+    if !matches!(reader.format(), Some(image::ImageFormat::Jpeg | image::ImageFormat::Png)) {
+        return Err("Only JPEG and PNG artwork can be embedded.".into());
+    }
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(5_000);
+    limits.max_image_height = Some(5_000);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|error| format!("The artwork image could not be decoded: {error}"))?;
+    let small = image.thumbnail(MAX_ARTWORK_DIM, MAX_ARTWORK_DIM).to_rgb8();
+    let mut normalized = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(
+        &mut normalized,
+        DOWNSCALE_JPEG_QUALITY,
+    )
+    .encode_image(&small)
+    .map_err(|error| format!("Could not prepare the artwork image: {error}"))?;
+    if normalized.len() > MAX_SINGLE_ARTWORK_BYTES {
+        return Err("The prepared artwork image is too large.".into());
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&normalized);
+    let url = format!("data:image/jpeg;base64,{encoded}");
+    Ok((normalized, "image/jpeg", url))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn normalize_provider_image(_data: &[u8]) -> Result<(Vec<u8>, &'static str, String), String> {
+    Err("Artwork tagging is only available in the macOS desktop app.".into())
+}
+
+/// Checks for a usable embedded picture without creating a base64 data URL.
+/// Used by the Settings artwork scanner, so scanning thousands of tracks does
+/// not allocate every cover image in the webview representation.
+pub fn has_embedded_artwork(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use lofty::file::TaggedFileExt;
+
+        match lofty::read_from_path(path) {
+            Ok(file) => file
+                .tags()
+                .iter()
+                .flat_map(|tag| tag.pictures())
+                .any(|picture| !picture.data().is_empty() && picture.data().len() <= MAX_SINGLE_ARTWORK_BYTES),
+            // Keep the scanner aligned with formats served by Symphonia even
+            // when Lofty cannot parse that container (for example WebM).
+            Err(_) => embedded_artwork_data_url(path).is_some(),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// Embeds the selected image in a same-directory staged copy. The original
+/// file is left intact unless tag writing succeeds and its identity still
+/// matches the source observed before staging.
+pub fn apply_embedded_artwork(path: &Path, image: &[u8], mime: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        apply_embedded_artwork_macos(path, image, mime)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (path, image, mime);
+        Err("Artwork tagging is only available in the macOS desktop app.".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_embedded_artwork_macos(path: &Path, image: &[u8], mime: &str) -> Result<(), String> {
+    use lofty::config::WriteOptions;
+    use lofty::file::{AudioFile, TaggedFileExt};
+    use lofty::picture::{MimeType, Picture, PictureType};
+    use lofty::tag::Tag;
+
+    if !matches!(mime, "image/jpeg" | "image/png") || image.is_empty() || image.len() > MAX_SINGLE_ARTWORK_BYTES {
+        return Err("The selected image is not a supported, verified artwork file.".into());
+    }
+    let _mutation = crate::library::mutations::lock_library_file_mutations();
+    let source_type = fs::symlink_metadata(path)
+        .map_err(|error| format!("Could not inspect the music file: {error}"))?
+        .file_type();
+    if !source_type.is_file() {
+        return Err("The selected music path is not a regular file.".into());
+    }
+    let original_permissions = fs::metadata(path)
+        .map_err(|error| format!("Could not inspect the music file: {error}"))?
+        .permissions();
+    let original_stamp = stamp(path)?;
+    let staged = stage_path(path)?;
+
+    let mut created_stage = false;
+    let result = (|| {
+        let mut source = File::open(path)
+            .map_err(|error| format!("Could not read the music file: {error}"))?;
+        let mut destination = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged)
+            .map_err(|error| format!("Could not create a staged music file: {error}"))?;
+        created_stage = true;
+        io::copy(&mut source, &mut destination)
+            .map_err(|error| format!("Could not stage the music file: {error}"))?;
+        destination
+            .sync_all()
+            .map_err(|error| format!("Could not flush the staged music file: {error}"))?;
+        drop(destination);
+
+        let mut tagged = lofty::read_from_path(&staged).map_err(|error| {
+            format!("This audio format cannot safely store embedded artwork: {error}")
+        })?;
+        let tag_type = tagged.primary_tag_type();
+        if !tagged.tag_support(tag_type).is_writable() {
+            return Err("This audio format does not support writing embedded artwork.".into());
+        }
+        if tagged.primary_tag().is_none() {
+            tagged.insert_tag(Tag::new(tag_type));
+        }
+        let tag = tagged
+            .primary_tag_mut()
+            .ok_or_else(|| "This audio format has no writable artwork tag.".to_string())?;
+        let mime_type = if mime == "image/png" { MimeType::Png } else { MimeType::Jpeg };
+        let picture = Picture::unchecked(image.to_vec())
+            .pic_type(PictureType::CoverFront)
+            .mime_type(mime_type)
+            .build();
+        if let Some(index) = tag
+            .pictures()
+            .iter()
+            .position(|picture| picture.pic_type() == PictureType::CoverFront)
+        {
+            tag.set_picture(index, picture);
+        } else if !tag.pictures().is_empty() {
+            tag.set_picture(0, picture);
+        } else {
+            tag.push_picture(picture);
+        }
+        tagged
+            .save_to_path(&staged, WriteOptions::default())
+            .map_err(|error| format!("Could not write artwork into this audio file: {error}"))?;
+        let verified = lofty::read_from_path(&staged)
+            .map_err(|error| format!("Could not verify the staged artwork: {error}"))?;
+        if !verified
+            .tags()
+            .iter()
+            .flat_map(|tag| tag.pictures())
+            .any(|picture| picture.data() == image)
+        {
+            return Err("This audio format could not retain the selected artwork. The original file is unchanged.".into());
+        }
+        fs::set_permissions(&staged, original_permissions)
+            .map_err(|error| format!("Could not preserve music file permissions: {error}"))?;
+        File::open(&staged)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| format!("Could not flush the artwork update: {error}"))?;
+
+        if stamp(path)? != original_stamp {
+            return Err("The music file changed while artwork was being prepared. Nothing was replaced.".into());
+        }
+        fs::rename(&staged, path)
+            .map_err(|error| format!("Could not atomically replace the music file: {error}"))?;
+        if let Some(parent) = path.parent() {
+            if let Ok(directory) = File::open(parent) {
+                let _ = directory.sync_all();
+            }
+        }
+        Ok(())
+    })();
+
+    if result.is_err() && created_stage {
+        let _ = fs::remove_file(&staged);
+    }
+    result
+}
+
+#[cfg(target_os = "macos")]
+#[derive(PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    digest: [u8; 32],
+}
+
+#[cfg(target_os = "macos")]
+fn stamp(path: &Path) -> Result<FileStamp, String> {
+    use sha2::{Digest, Sha256};
+
+    let mut file = File::open(path).map_err(|error| format!("Could not read the music file: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("Could not inspect the music file: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("Could not verify the music file: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(FileStamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        digest: hasher.finalize().into(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn stage_path(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "The music file has no parent folder.".to_string())?;
+    let extension = path
+        .extension()
+        .ok_or_else(|| "The music file has no supported extension.".to_string())?;
+    let sequence = NEXT_ARTWORK_STAGE.fetch_add(1, Ordering::Relaxed);
+    let mut staged_name = std::ffi::OsString::from(".");
+    staged_name.push(format!("luno-artwork-{}-{sequence}.", std::process::id()));
+    staged_name.push(extension);
+    Ok(parent.join(staged_name))
+}
+
 /// Downscales an oversized JPEG/PNG to [`MAX_ARTWORK_DIM`] and re-encodes
 /// as JPEG. Returns `None` when the image is already display-sized (serve
 /// the original) or when decoding fails (serve the original) — the caller
@@ -198,6 +456,7 @@ pub fn embedded_artwork_data_url(_path: &Path) -> Option<String> {
 pub struct TrackArtwork {
     pub cache: Mutex<ArtworkCache>,
     pub resolve: Box<dyn Fn(&str) -> Option<std::path::PathBuf> + Send + Sync>,
+    revision: AtomicU64,
 }
 
 impl TrackArtwork {
@@ -207,20 +466,33 @@ impl TrackArtwork {
         Self {
             cache: Mutex::new(ArtworkCache::default()),
             resolve: Box::new(resolve),
+            revision: AtomicU64::new(0),
         }
     }
 
     pub fn artwork(&self, track_id: &str) -> Option<String> {
+        let revision = self.revision.load(Ordering::Acquire);
         let cached = self.cache.lock().ok()?.get(track_id);
         if let Some(url) = cached {
             return Some(url);
         }
         let path = (self.resolve)(track_id)?;
         let url = embedded_artwork_data_url(&path)?;
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.insert(track_id.to_string(), url.clone());
+        if self.revision.load(Ordering::Acquire) == revision {
+            if let Ok(mut cache) = self.cache.lock() {
+                if self.revision.load(Ordering::Acquire) == revision {
+                    cache.insert(track_id.to_string(), url.clone());
+                }
+            }
         }
         Some(url)
+    }
+
+    pub fn invalidate(&self, track_id: &str) {
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.invalidate(track_id);
+        }
     }
 }
 
