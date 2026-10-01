@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ArtworkCandidate, LibrarySnapshot, Track } from "../shared/contracts";
+import type { ArtworkCandidate, ArtworkSearchSource, LibrarySnapshot, Track } from "../shared/contracts";
 import type { Bridge } from "../app/bridge";
 
 type ArtworkScope = "all" | "favorites" | "unsorted" | string;
@@ -102,7 +102,7 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
     void scan(idsForScope, scopeName(snapshot, scope), true);
   }, [autoScanKey, bridge, idsForScope, scan, scope, snapshot]);
 
-  const search = async () => {
+  const search = async (source: ArtworkSearchSource) => {
     if (!bridge || !selectedTrackId) return;
     const requestedTrackId = selectedTrackId;
     setSearching(true);
@@ -111,11 +111,13 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
     setCandidates([]);
     setSelectedCandidateId(null);
     try {
-      const result = await bridge.searchArtworkCandidates(requestedTrackId);
+      const result = await bridge.searchArtworkCandidates(requestedTrackId, source);
       if (requestedTrackId !== selectedTrackIdRef.current) return;
       setCandidates(result);
       setSelectedCandidateId(result[0]?.candidate_id ?? null);
-      if (result.length === 0) setMessage("No usable cover matches were found. Check the song title and artist, then try again.");
+      if (result.length === 0) setMessage(source === "youtube"
+        ? "No closely matching YouTube thumbnails were found. Check the title and artist, then try again."
+        : "No usable release covers were found. Check the song title and artist, then try again.");
     } catch (cause) {
       if (requestedTrackId === selectedTrackIdRef.current) setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -148,8 +150,6 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
   };
 
   const selectablePlaylists = (snapshot?.playlists ?? []).filter((playlist) => playlist.name.toLowerCase() !== "unsorted");
-  const selectedHasArtist = !!selectedTrack?.artist?.trim();
-
   return <main className="luno-artwork-manager" aria-labelledby="artwork-manager-heading">
     <header>
       <div>
@@ -183,7 +183,7 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
         <span>{matchingScopeTracks.length} matching song{matchingScopeTracks.length === 1 ? "" : "s"}{matchingScopeTracks.length > 0 && matchingScopeTracks.length <= 3 ? ` · ${matchingScopeTracks.map((track) => track.title).join(", ")}` : ""}</span>
         <button type="button" onClick={() => scan(matchingScopeTracks.map((track) => track.id), `search results in ${scopeName(snapshot, scope)}`)} disabled={!bridge || scanning || matchingScopeTracks.length === 0} style={{ ...buttonStyle, opacity: !bridge || scanning || matchingScopeTracks.length === 0 ? 0.5 : 1 }}>{scanning ? "Scanning…" : `Scan ${matchingScopeTracks.length} match${matchingScopeTracks.length === 1 ? "" : "es"}`}</button>
       </div>}
-      <p className="luno-artwork-note">Opening this page scans the selected scope automatically. Search first to scan only matching songs, or rescan the whole scope. Artwork checks run locally; online search sends a selected song’s title and artist to MusicBrainz.</p>
+      <p className="luno-artwork-note">Opening this page scans the selected scope automatically. Search first to scan only matching songs, or rescan the whole scope. Online searches send the selected song’s title and artist to MusicBrainz or YouTube.</p>
     </section>
 
     {error && <p className="luno-artwork-error" role="alert">{error}</p>}
@@ -210,22 +210,29 @@ export function ArtworkManager({ snapshot, initialScope = "all", bridge, onArtwo
       <section className="luno-artwork-review" aria-label="Artwork match review">
         <h2>{selectedTrack ? `${selectedTrack.artist ? `${selectedTrack.artist} · ` : ""}${selectedTrack.title}` : "Choose a song"}</h2>
         {selectedTrack && <>
-          <button type="button" onClick={search} disabled={!bridge || searching || applying || !selectedHasArtist} style={{ ...buttonStyle, opacity: !bridge || searching || applying || !selectedHasArtist ? 0.5 : 1 }}>
-            {searching ? "Searching…" : "Find artwork matches"}
-          </button>
-          {!selectedHasArtist && <p className="luno-artwork-note">Add an artist name to search for a matching release.</p>}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button type="button" onClick={() => search("musicbrainz")} disabled={!bridge || searching || applying} style={{ ...buttonStyle, opacity: !bridge || searching || applying ? 0.5 : 1 }}>
+              {searching ? "Searching…" : "Find artwork matches"}
+            </button>
+            <button type="button" onClick={() => search("youtube")} disabled={!bridge || searching || applying} style={{ ...secondaryButton, opacity: !bridge || searching || applying ? 0.5 : 1 }}>
+              {searching ? "Searching…" : "Try YouTube thumbnails"}
+            </button>
+          </div>
+          {!selectedTrack.artist?.trim() && <p className="luno-artwork-note">No artist name is saved, so searches use the title only. Review matches carefully.</p>}
         </>}
         {candidates.length > 0 && <>
-          <p className="luno-artwork-note">Choose the cover that matches this recording. MusicBrainz scores help sort results; check the artist and release before applying.</p>
+          <p className="luno-artwork-note">{candidates[0]?.source === "youtube"
+            ? "These are video thumbnails and may not be the album cover. Choose a close match and review it before applying."
+            : "Choose the cover that matches this recording. MusicBrainz scores sort results; check the artist and release before applying."}</p>
           <div className="luno-artwork-candidates" role="radiogroup" aria-label="Artwork matches">
             {candidates.map((candidate) => <button key={candidate.candidate_id} type="button" role="radio" aria-checked={selectedCandidateId === candidate.candidate_id} onClick={() => setSelectedCandidateId(candidate.candidate_id)}>
               <img src={candidate.artwork_data_url} alt="" />
-              <span><strong>{candidate.release}</strong><small>{candidate.artist || "Unknown artist"}{candidate.year ? ` · ${candidate.year}` : ""}</small><small>{candidate.exact_match ? "Track title and artist match" : `MusicBrainz score ${candidate.score}`}</small></span>
+              <span><strong>{candidate.release}</strong><small>{candidate.artist || "Unknown artist"}{candidate.year ? ` · ${candidate.year}` : ""}</small><small>{candidate.source === "youtube" ? "YouTube video thumbnail" : candidate.exact_match ? "Track title and artist match" : `MusicBrainz score ${candidate.score}`}</small></span>
             </button>)}
           </div>
           <button type="button" onClick={apply} disabled={!selectedCandidateId || applying} style={{ ...buttonStyle, marginTop: 12, opacity: !selectedCandidateId || applying ? 0.5 : 1 }}>{applying ? "Saving artwork…" : "Apply selected artwork"}</button>
         </>}
-        <p className="luno-artwork-source">Matches come from MusicBrainz and Cover Art Archive. Check the match and respect artist and label rights before embedding. Unsupported formats stay unchanged.</p>
+        <p className="luno-artwork-source">Release covers come from MusicBrainz and Cover Art Archive. YouTube results are video thumbnails, which may not be album art. Review every image before embedding. Unsupported formats stay unchanged.</p>
       </section>
     </div>}
   </main>;

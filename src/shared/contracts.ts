@@ -33,7 +33,8 @@ export interface PlaylistSyncReviewSummary { playlist_id: PlaylistId; name: stri
 export interface TrackPlayCount { track_id: TrackId; plays: number }
 export interface PlaylistPlayCount { playlist_id: PlaylistId; plays: number }
 export interface PlayStatisticsSnapshot { generation: Generation; tracks: TrackPlayCount[]; playlists: PlaylistPlayCount[]; legacy_track_counts_imported: boolean }
-export interface ArtworkCandidate { candidate_id: string; release: string; artist: string; year: string | null; score: number; exact_match: boolean; artwork_data_url: string }
+export type ArtworkSearchSource = "musicbrainz" | "youtube";
+export interface ArtworkCandidate { candidate_id: string; source: ArtworkSearchSource; release: string; artist: string; year: string | null; score: number; exact_match: boolean; artwork_data_url: string }
 export interface SafeDeleteResult { deleted: number; needs_confirmation: boolean; verification_incomplete: boolean; final_copy_review_id: string | null; final_copies: string[]; generation: number | null }
 
 export type Command =
@@ -311,8 +312,8 @@ export function parseEventEnvelope(json: string): EventEnvelope { const value: u
 export function isSearchResults(value: unknown): value is SearchResult[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["provider", "query", "title", "artist", "duration", "thumbnail_url", "url"]) && nonEmptyId(item.provider) && nonEmptyId(item.query) && nonEmptyId(item.title) && (item.artist === null || nonEmptyId(item.artist)) && (item.duration === null || typeof item.duration === "string") && (item.thumbnail_url === null || nonEmptyId(item.thumbnail_url)) && (item.url === null || nonEmptyId(item.url))); }
 export function isArtworkCandidates(value: unknown): value is ArtworkCandidate[] {
   return Array.isArray(value) && value.length <= 5 && value.every((candidate) => object(candidate)
-    && exact(candidate, ["candidate_id", "release", "artist", "year", "score", "exact_match", "artwork_data_url"])
-    && nonEmptyId(candidate.candidate_id) && nonEmptyId(candidate.release) && typeof candidate.artist === "string"
+    && exact(candidate, ["candidate_id", "source", "release", "artist", "year", "score", "exact_match", "artwork_data_url"])
+    && nonEmptyId(candidate.candidate_id) && (candidate.source === "musicbrainz" || candidate.source === "youtube") && nonEmptyId(candidate.release) && typeof candidate.artist === "string"
     && (candidate.year === null || typeof candidate.year === "string") && safeInteger(candidate.score) && candidate.score >= 0 && candidate.score <= 100
     && typeof candidate.exact_match === "boolean" && typeof candidate.artwork_data_url === "string"
     && candidate.artwork_data_url.startsWith("data:image/jpeg;base64,") && candidate.artwork_data_url.length <= 1_500_000);

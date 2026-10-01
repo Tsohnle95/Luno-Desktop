@@ -130,9 +130,14 @@ transfer manifests (`docs/modules/contracts.md`).
 - Artwork maintenance is initiated from the playlist cover menu or Settings.
   Local scans check embedded tags without building data URLs; provider search
   only runs for a selected missing-art track and sends its title and artist to
-  MusicBrainz. It searches recordings, then checks linked release groups in
-  Cover Art Archive; results are displayed for review, and no match is written
-  until the user applies one. MusicBrainz permits free API use for
+  MusicBrainz. If the artist is missing, it searches by title alone. It searches
+  recordings, filters low-scoring matches, then checks linked release groups in
+  Cover Art Archive. A separate user-triggered YouTube search offers closely
+  matching video thumbnails as a fallback; those thumbnails may not be album
+  covers. Results from both providers are displayed for review, and no match is
+  written until the user applies one. YouTube thumbnail fetches are restricted
+  to `i.ytimg.com`, bounded, and decoded through the same image normalizer.
+  MusicBrainz permits free API use for
   non-commercial applications; a commercial Luno distribution needs an
   appropriate plan or arrangement.
   Candidate images are byte- and dimension-bounded, decoded, resized to 512 px,

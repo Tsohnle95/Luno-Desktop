@@ -2839,18 +2839,41 @@ impl AppState {
         Ok(missing)
     }
 
-    /// Searches MusicBrainz and Cover Art Archive for a user-selected track.
+    /// Searches the selected artwork provider for a user-selected track.
     /// Network work is called from Tauri's blocking worker command.
-    pub fn search_artwork_candidates(&self, track_id: &str) -> Result<Vec<ArtworkCandidate>, String> {
+    pub fn search_artwork_candidates(
+        &self,
+        track_id: &str,
+        source: &str,
+    ) -> Result<Vec<ArtworkCandidate>, String> {
         let id = TrackId(track_id.to_owned());
-        let track = self.library().tracks.into_iter().find(|track| track.id == id)
+        let track = self
+            .library()
+            .tracks
+            .into_iter()
+            .find(|track| track.id == id)
             .ok_or_else(|| "That song is no longer in the library.".to_string())?;
-        let artist = track.artist.as_deref().filter(|artist| !artist.trim().is_empty())
-            .ok_or_else(|| "Add an artist name before searching for artwork.".to_string())?;
-        if !self.track_paths.lock().unwrap_or_else(|error| error.into_inner()).contains_key(&id) {
+        let artist = track.artist.as_deref().unwrap_or("");
+        if !self
+            .track_paths
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&id)
+        {
             return Err("That song is no longer available on disk.".into());
         }
-        self.artwork_search.search(track_id, &track.title, artist, track.album.as_deref())
+        match source {
+            "musicbrainz" => self.artwork_search.search(
+                track_id,
+                &track.title,
+                artist,
+                track.album.as_deref(),
+            ),
+            "youtube" => self
+                .artwork_search
+                .search_youtube(track_id, &track.title, artist),
+            _ => Err("Choose MusicBrainz or YouTube as the artwork search source.".into()),
+        }
     }
 
     /// Applies one review-selected candidate to the staged local audio file.

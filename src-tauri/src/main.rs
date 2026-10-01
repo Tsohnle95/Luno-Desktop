@@ -200,9 +200,10 @@ async fn missing_artwork_tracks(
 async fn search_artwork_candidates(
     state: tauri::State<'_, AppState>,
     track_id: String,
+    source: String,
 ) -> Result<Vec<luno_desktop_lib::library::artwork_search::ArtworkCandidate>, String> {
     let app = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || app.search_artwork_candidates(&track_id))
+    tauri::async_runtime::spawn_blocking(move || app.search_artwork_candidates(&track_id, &source))
         .await
         .map_err(|error| error.to_string())?
 }

@@ -1,7 +1,7 @@
 import { useState, type ChangeEvent, type ReactNode } from "react";
 
 /** Destinations reachable from the settings rail. */
-export type SettingsNavLink = "home" | "artwork" | "sync_review";
+export type SettingsNavLink = "home" | "downloader" | "artwork" | "sync_review";
 
 export interface SettingsViewProps {
   lastfmKey?: string;
@@ -100,6 +100,7 @@ export function SettingsView({
     <nav className="luno-settings-nav" aria-label="Settings">
       <h1>Settings</h1>
       <button type="button" aria-current={activeScreen === "home" ? "true" : undefined} onClick={() => onNavigate?.("home")}>Home</button>
+      <button type="button" aria-current={activeScreen === "downloader" ? "true" : undefined} onClick={() => onNavigate?.("downloader")}>Downloader</button>
       <button type="button" aria-current={activeScreen === "artwork" ? "true" : undefined} onClick={() => onNavigate?.("artwork")}>Artwork</button>
       <button type="button" aria-current={activeScreen === "sync_review" ? "true" : undefined} onClick={() => onNavigate?.("sync_review")}>Sync Review</button>
       {CATEGORIES.map((item) => <button key={item} type="button" aria-current={activeScreen == null && category === item ? "true" : undefined} onClick={() => { setCategory(item); onScreenClosed?.(); }}>{item}</button>)}

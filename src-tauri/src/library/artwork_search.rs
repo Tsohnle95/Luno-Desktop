@@ -19,12 +19,14 @@ const MAX_PROVIDER_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RESULTS: usize = 8;
 const MAX_RELEASE_GROUPS_TO_CHECK: usize = 8;
 const MAX_REVIEW_CANDIDATES: usize = 5;
+const MAX_YOUTUBE_CANDIDATES: usize = 3;
 const MAX_PENDING_CANDIDATES: usize = 40;
 const CANDIDATE_TTL: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ArtworkCandidate {
     pub candidate_id: String,
+    pub source: String,
     pub release: String,
     pub artist: String,
     pub year: Option<String>,
@@ -58,6 +60,7 @@ struct ReleaseGroupMatch {
 
 pub struct ArtworkSearchService {
     client: Client,
+    youtube_thumbnail_client: Option<Client>,
     user_agent: String,
     request_start: Mutex<Option<Instant>>,
     next_candidate: AtomicU64,
@@ -74,8 +77,14 @@ impl Default for ArtworkSearchService {
             .timeout(Duration::from_secs(15))
             .build()
             .unwrap_or_else(|_| Client::new());
+        let youtube_thumbnail_client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .ok();
         Self {
             client,
+            youtube_thumbnail_client,
             user_agent: agent,
             request_start: Mutex::new(None),
             next_candidate: AtomicU64::new(1),
@@ -95,8 +104,8 @@ impl ArtworkSearchService {
         let title = title.trim();
         let artist = artist.trim();
         let album = album.map(str::trim).filter(|album| !album.is_empty());
-        if title.is_empty() || artist.is_empty() {
-            return Err("A song title and artist are required to search for artwork.".into());
+        if title.is_empty() {
+            return Err("A song title is required to search for artwork.".into());
         }
         if title.chars().count() > 512
             || artist.chars().count() > 256
@@ -105,20 +114,17 @@ impl ArtworkSearchService {
             return Err("The song title or artist name is too long to search.".into());
         }
 
-        {
-            let now = Instant::now();
-            let mut pending = self.pending.lock().unwrap_or_else(|error| error.into_inner());
-            pending.retain(|_, candidate| {
-                now.saturating_duration_since(candidate.created_at) < CANDIDATE_TTL
-                    && candidate.track_id != track_id
-            });
-        }
+        self.expire_candidates_for_search(track_id);
 
-        let query = format!(
-            "recording:\"{}\" AND artist:\"{}\"",
-            escape_query(title),
-            escape_query(artist)
-        );
+        let escaped_title = escape_query(title);
+        let query = if artist.is_empty() {
+            format!("recording:\"{escaped_title}\"")
+        } else {
+            format!(
+                "recording:\"{escaped_title}\" AND artist:\"{}\"",
+                escape_query(artist)
+            )
+        };
         self.wait_for_provider_slot();
         let response = self
             .client
@@ -144,8 +150,11 @@ impl ArtworkSearchService {
             let recording_title = recording.get("title").and_then(Value::as_str).unwrap_or("");
             let recording_artist = artist_credit(recording.get("artist-credit"));
             let exact_match = normalize(title) == normalize(recording_title)
-                && normalize(artist) == normalize(&recording_artist);
+                && (artist.is_empty() || normalize(artist) == normalize(&recording_artist));
             let score = parse_score(recording.get("score"));
+            if score < 70 {
+                continue;
+            }
             let Some(releases) = recording.get("releases").and_then(Value::as_array) else {
                 continue;
             };
@@ -193,8 +202,9 @@ impl ArtworkSearchService {
         }
         release_groups.sort_by(|left, right| {
             right
-                .album_match
-                .cmp(&left.album_match)
+                .exact_recording
+                .cmp(&left.exact_recording)
+                .then_with(|| right.album_match.cmp(&left.album_match))
                 .then_with(|| right.score.cmp(&left.score))
         });
         release_groups.truncate(MAX_RELEASE_GROUPS_TO_CHECK);
@@ -225,23 +235,10 @@ impl ArtworkSearchService {
                     Err(_) => continue,
                 };
 
-            let candidate_id = format!(
-                "artwork-{}",
-                self.next_candidate.fetch_add(1, Ordering::Relaxed)
-            );
-            self.pending
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .insert(
-                    candidate_id.clone(),
-                    PendingCandidate {
-                        track_id: track_id.to_owned(),
-                        created_at: Instant::now(),
-                        artwork: PendingArtwork { bytes, mime },
-                    },
-                );
+            let candidate_id = self.remember_candidate(track_id, bytes, mime);
             candidates.push(ArtworkCandidate {
                 candidate_id,
+                source: "musicbrainz".into(),
                 release: matched.title,
                 artist: matched.artist,
                 year: matched.year,
@@ -254,7 +251,127 @@ impl ArtworkSearchService {
             }
         }
 
+        Ok(candidates)
+    }
+
+    /// Searches YouTube video thumbnails as an explicitly requested fallback.
+    /// These images are never written until the user reviews and applies one.
+    pub fn search_youtube(
+        &self,
+        track_id: &str,
+        title: &str,
+        artist: &str,
+    ) -> Result<Vec<ArtworkCandidate>, String> {
+        let title = title.trim();
+        let artist = artist.trim();
+        if title.is_empty() {
+            return Err("A song title is required to search for artwork.".into());
+        }
+        if title.chars().count() > 512 || artist.chars().count() > 256 {
+            return Err("The song title or artist name is too long to search.".into());
+        }
+
+        self.expire_candidates_for_search(track_id);
+        let thumbnail_client = self
+            .youtube_thumbnail_client
+            .as_ref()
+            .ok_or_else(|| "YouTube thumbnail requests are unavailable on this device.".to_string())?;
+        let query = if artist.is_empty() {
+            title.to_owned()
+        } else {
+            format!("{artist} {title}")
+        };
+        let results = crate::download::search::search_youtube_web(&query, 10)?;
+        let mut results = results
+            .into_iter()
+            .filter_map(|result| {
+                let thumbnail = result.thumbnail_url.clone()?;
+                let title_score = text_match_score(title, &result.title);
+                let searchable_artist = format!(
+                    "{} {}",
+                    result.title,
+                    result.artist.as_deref().unwrap_or("")
+                );
+                let artist_score = if artist.is_empty() {
+                    100
+                } else {
+                    text_match_score(artist, &searchable_artist)
+                };
+                let minimum_title_score = if artist.is_empty() { 60 } else { 40 };
+                if title_score < minimum_title_score || artist_score < 50 {
+                    return None;
+                }
+                let score = ((title_score as u16 * 80 + artist_score as u16 * 20) / 100) as u8;
+                let exact_match = title_score == 100 && (artist.is_empty() || artist_score == 100);
+                Some((score, exact_match, result, thumbnail))
+            })
+            .collect::<Vec<_>>();
+        results.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+
+        let mut candidates = Vec::new();
+        for (score, exact_match, result, thumbnail_url) in results {
+            if candidates.len() >= MAX_YOUTUBE_CANDIDATES {
+                break;
+            }
+            if !is_youtube_thumbnail_url(&thumbnail_url) {
+                continue;
+            }
+            let Ok(response) = thumbnail_client
+                .get(&thumbnail_url)
+                .header(reqwest::header::USER_AGENT, &self.user_agent)
+                .send()
+            else {
+                continue;
+            };
+            if !response.status().is_success() || !is_youtube_thumbnail_url(response.url().as_str()) {
+                continue;
+            }
+            let Ok(bytes) = read_limited(response, MAX_PROVIDER_IMAGE_BYTES) else {
+                continue;
+            };
+            let Ok((bytes, mime, artwork_data_url)) =
+                super::artwork::normalize_provider_image(&bytes)
+            else {
+                continue;
+            };
+            let candidate_id = self.remember_candidate(track_id, bytes, mime);
+            candidates.push(ArtworkCandidate {
+                candidate_id,
+                source: "youtube".into(),
+                release: result.title,
+                artist: result.artist.unwrap_or_default(),
+                year: None,
+                score,
+                exact_match,
+                artwork_data_url,
+            });
+        }
+        Ok(candidates)
+    }
+
+    fn expire_candidates_for_search(&self, track_id: &str) {
+        let now = Instant::now();
         let mut pending = self.pending.lock().unwrap_or_else(|error| error.into_inner());
+        pending.retain(|_, candidate| {
+            now.saturating_duration_since(candidate.created_at) < CANDIDATE_TTL
+                && candidate.track_id != track_id
+        });
+    }
+
+    fn remember_candidate(&self, track_id: &str, bytes: Vec<u8>, mime: &'static str) -> String {
+        let candidate_id = format!(
+            "artwork-{}",
+            self.next_candidate.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut pending = self.pending.lock().unwrap_or_else(|error| error.into_inner());
+        pending.insert(
+            candidate_id.clone(),
+            PendingCandidate {
+                track_id: track_id.to_owned(),
+                created_at: Instant::now(),
+                artwork: PendingArtwork { bytes, mime },
+            },
+        );
         while pending.len() > MAX_PENDING_CANDIDATES {
             let oldest = pending
                 .iter()
@@ -263,7 +380,7 @@ impl ArtworkSearchService {
             let Some(oldest) = oldest else { break };
             pending.remove(&oldest);
         }
-        Ok(candidates)
+        candidate_id
     }
 
     pub fn candidate(&self, track_id: &str, candidate_id: &str) -> Result<PendingArtwork, String> {
@@ -341,6 +458,44 @@ fn normalize(value: &str) -> String {
         .filter(|character| character.is_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+fn text_match_score(query: &str, result: &str) -> u8 {
+    let query_normalized = normalize(query);
+    let result_normalized = normalize(result);
+    if query_normalized.is_empty() || result_normalized.is_empty() {
+        return 0;
+    }
+    if result_normalized.contains(&query_normalized) {
+        return 100;
+    }
+    let query_tokens = query
+        .split(|character: char| !character.is_alphanumeric())
+        .map(normalize)
+        .filter(|token| token.chars().count() > 1)
+        .collect::<std::collections::HashSet<_>>();
+    if query_tokens.is_empty() {
+        return 0;
+    }
+    let result_tokens = result
+        .split(|character: char| !character.is_alphanumeric())
+        .map(normalize)
+        .collect::<std::collections::HashSet<_>>();
+    let matched = query_tokens
+        .iter()
+        .filter(|token| result_tokens.contains(*token))
+        .count();
+    ((matched * 100) / query_tokens.len()) as u8
+}
+
+fn is_youtube_thumbnail_url(value: &str) -> bool {
+    reqwest::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str() == Some("i.ytimg.com")
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port_or_known_default() == Some(443)
+    })
 }
 
 fn valid_musicbrainz_id(value: &str) -> bool {

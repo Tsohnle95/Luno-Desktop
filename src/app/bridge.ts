@@ -22,6 +22,7 @@ import {
   type PlaylistSyncSelection,
   type PlaylistSyncReviewSummary,
   type ArtworkCandidate,
+  type ArtworkSearchSource,
   type SafeDeleteResult,
   isPlaylistSyncIssues,
   isPlaylistSyncCandidates,
@@ -191,8 +192,8 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
       }
       return value as TrackId[];
     },
-    searchArtworkCandidates: async (trackId: TrackId): Promise<ArtworkCandidate[]> => {
-      const value = await transport.invoke<unknown>("search_artwork_candidates", { trackId });
+    searchArtworkCandidates: async (trackId: TrackId, source: ArtworkSearchSource): Promise<ArtworkCandidate[]> => {
+      const value = await transport.invoke<unknown>("search_artwork_candidates", { trackId, source });
       if (!isArtworkCandidates(value)) throw new Error("invalid artwork matches response");
       return value;
     },

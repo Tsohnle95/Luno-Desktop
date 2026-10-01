@@ -35,6 +35,7 @@ describe("Settings navigation rail", () => {
   it("keeps the settings rail focused on settings and review destinations", () => {
     const html = renderToStaticMarkup(<SettingsView />);
     expect(html).toContain("Home");
+    expect(html).toContain("Downloader");
     expect(html).toContain("Artwork");
     expect(html).toContain("Sync Review");
     expect(html).toContain("Library");
@@ -42,7 +43,6 @@ describe("Settings navigation rail", () => {
     expect(html).toContain("Transfer");
     expect(html).not.toContain("Recent Songs");
     expect(html).not.toContain("Discover</button>");
-    expect(html).not.toContain("Downloader");
     expect(html).not.toContain("Error Log");
     expect(html).not.toContain("Playback");
     expect(html).not.toContain("Downloads");

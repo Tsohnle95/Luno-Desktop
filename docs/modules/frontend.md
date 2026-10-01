@@ -67,12 +67,17 @@ envelope shapes (`docs/modules/contracts.md`).
   `track_artwork` command as bounded data URLs; visible library rows request
   missing durations through `track_duration`, which probes on a blocking
   worker instead of extending every library scan.
+- The Settings rail includes Home, Downloader, Artwork, and Sync Review
+  shortcuts. Downloader embeds the same `DownloaderView` used by its main
+  route, so its search, queue, sync, and destination controls share the same
+  state and behavior.
 - ArtworkManager scans the selected local collection on entry and lists every
   track without embedded artwork. Search filters that list and can scan only
   matching tracks in the selected scope; provider lookup remains user-triggered
-  for one selected track and requires review before applying a
-  MusicBrainz/Cover Art Archive match. The playlist hero banner menu opens the
-  manager at its scope.
+  for one selected track, supports title-only searches, and requires review
+  before applying MusicBrainz/Cover Art Archive covers or YouTube video
+  thumbnails. YouTube thumbnails are labeled as such because they may not be
+  album art. The playlist hero banner menu opens the manager at its scope.
 - Favorite-only events update the matching projected track without advancing
   the scan generation, so visible rows keep valid duration probe results.
   Track maps depend on the current track array so favorites stay current in
