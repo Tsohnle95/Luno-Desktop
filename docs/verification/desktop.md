@@ -40,10 +40,13 @@ npx tauri build
 
 The DMG bundler deletes the intermediate `.app` after packaging, so to install
 the release app into `/Applications` use `npx tauri build --bundles app` (or
-`scripts/install-release-app.sh`, which builds, quits the running copy,
-installs, verifies, and relaunches). The bundle verifier checks the managed binary manifest, third-party notices,
-executable bits, checksums, architectures, versions, and behavior with the
-developer PATH unavailable.
+`scripts/install-release-app.sh`). The installer resolves Node from
+`.node-version`, stages and verifies the new bundle before closing the current
+app, then replaces and verifies the installed copy. If replacing the app needs
+administrator access, it prompts through `sudo`; a failed copy or verification
+restores the previous bundle. The bundle verifier checks the managed binary
+manifest, third-party notices, executable bits, checksums, architectures,
+versions, and behavior with the developer PATH unavailable.
 
 `./build-test.command` is the local end-to-end harness (Rust tests,
 typecheck, frontend tests, production build, app launch, best-effort DMG)
