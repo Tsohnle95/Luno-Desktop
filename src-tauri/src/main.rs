@@ -186,6 +186,17 @@ async fn track_artwork(
 }
 
 #[tauri::command]
+async fn track_duration(
+    state: tauri::State<'_, AppState>,
+    track_id: String,
+) -> Result<Option<u64>, String> {
+    let app = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || app.track_duration(&track_id))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn discovery_key_status(state: tauri::State<'_, AppState>) -> Result<Value, String> {
     Ok(serde_json::json!({ "configured": state.has_discovery_key() }))
 }
@@ -420,9 +431,9 @@ fn main() {
             },
         );
     #[cfg(debug_assertions)]
-    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, discovery_key_status, save_discovery_key, gate5_smoke]);
+    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, track_duration, discovery_key_status, save_discovery_key, gate5_smoke]);
     #[cfg(not(debug_assertions))]
-    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, discovery_key_status, save_discovery_key]);
+    let builder = builder.invoke_handler(tauri::generate_handler![backend_command, downloader_search, settings_load, transfer_preview, migration_status, track_artwork, track_duration, discovery_key_status, save_discovery_key]);
     builder
         .setup(|app| {
             let handle = app.handle().clone();

@@ -2803,6 +2803,26 @@ impl AppState {
         Ok(self.artwork.artwork(track_id))
     }
 
+    /// Reads a local file's container duration for the visible library row.
+    /// The Tauri command runs this method on a blocking worker; failure to
+    /// probe an unsupported or unavailable file simply leaves its duration unknown.
+    pub fn track_duration(&self, track_id: &str) -> Option<u64> {
+        let path = self.track_paths.lock().unwrap_or_else(|e| e.into_inner())
+            .get(&TrackId(track_id.to_owned()))?.clone();
+        #[cfg(target_os = "macos")]
+        {
+            return crate::playback::backend_adapter::CpalSymphoniaBackend::probe_duration(&path)
+                .ok()
+                .flatten()
+                .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = path;
+            None
+        }
+    }
+
     pub fn set_discovery_key(&self, key: Option<String>) {
         self.discovery_configured.store(key.is_some(), Ordering::Release);
         self.discovery.lock().unwrap_or_else(|e| e.into_inner()).set_api_key(key);
@@ -6086,9 +6106,11 @@ impl AppState {
             Command::SetPlaylistUrl { playlist_id, url } => self.set_playlist_url(&playlist_id, url.as_deref()),
             Command::SyncPlaylist { playlist_id } => self.sync_playlist(&playlist_id),
             Command::PlaylistSyncLog { playlist_id } => self.playlist_sync_log(&playlist_id),
+            Command::PlaylistSyncReviewSummary => self.playlist_sync_review_summary(),
             Command::PlaylistSyncIssues { playlist_id } => self.playlist_sync_issues(&playlist_id),
             Command::PlaylistSyncCandidates { playlist_id, video_id } => self.playlist_sync_candidates(&playlist_id, &video_id),
             Command::PlaylistSyncSelectSource { playlist_id, video_id, source_video_id } => self.playlist_sync_select_source(&playlist_id, &video_id, &source_video_id),
+            Command::PlaylistSyncResolveIssue { playlist_id, video_id, replacement_track_id } => self.playlist_sync_resolve_issue(&playlist_id, &video_id, replacement_track_id.as_ref()),
             Command::DeletePlaylist { playlist_id } => self.delete_playlist(&playlist_id),
             Command::AddTracksToPlaylist { track_ids, playlist_id } => self.add_tracks_to_playlist(&track_ids, &playlist_id),
             Command::DeleteTracks { track_ids } => self.delete_tracks(&track_ids),
@@ -6648,14 +6670,19 @@ impl AppState {
             let outcome = (|| -> Result<(usize, usize, Option<String>), String> {
                 let entries = crate::download::search::playlist_entries_with_browser_fallback(&state.supervisor, &ytdlp, &url, cookies_browser.as_deref(), &token)?;
                 let mut sync_state = crate::download::sync::PlaylistSyncState::load(&destination)?;
+                let mut review_state = crate::download::sync::PlaylistSyncReviewState::load(&destination)?;
                 let mut markers = crate::download::markers::Markers::load(&destination);
                 let migrated = sync_state.migrate_legacy_unavailable(&destination, &entries, &markers);
                 let pruned = sync_state.prune_unresolved(&entries, &markers);
+                let review_pruned = review_state.prune(&entries);
                 if migrated || pruned { sync_state.save(&destination)?; }
+                if review_pruned { review_state.save(&destination)?; }
                 crate::download::sync::reconcile_unresolved_local_matches(
                     &worker_root, &destination, &entries, &mut sync_state, &mut markers,
                 )?;
-                let items = crate::download::sync::plan_with_state(&worker_root, &destination, &entries, &sync_state);
+                let items = crate::download::sync::plan_with_review_state(
+                    &worker_root, &destination, &entries, &sync_state, &review_state,
+                );
                 if items.is_empty() { return Ok((0, 0, None)); }
                 let total = items.len();
                 let mut started = 0usize;
@@ -6739,10 +6766,48 @@ impl AppState {
         Ok(destination)
     }
 
+    fn playlist_sync_review_summary(&self) -> Result<Value, ContractError> {
+        let snapshot = self.library();
+        let root = match self.playlist_mutation_root() {
+            Ok(root) => root,
+            Err(_) if snapshot.playlists.is_empty() => return Ok(serde_json::json!({ "entries": [] })),
+            Err(error) => return Err(error),
+        };
+        let mut entries = Vec::new();
+        for playlist in snapshot.playlists {
+            let Ok(folder) = self.playlist_sync_folder(&playlist.id) else { continue; };
+            let sync_state = crate::download::sync::PlaylistSyncState::load(&folder)
+                .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+            let review_state = crate::download::sync::PlaylistSyncReviewState::load(&folder)
+                .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+            let markers = crate::download::markers::Markers::load(&folder);
+            let unresolved_count = sync_state.unresolved.keys()
+                .filter(|id| !markers.successful.contains(*id)
+                    && !review_state.is_dismissed(id)
+                    && !review_state.replacement_exists(&root, id))
+                .count() as u64;
+            if playlist.url.is_some() || unresolved_count > 0 {
+                entries.push(crate::contracts::types::PlaylistSyncReviewSummary {
+                    playlist_id: playlist.id, name: playlist.name, url: playlist.url, unresolved_count,
+                });
+            }
+        }
+        Ok(serde_json::json!({ "entries": entries }))
+    }
+
     fn playlist_sync_issues(&self, playlist_id: &PlaylistId) -> Result<Value, ContractError> {
         let folder = self.playlist_sync_folder(playlist_id)?;
         let root = self.playlist_mutation_root()?;
+        let target_playlist = self.playlist_name(playlist_id)?;
+        let library = self.library();
+        let local_track_ids: std::collections::HashSet<String> = self.track_paths.lock().unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, path)| path.starts_with(&root))
+            .map(|(id, _)| id.0.clone())
+            .collect();
         let mut state = crate::download::sync::PlaylistSyncState::load(&folder)
+            .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+        let review_state = crate::download::sync::PlaylistSyncReviewState::load(&folder)
             .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
         let mut markers = crate::download::markers::Markers::load(&folder);
         let unresolved_entries: Vec<crate::download::sync::PlaylistEntry> = state.unresolved.values()
@@ -6755,7 +6820,9 @@ impl AppState {
             &root, &folder, &unresolved_entries, &mut state, &mut markers,
         ).map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
         let entries: Vec<crate::contracts::types::PlaylistSyncIssue> = state.unresolved.values()
-            .filter(|issue| !markers.successful.contains(&issue.video_id))
+            .filter(|issue| !markers.successful.contains(&issue.video_id)
+                && !review_state.is_dismissed(&issue.video_id)
+                && !review_state.replacement_exists(&root, &issue.video_id))
             .map(|issue| crate::contracts::types::PlaylistSyncIssue {
                 video_id: issue.video_id.clone(), title: issue.title.clone(), channel: issue.channel.clone(),
                 duration_secs: issue.duration_secs, reason: issue.reason.clone(),
@@ -6763,6 +6830,9 @@ impl AppState {
                 selected_source_id: state.sources.get(&issue.video_id).map(|source| source.video_id.clone()),
                 retry_pending: state.sources.get(&issue.video_id).is_some_and(|source| source.retry_pending),
                 updated_at_ms: issue.updated_at_ms,
+                local_matches: crate::download::sync::local_replacement_matches(
+                    &issue.title, issue.channel.as_deref(), &target_playlist, &library,
+                ).into_iter().filter(|candidate| local_track_ids.contains(&candidate.track_id.0)).collect(),
             })
             .collect();
         Ok(serde_json::json!({ "entries": entries }))
@@ -6822,6 +6892,48 @@ impl AppState {
         sync_state.save(&folder).map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
         let source = sync_state.sources.get(video_id).expect("source mapping was inserted");
         Ok(serde_json::json!({ "video_id": video_id, "source_video_id": source.video_id, "url": source.url }))
+    }
+
+    fn playlist_sync_resolve_issue(
+        &self,
+        playlist_id: &PlaylistId,
+        video_id: &str,
+        replacement_track_id: Option<&TrackId>,
+    ) -> Result<Value, ContractError> {
+        let folder = self.playlist_sync_folder(playlist_id)?;
+        let root = self.playlist_mutation_root()?;
+        let sync_state = crate::download::sync::PlaylistSyncState::load(&folder)
+            .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+        let issue = sync_state.unresolved.get(video_id)
+            .ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "unresolved playlist entry not found".into(), retryable: false })?;
+        if crate::download::markers::Markers::load(&folder).successful.contains(video_id) {
+            return Err(ContractError { code: ErrorCode::NotFound, message: "unresolved playlist entry not found".into(), retryable: false });
+        }
+
+        let mut review_state = crate::download::sync::PlaylistSyncReviewState::load(&folder)
+            .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+        match replacement_track_id {
+            Some(track_id) => {
+                let library = self.library();
+                let target_playlist = self.playlist_name(playlist_id)?;
+                let title_match = crate::download::sync::local_replacement_matches(
+                    &issue.title, issue.channel.as_deref(), &target_playlist, &library,
+                ).iter().any(|candidate| candidate.track_id == *track_id);
+                if !title_match {
+                    return Err(ContractError::invalid("choose a local track with a matching song title"));
+                }
+                let path = self.track_paths.lock().unwrap_or_else(|e| e.into_inner())
+                    .get(track_id).cloned()
+                    .ok_or_else(|| ContractError { code: ErrorCode::NotFound, message: "replacement track is no longer in the library".into(), retryable: true })?;
+                let relative = crate::download::sync::PlaylistSyncReviewState::replacement_relative_path(&root, &path)
+                    .map_err(ContractError::invalid)?;
+                review_state.replace(video_id, relative).map_err(ContractError::invalid)?;
+            }
+            None => review_state.dismiss(video_id).map_err(ContractError::invalid)?,
+        }
+        review_state.save(&folder)
+            .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+        Ok(serde_json::json!({ "resolved": video_id }))
     }
 
     fn publish_sync_job(&self, job_id: &JobId, generation: Generation, job_state: crate::contracts::types::JobState, progress: Option<f32>, current_item: Option<&str>) {

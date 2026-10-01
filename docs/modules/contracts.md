@@ -33,7 +33,7 @@ docs), release packaging (`docs/release/desktop.md`).
   entry point all Tauri commands funnel through.
 - `src-tauri/src/main.rs` — Tauri command wiring (`backend_command`,
   `downloader_search`, `settings_load`, `transfer_preview`,
-  `migration_status`, `track_artwork`, discovery-key commands),
+  `migration_status`, `track_artwork`, `track_duration`, discovery-key commands),
   `spawn_blocking` dispatch, pending-event drain, `luno-video://` scheme.
 - `src-tauri/src/transfer/` — `codec.rs`, `planner.rs`,
   `provider_index.rs`: export/import of the v1 manifest.
@@ -60,6 +60,9 @@ docs), release packaging (`docs/release/desktop.md`).
 - Frontend never recreates backend policy: it renders snapshots and sends
   commands. Queue order, scan results, job state, and playback position
   are backend-owned; frontend projections (`src/state/`) are read models.
+- Playlist sync review summary and resolution commands remain backend-owned;
+  issue responses include candidate local tracks, while the frontend only
+  presents choices and sends the selected local track ID or dismissal.
 - `dispatch` must leave the UI thread: `main.rs` runs it under
   `spawn_blocking`, and panics are caught and sanitized (never leak
   `PoisonError` internals to the UI).

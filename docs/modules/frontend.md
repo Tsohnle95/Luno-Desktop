@@ -28,7 +28,8 @@ envelope shapes (`docs/modules/contracts.md`).
   probes, not production UI paths.
 - `src/views/` — `HomeView`, `LibraryView` (+ `libraryPlaylists`,
   `libraryAlbums`, `playlistTracks` helpers), `RecentView`, `SongPageView`,
-  `DiscoverView`, `DownloaderView`, `SettingsView`, `ErrorLogView`.
+  `DiscoverView`, `DownloaderView`, `PlaylistSyncReviewView`, `SettingsView`,
+  `ErrorLogView`.
 - `src/components/` — `PlayerBar`, `Queue`, `TrackRow`, `Artwork`,
   `RecommendationArtwork`, `PlaylistArtwork`, `Recommendations`, `DownloadTabs`,
   `PlaylistDialogs`, `PlaylistPicker`, `EditTrackDialog`, `TransferDialogs`,
@@ -43,7 +44,9 @@ envelope shapes (`docs/modules/contracts.md`).
 - Views render backend snapshots; they must not reimplement queue order,
   scan results, or job state. All mutations go through bridge commands.
 - Heavy work stays off the UI thread: artwork arrives via the
-  `track_artwork` command as bounded data URLs; rows request lazily.
+  `track_artwork` command as bounded data URLs; visible library rows request
+  missing durations through `track_duration`, which probes on a blocking
+  worker instead of extending every library scan.
 - UI mutations from backend events are scheduled via `.after(0, callback)`.
 - Virtual-list rows are 56 px with scroll-region clamping where the
   library list applies — preserve both when touching list rendering.
@@ -86,6 +89,10 @@ envelope shapes (`docs/modules/contracts.md`).
   seeded from file mtime for existing files), not queue order; the library
   table shows that timestamp as Date added and derives playlist names from
   each playlist's ordered track IDs.
+- The library table probes duration for virtualized visible rows and displays
+  results in the Duration column. These reads do not change track identity or
+  persist metadata. The library hero keeps Play and Shuffle controls without
+  the former scan icon or selected-count badge.
 - Video element behavior is CSS-driven; fullscreen toggles must not call
   `window.setFullscreen()` (blacks out WKWebView over the hide
   transition).
@@ -114,12 +121,18 @@ envelope shapes (`docs/modules/contracts.md`).
   entries remain after a completed sync, the status offers a review action
   instead of claiming the playlist is up to date. The review dialog shows the
   original title, channel, duration, and unavailable reason, then displays
-  candidate title/channel/duration as review cues. Every source must be chosen
-  explicitly per entry. Choosing a candidate downloads it immediately through
+  local library title matches plus YouTube candidate title/channel/duration as
+  review cues. A user can explicitly map a title match as the local
+  replacement, dismiss that unavailable entry, retry the original, or choose
+  another YouTube source. Local replacement and dismissal state persists per
+  playlist; replacement paths are rechecked so deleted files become reviewable
+  again. Choosing a YouTube candidate downloads it immediately through
   the normal single-download pipeline into the linked playlist folder; the
   selected source remains available for an explicit sync retry if that
   download fails. A successful file refreshes the issue list and clears the
-  resolved original entry. Log shows only dated successful sync additions; a
+  resolved original entry. Settings → Sync Review provides a persistent
+  playlist list and opens this same dialog, even after the transient sync
+  notice has gone away. Log shows only dated successful sync additions; a
   separate error view shows backend-owned sync failure details. React does not
   enumerate videos or decide which playlist entries are already satisfied.
 

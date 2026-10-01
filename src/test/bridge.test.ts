@@ -157,7 +157,7 @@ describe("typed IPC bridge and projection", () => {
   });
 
   it("validates unresolved playlist entries, YouTube candidates, and explicit source selections", () => {
-    const issue = { video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "aPSOTX5AkiY", selected_source_id: null, retry_pending: false, updated_at_ms: 1 };
+    const issue = { video_id: "aPSOTX5AkiY", title: "Get What You Give", channel: "Boogie T - Topic", duration_secs: 292, reason: "Video unavailable", attempted_source_id: "aPSOTX5AkiY", selected_source_id: null, retry_pending: false, updated_at_ms: 1, local_matches: [] };
     expect(isPlaylistSyncIssues({ entries: [issue] })).toBe(true);
     expect(isPlaylistSyncIssues({ entries: [{ ...issue, extra: true }] })).toBe(false);
     const candidate = { video_id: "6U7_Qy5c_uc", title: "Get What You Give", channel: "Boogie T - Topic", duration: "4:51", thumbnail_url: null, url: "https://www.youtube.com/watch?v=6U7_Qy5c_uc" };

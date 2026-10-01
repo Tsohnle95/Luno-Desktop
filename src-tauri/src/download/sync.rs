@@ -1,10 +1,10 @@
 //! Playlist synchronization policy, independent of provider/UI plumbing.
 
-use crate::domain::normalization::{split_track_name, sync_key};
+use crate::domain::normalization::{duplicate_key, split_track_name, sync_key};
 use crate::download::markers::Markers;
 use crate::download::promotion::{validate_output, Validation};
 use crate::runtime::task_registry::CancellationToken;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const SYNC_LOG: &str = ".luno-sync-log.jsonl";
 pub const SYNC_SOURCE_STATE: &str = ".luno-sync-source-state.json";
 const SYNC_SOURCE_STATE_VERSION: u8 = 1;
+pub const SYNC_REVIEW_STATE: &str = ".luno-sync-review-state.json";
+const SYNC_REVIEW_STATE_VERSION: u8 = 1;
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,6 +206,158 @@ impl PlaylistSyncState {
     }
 }
 
+/// Explicit local replacements and dismissals are kept in a separate file so
+/// existing v1 source-selection state remains readable by older app builds.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PlaylistSyncReviewState {
+    pub version: u8,
+    #[serde(default)]
+    pub dismissed: BTreeSet<String>,
+    #[serde(default)]
+    pub replacements: BTreeMap<String, String>,
+}
+
+impl Default for PlaylistSyncReviewState {
+    fn default() -> Self {
+        Self { version: SYNC_REVIEW_STATE_VERSION, dismissed: BTreeSet::new(), replacements: BTreeMap::new() }
+    }
+}
+
+impl PlaylistSyncReviewState {
+    pub fn load(folder: &Path) -> Result<Self, String> {
+        let path = folder.join(SYNC_REVIEW_STATE);
+        let content = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(format!("playlist review state could not be read: {error}")),
+        };
+        let state: Self = serde_json::from_str(&content)
+            .map_err(|error| format!("playlist review state is malformed: {error}"))?;
+        if state.version != SYNC_REVIEW_STATE_VERSION
+            || state.dismissed.iter().any(|id| !valid_marker_id(id))
+            || state.replacements.iter().any(|(id, path)| !valid_marker_id(id) || !valid_review_path(path))
+        {
+            return Err("playlist review state contains an unsupported version or unsafe mapping".into());
+        }
+        Ok(state)
+    }
+
+    pub fn save(&self, folder: &Path) -> Result<(), String> {
+        if self.version != SYNC_REVIEW_STATE_VERSION
+            || self.dismissed.iter().any(|id| !valid_marker_id(id))
+            || self.replacements.iter().any(|(id, path)| !valid_marker_id(id) || !valid_review_path(path))
+        {
+            return Err("cannot save invalid playlist review state".into());
+        }
+        let json = serde_json::to_vec_pretty(self).map_err(|error| format!("playlist review state could not be encoded: {error}"))?;
+        write_atomic(&folder.join(SYNC_REVIEW_STATE), &json)
+            .map_err(|error| format!("playlist review state could not be saved: {error}"))
+    }
+
+    pub fn dismiss(&mut self, video_id: &str) -> Result<(), String> {
+        if !valid_marker_id(video_id) { return Err("original playlist video ID is invalid".into()); }
+        self.replacements.remove(video_id);
+        self.dismissed.insert(video_id.to_owned());
+        Ok(())
+    }
+
+    pub fn replace(&mut self, video_id: &str, relative_path: String) -> Result<(), String> {
+        if !valid_marker_id(video_id) { return Err("original playlist video ID is invalid".into()); }
+        if !valid_review_path(&relative_path) { return Err("replacement track path is invalid".into()); }
+        self.dismissed.remove(video_id);
+        self.replacements.insert(video_id.to_owned(), relative_path);
+        Ok(())
+    }
+
+    pub fn prune(&mut self, entries: &[PlaylistEntry]) -> bool {
+        let present: HashSet<&str> = entries.iter().filter_map(|entry| entry.id.as_deref()).collect();
+        let before = self.dismissed.len() + self.replacements.len();
+        self.dismissed.retain(|id| present.contains(id.as_str()));
+        self.replacements.retain(|id, _| present.contains(id.as_str()));
+        before != self.dismissed.len() + self.replacements.len()
+    }
+
+    pub fn is_dismissed(&self, video_id: &str) -> bool { self.dismissed.contains(video_id) }
+
+    pub fn replacement_exists(&self, root: &Path, video_id: &str) -> bool {
+        let Some(relative) = self.replacements.get(video_id) else { return false; };
+        resolve_review_path(root, relative).is_some()
+    }
+
+    pub fn replacement_relative_path(root: &Path, path: &Path) -> Result<String, String> {
+        let root = fs::canonicalize(root).map_err(|error| format!("library root could not be resolved: {error}"))?;
+        let path = fs::canonicalize(path).map_err(|error| format!("replacement track is unavailable: {error}"))?;
+        if !path.starts_with(&root) || !path.is_file() {
+            return Err("replacement track is outside the library or is not a file".into());
+        }
+        let relative = path.strip_prefix(&root).map_err(|_| "replacement track is outside the library")?;
+        let parts: Vec<String> = relative.components().map(|component| match component {
+            std::path::Component::Normal(part) => Ok(part.to_string_lossy().into_owned()),
+            _ => Err("replacement track path is not root-relative"),
+        }).collect::<Result<_, _>>()?;
+        if parts.is_empty() { return Err("replacement track path is empty".into()); }
+        Ok(parts.join("/"))
+    }
+}
+
+fn valid_review_path(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('/')
+        && value.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+fn resolve_review_path(root: &Path, relative: &str) -> Option<PathBuf> {
+    if !valid_review_path(relative) { return None; }
+    let root = fs::canonicalize(root).ok()?;
+    let path = fs::canonicalize(root.join(relative)).ok()?;
+    (path.starts_with(&root) && path.is_file()).then_some(path)
+}
+
+pub fn local_replacement_matches(
+    entry_title: &str,
+    channel: Option<&str>,
+    target_playlist: &str,
+    snapshot: &crate::contracts::types::LibrarySnapshot,
+) -> Vec<crate::contracts::types::PlaylistSyncLocalMatch> {
+    let (listed_artist, listed_title) = parse_title(entry_title);
+    let wanted_title = duplicate_key(&listed_title);
+    let full_title = duplicate_key(entry_title);
+    if wanted_title.is_empty() && full_title.is_empty() { return Vec::new(); }
+    let wanted_artist = duplicate_key(if listed_artist.is_empty() {
+        channel.unwrap_or_default()
+    } else {
+        &listed_artist
+    });
+    let mut candidates: Vec<(bool, bool, crate::contracts::types::PlaylistSyncLocalMatch)> = snapshot.tracks.iter()
+        .filter(|track| {
+            let title = duplicate_key(&track.title);
+            (!wanted_title.is_empty() && title == wanted_title) || (!full_title.is_empty() && title == full_title)
+        })
+        .map(|track| {
+            let playlists: Vec<String> = snapshot.playlists.iter()
+                .filter(|playlist| playlist.ordered_track_ids.contains(&track.id))
+                .map(|playlist| playlist.name.clone())
+                .collect();
+            let in_target = playlists.iter().any(|name| name == target_playlist);
+            let artist_match = !wanted_artist.is_empty()
+                && track.artist.as_deref().is_some_and(|artist| duplicate_key(artist) == wanted_artist);
+            let local = crate::contracts::types::PlaylistSyncLocalMatch {
+                track_id: track.id.clone(), title: track.title.clone(), artist: track.artist.clone(),
+                duration_ms: track.duration_ms, playlists,
+            };
+            (in_target, artist_match, local)
+        })
+        .collect();
+    candidates.sort_by(|left, right| {
+        right.0.cmp(&left.0)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| left.2.title.to_lowercase().cmp(&right.2.title.to_lowercase()))
+            .then_with(|| left.2.track_id.0.cmp(&right.2.track_id.0))
+    });
+    candidates.into_iter().take(12).map(|(_, _, candidate)| candidate).collect()
+}
+
 /// Resolve previously unavailable playlist entries when their audio has since
 /// appeared in the library through another download path. Keep this aligned
 /// with the filename matching policy used by playlist planning.
@@ -326,6 +480,16 @@ pub fn plan_with_state(
     entries: &[PlaylistEntry],
     state: &PlaylistSyncState,
 ) -> Vec<SyncItem> {
+    plan_with_review_state(root, destination, entries, state, &PlaylistSyncReviewState::default())
+}
+
+pub fn plan_with_review_state(
+    root: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    entries: &[PlaylistEntry],
+    state: &PlaylistSyncState,
+    review: &PlaylistSyncReviewState,
+) -> Vec<SyncItem> {
     let root = root.as_ref();
     let destination = destination.as_ref();
     let mut keys = HashSet::new();
@@ -336,6 +500,9 @@ pub fn plan_with_state(
     entries
         .iter()
         .filter_map(|entry| {
+            if let Some(id) = entry.id.as_deref() {
+                if review.is_dismissed(id) || review.replacement_exists(root, id) { return None; }
+            }
             if existing_audio_matches(entry, &existing_keys, &existing_titles) {
                 return None;
             }

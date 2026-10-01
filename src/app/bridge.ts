@@ -20,9 +20,11 @@ import {
   type PlaylistSyncIssue,
   type PlaylistSyncCandidate,
   type PlaylistSyncSelection,
+  type PlaylistSyncReviewSummary,
   isPlaylistSyncIssues,
   isPlaylistSyncCandidates,
   isPlaylistSyncSelection,
+  isPlaylistSyncReviewSummary,
 } from "../shared/contracts";
 import type { LibrarySnapshot } from "../shared/contracts";
 
@@ -111,9 +113,11 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
       setPlaylistUrl: (playlist_id: PlaylistId, url: string | null) => send({ type: "set_playlist_url", payload: { playlist_id, url } }),
       syncPlaylist: (playlist_id: PlaylistId) => send({ type: "sync_playlist", payload: { playlist_id } }),
       playlistSyncLog: (playlist_id: PlaylistId) => send<{ entries: { title: string; video_id: string | null; source_video_id?: string; at_ms: number; status: string; reason: string | null }[] }>({ type: "playlist_sync_log", payload: { playlist_id } }),
+      playlistSyncReviewSummary: async (): Promise<PlaylistSyncReviewSummary[]> => { const value = await send<unknown>({ type: "playlist_sync_review_summary" }); if (!isPlaylistSyncReviewSummary(value)) throw new Error("invalid playlist sync review summary response"); return value.entries; },
       playlistSyncIssues: async (playlist_id: PlaylistId) => { const value = await send<unknown>({ type: "playlist_sync_issues", payload: { playlist_id } }); if (!isPlaylistSyncIssues(value)) throw new Error("invalid playlist sync issues response"); return value.entries as PlaylistSyncIssue[]; },
       playlistSyncCandidates: async (playlist_id: PlaylistId, video_id: string) => { const value = await send<unknown>({ type: "playlist_sync_candidates", payload: { playlist_id, video_id } }); if (!isPlaylistSyncCandidates(value)) throw new Error("invalid playlist sync candidates response"); return value as PlaylistSyncCandidate[]; },
       playlistSyncSelectSource: async (playlist_id: PlaylistId, video_id: string, source_video_id: string) => { const value = await send<unknown>({ type: "playlist_sync_select_source", payload: { playlist_id, video_id, source_video_id } }); if (!isPlaylistSyncSelection(value)) throw new Error("invalid playlist sync source response"); return value as PlaylistSyncSelection; },
+      playlistSyncResolveIssue: (playlist_id: PlaylistId, video_id: string, replacement_track_id: TrackId | null) => send({ type: "playlist_sync_resolve_issue", payload: { playlist_id, video_id, replacement_track_id } }),
       deletePlaylist: (playlist_id: PlaylistId) => send({ type: "delete_playlist", payload: { playlist_id } }),
       addTracksToPlaylist: (track_ids: TrackId[], playlist_id: PlaylistId) => send({ type: "add_tracks_to_playlist", payload: { track_ids, playlist_id } }),
       deleteTracks: (track_ids: TrackId[]) => send({ type: "delete_tracks", payload: { track_ids } }),
@@ -167,6 +171,10 @@ export function createBridge(transport: BridgeTransport = tauriTransport) {
     trackArtwork: async (trackId: TrackId): Promise<string | null> => {
       const value = await transport.invoke<unknown>("track_artwork", { trackId });
       return typeof value === "string" && value.startsWith("data:") ? value : null;
+    },
+    trackDuration: async (trackId: TrackId): Promise<number | null> => {
+      const value = await transport.invoke<unknown>("track_duration", { trackId });
+      return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
     },
     discoveryKeyStatus: async (): Promise<{ configured: boolean }> => {
       const value = await transport.invoke<unknown>("discovery_key_status", null);

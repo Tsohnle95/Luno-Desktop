@@ -33,6 +33,9 @@ transfer manifests (`docs/modules/contracts.md`).
   in `.luno_track_metadata.json` at the music root.
 - `src-tauri/src/library/artwork.rs` — bounded embedded-artwork extraction
   served as data URLs over the `track_artwork` command.
+- `src-tauri/src/playback/backend_adapter.rs::probe_duration` — container
+  duration probing served through the blocking `track_duration` Tauri command
+  for visible library rows.
 - `src-tauri/src/domain/identity.rs` — `TrackMetadata`, filename-derived
   identity, provider identity.
 - `src-tauri/src/domain/normalization.rs` — title/artist normalization and
@@ -95,6 +98,10 @@ transfer manifests (`docs/modules/contracts.md`).
   count and byte budget and retries evicted entries lazily on the next
   visible pass — never eagerly from the eviction event (fetch-evict-refetch
   loop, 2026-09-09).
+- Missing table durations are probed lazily for virtualized visible rows
+  through `track_duration`, on a blocking worker. Probed values stay in the
+  current frontend view cache; they do not change filename-derived IDs or the
+  portable metadata sidecar, and library scans do not probe every audio file.
 - Library track rows, home song and playlist cards, and playlist cover mosaics use the
   deterministic generated Luno artwork when a file has no usable embedded
   cover, including recommendations saved to a physical playlist.
@@ -116,6 +123,7 @@ scan_async → validate/canonicalize roots → off-thread scan → stable keys
 event when all roots unreadable)
 play_with_context → heal ids vs current map → queue → playback
 visible row → track_artwork command → bounded extract → data URL
+visible library row → track_duration command → blocking container probe
 set_playlist_url → validated YouTube URL → atomic URL map → rescan → snapshot
 startup → has_legacy_data → validated_music_root → migrate → status
 ```

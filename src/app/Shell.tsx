@@ -11,13 +11,14 @@ import { RecentView } from "../views/RecentView";
 import { SongPageView } from "../views/SongPageView";
 import { DownloaderView } from "../views/DownloaderView";
 import { DiscoverView } from "../views/DiscoverView";
+import { PlaylistSyncReviewView } from "../views/PlaylistSyncReviewView";
 import type { BackendProjection } from "../state/backend_projection";
 import { currentTrack } from "../state/backend_projection";
 import { useTrackArtwork } from "../state/track_artwork";
 import { bumpPlayCount, loadDownloadJournal, loadPlayCounts, madeForYouIds, popularTrackIds, recordDownloadCompletions, saveDownloadJournal, savePlayCounts, type DownloadEntry, type PlayCounts } from "../state/play_stats";
 import { downloadDisplayLabel, downloadFilename, type DownloadMetadata } from "../state/download_naming";
 import type { Bridge, MigrationStatus } from "./bridge";
-import { type Playlist, type PlaylistSyncCandidate, type PlaylistSyncIssue, type Recommendation, type SearchResult, type SettingsInput, type Track, type YtDlpCookieBrowser } from "../shared/contracts";
+import { type Playlist, type PlaylistSyncCandidate, type PlaylistSyncIssue, type PlaylistSyncLocalMatch, type PlaylistSyncReviewSummary, type Recommendation, type SearchResult, type SettingsInput, type Track, type YtDlpCookieBrowser } from "../shared/contracts";
 import { previewKey } from "../shared/contracts";
 import type { RecommendationState } from "../components/Recommendations";
 import { Queue } from "../components/Queue";
@@ -241,6 +242,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [playlistSyncReview, setPlaylistSyncReview] = useState<{ playlist: Playlist; entries: PlaylistSyncIssue[]; loading: boolean; error: string | null; candidateLookups: Record<string, PlaylistSyncCandidateLookup>; selectingVideoId: string | null } | null>(null);
   const [playlistSyncReviewDownloadingVideoId, setPlaylistSyncReviewDownloadingVideoId] = useState<string | null>(null);
   const [playlistSyncReviewOffer, setPlaylistSyncReviewOffer] = useState<{ playlist: Playlist; count: number } | null>(null);
+  const [playlistSyncReviewSummary, setPlaylistSyncReviewSummary] = useState<{ entries: PlaylistSyncReviewSummary[]; loading: boolean; error: string | null }>({ entries: [], loading: false, error: null });
+  const [playlistSyncReviewSummaryRefresh, setPlaylistSyncReviewSummaryRefresh] = useState(0);
   const askConfirm = (request: { title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void }) => {
     setConfirmError(null);
     setConfirmDialog(request);
@@ -295,6 +298,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         setCommandError(normalizeRuntimeCommandError(error));
       });
     }
+    setPlaylistSyncReviewSummaryRefresh((current) => current + 1);
     setActivePlaylistSync(null);
   }, [activePlaylistSync, projection.jobs, bridge]);
   const [downloadSources, setDownloadSources] = useState<SearchResult[]>([]);
@@ -316,6 +320,21 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const fixtureHelper = viteEnv?.DEV ? viteEnv.VITE_LUNO_GATE4_HELPER : undefined;
   const fixtureDestination = viteEnv?.DEV ? viteEnv.VITE_LUNO_GATE4_DESTINATION : undefined;
   const available = backendAvailable === true;
+  useEffect(() => {
+    if (route !== "settings" || settingsScreen !== "sync_review") return;
+    if (!bridge || !available) {
+      setPlaylistSyncReviewSummary({ entries: [], loading: false, error: "Playlist sync review is unavailable until the backend is connected." });
+      return;
+    }
+    let current = true;
+    setPlaylistSyncReviewSummary((summary) => ({ ...summary, loading: true, error: null }));
+    void bridge.playlistSyncReviewSummary().then((entries) => {
+      if (current) setPlaylistSyncReviewSummary({ entries, loading: false, error: null });
+    }).catch((error: unknown) => {
+      if (current) setPlaylistSyncReviewSummary({ entries: [], loading: false, error: normalizeRuntimeCommandError(error) });
+    });
+    return () => { current = false; };
+  }, [route, settingsScreen, bridge, available, playlistSyncReviewSummaryRefresh, projection.library?.generation]);
   const runCommand = (command: Promise<unknown> | null | undefined) => {
     if (!available || !command) return;
     void command.then(() => setCommandError(null)).catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
@@ -454,6 +473,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     void bridge.playlistSyncIssues(playlist.id).then((entries) => {
       setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, entries, loading: false } : current);
       if (playlistSyncSequence.current === sequence) setPlaylistSyncReviewOffer(entries.length > 0 ? { playlist, count: entries.length } : null);
+      setPlaylistSyncReviewSummaryRefresh((current) => current + 1);
     }).catch((error: unknown) => {
       setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, loading: false, error: normalizeRuntimeCommandError(error) } : current);
     });
@@ -489,6 +509,30 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       } : current);
     }).catch((error: unknown) => {
       setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, selectingVideoId: null, error: normalizeRuntimeCommandError(error) } : current);
+    });
+  };
+  const persistPlaylistSyncResolution = (videoId: string, replacement: PlaylistSyncLocalMatch | null) => {
+    if (!bridge || !available || !playlistSyncReview || activePlaylistSync) return;
+    const playlist = playlistSyncReview.playlist;
+    setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, selectingVideoId: videoId, error: null } : current);
+    void bridge.playlistSyncResolveIssue(playlist.id, videoId, replacement?.track_id ?? null).then(() => {
+      const remaining = playlistSyncReview.entries.filter((issue) => issue.video_id !== videoId);
+      setPlaylistSyncReview((current) => current?.playlist.id === playlist.id
+        ? { ...current, entries: remaining, selectingVideoId: null }
+        : current);
+      setPlaylistSyncReviewOffer(remaining.length > 0 ? { playlist, count: remaining.length } : null);
+      setPlaylistSyncReviewSummaryRefresh((current) => current + 1);
+      setCommandNotice(replacement
+        ? `Using “${replacement.title}” for the unavailable song in “${playlist.name}”.`
+        : `Dismissed an unavailable song from “${playlist.name}”.`);
+      void bridge.playlistSyncIssues(playlist.id).then((entries) => {
+        setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, entries } : current);
+        setPlaylistSyncReviewOffer(entries.length > 0 ? { playlist, count: entries.length } : null);
+      }).catch(() => undefined);
+    }).catch((error: unknown) => {
+      setPlaylistSyncReview((current) => current?.playlist.id === playlist.id
+        ? { ...current, selectingVideoId: null, error: normalizeRuntimeCommandError(error) }
+        : current);
     });
   };
   const downloadPlaylistSyncCandidate = (videoId: string, candidate: PlaylistSyncCandidate) => {
@@ -733,6 +777,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
             setPlaylistSyncReviewOffer(entries.length > 0
               ? { playlist: reviewTarget.playlist, count: entries.length }
               : null);
+            setPlaylistSyncReviewSummaryRefresh((current) => current + 1);
             setCommandNotice(`Downloaded “${reviewTarget.title}” into “${reviewTarget.playlist.name}”.`);
           }).catch((error: unknown) => {
             setPlaylistSyncReview((current) => current?.playlist.id === reviewTarget.playlist.id
@@ -1346,9 +1391,14 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     onCreateDestination={createDownloadDestination}
   />;
   const errorLogViewEl = <ErrorLogView />;
-  const settingsScreens: Record<SettingsNavLink, ReactNode> = { home: homeViewEl, recent: recentViewEl, discover: discoverViewEl, downloader: downloaderViewEl, error_log: errorLogViewEl };
+  const playlistSyncReviewViewEl = <PlaylistSyncReviewView entries={playlistSyncReviewSummary.entries} loading={playlistSyncReviewSummary.loading} error={playlistSyncReviewSummary.error} onOpenReview={(playlistId) => {
+    const playlist = projection.library?.playlists.find((item) => item.id === playlistId);
+    if (playlist) openPlaylistSyncReview(playlist);
+    else setPlaylistSyncReviewSummaryRefresh((current) => current + 1);
+  }} onRefresh={() => setPlaylistSyncReviewSummaryRefresh((current) => current + 1)} />;
+  const settingsScreens: Record<SettingsNavLink, ReactNode> = { home: homeViewEl, recent: recentViewEl, discover: discoverViewEl, downloader: downloaderViewEl, sync_review: playlistSyncReviewViewEl, error_log: errorLogViewEl };
 
-   const content = views[route] ?? (route === "library" ? (libraryHome ? homeViewEl : <LibraryView snapshot={projection.library} loading={!projection.library || projection.library.generation <= 0} playback={projection.playback} backendAvailable={available} selectedScope={libraryScope} query={libraryQuery} onQueryChange={setLibraryQuery} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onShuffle={() => runCommand(bridge?.toggleShuffle())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onContextMenu={openTrackMenu} onScan={() => runCommand(bridge?.scanLibrary())} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />) : route === "recent" ? recentViewEl : route === "discover" ? discoverViewEl : route === "downloader" ? downloaderViewEl : route === "settings" ? <SettingsView lastfmKey="" keychainStatus={discoveryKeyConfigured === null ? "loading" : discoveryKeyConfigured ? "available" : "missing"} onSaveLastfmKey={available ? saveLastfmKey : undefined} musicRoot={musicRoot} autoDiscovery={settings.auto_discovery ?? false} mediaKeys={settings.global_keys ?? true} youtubeCookiesBrowser={settings.youtube_cookies_browser ?? "none"} onYoutubeCookiesBrowserChange={available ? (browser) => saveSettings({ ...settings, youtube_cookies_browser: browser }) : undefined} transferManifest={transferManifest} transferDestination={transferDestination} transferResult={transferResult} error={commandError} libraryRootPath={viteEnv?.DEV ? undefined : libraryRootPath ?? undefined} onLibraryRootSubmit={viteEnv?.DEV ? undefined : submitLibraryRoot} onChooseMusicRoot={viteEnv?.DEV ? chooseRoot : undefined} onAutoDiscoveryChange={(value) => saveSettings({ ...settings, auto_discovery: value })} onMediaKeysChange={(value) => saveSettings({ ...settings, global_keys: value })} onTransferManifestChange={setTransferManifest} onTransferDestinationChange={setTransferDestination} onTransferPreview={() => runCommand(bridge?.transferPreview(transferManifest, transferDestination).then((result) => setTransferResult(JSON.stringify(result))))} onTransferApply={() => runCommand(bridge?.transferApply(transferManifest, transferDestination, {}).then((result) => setTransferResult(JSON.stringify(result))))} onTransferExport={() => { if (!available) { setCommandError("Transfer export is unavailable until the backend is connected."); return; } runCommand(bridge?.transferExport().then((result) => { const manifest = (result as { manifest?: string }).manifest ?? ""; setTransferManifest(manifest); setTransferResult(manifest ? "Exported manifest is ready for review." : "Export returned no manifest."); })); }} onOpenErrorLog={() => navigate("error_log")} activeScreen={settingsScreen} screen={settingsScreen ? settingsScreens[settingsScreen] : null} onNavigate={(target) => { if (target === "home") { setSettingsScreen(null); navigate("library"); setLibraryHome(true); } else setSettingsScreen(target); }} onScreenClosed={() => setSettingsScreen(null)} /> : route === "error_log" ? errorLogViewEl : route === "song_page" ? <SongPageView track={seedTrack} nowPlaying={displayTrack} backendAvailable={available} recommendations={songRecs.items} recommendationState={songRecs.state} recommendationError={songRecs.error} hasApiKey={discoveryKeyConfigured !== false} sessionActive={!!projection.preview?.active} discoverMode={!!projection.discover?.enabled} discoverHint={projection.discover?.enabled ? ("Pre-loaded " + String(projection.discover.ready ?? 0) + " of " + String(projection.discover.window.length) + " recommendations" + (projection.discover.queued ? " (" + String(projection.discover.queued) + " in queue)" : "") + ". Next/Previous walk them; turn off to restore your library.") : track && !track.artist ? `“${track.title}” has no artist info — similar tracks need "Artist - Title" in the filename.` : discoveryKeyConfigured === false ? "Add a Last.fm API key in Settings to enable discovery mode." : songRecs.state === "loading" ? "Finding recommendations…" : songRecs.items.length === 0 ? "No recommendations are available for this song yet." : null} onToggleDiscoverMode={() => { if (!bridge || !available) return; if (projection.discover?.enabled) { runCommand(bridge.discoverDisable()); return; } if (discoveryKeyConfigured === false) { setCommandError("Add a Last.fm API key in Settings to enable discovery mode."); return; } if (track && !track.artist) { setCommandError(`“${track.title}” has no artist info, so there are no recommendations to play yet.`); return; } if (songRecs.state === "loading") { setCommandNotice("Still finding recommendations for this song…"); return; } if (songRecs.items.length === 0) { setCommandError("No recommendations to play yet."); return; } runCommand(bridge.discoverEnable(songRecs.items.slice(0, 10).map((entry) => ({ artist: entry.artist, title: entry.title })))); }} onRetryRecommendations={() => setSongRecRefresh((value) => value + 1)} onRefreshRecommendations={() => setSongRecRefresh((value) => value + 1)} onPreviewRecommendation={(item) => { const key = previewKey(item.artist, item.title); runCommand(projection.discover?.enabled ? bridge?.discoverSelect(key) : bridge?.previewTap(songRecs.items.slice(0, 50).map((entry) => ({ artist: entry.artist, title: entry.title })), key)); }} onSaveRecommendation={(item, playlistId) => {
+   const content = views[route] ?? (route === "library" ? (libraryHome ? homeViewEl : <LibraryView snapshot={projection.library} loading={!projection.library || projection.library.generation <= 0} playback={projection.playback} backendAvailable={available} selectedScope={libraryScope} query={libraryQuery} onQueryChange={setLibraryQuery} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onShuffle={() => runCommand(bridge?.toggleShuffle())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onContextMenu={openTrackMenu} onScan={() => runCommand(bridge?.scanLibrary())} onProbeDuration={(id) => bridge ? bridge.trackDuration(id) : Promise.resolve(null)} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />) : route === "recent" ? recentViewEl : route === "discover" ? discoverViewEl : route === "downloader" ? downloaderViewEl : route === "settings" ? <SettingsView lastfmKey="" keychainStatus={discoveryKeyConfigured === null ? "loading" : discoveryKeyConfigured ? "available" : "missing"} onSaveLastfmKey={available ? saveLastfmKey : undefined} musicRoot={musicRoot} autoDiscovery={settings.auto_discovery ?? false} mediaKeys={settings.global_keys ?? true} youtubeCookiesBrowser={settings.youtube_cookies_browser ?? "none"} onYoutubeCookiesBrowserChange={available ? (browser) => saveSettings({ ...settings, youtube_cookies_browser: browser }) : undefined} transferManifest={transferManifest} transferDestination={transferDestination} transferResult={transferResult} error={commandError} libraryRootPath={viteEnv?.DEV ? undefined : libraryRootPath ?? undefined} onLibraryRootSubmit={viteEnv?.DEV ? undefined : submitLibraryRoot} onChooseMusicRoot={viteEnv?.DEV ? chooseRoot : undefined} onAutoDiscoveryChange={(value) => saveSettings({ ...settings, auto_discovery: value })} onMediaKeysChange={(value) => saveSettings({ ...settings, global_keys: value })} onTransferManifestChange={setTransferManifest} onTransferDestinationChange={setTransferDestination} onTransferPreview={() => runCommand(bridge?.transferPreview(transferManifest, transferDestination).then((result) => setTransferResult(JSON.stringify(result))))} onTransferApply={() => runCommand(bridge?.transferApply(transferManifest, transferDestination, {}).then((result) => setTransferResult(JSON.stringify(result))))} onTransferExport={() => { if (!available) { setCommandError("Transfer export is unavailable until the backend is connected."); return; } runCommand(bridge?.transferExport().then((result) => { const manifest = (result as { manifest?: string }).manifest ?? ""; setTransferManifest(manifest); setTransferResult(manifest ? "Exported manifest is ready for review." : "Export returned no manifest."); })); }} onOpenErrorLog={() => navigate("error_log")} activeScreen={settingsScreen} screen={settingsScreen ? settingsScreens[settingsScreen] : null} onNavigate={(target) => { if (target === "home") { setSettingsScreen(null); navigate("library"); setLibraryHome(true); } else setSettingsScreen(target); }} onScreenClosed={() => setSettingsScreen(null)} /> : route === "error_log" ? errorLogViewEl : route === "song_page" ? <SongPageView track={seedTrack} nowPlaying={displayTrack} backendAvailable={available} recommendations={songRecs.items} recommendationState={songRecs.state} recommendationError={songRecs.error} hasApiKey={discoveryKeyConfigured !== false} sessionActive={!!projection.preview?.active} discoverMode={!!projection.discover?.enabled} discoverHint={projection.discover?.enabled ? ("Pre-loaded " + String(projection.discover.ready ?? 0) + " of " + String(projection.discover.window.length) + " recommendations" + (projection.discover.queued ? " (" + String(projection.discover.queued) + " in queue)" : "") + ". Next/Previous walk them; turn off to restore your library.") : track && !track.artist ? `“${track.title}” has no artist info — similar tracks need "Artist - Title" in the filename.` : discoveryKeyConfigured === false ? "Add a Last.fm API key in Settings to enable discovery mode." : songRecs.state === "loading" ? "Finding recommendations…" : songRecs.items.length === 0 ? "No recommendations are available for this song yet." : null} onToggleDiscoverMode={() => { if (!bridge || !available) return; if (projection.discover?.enabled) { runCommand(bridge.discoverDisable()); return; } if (discoveryKeyConfigured === false) { setCommandError("Add a Last.fm API key in Settings to enable discovery mode."); return; } if (track && !track.artist) { setCommandError(`“${track.title}” has no artist info, so there are no recommendations to play yet.`); return; } if (songRecs.state === "loading") { setCommandNotice("Still finding recommendations for this song…"); return; } if (songRecs.items.length === 0) { setCommandError("No recommendations to play yet."); return; } runCommand(bridge.discoverEnable(songRecs.items.slice(0, 10).map((entry) => ({ artist: entry.artist, title: entry.title })))); }} onRetryRecommendations={() => setSongRecRefresh((value) => value + 1)} onRefreshRecommendations={() => setSongRecRefresh((value) => value + 1)} onPreviewRecommendation={(item) => { const key = previewKey(item.artist, item.title); runCommand(projection.discover?.enabled ? bridge?.discoverSelect(key) : bridge?.previewTap(songRecs.items.slice(0, 50).map((entry) => ({ artist: entry.artist, title: entry.title })), key)); }} onSaveRecommendation={(item, playlistId) => {
                       if (playlistId) {
                         runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), playlistId));
                         return;
@@ -1484,7 +1534,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     {playlistSyncAuthRequest && <PlaylistSyncAuthDialog playlistName={playlistSyncAuthRequest.name} initialBrowser={settings.youtube_cookies_browser ?? "none"} busy={playlistSyncAuthBusy} error={playlistSyncAuthError} onClose={() => { if (!playlistSyncAuthBusy) { setPlaylistSyncAuthRequest(null); setPlaylistSyncAuthError(null); } }} onSubmit={submitPlaylistSyncAuth} />}
     {playlistSyncLog && <PlaylistSyncLogDialog playlistName={playlistSyncLog.name} entries={playlistSyncLog.entries} loading={playlistSyncLog.loading} error={playlistSyncLog.error} onClose={() => setPlaylistSyncLog(null)} />}
     {playlistSyncErrors && <PlaylistSyncErrorsDialog playlistName={playlistSyncErrors.name} entries={playlistSyncErrors.entries} loading={playlistSyncErrors.loading} error={playlistSyncErrors.error} onClose={() => setPlaylistSyncErrors(null)} />}
-    {playlistSyncReview && <PlaylistSyncReviewDialog playlistName={playlistSyncReview.playlist.name} entries={playlistSyncReview.entries} loading={playlistSyncReview.loading} error={playlistSyncReview.error} candidateLookups={playlistSyncReview.candidateLookups} selectingVideoId={playlistSyncReview.selectingVideoId} downloadingVideoId={playlistSyncReviewDownloadingVideoId} onFindCandidates={findPlaylistSyncCandidates} onChooseCandidate={downloadPlaylistSyncCandidate} onRetryOriginal={retryOriginalPlaylistSource} onSyncSelected={syncSelectedPlaylistSources} onClose={() => { if (!playlistSyncReview.selectingVideoId && !playlistSyncReviewDownloadingVideoId) setPlaylistSyncReview(null); }} />}
+    {playlistSyncReview && <PlaylistSyncReviewDialog playlistName={playlistSyncReview.playlist.name} entries={playlistSyncReview.entries} loading={playlistSyncReview.loading} error={playlistSyncReview.error} candidateLookups={playlistSyncReview.candidateLookups} selectingVideoId={playlistSyncReview.selectingVideoId} downloadingVideoId={playlistSyncReviewDownloadingVideoId} syncing={!!activePlaylistSync} onFindCandidates={findPlaylistSyncCandidates} onChooseCandidate={downloadPlaylistSyncCandidate} onRetryOriginal={retryOriginalPlaylistSource} onSyncSelected={syncSelectedPlaylistSources} onResolveWithLocalMatch={(videoId, match) => persistPlaylistSyncResolution(videoId, match)} onDismissIssue={(videoId) => persistPlaylistSyncResolution(videoId, null)} onClose={() => { if (!playlistSyncReview.selectingVideoId && !playlistSyncReviewDownloadingVideoId && !activePlaylistSync) setPlaylistSyncReview(null); }} />}
   </div>;
 }
 

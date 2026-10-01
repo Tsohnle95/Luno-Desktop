@@ -177,6 +177,16 @@ What it does not own: library snapshots and promotion targets
   the original ID and clears its unresolved issue.
   Candidate search is bounded and only runs for an unresolved entry requested
   by the user. Search results are review suggestions, never automatic choices.
+  Review also offers local tracks with the same normalized song title, even
+  when artist or uploader names differ. The user must choose a match; Luno
+  stores its root-relative path or an explicit dismissal in the separate,
+  playlist-scoped `.luno-sync-review-state.json`. A live replacement or
+  dismissal suppresses repeat attempts without recording a downloaded marker.
+  If the replacement file disappears, the issue becomes reviewable again.
+  Resolutions are pruned only after a successful playlist lookup confirms the
+  source video ID has left that YouTube playlist. Settings → Sync Review lists
+  outstanding issues for linked playlists (and old issues whose link was
+  removed), and opens the same review dialog as the context menu.
   From Review, an explicitly chosen candidate also supports the normal
   single-download coordinator directly into that playlist folder, so the
   recovery path uses the same staging, validation, promotion, and rescan as a

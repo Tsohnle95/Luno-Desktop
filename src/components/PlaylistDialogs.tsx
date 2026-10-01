@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { YTDLP_COOKIE_BROWSERS, type PlaylistSyncCandidate, type PlaylistSyncIssue, type YtDlpCookieBrowser } from "../shared/contracts";
+import { YTDLP_COOKIE_BROWSERS, type PlaylistSyncCandidate, type PlaylistSyncIssue, type PlaylistSyncLocalMatch, type YtDlpCookieBrowser } from "../shared/contracts";
 
 export type PlaylistAction = "create" | "delete" | "empty" | "dump" | "copy" | "smart";
 
@@ -141,7 +141,7 @@ export interface PlaylistSyncCandidateLookup {
   error: string | null;
 }
 
-export function PlaylistSyncReviewDialog({ playlistName, entries, loading, error, candidateLookups = {}, selectingVideoId, downloadingVideoId, onFindCandidates, onChooseCandidate, onRetryOriginal, onSyncSelected, onClose }: {
+export function PlaylistSyncReviewDialog({ playlistName, entries, loading, error, candidateLookups = {}, selectingVideoId, downloadingVideoId, syncing = false, onFindCandidates, onChooseCandidate, onRetryOriginal, onSyncSelected, onResolveWithLocalMatch, onDismissIssue, onClose }: {
   playlistName: string;
   entries: PlaylistSyncIssue[];
   loading: boolean;
@@ -149,14 +149,18 @@ export function PlaylistSyncReviewDialog({ playlistName, entries, loading, error
   candidateLookups?: Record<string, PlaylistSyncCandidateLookup>;
   selectingVideoId?: string | null;
   downloadingVideoId?: string | null;
+  syncing?: boolean;
   onFindCandidates: (videoId: string) => void;
   onChooseCandidate: (videoId: string, candidate: PlaylistSyncCandidate) => void;
   onRetryOriginal: (videoId: string) => void;
   onSyncSelected: () => void;
+  onResolveWithLocalMatch: (videoId: string, match: PlaylistSyncLocalMatch) => void;
+  onDismissIssue: (videoId: string) => void;
   onClose: () => void;
 }) {
   const selectedCount = entries.filter((issue) => issue.selected_source_id && issue.retry_pending).length;
-  return <DialogFrame title={`Review unavailable songs · ${playlistName}`} description="Search for another upload, check its title and length, then download the version you choose straight into this playlist." error={error} busy={!!selectingVideoId || !!downloadingVideoId} onClose={onClose}>
+  const busy = syncing || !!selectingVideoId || !!downloadingVideoId;
+  return <DialogFrame title={`Review unavailable songs · ${playlistName}`} description="Use a matching song already in your library, ignore an entry, or search YouTube for another upload." error={error} busy={busy} onClose={onClose}>
     {loading ? <p>Loading unresolved songs…</p> : entries.length === 0 ? <p>No songs currently need source review.</p> : <div className="luno-sync-log">
       {entries.map((issue) => {
         const lookup = candidateLookups[issue.video_id];
@@ -167,18 +171,30 @@ export function PlaylistSyncReviewDialog({ playlistName, entries, loading, error
           {issue.selected_source_id && <small>Selected source: {issue.selected_source_id}{issue.retry_pending ? " · ready for next sync" : " · last attempt finished; select again to retry or change"}</small>}
           {issue.attempted_source_id && issue.attempted_source_id !== issue.video_id && <small>Last unavailable attempt: {issue.attempted_source_id}</small>}
           <p>{issue.reason}</p>
-          <button type="button" onClick={() => onRetryOriginal(issue.video_id)} disabled={!!selectingVideoId || !!downloadingVideoId}>{selectingVideoId === issue.video_id ? "Saving source…" : "Retry original source"}</button>
-          <button type="button" onClick={() => onFindCandidates(issue.video_id)} disabled={lookup?.loading || !!selectingVideoId || !!downloadingVideoId}>{lookup?.loading ? "Searching…" : lookup ? "Search again" : "Search available versions"}</button>
+          {issue.local_matches.length > 0 && <div className="luno-sync-local-matches">
+            <strong>Possible matches already in your library</strong>
+            <p>Song titles match; artist or uploader names may differ. Choosing the right recording stops this entry returning during sync, with no YouTube playlist edit or extra download.</p>
+            {issue.local_matches.map((match) => {
+              const matchDuration = match.duration_ms === null ? null : `${Math.floor(match.duration_ms / 60_000)}:${String(Math.floor(match.duration_ms / 1000) % 60).padStart(2, "0")}`;
+              return <div key={`${issue.video_id}-${match.track_id}`} className="luno-sync-candidate">
+                <div><strong>{match.title}</strong><span>{[match.artist, matchDuration, match.playlists.length ? `In ${match.playlists.join(", ")}` : "In your library"].filter(Boolean).join(" · ")}</span></div>
+                <button type="button" onClick={() => onResolveWithLocalMatch(issue.video_id, match)} disabled={busy}>{selectingVideoId === issue.video_id ? "Saving…" : "Use this song"}</button>
+              </div>;
+            })}
+          </div>}
+          <button type="button" onClick={() => onDismissIssue(issue.video_id)} disabled={busy}>{selectingVideoId === issue.video_id ? "Saving…" : "Dismiss this unavailable song"}</button>
+          <button type="button" onClick={() => onRetryOriginal(issue.video_id)} disabled={busy}>{selectingVideoId === issue.video_id ? "Saving source…" : "Retry original source"}</button>
+          <button type="button" onClick={() => onFindCandidates(issue.video_id)} disabled={lookup?.loading || busy}>{lookup?.loading ? "Searching…" : lookup ? "Search again" : "Search available versions"}</button>
           {lookup?.error && <p role="alert" className="luno-dialog-error">{lookup.error}</p>}
           {lookup && !lookup.loading && !lookup.error && lookup.candidates.length === 0 && <p>No concrete YouTube watch videos were returned. Try searching again later.</p>}
           {lookup?.candidates.map((candidate) => <div key={`${issue.video_id}-${candidate.video_id}`} className="luno-sync-candidate">
             <div><strong>{candidate.title}</strong><span>{[candidate.channel, candidate.duration].filter(Boolean).join(" · ") || "Channel and duration unavailable"}</span><a href={candidate.url} target="_blank" rel="noreferrer">Open candidate on YouTube</a></div>
-            <button type="button" onClick={() => onChooseCandidate(issue.video_id, candidate)} disabled={!!selectingVideoId || !!downloadingVideoId}>{downloadingVideoId === issue.video_id ? "Downloading to playlist…" : candidate.video_id === issue.selected_source_id ? "Download this version again" : "Download this version to playlist"}</button>
+            <button type="button" onClick={() => onChooseCandidate(issue.video_id, candidate)} disabled={busy}>{downloadingVideoId === issue.video_id ? "Downloading to playlist…" : candidate.video_id === issue.selected_source_id ? "Download this version again" : "Download this version to playlist"}</button>
           </div>)}
         </section>;
       })}
     </div>}
-    <footer>{selectedCount > 0 && <button type="button" onClick={onSyncSelected} disabled={!!selectingVideoId}>Sync selected sources ({selectedCount})</button>}<button type="button" onClick={onClose} disabled={!!selectingVideoId}>Close</button></footer>
+    <footer>{selectedCount > 0 && <button type="button" onClick={onSyncSelected} disabled={busy}>Sync selected sources ({selectedCount})</button>}<button type="button" onClick={onClose} disabled={busy}>Close</button></footer>
   </DialogFrame>;
 }
 

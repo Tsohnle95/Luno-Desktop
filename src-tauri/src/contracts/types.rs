@@ -210,6 +210,30 @@ pub struct PlaylistSyncIssue {
     pub retry_pending: bool,
     #[serde(deserialize_with = "safe_u64")]
     pub updated_at_ms: u64,
+    pub local_matches: Vec<PlaylistSyncLocalMatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaylistSyncLocalMatch {
+    pub track_id: TrackId,
+    #[serde(deserialize_with = "non_empty_string")]
+    pub title: String,
+    pub artist: Option<String>,
+    #[serde(deserialize_with = "safe_option_u64")]
+    pub duration_ms: Option<u64>,
+    pub playlists: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaylistSyncReviewSummary {
+    pub playlist_id: PlaylistId,
+    #[serde(deserialize_with = "non_empty_string")]
+    pub name: String,
+    pub url: Option<String>,
+    #[serde(deserialize_with = "safe_u64")]
+    pub unresolved_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
