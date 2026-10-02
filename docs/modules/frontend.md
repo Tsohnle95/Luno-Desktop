@@ -124,9 +124,9 @@ envelope shapes (`docs/modules/contracts.md`).
   physical queue points elsewhere; the resolved image feeds the backdrop and
   media stage. Missing artwork renders the same deterministic custom design,
   which stays visible until a staged video decodes its first frame.
-- The single-song artwork's Download video action stays in its lower-left
-  position and follows the stage's existing hover/focus reveal; retry/error
-  details remain in the hover controls. The action is not shown permanently.
+- The stage's upper-right Music mode switch is the song page's video activation
+  control. Enabling it starts current-track staging; retry/error details remain
+  in the hover controls. There is no second Download video button over artwork.
 - Recommendation rows select through `discover_select` while Discover is
   enabled and through focused preview otherwise. Their Add to playlist action
   remains available while audio is pending or unavailable; the backend reuses

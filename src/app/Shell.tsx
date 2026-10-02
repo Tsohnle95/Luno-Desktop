@@ -1490,19 +1490,18 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
                       const target = playlists.find((playlist) => playlist.name.toLowerCase() !== "unsorted") ?? playlists[0];
                       if (!target) { setCommandError("Create a playlist before saving recommendations."); return; }
                       runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), target.id));
-                      }} preview={recommendationPreview} saved={projection.saved} playlists={projection.library?.playlists ?? []} jobs={projection.jobs} tracksById={tracksByIdForQueue} onArtwork={artworkFetcher} onCreatePlaylist={(item) => { if (!bridge || !available) return; createPlaylist([], (name) => runCommand(bridge.saveRecommendation(previewKey(item.artist, item.title), `playlist:${name}`))); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} videoRequestError={hasVideoRequestError ? videoRequestError.message : null} onLoadVideo={() => {
-                        if (!displayTrack || !bridge || !available) return;
+                      }} preview={recommendationPreview} saved={projection.saved} playlists={projection.library?.playlists ?? []} jobs={projection.jobs} tracksById={tracksByIdForQueue} onArtwork={artworkFetcher} onCreatePlaylist={(item) => { if (!bridge || !available) return; createPlaylist([], (name) => runCommand(bridge.saveRecommendation(previewKey(item.artist, item.title), `playlist:${name}`))); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} videoRequestError={hasVideoRequestError ? videoRequestError.message : null} onRetryVideo={() => {
+                        const retryTrack = displayTrack;
+                        if (!retryTrack || !bridge || !available) return;
                         setVideoRequestError(null);
-                        const request = !videoMode
-                          ? bridge.setVideoMode(true).then(() => { setVideoMode(true); })
-                          : bridge.videoStage(displayTrack.id).then((snapshot) => {
-                              if (snapshot && typeof snapshot === "object" && "status" in snapshot) {
-                                backendProjection?.applyVideoSnapshot?.(snapshot as NonNullable<BackendProjection["video"]>);
-                              }
-                            });
-                        void request
-                          .then(() => setCommandError(null))
-                          .catch((error: unknown) => recordVideoRequestError(displayTrack.id, error));
+                        void bridge.videoStage(retryTrack.id)
+                          .then((snapshot) => {
+                            if (snapshot && typeof snapshot === "object" && "status" in snapshot) {
+                              backendProjection?.applyVideoSnapshot?.(snapshot as NonNullable<BackendProjection["video"]>);
+                            }
+                            setCommandError(null);
+                          })
+                          .catch((error: unknown) => recordVideoRequestError(retryTrack.id, error));
                       }} videoMode={videoMode} onVideoModeChange={changeVideoMode} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
 
   const showSidebar = !sidebarCollapsed && route !== "settings";

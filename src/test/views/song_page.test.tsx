@@ -72,37 +72,34 @@ describe("Music-mode hover controls", () => {
     expect(withVideo).toContain("luno-video-fullscreen");
   });
 
-  it("keeps the video download action inside the artwork hover controls", () => {
+  it("uses the mode pill to start video and keeps retry in the hover controls", () => {
     const html = renderToStaticMarkup(
-      <SongPageView track={track} backendAvailable videoConnection="connected" onLoadVideo={() => undefined} videoMode={false} onVideoModeChange={() => undefined} />
+      <SongPageView track={track} backendAvailable videoConnection="connected" onRetryVideo={() => undefined} videoMode={false} onVideoModeChange={() => undefined} />
     );
-    const controlsStart = html.indexOf('data-testid="video-hover-controls"');
-    const controlsEnd = html.indexOf("</div>", controlsStart);
-    expect(controlsStart).toBeGreaterThanOrEqual(0);
-    const downloadAction = html.indexOf('class="luno-video-load"');
-    expect(downloadAction).toBeGreaterThan(controlsEnd);
-    expect(html.slice(downloadAction)).toContain(">Download video</button>");
-    expect(html).toContain(".luno-video-stage:hover .luno-video-load");
+    expect(html).toContain('aria-label="Music mode off"');
+    expect(html).toContain('aria-checked="false"');
+    expect(html).not.toContain("Download video");
+    expect(html).not.toContain('class="luno-video-load"');
     expect(html).not.toContain("Retry music video");
     // A failed lookup stays inside the hover controls with its retry action;
     // it no longer leaves a persistent popup over the artwork.
     const retryHtml = renderToStaticMarkup(
-      <SongPageView track={track} backendAvailable videoConnection="connected" onLoadVideo={() => undefined} videoMode onVideoModeChange={() => undefined} video={{ status: "unavailable" }} />
+      <SongPageView track={track} backendAvailable videoConnection="connected" onRetryVideo={() => undefined} videoMode onVideoModeChange={() => undefined} video={{ status: "unavailable" }} />
     );
     expect(retryHtml).toContain("Error loading video");
     expect(retryHtml).toContain('data-testid="video-hover-controls"');
     expect(retryHtml).toContain(">Retry</button>");
     expect(retryHtml).not.toContain('class="luno-video-status"');
     const idleHtml = renderToStaticMarkup(
-      <SongPageView track={track} backendAvailable videoConnection="connected" onLoadVideo={() => undefined} videoMode onVideoModeChange={() => undefined} />
+      <SongPageView track={track} backendAvailable videoConnection="connected" onRetryVideo={() => undefined} videoMode onVideoModeChange={() => undefined} />
     );
-    // Mode on with no failure keeps the initial download action from
-    // appearing a second time.
+    // The mode pill is the only initial request control; no lower-left action
+    // appears in either state.
     expect(idleHtml).not.toContain("Retry music video");
-    expect(idleHtml).not.toContain(">Download video</button>");
+    expect(idleHtml).not.toContain("Download video");
 
     const requestErrorHtml = renderToStaticMarkup(
-      <SongPageView track={track} backendAvailable videoConnection="connected" videoMode onLoadVideo={() => undefined} videoRequestError="video staging is busy; try again shortly" onVideoModeChange={() => undefined} />
+      <SongPageView track={track} backendAvailable videoConnection="connected" videoMode onRetryVideo={() => undefined} videoRequestError="video staging is busy; try again shortly" onVideoModeChange={() => undefined} />
     );
     const errorControlsStart = requestErrorHtml.indexOf('data-testid="video-hover-controls"');
     const errorControlsEnd = requestErrorHtml.indexOf("</div>", errorControlsStart);

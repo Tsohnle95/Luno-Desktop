@@ -1207,16 +1207,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&music_dir);
     }
 
-    /// The pressure gate: near the registry cap, staging defers instead of
-    /// spawning so playback-load/heartbeat always have slots.
+    /// Mode intent survives pressure even though the stage request itself
+    /// must defer, allowing the song page's retry loop to run after capacity
+    /// returns.
     #[test]
-    fn stage_defers_when_task_registry_is_under_pressure() {
+    fn mode_enable_survives_stage_admission_pressure() {
         let state = AppState::new(32);
         let video_root = std::env::temp_dir().join(format!("luno-video-pressure-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&video_root);
         state.set_video_runtime(video_root.clone(), Some(PathBuf::from("/nonexistent/yt-dlp")), None);
-        *state.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = true;
-
         let music_dir = std::env::temp_dir().join(format!("luno-video-pressure-lib-{}", std::process::id()));
         let playlist_dir = music_dir.join("Unsorted");
         std::fs::create_dir_all(&playlist_dir).unwrap();
@@ -1233,6 +1232,8 @@ mod tests {
             }).expect("dummy submit");
         }
         assert!(state.tasks.active_count() >= VIDEO_STAGE_PRESSURE_LIMIT);
+        state.set_video_mode(true).expect("busy stage admission must not reject the mode toggle");
+        assert!(state.video_mode_enabled());
         let before = state.tasks.active_count();
 
         let error = state.video_stage_track(id.clone()).expect_err("pressure must be reported as retryable busy");
@@ -1729,7 +1730,7 @@ esac
     }
 
     #[test]
-    fn enabling_video_mode_reports_missing_runtime_for_an_audible_track() {
+    fn enabling_video_mode_is_not_blocked_by_missing_video_runtime() {
         let state = AppState::new(8);
         let music_root = std::env::temp_dir().join(format!("luno-video-no-helper-lib-{}", std::process::id()));
         let playlist_dir = music_root.join("Unsorted");
@@ -1739,17 +1740,18 @@ esac
         let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), vec![track_path])]));
         let id = snapshot.tracks[0].id.clone();
         state.set_playing(id.clone(), vec![id.clone()]);
-        *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
+        *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
         *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Paused;
 
-        let error = state.dispatch(CommandEnvelope {
+        state.dispatch(CommandEnvelope {
             version: CONTRACT_VERSION,
             request_id: "video-mode-no-helper".into(),
             command: Command::SetVideoMode { enabled: true },
-        }).expect_err("mode must not report success when the video runtime is missing");
+        }).expect("mode intent is independent of video runtime availability");
 
+        assert!(state.video_mode_enabled(), "the UI must be able to enter mode and run its retry path");
+        let error = state.video_stage_track(id).expect_err("the separate stage request still reports the missing runtime");
         assert_eq!(error.code, ErrorCode::Unavailable);
-        assert!(!state.video_mode_enabled());
         let _ = std::fs::remove_dir_all(&music_root);
     }
 
@@ -3636,19 +3638,10 @@ impl AppState {
         Ok(self.video_snapshot_json())
     }
 
-    /// Song-page video mode toggle: flips the persisted flag and, when
-    /// enabling, immediately stages the playing track plus prefetches the
-    /// next five queue videos. Disabling cancels any prefetch in flight.
+    /// Song-page video mode records user intent separately from stage-worker
+    /// admission. The song page owns retrying the current item if the worker
+    /// registry is busy; a transient failure must not leave the mode stuck Off.
     fn set_video_mode(&self, enabled: bool) -> Result<Value, ContractError> {
-        if enabled {
-            // Start the audible item's request synchronously at the command
-            // boundary. The worker remains asynchronous, but a missing helper
-            // or saturated task registry now fails the user's action instead
-            // of returning success with no Loading state to observe.
-            if let Some(track_id) = self.audible_video_track() {
-                self.video_stage_track(track_id)?;
-            }
-        }
         *self.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = enabled;
         if let Some(home) = self.settings_home.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             let settings = crate::contracts::types::SettingsInput {

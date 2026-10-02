@@ -23,7 +23,6 @@ export interface VideoStageProps {
   onEnded?: () => void;
   onError?: () => void;
   onRetry?: () => void;
-  onDownloadVideo?: () => void;
   videoRequestError?: string | null;
   onFullscreenChange?: (fullscreen: boolean) => void;
   /** Master audio volume shown with the fullscreen hover controls. */
@@ -166,7 +165,7 @@ const stageChromeStyles = `
 `;
 
 /** Presentation-only video surface. The supplied audio position remains authoritative. */
-export function VideoStage({ src, status = "not-checked", positionMs = 0, playing = false, artworkUrl, artworkLoading = false, artworkAlt = "Album artwork", artworkArtist = "", artworkTitle = "", onResize, onSeek, onPause, onResume, onEnded, onError, onRetry, onDownloadVideo, videoRequestError, onFullscreenChange, volume = 1, onVolume, onVolumeCommit, videoModeEnabled, onVideoModeChange, downloadProgress: videoProgress }: VideoStageProps & { downloadProgress?: number | null }) {
+export function VideoStage({ src, status = "not-checked", positionMs = 0, playing = false, artworkUrl, artworkLoading = false, artworkAlt = "Album artwork", artworkArtist = "", artworkTitle = "", onResize, onSeek, onPause, onResume, onEnded, onError, onRetry, videoRequestError, onFullscreenChange, volume = 1, onVolume, onVolumeCommit, videoModeEnabled, onVideoModeChange, downloadProgress: videoProgress }: VideoStageProps & { downloadProgress?: number | null }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   // Position we last pushed INTO the element. Every programmatic currentTime
@@ -314,6 +313,5 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
       <DownloadRing progress={typeof videoProgress === "number" ? videoProgress : null} />
     </div>}
     {hoverControls}
-    {onDownloadVideo && <button type="button" className="luno-video-load" onClick={onDownloadVideo}>Download video</button>}
   </div>;
 }
