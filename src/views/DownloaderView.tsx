@@ -46,6 +46,7 @@ function Destination({ items, value, onChange, onCreate }: { items: string[]; va
         value={open ? search : label}
         disabled={items.length === 0}
         onFocus={() => { setSearch(""); setOpen(true); }}
+        onClick={() => { if (!open) { setSearch(""); setOpen(true); } }}
         onChange={(event) => { setSearch(event.target.value); setOpen(true); }}
         onKeyDown={(event) => {
           if (event.key === "Escape") setOpen(false);
@@ -60,7 +61,13 @@ function Destination({ items, value, onChange, onCreate }: { items: string[]; va
       {open && items.length > 0 && <div id={listId} role="listbox" aria-label="Playlist destinations" style={{ position: "absolute", zIndex: 20, top: "calc(100% + 4px)", left: 0, right: 0, maxHeight: 240, overflowY: "auto", padding: 4, border: "1px solid var(--luno-border)", borderRadius: 8, background: "var(--luno-bg-2)", boxShadow: "0 12px 32px rgba(0,0,0,0.4)" }}>
         {filtered.length === 0
           ? <p style={{ margin: 0, padding: 10, color: "var(--luno-text-2)", fontSize: 13 }}>No playlists match “{search.trim()}”.</p>
-          : filtered.map((item) => <button key={item} type="button" role="option" aria-selected={item === selected} onClick={() => choose(item)} style={{ width: "100%", border: 0, borderRadius: 6, background: item === selected ? "rgba(29,185,84,0.12)" : "transparent", color: "var(--luno-text)", padding: "9px 10px", textAlign: "left", cursor: "pointer" }} onMouseEnter={(event) => { event.currentTarget.style.background = "var(--luno-bg-3)"; }} onMouseLeave={(event) => { event.currentTarget.style.background = item === selected ? "rgba(29,185,84,0.12)" : "transparent"; }}>{destinationName(item)}</button>)}
+          : filtered.map((item) => <button key={item} type="button" role="option" aria-selected={item === selected} onMouseDown={(event) => {
+            // Keep the input focused until the option commits. In WKWebView a
+            // pointer focus change can blur the input with a null relatedTarget,
+            // closing this list before the button's click handler can run.
+            event.preventDefault();
+            choose(item);
+          }} onClick={() => choose(item)} style={{ width: "100%", border: 0, borderRadius: 6, background: item === selected ? "rgba(29,185,84,0.12)" : "transparent", color: "var(--luno-text)", padding: "9px 10px", textAlign: "left", cursor: "pointer" }} onMouseEnter={(event) => { event.currentTarget.style.background = "var(--luno-bg-3)"; }} onMouseLeave={(event) => { event.currentTarget.style.background = item === selected ? "rgba(29,185,84,0.12)" : "transparent"; }}>{destinationName(item)}</button>)}
       </div>}
     </div>
     <button type="button" onClick={onCreate} style={{ ...buttonStyle, whiteSpace: "nowrap" }}>+ New</button>
