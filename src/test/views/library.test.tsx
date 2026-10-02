@@ -36,12 +36,11 @@ describe("normalizeFilterText", () => {
 });
 
 describe("zero-match state", () => {
-  it("offers a Clear search action instead of a dead end", () => {
-    // The recurring "clicked a song and now there are no matches" reports
-    // all end on this screen; it must be one click away from recovery.
+  it("explains that the context-aware app search controls the playlist filter", () => {
     const html = renderToStaticMarkup(<LibraryView snapshot={snapshot} query="nonexistent" />);
     expect(html).toContain("No matches for");
-    expect(html).toContain('aria-label="Clear search"');
+    expect(html).toContain("Update the search at the top of the app");
+    expect(html).not.toContain('aria-label="Clear search"');
   });
 
   it("keeps matching rows rendered while a search is active", () => {
@@ -88,6 +87,18 @@ describe("library sort", () => {
     ];
     expect(sortLibraryTracks(list, "Z-A").map((item) => item.id)).toEqual(["b", "a"]);
     expect(sortLibraryTracks(list, "Duration").map((item) => item.id)).toEqual(["b", "a"]);
+  });
+
+  it("orders resolved durations immediately while unresolved tracks stay after them", () => {
+    const list = [track("a", "Alpha"), track("b", "Beta"), track("c", "Gamma")];
+    expect(sortLibraryTracks(list, "Duration", { b: 2_000, c: 1_000 }).map((item) => item.id)).toEqual(["c", "b", "a"]);
+    expect(sortLibraryTracks(list, "Longest duration", { b: 2_000, c: 1_000 }).map((item) => item.id)).toEqual(["b", "c", "a"]);
+  });
+
+  it("shows duration probe progress while sorting proceeds", () => {
+    const html = renderToStaticMarkup(<LibraryView snapshot={snapshot} sort="Duration" onProbeDuration={async () => null} />);
+    expect(html).toContain("Reading durations… 0 of 2");
+    expect(html).toContain('aria-label="Sort longest duration first"');
   });
 });
 

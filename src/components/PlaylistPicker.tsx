@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Playlist, Track } from "../shared/contracts";
-import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
+import { useTrackArtworkState, type ArtworkFetcher } from "../state/track_artwork";
 import { PlaylistArtwork } from "./PlaylistArtwork";
 
 export interface PlaylistPickerProps {
@@ -35,7 +35,8 @@ export function PlaylistPicker({ title = "Add to playlist", playlists, selectedT
     return [...byId.entries()];
   }, [selectedTracks, selectedTrackIds]);
   const artworkIds = useMemo(() => playlists.flatMap((playlist) => playlist.ordered_track_ids.slice(0, 4)), [playlists]);
-  const artwork = useTrackArtwork(artworkIds, onArtwork);
+  const artworkState = useTrackArtworkState(artworkIds, onArtwork);
+  const artwork = artworkState.artwork;
   const filtered = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     if (!needle) return playlists;
@@ -179,6 +180,8 @@ export function PlaylistPicker({ title = "Add to playlist", playlists, selectedT
                 <PlaylistArtwork
                   tracks={playlistCovers}
                   artwork={artwork}
+                  loadingIds={artworkState.loading}
+                  eager
                   style={{ width: 36, height: 36, flex: "0 0 36px", borderRadius: 6, fontSize: 13 }}
                 />
                 <span style={{ display: "grid", gap: 2, minWidth: 0 }}>

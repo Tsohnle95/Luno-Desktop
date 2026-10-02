@@ -5,13 +5,15 @@ import { RecommendationArtworkImage } from "./RecommendationArtwork";
 export interface PlaylistArtworkProps {
   tracks: Track[];
   artwork: Readonly<Record<string, string | undefined>>;
+  loadingIds?: ReadonlySet<string>;
+  eager?: boolean;
   className?: string;
   style?: CSSProperties;
   emptyFallback?: ReactNode;
 }
 
 /** Shared four-cover playlist tile used by the sidebar, picker, and home. */
-export function PlaylistArtwork({ tracks, artwork, className, style, emptyFallback = "♫" }: PlaylistArtworkProps) {
+export function PlaylistArtwork({ tracks, artwork, loadingIds, eager = false, className, style, emptyFallback = "♫" }: PlaylistArtworkProps) {
   const covers = tracks.slice(0, 4);
   return <span
     className={`luno-playlist-mosaic${className ? ` ${className}` : ""}`}
@@ -31,6 +33,8 @@ export function PlaylistArtwork({ tracks, artwork, className, style, emptyFallba
           return <span key={track.id} style={span}>
             <RecommendationArtworkImage
               artworkUrl={artwork[track.id] ?? track.artwork_url}
+              loading={loadingIds?.has(track.id)}
+              eager={eager}
               artist={track.artist ?? ""}
               title={track.title}
               alt=""

@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState, type MouseEvent, type UIEvent } from "react";
 import type { Track } from "../shared/contracts";
 import { RecommendationArtworkImage } from "./RecommendationArtwork";
-import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
+import { useTrackArtworkState, type ArtworkFetcher } from "../state/track_artwork";
 
 export interface QueueProps {
   tracks: Track[];
@@ -89,7 +89,8 @@ export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onF
   if (current && !artworkIds.includes(current.id)) artworkIds.unshift(current.id);
   // Queue rows fetch embedded artwork lazily; the module-level cache in the
   // hook means re-renders never re-request the same track ids.
-  const artwork = useTrackArtwork(artworkIds, onArtwork);
+  const artworkState = useTrackArtworkState(artworkIds, onArtwork);
+  const artwork = artworkState.artwork;
   return <div className="luno-queue-panel">
     {onTabChange && <header className="luno-queue-head">
       <button className="luno-queue-tab" type="button" aria-label="Queue tab" aria-pressed={!recent} disabled={!onTabChange} onClick={() => onTabChange?.(false)}>Queue</button>
@@ -99,7 +100,7 @@ export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onF
       {current && !recent ? <>
         <h2 className="luno-queue-section">Now playing</h2>
         <div className="luno-queue-now-card" onContextMenu={(event) => onContextMenu?.(event, current)}>
-           <RecommendationArtworkImage artist={current.artist ?? ""} title={current.title} artworkUrl={artwork[current.id] ?? current.artwork_url} alt="" size={56} />
+           <RecommendationArtworkImage artist={current.artist ?? ""} title={current.title} artworkUrl={artwork[current.id] ?? current.artwork_url} loading={artworkState.loading.has(current.id)} eager alt="" size={56} />
           <span className="luno-queue-copy"><strong>{current.title}</strong><small>{current.artist ?? "Unknown artist"}</small></span>
           {current.favorite && <span className="luno-queue-favorite" aria-label="Favorite">★</span>}
         </div>
@@ -119,7 +120,7 @@ export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onF
           onContextMenu={(event) => onContextMenu?.(event, track)}
           onClick={() => onPlay?.(track, queueIndex)}
           onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onPlay?.(track, queueIndex); } }}>
-           <RecommendationArtworkImage artist={track.artist ?? ""} title={track.title} artworkUrl={artwork[track.id] ?? track.artwork_url} alt="" size={40} />
+           <RecommendationArtworkImage artist={track.artist ?? ""} title={track.title} artworkUrl={artwork[track.id] ?? track.artwork_url} loading={artworkState.loading.has(track.id)} eager alt="" size={40} />
           <span className="luno-queue-copy"><strong title={track.title}>{track.title}</strong><small>{track.artist ?? "Unknown artist"}</small></span>
           {track.favorite && <span className="luno-queue-favorite" aria-label="Favorite">★</span>}
           {!recent && <span className="luno-queue-actions">

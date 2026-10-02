@@ -10,6 +10,7 @@ export interface VideoStageProps {
   positionMs?: number;
   playing?: boolean;
   artworkUrl?: string | null;
+  artworkLoading?: boolean;
   artworkAlt?: string;
   artworkArtist?: string | null;
   artworkTitle?: string | null;
@@ -163,7 +164,7 @@ const stageChromeStyles = `
 `;
 
 /** Presentation-only video surface. The supplied audio position remains authoritative. */
-export function VideoStage({ src, status = "not-checked", positionMs = 0, playing = false, artworkUrl, artworkAlt = "Album artwork", artworkArtist = "", artworkTitle = "", onResize, onSeek, onPause, onResume, onEnded, onError, onRetry, onFullscreenChange, volume = 1, onVolume, onVolumeCommit, videoModeEnabled, onVideoModeChange, downloadProgress: videoProgress }: VideoStageProps & { downloadProgress?: number | null }) {
+export function VideoStage({ src, status = "not-checked", positionMs = 0, playing = false, artworkUrl, artworkLoading = false, artworkAlt = "Album artwork", artworkArtist = "", artworkTitle = "", onResize, onSeek, onPause, onResume, onEnded, onError, onRetry, onFullscreenChange, volume = 1, onVolume, onVolumeCommit, videoModeEnabled, onVideoModeChange, downloadProgress: videoProgress }: VideoStageProps & { downloadProgress?: number | null }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   // Position we last pushed INTO the element. Every programmatic currentTime
@@ -305,7 +306,7 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
 
   return <div ref={stageRef} className={`luno-video-stage${fullscreenWanted ? " is-fullscreen" : ""}`} data-testid="video-stage" aria-label="Song video preview">
     <style>{stageChromeStyles}</style>
-    {!videoVisible && <div className="luno-video-fallback"><RecommendationArtworkImage artworkUrl={artworkUrl} alt={artworkAlt} artist={artworkArtist ?? ""} title={artworkTitle ?? ""} size="100%" /></div>}
+    {!videoVisible && <div className="luno-video-fallback"><RecommendationArtworkImage artworkUrl={artworkUrl} loading={artworkLoading} eager alt={artworkAlt} artist={artworkArtist ?? ""} title={artworkTitle ?? ""} size="100%" /></div>}
     {showVideo && <video key={src} ref={videoRef} src={src!} preload="auto" playsInline muted aria-label="Song video" style={{ visibility: videoVisible ? "visible" : "hidden" }} onLoadedData={() => setLoadedSrc(src ?? null)} onError={onVideoError} onSeeked={handleSeeked} onPause={handlePause} onPlay={handlePlay} onEnded={handleEnded} />}
     {status === "loading" && <div className="luno-video-loading" role="status">
       <DownloadRing progress={typeof videoProgress === "number" ? videoProgress : null} />

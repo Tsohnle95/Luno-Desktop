@@ -29,13 +29,15 @@ const CAP = 240;
 const MAX_CACHE_BYTES = 24 * 1024 * 1024;
 const MAX_CACHED_BYTES = 1_000_000;
 const MAX_CONCURRENT = 6;
+const MAX_BACKGROUND_CONCURRENT = 2;
 const resolvedCache = new Map<string, { url: string | null; bytes: number }>();
 const inFlight = new Map<string, Promise<string | null>>();
 let activeCount = 0;
+let activeBackgroundCount = 0;
 let cachedBytes = 0;
 let nextQueueOrder = 0;
 const pendingQueue = new Map<string, { id: string; fetcher: ArtworkFetcher; priority: number; order: number }>();
-const demandOwners = new Map<symbol, { ids: Set<string>; fetcher: ArtworkFetcher; priority: number; requested: Set<string> }>();
+const demandOwners = new Map<symbol, { ids: Set<string>; remaining: Set<string>; fetcher: ArtworkFetcher; priority: number; requested: Set<string>; onComplete?: () => void }>();
 const requestedOwners = new Map<string, Set<Set<string>>>();
 const artworkRevision = new Map<string, number>();
 
@@ -55,12 +57,21 @@ const artworkRevision = new Map<string, number>();
  * (single-song-page art survived because its one-id request is prioritized
  * fresh on every navigation).
  */
-type Listener = (event: { type: "resolved"; urls: Record<string, string> } | { type: "evicted"; id: string }) => void;
+type Listener = (event: { type: "resolved"; urls: Record<string, string | null> } | { type: "evicted"; id: string }) => void;
 const listeners = new Set<Listener>();
 
-function publishResolved(id: string, url: string): void {
+function publishResolved(id: string, url: string | null): void {
   const urls = { [id]: url };
   for (const listener of listeners) listener({ type: "resolved", urls });
+}
+
+function settleDemand(id: string): void {
+  for (const demand of demandOwners.values()) {
+    if (!demand.remaining.delete(id) || demand.remaining.size !== 0) continue;
+    const onComplete = demand.onComplete;
+    demand.onComplete = undefined;
+    onComplete?.();
+  }
 }
 
 function remember(id: string, url: string | null): void {
@@ -71,7 +82,8 @@ function remember(id: string, url: string | null): void {
   resolvedCache.delete(id);
   resolvedCache.set(id, { url, bytes });
   cachedBytes += bytes;
-  if (url) publishResolved(id, url);
+  settleDemand(id);
+  publishResolved(id, url);
   requestedOwners.delete(id);
   while (resolvedCache.size > CAP || cachedBytes > MAX_CACHE_BYTES) {
     const oldest = resolvedCache.keys().next().value;
@@ -140,13 +152,17 @@ function scheduleNext(): void {
       if (!job || queued.priority > job.priority || (queued.priority === job.priority && queued.order < job.order)) job = queued;
     }
     if (!job) break;
+    const background = job.priority < 1;
+    if (background && activeBackgroundCount >= MAX_BACKGROUND_CONCURRENT) break;
     pendingQueue.delete(job.id);
     const { id, fetcher } = job;
     if (resolvedCache.has(id) || inFlight.has(id)) continue;
     const revision = artworkRevision.get(id) ?? 0;
     activeCount += 1;
-    const promise = fetcher(id).finally(() => {
+    if (background) activeBackgroundCount += 1;
+    const promise = Promise.resolve().then(() => fetcher(id)).finally(() => {
       activeCount -= 1;
+      if (background) activeBackgroundCount -= 1;
       inFlight.delete(id);
       // Defer next tick to avoid deep recursion and to let React batch.
       queueMicrotask(scheduleNext);
@@ -164,6 +180,7 @@ function scheduleNext(): void {
           if (!stillDemanded) owner.delete(id);
         }
         requestedOwners.delete(id);
+        settleDemand(id);
         publishResolved(id, url);
       }
       return url;
@@ -219,12 +236,14 @@ function requestForDemand(id: string, demand: { fetcher: ArtworkFetcher; priorit
   pendingQueue.set(id, { id, fetcher: demand.fetcher, priority: demand.priority, order: nextQueueOrder++ });
 }
 
-function registerDemand(ids: string[], fetcher: ArtworkFetcher, priority: number, requested: Set<string>): () => void {
+function registerDemand(ids: string[], fetcher: ArtworkFetcher, priority: number, requested: Set<string>, onComplete?: () => void): () => void {
   const token = Symbol("artwork-demand");
-  const demand = { ids: new Set(ids), fetcher, priority, requested };
+  const uniqueIds = new Set(ids);
+  const demand = { ids: uniqueIds, remaining: new Set([...uniqueIds].filter((id) => !resolvedCache.has(id))), fetcher, priority, requested, onComplete };
   demandOwners.set(token, demand);
   for (const id of demand.ids) requestForDemand(id, demand);
   scheduleNext();
+  if (demand.remaining.size === 0) queueMicrotask(() => demand.onComplete?.());
   return () => {
     demandOwners.delete(token);
     for (const id of demand.ids) updateQueuedDemand(id);
@@ -232,8 +251,47 @@ function registerDemand(ids: string[], fetcher: ArtworkFetcher, priority: number
   };
 }
 
-export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | undefined, priority = 1): Record<string, string> {
+/**
+ * Keep the persistent backend thumbnail cache warm without retaining the
+ * whole library's data URLs in React state. Foreground views raise matching
+ * queued work above this low-priority demand as soon as rows are shown.
+ */
+export function useTrackArtworkWarmup(trackIds: string[], fetcher: ArtworkFetcher | undefined): void {
+  const fetcherRef = useRef(fetcher);
+  fetcherRef.current = fetcher;
+  const fetchArtwork = useRef<ArtworkFetcher>((id) => fetcherRef.current?.(id) ?? Promise.resolve(null)).current;
+  useEffect(() => {
+    if (!fetcherRef.current) return;
+    let cancelled = false;
+    let cursor = 0;
+    let release: (() => void) | null = null;
+    const queueBatch = () => {
+      if (cancelled) return;
+      const batch = trackIds.slice(cursor, cursor + 64);
+      cursor += batch.length;
+      if (batch.length === 0) return;
+      release = registerDemand(batch, fetchArtwork, -1, new Set(), () => {
+        release?.();
+        release = null;
+        queueMicrotask(queueBatch);
+      });
+    };
+    queueBatch();
+    return () => { cancelled = true; release?.(); };
+  }, [trackIds, fetcher !== undefined]);
+}
+
+export interface TrackArtworkState {
+  artwork: Record<string, string>;
+  /** IDs with no known result yet; a neutral tile is shown instead of fallback art. */
+  loading: ReadonlySet<string>;
+}
+
+export function useTrackArtworkState(trackIds: string[], fetcher: ArtworkFetcher | undefined, priority = 1): TrackArtworkState {
   const [art, setArt] = useState<Record<string, string>>({});
+  const [, setCacheEpoch] = useState(0);
+  const artRef = useRef(art);
+  artRef.current = art;
   const requested = useRef<Set<string>>(new Set());
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
@@ -299,24 +357,31 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
     // Eviction events unmark the id so a later visible pass re-requests it
     // (the LRU cache drops old rows while scrolling a large library, and the
     // requested marker would otherwise keep those rows blank forever).
-    const onCacheEvent = (event: { type: "resolved"; urls: Record<string, string> } | { type: "evicted"; id: string }) => {
+    const onCacheEvent: Listener = (event) => {
       if (event.type === "evicted") {
         // LAZY retry only: forget the per-instance marker so a later visible
         // pass may re-request. Never fetch from here — an eviction-triggered
         // fetch evicts the next id and loops forever once the mounted working
         // set exceeds the cap (2026-09-09: gigabytes of heap churn).
         if (requested.current.has(event.id)) requested.current.delete(event.id);
+        if (idsRef.current.includes(event.id) && !artRef.current[event.id]) setCacheEpoch((epoch) => epoch + 1);
         return;
       }
       const currentIds = idsRef.current;
+      let unresolvedResult = false;
       for (const id of Object.keys(event.urls)) {
         if (!currentIds.includes(id)) continue;
         const url = event.urls[id];
+        if (!url) {
+          unresolvedResult = true;
+          continue;
+        }
         setArt((prev) => {
           if (prev[id] === url) return prev;
           return capTrimmed({ ...prev, [id]: url });
         });
       }
+      if (unresolvedResult) setCacheEpoch((epoch) => epoch + 1);
     };
     listeners.add(onCacheEvent);
 
@@ -338,5 +403,22 @@ export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | un
     }
     return () => { listeners.delete(onCacheEvent); releaseDemand(); };
   }, [idsKey, priority, fetcher !== undefined]);
-  return art;
+  const artwork = { ...art };
+  const loading = new Set<string>();
+  if (fetcher !== undefined) {
+    for (const id of trackIds) {
+      if (!artwork[id]) {
+        const cachedUrl = resolvedCache.get(id)?.url;
+        if (cachedUrl) artwork[id] = cachedUrl;
+      }
+      const requestIsActive = pendingQueue.has(id) || inFlight.has(id);
+      const requestWasSettled = requested.current.has(id) && !requestIsActive;
+      if (!resolvedCache.has(id) && !artwork[id] && !requestWasSettled) loading.add(id);
+    }
+  }
+  return { artwork, loading };
+}
+
+export function useTrackArtwork(trackIds: string[], fetcher: ArtworkFetcher | undefined, priority = 1): Record<string, string> {
+  return useTrackArtworkState(trackIds, fetcher, priority).artwork;
 }

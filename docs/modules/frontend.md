@@ -64,9 +64,10 @@ envelope shapes (`docs/modules/contracts.md`).
   counts are never summed into every playlist containing a song. The old
   localStorage counts are imported once and removed after the backend save.
 - Heavy work stays off the UI thread: artwork arrives via the
-  `track_artwork` command as bounded data URLs; visible library rows request
-  missing durations through `track_duration`, which probes on a blocking
-  worker instead of extending every library scan.
+  `track_artwork` command as bounded data URLs; Shell keeps a low-priority,
+  bounded-batch warmup active for library tracks, while audible and visible
+  requests preempt queued warmup work. Missing durations use the blocking
+  `track_duration` command instead of extending every library scan.
 - The Settings rail includes Home, Downloader, Artwork, and Sync Review
   shortcuts. Downloader embeds the same `DownloaderView` used by its main
   route, so its search, queue, sync, and destination controls share the same
@@ -86,7 +87,14 @@ envelope shapes (`docs/modules/contracts.md`).
   queued requests no longer needed by that view; shared IDs stay queued while
   any view still needs them, and an in-flight extraction remains shared.
   Audible-track art outranks virtualized library rows, which outrank static
-  sidebar art. The six-request limit and cache budgets stay fixed.
+  sidebar art, which outrank the low-priority library warmup. Six requests may
+  run at once, with at most two warmup requests active. The process LRU stays
+  bounded; the Rust cache also stores downscaled results in the app cache
+  (512 MiB cap) so evicted and later-scrolled art does not need to be extracted
+  again. A cold item stays on a neutral tile until its first extraction ends;
+  deterministic custom artwork appears only after a missing or failed result
+  is known. Rendered virtual rows load resolved images without browser lazy
+  loading delay.
 - UI mutations from backend events are scheduled via `.after(0, callback)`.
 - Virtual-list rows are 56 px with scroll-region clamping where the
   library list applies — preserve both when touching list rendering.
@@ -129,15 +137,25 @@ envelope shapes (`docs/modules/contracts.md`).
 - Downloader search remains usable during transfers. Each clicked result
   captures its source, metadata, and chosen destination before another search
   can replace the results; up to three jobs run concurrently, each with its own
-  progress and cancellation control. Fresh sessions default to Unsorted.
+  progress and cancellation control. The selected destination is owned by
+  Shell, survives route changes and library snapshots, and defaults to
+  Unsorted for a fresh session.
 - "Recently added" sorts by `Track.added_ms` (portable first-added time,
   seeded from file mtime for existing files), not queue order; the library
   table shows that timestamp as Date added and derives playlist names from
   each playlist's ordered track IDs.
-- The library table probes duration for virtualized visible rows and displays
-  results in the Duration column. These reads do not change track identity or
-  persist metadata. The library hero keeps Play and Shuffle controls without
-  the former scan icon or selected-count badge.
+- The library table sorts from clickable Title, Date added, and clock headers;
+  each header toggles its ascending/descending order. Missing durations are
+  probed across the active filtered scope when duration sorting is selected,
+  with four probes in flight at once; resolved rows reorder immediately while
+  pending results stay after them, and an accessible progress status reports
+  completion. Ordinary browsing still probes only visible rows. A bounded
+  session cache keeps results across route changes and library generations;
+  these reads do not change track identity or persist metadata. The Shell
+  retains each scope's sort choice while the user visits Downloader.
+  The top-bar search filters the active library scope, with no duplicate search
+  control in the playlist cover area. The library hero keeps Play and Shuffle
+  controls without the former scan icon or selected-count badge.
 - The transient unavailable-playlist notice can be dismissed independently of
   the persistent Settings → Sync Review destination.
 - Playlist URL editing loads the saved source list before mounting the form and

@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type UIEvent } from "react";
 import type { LibrarySnapshot, PlaybackSnapshot, Playlist, Track } from "../shared/contracts";
 import { TrackRow } from "../components/TrackRow";
-import { IconClock, IconClose, IconMoreHorizontal, IconPlay, IconSearch, IconShuffle } from "../components/icons";
-import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
+import { IconClock, IconMoreHorizontal, IconPlay, IconShuffle } from "../components/icons";
+import { useTrackArtworkState, type ArtworkFetcher } from "../state/track_artwork";
+import { cachedTrackDuration, requestTrackDuration } from "../state/track_durations";
 import { PlaylistArtwork } from "../components/PlaylistArtwork";
 
 export type LibraryScope = "all" | "unsorted" | "favorites" | string;
-export type LibrarySort = "A-Z" | "Z-A" | "Recently added" | "Duration";
+export type LibrarySort = "A-Z" | "Z-A" | "Recently added" | "Oldest added" | "Duration" | "Longest duration";
+const EMPTY_DURATION_MAP: Readonly<Record<string, number | null | undefined>> = {};
+
+export function defaultLibrarySort(scope: LibraryScope): LibrarySort {
+  return scope === "unsorted" ? "Recently added" : "A-Z";
+}
 
 /** Playlist navigation entries shared by the shell sidebar and the view header. */
 export function libraryPlaylists(snapshot: LibrarySnapshot | null | undefined): Playlist[] {
@@ -79,9 +85,10 @@ export interface LibraryViewProps {
   error?: string | null;
   selectedScope?: LibraryScope;
   onScopeChange?: (scope: LibraryScope) => void;
-  /** Controlled filter text; falls back to internal state when omitted. */
+  /** Search text from the context-aware app search in the top bar. */
   query?: string | null;
-  onQueryChange?: (query: string) => void;
+  sort?: LibrarySort;
+  onSortChange?: (sort: LibrarySort) => void;
   onPlay?: (track: Track, context: Track[], sourcePlaylistId?: string) => void;
   onShuffle?: (tracks: Track[]) => void;
   onFavoriteToggle?: (track: Track) => void;
@@ -109,18 +116,33 @@ function scopeTracks(snapshot: LibrarySnapshot | null | undefined, scope: Librar
   return playlist ? playlist.ordered_track_ids.map((id) => snapshot.tracks.find((track) => track.id === id)).filter((track): track is Track => !!track) : [];
 }
 
-export function sortLibraryTracks(tracks: Track[], sort: LibrarySort): Track[] {
+export function sortLibraryTracks(tracks: Track[], sort: LibrarySort, probedDurations: Readonly<Record<string, number | null | undefined>> = {}): Track[] {
+  const durationFor = (track: Track) => Object.prototype.hasOwnProperty.call(probedDurations, track.id)
+    ? probedDurations[track.id]
+    : track.duration_ms;
+  const titleFor = (track: Track) => track.title.toLocaleLowerCase();
+  const alphabetical = (a: Track, b: Track) => {
+    const titleOrder = titleFor(a).localeCompare(titleFor(b));
+    if (titleOrder !== 0) return titleOrder;
+    return (a.artist ?? "").toLocaleLowerCase().localeCompare((b.artist ?? "").toLocaleLowerCase());
+  };
   return [...tracks].sort((a, b) => {
-    if (sort === "Duration") return (a.duration_ms ?? 0) - (b.duration_ms ?? 0);
-    if (sort === "Recently added") {
-      // Newest saved first; tracks with no known date sort last, ties fall
-      // through to the alphabetical comparison below for deterministic order.
-      const delta = (b.added_ms ?? 0) - (a.added_ms ?? 0);
-      if (delta !== 0) return delta;
+    if (sort === "Duration" || sort === "Longest duration") {
+      const left = durationFor(a);
+      const right = durationFor(b);
+      if (left == null && right != null) return 1;
+      if (left != null && right == null) return -1;
+      if (left != null && right != null && left !== right) return sort === "Duration" ? left - right : right - left;
+      return alphabetical(a, b);
     }
-    const left = `${a.artist ?? ""} ${a.title}`.toLocaleLowerCase();
-    const right = `${b.artist ?? ""} ${b.title}`.toLocaleLowerCase();
-    return sort === "Z-A" ? right.localeCompare(left) : left.localeCompare(right);
+    if (sort === "Recently added" || sort === "Oldest added") {
+      const left = a.added_ms;
+      const right = b.added_ms;
+      if (left == null && right != null) return 1;
+      if (left != null && right == null) return -1;
+      if (left != null && right != null && left !== right) return sort === "Recently added" ? right - left : left - right;
+    }
+    return sort === "Z-A" ? alphabetical(b, a) : alphabetical(a, b);
   });
 }
 
@@ -156,30 +178,46 @@ function formatTotal(ms: number) {
  * song rows slide beneath it. The virtualization window therefore subtracts
  * the measured anchor height from the live scroll position.
  */
-export function LibraryView({ snapshot, playback, loading = false, error = null, selectedScope = "all", onScopeChange, query: externalQuery, onQueryChange, onPlay, onShuffle, onFavoriteToggle, onScan, onProbeDuration, onContextMenu, onArtwork, onOpenArtwork, backendAvailable = true }: LibraryViewProps) {
-  const [internalQuery, setInternalQuery] = useState("");
-  const query = externalQuery != null ? externalQuery : internalQuery;
-  const setQuery = (value: string) => { setInternalQuery(value); onQueryChange?.(value); };
-  const [sort, setSort] = useState<LibrarySort>(selectedScope === "unsorted" ? "Recently added" : "A-Z");
+export function LibraryView({ snapshot, playback, loading = false, error = null, selectedScope = "all", onScopeChange, query: externalQuery, sort: controlledSort, onSortChange, onPlay, onShuffle, onFavoriteToggle, onScan, onProbeDuration, onContextMenu, onArtwork, onOpenArtwork, backendAvailable = true }: LibraryViewProps) {
+  const query = externalQuery ?? "";
+  const [internalSort, setInternalSort] = useState<LibrarySort>(() => defaultLibrarySort(selectedScope));
+  const sort = controlledSort ?? internalSort;
+  const setSort = (next: LibrarySort) => {
+    if (controlledSort == null) setInternalSort(next);
+    onSortChange?.(next);
+  };
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [probedDurations, setProbedDurations] = useState<Record<string, number | null | undefined>>({});
   const requestedDurations = useRef(new Set<string>());
   const activeDurationGeneration = useRef(snapshot?.generation ?? null);
+  const pendingDurationResults = useRef<Record<string, number | null>>({});
+  const durationResultFrame = useRef<number | null>(null);
+  const probeDurationRef = useRef(onProbeDuration);
+  const durationProbeMounted = useRef(false);
+  probeDurationRef.current = onProbeDuration;
   const [scrollTop, setScrollTop] = useState(0);
-  const [filterOpen, setFilterOpen] = useState(false);
   const [artworkMenuOpen, setArtworkMenuOpen] = useState(false);
   const artworkMenuRef = useRef<HTMLDivElement | null>(null);
-  // The in-view filter box opens ONLY via its own toggle button. Auto-mounting
-  // it whenever the TOP search had text (`query !== ""`) spawned a phantom
-  // focused input under the hero artwork and stole focus mid-typing.
-  const showFilter = filterOpen;
-  // Fold smart punctuation / accents on BOTH sides before matching so a typed
-  // "l'in" (macOS inserts U+2019) still finds "L'indécis".
   const needle = useMemo(() => normalizeFilterText(query), [query]);
+  const filteredTracks = useMemo(() => {
+    return scopeTracks(snapshot, selectedScope).filter((track) => normalizeFilterText(`${track.title} ${track.artist ?? ""} ${track.album ?? ""}`).includes(needle));
+  }, [snapshot, selectedScope, needle]);
+  const durationSort = sort === "Duration" || sort === "Longest duration";
+  // Apply each known result immediately. Holding an old title sort until every
+  // unknown track is probed made the duration header look broken on large lists.
+  const durationValues = useMemo(() => {
+    if (!durationSort) return EMPTY_DURATION_MAP;
+    const values = { ...probedDurations };
+    for (const track of filteredTracks) {
+      if (track.duration_ms != null || Object.prototype.hasOwnProperty.call(values, track.id)) continue;
+      const cached = cachedTrackDuration(track.id);
+      if (cached) values[track.id] = cached.value;
+    }
+    return values;
+  }, [durationSort, filteredTracks, probedDurations]);
   const tracks = useMemo(() => {
-    const filtered = scopeTracks(snapshot, selectedScope).filter((track) => normalizeFilterText(`${track.title} ${track.artist ?? ""} ${track.album ?? ""}`).includes(needle));
-    return sortLibraryTracks(filtered, sort);
-  }, [snapshot, selectedScope, needle, sort]);
+    return sortLibraryTracks(filteredTracks, sort, durationValues);
+  }, [filteredTracks, sort, durationValues]);
   const playlistNamesByTrackId = useMemo(() => {
     const names = new Map<string, string[]>();
     for (const playlist of snapshot?.playlists ?? []) {
@@ -261,12 +299,11 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
     scheduleScrollUpdate();
   };
 
-  // Sort is per-scope, like the original desktop app: switching scope restores
-  // that scope's default instead of leaving the previous scope's choice (e.g.
-  // "Recently added") applied to a list that cannot honor it.
+  // Uncontrolled embeds still get a useful default on scope changes. The app
+  // Shell controls this value so it survives route changes such as Downloader.
   useEffect(() => {
-    setSort(selectedScope === "unsorted" ? "Recently added" : "A-Z");
-  }, [selectedScope]);
+    if (controlledSort == null) setInternalSort(defaultLibrarySort(selectedScope));
+  }, [selectedScope, controlledSort]);
   // Keep the DOM scroller and state in agreement when the list resets.
   useEffect(() => {
     setScrollTop(0);
@@ -274,7 +311,14 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
     latestScrollRef.current = 0;
   }, [selectedScope, query, sort]);
-  useEffect(() => () => { if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current); }, []);
+  useEffect(() => {
+    durationProbeMounted.current = true;
+    return () => {
+      durationProbeMounted.current = false;
+      if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
+      if (durationResultFrame.current !== null) cancelAnimationFrame(durationResultFrame.current);
+    };
+  }, []);
 
   // Clamp scrollTop into a defensible range derived from the full page height,
   // then translate it into the row coordinate space under the hero + head.
@@ -285,29 +329,70 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
     if (activeDurationGeneration.current === generation) return;
     activeDurationGeneration.current = generation;
     requestedDurations.current.clear();
-    setProbedDurations({});
+    pendingDurationResults.current = {};
+    if (durationResultFrame.current !== null) cancelAnimationFrame(durationResultFrame.current);
+    durationResultFrame.current = null;
+    setProbedDurations((current) => {
+      const next: Record<string, number | null | undefined> = {};
+      for (const track of snapshot?.tracks ?? []) {
+        const cached = cachedTrackDuration(track.id);
+        if (cached) next[track.id] = cached.value;
+        else if (Object.prototype.hasOwnProperty.call(current, track.id) && current[track.id] !== undefined) next[track.id] = current[track.id];
+      }
+      return next;
+    });
   }, [snapshot?.generation]);
+  const durationProbeTargets = durationSort ? filteredTracks : visible;
   useEffect(() => {
-    if (!onProbeDuration) return;
+    const probeDuration = probeDurationRef.current;
+    if (!probeDuration) return;
     const generation = snapshot?.generation ?? null;
-    const pending = visible.filter((track) => track.duration_ms == null && !requestedDurations.current.has(track.id));
+    const pending = durationProbeTargets.filter((track) => track.duration_ms == null && !requestedDurations.current.has(track.id));
     if (pending.length === 0) return;
     for (const track of pending) requestedDurations.current.add(track.id);
     setProbedDurations((current) => {
       const next = { ...current };
-      for (const track of pending) next[track.id] = undefined;
+      for (const track of pending) {
+        const cached = cachedTrackDuration(track.id);
+        next[track.id] = cached ? cached.value : undefined;
+      }
       return next;
     });
-    for (const track of pending) {
-      void onProbeDuration(track.id).then((durationMs) => {
-        if (activeDurationGeneration.current === generation) setProbedDurations((current) => ({ ...current, [track.id]: durationMs }));
-      }).catch(() => {
-        if (activeDurationGeneration.current === generation) setProbedDurations((current) => ({ ...current, [track.id]: null }));
+    const queueResult = (trackId: string, durationMs: number | null) => {
+      if (!durationProbeMounted.current || activeDurationGeneration.current !== generation) return;
+      pendingDurationResults.current[trackId] = durationMs;
+      if (durationResultFrame.current !== null) return;
+      durationResultFrame.current = requestAnimationFrame(() => {
+        durationResultFrame.current = null;
+        const results = pendingDurationResults.current;
+        pendingDurationResults.current = {};
+        if (durationProbeMounted.current && activeDurationGeneration.current === generation) setProbedDurations((current) => ({ ...current, ...results }));
       });
-    }
-  }, [visible, onProbeDuration, snapshot?.generation]);
-  const artwork = useTrackArtwork(visible.map((track) => track.id), onArtwork, 2);
-  const coverArtwork = useTrackArtwork(tracks.slice(0, 8).map((track) => track.id), onArtwork);
+    };
+    let cursor = 0;
+    let cancelled = false;
+    const started = new Set<string>();
+    const worker = async () => {
+      while (!cancelled && cursor < pending.length) {
+        const track = pending[cursor++];
+        started.add(track.id);
+        try {
+          queueResult(track.id, await requestTrackDuration(track.id, probeDuration));
+        } catch {
+          queueResult(track.id, null);
+        }
+      }
+    };
+    void Promise.all(Array.from({ length: Math.min(4, pending.length) }, () => worker()));
+    return () => {
+      cancelled = true;
+      for (const track of pending) if (!started.has(track.id)) requestedDurations.current.delete(track.id);
+    };
+  }, [durationProbeTargets, onProbeDuration != null, snapshot?.generation]);
+  const artworkState = useTrackArtworkState(visible.map((track) => track.id), onArtwork, 2);
+  const coverArtworkState = useTrackArtworkState(tracks.slice(0, 8).map((track) => track.id), onArtwork);
+  const artwork = artworkState.artwork;
+  const coverArtwork = coverArtworkState.artwork;
   const sourcePlaylistId = snapshot?.playlists.find((playlist) => playlist.id === selectedScope)?.id;
   const play = (track: Track) => { if (backendAvailable) onPlay?.(track, tracks, sourcePlaylistId); };
   const toggleSelection = (track: Track, event: MouseEvent) => {
@@ -316,6 +401,11 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
   };
   const totalMs = tracks.reduce((sum, track) => sum + (track.duration_ms ?? 0), 0);
   const covers = tracks.slice(0, 4);
+  const titleSorted = sort === "A-Z" || sort === "Z-A";
+  const dateSorted = sort === "Recently added" || sort === "Oldest added";
+  const durationSorted = sort === "Duration" || sort === "Longest duration";
+  const durationKnownCount = filteredTracks.filter((track) => track.duration_ms != null || (Object.prototype.hasOwnProperty.call(durationValues, track.id) && durationValues[track.id] !== undefined)).length;
+  const durationSortComplete = !durationSorted || !onProbeDuration || durationKnownCount === filteredTracks.length;
   return <section className="luno-library-view" aria-label="Library" style={{ "--luno-scope-gradient": gradient } as CSSProperties}>
     <div ref={scrollRef} role="list" aria-label={`${scopeName} tracks`} className="luno-track-scroller" onScroll={handleScroll}>
       <div ref={anchorRef}>
@@ -330,6 +420,8 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
                 className="luno-hero-cover"
                 tracks={covers}
                 artwork={coverArtwork}
+                loadingIds={coverArtworkState.loading}
+                eager
                 emptyFallback={<span style={{ display: "grid", placeItems: "center", fontSize: 48, color: "rgba(255,255,255,0.55)" }}>♫</span>}
               />
             </div>
@@ -342,32 +434,29 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
           <div className="luno-hero-actions">
             <button className="luno-fab" type="button" aria-label={`Play ${scopeName}`} disabled={!backendAvailable || tracks.length === 0} onClick={() => { const first = playback?.shuffle ? shuffledFirstTrack(tracks) : tracks[0]; if (first) play(first); }}><IconPlay size={18} /></button>
             <button className="luno-action-toggle" type="button" aria-label={playback?.shuffle ? "Disable shuffle" : "Enable shuffle"} aria-pressed={!!playback?.shuffle} disabled={!backendAvailable || !onShuffle} onClick={() => onShuffle?.(tracks)}><IconShuffle size={17} /></button>
-            <div className="luno-hero-right">
-              <button className="luno-action-toggle" type="button" aria-label="Filter tracks" aria-expanded={showFilter} onClick={() => { setFilterOpen((open) => !open); }}>{showFilter ? <IconClose size={15} /> : <IconSearch size={15} />}</button>
-              <select className="luno-sort-select" aria-label="Sort tracks" value={sort} onChange={(event) => setSort(event.target.value as LibrarySort)}>
-                <option>A-Z</option><option>Z-A</option><option>Recently added</option><option>Duration</option>
-              </select>
-            </div>
           </div>
         </header>
       </div>
       <div className="luno-table-head luno-track-grid-template">
-        {showFilter
-          ? <div className="luno-table-filter">
-            <input autoFocus autoCorrect="off" spellCheck={false} aria-label="Filter tracks" placeholder={`Search in ${scopeName}`} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setQuery(""); setFilterOpen(false); } }} />
-          </div>
-          : <><span className="luno-th-index">#</span><span aria-hidden="true"></span><span>Title</span><span className="luno-track-cell-playlist">Playlist</span><span className="luno-track-cell-added">Date added</span><span aria-hidden="true"></span><span className="luno-th-duration" title="Duration" aria-label="Duration"><IconClock size={13} /></span></>}
+        <span className="luno-th-index">#</span>
+        <span aria-hidden="true"></span>
+        <button className="luno-sort-button" type="button" aria-label={sort === "A-Z" ? "Sort title Z to A" : "Sort title A to Z"} aria-pressed={titleSorted} onClick={() => setSort(sort === "A-Z" ? "Z-A" : "A-Z")}>Title{titleSorted && <span aria-hidden="true">{sort === "A-Z" ? "↑" : "↓"}</span>}</button>
+        <span className="luno-track-cell-playlist">Playlist</span>
+        <button className="luno-sort-button luno-track-cell-added" type="button" aria-label={sort === "Recently added" ? "Sort oldest added first" : "Sort latest added first"} aria-pressed={dateSorted} onClick={() => setSort(sort === "Recently added" ? "Oldest added" : "Recently added")}>Date added{dateSorted && <span aria-hidden="true">{sort === "Recently added" ? "↓" : "↑"}</span>}</button>
+        <span aria-hidden="true"></span>
+        <button className="luno-sort-button luno-th-duration" type="button" aria-label={sort === "Duration" ? "Sort longest duration first" : "Sort shortest duration first"} title={sort === "Duration" ? "Longest duration first" : "Shortest duration first"} aria-pressed={durationSorted} onClick={() => setSort(sort === "Duration" ? "Longest duration" : "Duration")}><IconClock size={13} />{durationSorted && <span aria-hidden="true">{sort === "Duration" ? "↑" : "↓"}</span>}</button>
       </div>
+      {durationSorted && !durationSortComplete && <p className="luno-duration-sort-status" role="status" aria-live="polite">Reading durations… {durationKnownCount} of {filteredTracks.length}</p>}
       {loading ? <p role="status" className="luno-track-empty">Loading library...</p>
         : error ? <div role="alert" className="luno-track-empty">{error}<button type="button" disabled={!backendAvailable} onClick={onScan}>Retry</button></div>
           : !snapshot ? <p className="luno-track-empty">Library is not available.</p>
-            : tracks.length === 0 && scopeSize > 0 ? <p className="luno-track-empty">No matches for “{query}” in {scopeName} — showing all {scopeSize} songs once you clear the search. <button type="button" aria-label="Clear search" onClick={() => setQuery("")}>Clear search</button></p>
+            : tracks.length === 0 && scopeSize > 0 ? <p className="luno-track-empty">No matches for “{query}” in {scopeName}. Update the search at the top of the app to see other songs.</p>
               : tracks.length === 0 ? <p className="luno-track-empty">No songs in {scopeName}.</p>
               : <div style={{ height: tracks.length * 56, position: "relative" }}>
                 <div style={{ transform: `translateY(${startIndex * 56}px)` }}>{visible.map((track, index) => {
-                  const hasProbedDuration = Object.prototype.hasOwnProperty.call(probedDurations, track.id);
-                  const durationMs = hasProbedDuration ? probedDurations[track.id] : track.duration_ms;
-                  return <div role="listitem" key={`${track.id}:${startIndex + index}`} onClick={(event) => toggleSelection(track, event)}><TrackRow track={track} artwork={artwork[track.id] ?? track.artwork_url} durationMs={durationMs} durationLoading={hasProbedDuration && durationMs === undefined} index={startIndex + index} playlistName={playlistNamesByTrackId.get(track.id) ?? "—"} selected={selected.has(track.id)} playing={playing === track.id} onClick={play} onFavoriteToggle={onFavoriteToggle} onContextMenu={onContextMenu} backendAvailable={backendAvailable} /></div>;
+                  const hasProbedDuration = Object.prototype.hasOwnProperty.call(durationValues, track.id);
+                  const durationMs = hasProbedDuration ? durationValues[track.id] : track.duration_ms;
+                  return <div role="listitem" key={`${track.id}:${startIndex + index}`} onClick={(event) => toggleSelection(track, event)}><TrackRow track={track} artwork={artwork[track.id] ?? track.artwork_url} artworkLoading={artworkState.loading.has(track.id)} durationMs={durationMs} durationLoading={hasProbedDuration && durationMs === undefined} index={startIndex + index} playlistName={playlistNamesByTrackId.get(track.id) ?? "—"} selected={selected.has(track.id)} playing={playing === track.id} onClick={play} onFavoriteToggle={onFavoriteToggle} onContextMenu={onContextMenu} backendAvailable={backendAvailable} /></div>;
                 })}</div>
               </div>}
     </div>

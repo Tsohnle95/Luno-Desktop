@@ -229,15 +229,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-action-toggle[aria-pressed="true"], .luno-action-toggle.is-active { color: var(--luno-green); }
 .luno-action-toggle[aria-expanded="true"] { color: var(--luno-text); }
 .luno-action-toggle:disabled { opacity: 0.4; cursor: default; }
-.luno-hero-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-.luno-sort-select {
-  appearance: none; -webkit-appearance: none;
-  height: 34px; padding: 0 30px 0 14px; border: 1px solid var(--luno-bg-4); border-radius: 999px;
-  background: rgba(0, 0, 0, 0.35) url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23b3b3b3' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 12px center;
-  color: var(--luno-text-2); font-size: 13px; cursor: pointer;
-}
-.luno-sort-select:hover { color: var(--luno-text); border-color: var(--luno-text-2); }
-
 /* ---- Track table ---- */
 .luno-track-grid-template { display: grid; grid-template-columns: 16px 40px minmax(0, 4fr) minmax(0, 2fr) minmax(86px, 1.2fr) 24px 48px; gap: 14px; align-items: center; padding: 0 16px; }
 .luno-table-head {
@@ -249,12 +240,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .luno-table-head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .luno-table-head .luno-th-index { text-align: center; }
-.luno-table-head .luno-th-duration { text-align: right; }
-.luno-table-filter { display: flex; align-items: center; gap: 8px; grid-column: 2 / -1; min-width: 0; }
-.luno-table-filter input {
-  flex: 1; min-width: 0; height: 30px; padding: 0 12px;
-  border: 0; border-radius: 15px; background: var(--luno-bg-3); color: var(--luno-text); font-size: 13px;
-}
+.luno-sort-button { display: inline-flex; align-items: center; gap: 5px; width: 100%; min-width: 0; height: 100%; overflow: hidden; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; white-space: nowrap; cursor: pointer; }
+.luno-sort-button:hover, .luno-sort-button[aria-pressed="true"] { color: var(--luno-text); }
+.luno-sort-button:focus-visible { outline: var(--luno-focus); outline-offset: -2px; border-radius: 3px; }
+.luno-table-head .luno-th-duration { justify-content: flex-end; }
+.luno-duration-sort-status { margin: 0; padding: 7px 16px; color: var(--luno-text-2); font-size: 12px; }
 
 .luno-track-grid { display: grid; grid-template-columns: 16px 40px minmax(0, 4fr) minmax(0, 2fr) minmax(86px, 1.2fr) 24px 48px; gap: 14px; align-items: center; padding: 0 16px; height: 100%; min-width: 0; }
 .luno-track-row {
@@ -283,6 +273,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-scroll { overflow: auto; overscroll-behavior: none; scrollbar-width: thin; scrollbar-color: var(--luno-bg-4) transparent; }
 .luno-artwork { flex: 0 0 auto; display: grid; place-items: center; overflow: hidden; border-radius: 4px; background: var(--luno-bg-3); }
 .luno-artwork img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.luno-artwork-loading { display: block; width: 100%; height: 100%; background: var(--luno-bg-3); }
 .luno-artwork-fallback { color: var(--luno-text-2); font-size: 16px; user-select: none; }
 .luno-favorite { border: 0; background: transparent; padding: 0; color: inherit; cursor: pointer; font-size: 16px; line-height: 1; }
 .luno-favorite:hover { color: var(--luno-green); }

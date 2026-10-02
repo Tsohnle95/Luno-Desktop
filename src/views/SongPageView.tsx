@@ -102,7 +102,7 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
   return <div ref={pageRef} className="luno-song-page" data-testid="song-page">
     <style>{songPageStyles}</style>
     <div className="luno-song-page-backdrop" aria-hidden="true" style={hasBackdropArtwork ? { backgroundImage: `url(${backdropArtwork})` } : undefined}>
-      {!hasBackdropArtwork && displayedTrack && <RecommendationArtwork artist={displayedTrack.artist ?? ""} title={displayedTrack.title} size="100%" />}
+      {!hasBackdropArtwork && displayedTrack && !video?.artworkLoading && <RecommendationArtwork artist={displayedTrack.artist ?? ""} title={displayedTrack.title} size="100%" />}
     </div>
     {onVideoModeChange && backendAvailable && null}
     <div className="luno-song-page-scroll">

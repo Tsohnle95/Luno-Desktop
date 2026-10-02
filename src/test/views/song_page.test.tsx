@@ -132,17 +132,18 @@ describe("Discovery mode toggle", () => {
     const html = renderToStaticMarkup(
       <SongPageView track={track} backendAvailable recommendations={recs} recommendationState="ready" onToggleDiscoverMode={() => undefined} />
     );
-    expect(html).toContain('aria-label="Enable discovery mode"');
-    expect(html).toContain("Discovery mode: Off");
+    expect(html).toContain('role="switch" aria-checked="false" aria-label="Discovery off"');
+    expect(html).toContain('luno-discovery-switch-label">Discovery</span>');
+    expect(html).not.toContain("Discovery mode: Off");
   });
 
   it("announces the on state and restores library wording", () => {
     const html = renderToStaticMarkup(
       <SongPageView track={track} backendAvailable recommendations={recs} recommendationState="ready" discoverMode onToggleDiscoverMode={() => undefined} discoverHint="Pre-loaded 2 of 5 recommendations." />
     );
-    expect(html).toContain('aria-label="Disable discovery mode"');
-    expect(html).toContain("Discovery mode: On");
-    expect(html).toContain("Pre-loaded 2 of 5 recommendations.");
+    expect(html).toContain('role="switch" aria-checked="true" aria-label="Discovery on"');
+    expect(html).toContain('luno-discovery-switch-label">Discovery</span>');
+    expect(html).not.toContain("Pre-loaded 2 of 5 recommendations.");
   });
 
   it("hides the toggle when no handler is wired", () => {
@@ -160,25 +161,26 @@ describe("Artistless seed honesty", () => {
   // read as "discovery is completely broken".
   const artistless: Track = { id: "spaceboy", path: null, title: "[ spaceboy ]", artist: null, album: null, duration_ms: null, artwork_url: null, favorite: true, provider: null };
 
-  it("explains the missing artist instead of asking the user to play a song", () => {
+  it("exposes the artistless explanation through the recommendations info tip", () => {
     const html = renderToStaticMarkup(
       <Recommendations seed={artistless} items={[]} state="idle" />
     );
-    expect(html).toContain("has no artist info");
+    expect(html).toContain('aria-label="Why recommendations are missing"');
+    expect(html).toContain("This song has no artist in its filename.");
     expect(html).not.toContain("Play a song to see recommendations");
   });
 
-  it("keeps the refresh control disabled when there is no artist to look up", () => {
+  it("keeps the retired refresh control out of the recommendations panel", () => {
     const html = renderToStaticMarkup(
       <Recommendations seed={artistless} items={[]} state="idle" onRefresh={() => undefined} />
     );
-    expect(html).toContain('aria-label="Refresh recommendations"');
-    expect(html).toContain("disabled");
+    expect(html).not.toContain("Refresh recommendations");
+    expect(html).toContain('aria-label="Why recommendations are missing"');
   });
 
-  it("still invites a genuinely trackless state to play something", () => {
+  it("uses the current empty recommendation message without a seed", () => {
     const html = renderToStaticMarkup(<Recommendations seed={null} items={[]} state="idle" />);
-    expect(html).toContain("Play a song to see recommendations");
+    expect(html).toContain("No recommended tunes returned for this song.");
   });
 
   it("names the artistless track on the Discover route instead of asking for a seed", () => {

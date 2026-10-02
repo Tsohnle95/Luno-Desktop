@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 export const RECOMMENDATION_ART_DESIGN_COUNT = 75;
 
@@ -226,15 +226,16 @@ export interface RecommendationArtworkImageProps {
   artist: string;
   title: string;
   artworkUrl?: string | null;
+  loading?: boolean;
+  eager?: boolean;
   size?: number | string;
   alt?: string;
   className?: string;
 }
 
-export function RecommendationArtworkImage({ artist, title, artworkUrl, size = 48, alt, className }: RecommendationArtworkImageProps) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [artworkUrl]);
-  const usable = artworkUrl && !isPlaceholderArtwork(artworkUrl) && !failed;
+export function RecommendationArtworkImage({ artist, title, artworkUrl, loading = false, eager = false, size = 48, alt, className }: RecommendationArtworkImageProps) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const usable = artworkUrl && !isPlaceholderArtwork(artworkUrl) && artworkUrl !== failedSrc;
   const dim = typeof size === "number" ? `${size}px` : size;
   if (usable) {
     return (
@@ -243,12 +244,15 @@ export function RecommendationArtworkImage({ artist, title, artworkUrl, size = 4
           src={artworkUrl!}
           alt={alt ?? `${title} artwork`}
           decoding="async"
-          loading="lazy"
+          loading={eager ? "eager" : "lazy"}
           style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-          onError={() => setFailed(true)}
+          onError={() => setFailedSrc(artworkUrl!)}
         />
       </span>
     );
+  }
+  if (loading) {
+    return <span className={`luno-artwork${className ? ` ${className}` : ""}`} style={{ width: dim, height: dim, flex: `0 0 ${dim}` }} aria-hidden="true"><span className="luno-artwork-loading" /></span>;
   }
   return <RecommendationArtwork artist={artist} title={title} size={size} className={className} />;
 }

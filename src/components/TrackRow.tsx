@@ -10,6 +10,7 @@ export interface TrackRowProps {
   selected?: boolean;
   playing?: boolean;
   artwork?: string | null;
+  artworkLoading?: boolean;
   durationMs?: number | null;
   durationLoading?: boolean;
   onClick?: (track: Track) => void;
@@ -37,7 +38,7 @@ export function formatAddedDate(ms: number | null | undefined) {
   return Number.isFinite(date.getTime()) ? addedDateFormatter.format(date) : "—";
 }
 
-export function TrackRow({ track, index, playlistName, selected = false, playing = false, artwork, durationMs, durationLoading = false, onClick, onFavoriteToggle, onContextMenu, backendAvailable = true }: TrackRowProps) {
+export function TrackRow({ track, index, playlistName, selected = false, playing = false, artwork, artworkLoading = false, durationMs, durationLoading = false, onClick, onFavoriteToggle, onContextMenu, backendAvailable = true }: TrackRowProps) {
   const addedAt = track.added_ms != null && Number.isFinite(track.added_ms) && track.added_ms >= 0 ? new Date(track.added_ms) : null;
   const hasAddedAt = addedAt != null && Number.isFinite(addedAt.getTime());
   return <div className={`luno-track-row${selected ? " is-selected" : ""}${playing ? " is-playing" : ""}`} role="button" tabIndex={backendAvailable ? 0 : -1}
@@ -48,7 +49,7 @@ export function TrackRow({ track, index, playlistName, selected = false, playing
         {!playing && <IconPlay size={14} className="luno-track-hover-play" />}
         {playing ? <span className="luno-equalizer">{[0, 1, 2, 3].map((bar) => <i key={bar} style={{ animationDelay: `${bar * 0.12}s` }} />)}</span> : <span className="luno-track-num">{index == null ? "" : index + 1}</span>}
       </span>
-      <RecommendationArtworkImage className="luno-track-artwork-slot" artworkUrl={artwork ?? track.artwork_url} artist={track.artist ?? ""} title={track.title} alt={`${track.title} artwork`} size={40} />
+      <RecommendationArtworkImage className="luno-track-artwork-slot" artworkUrl={artwork ?? track.artwork_url} loading={artworkLoading} eager artist={track.artist ?? ""} title={track.title} alt={`${track.title} artwork`} size={40} />
       <span className="luno-track-copy"><strong title={track.title}>{truncate(track.title, 52)}</strong><span title={track.artist ?? "Unknown artist"}>{truncate(track.artist ?? "Unknown artist", 64)}</span></span>
       <span className="luno-track-cell-playlist luno-truncate" title={playlistName ?? undefined}>{playlistName}</span>
       <span className="luno-track-cell-added" title={hasAddedAt ? "Date added" : "Date added unavailable"}>{hasAddedAt ? <time dateTime={addedAt.toISOString()}>{formatAddedDate(track.added_ms)}</time> : "—"}</span>

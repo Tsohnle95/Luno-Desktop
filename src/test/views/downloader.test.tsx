@@ -111,6 +111,16 @@ describe("Gate 6 downloader view", () => {
     expect(filterDownloadDestinations(["/music/Unsorted", "/music/Live Shows", "/music/Favorites"], "live")).toEqual(["/music/Live Shows"]);
   });
 
+  it("renders the Shell-owned destination after the Downloader view remounts", () => {
+    const html = renderToStaticMarkup(<DownloaderView
+      destinations={["/music/Unsorted", "/music/Live Shows"]}
+      defaultDestination="/music/Unsorted"
+      destination="/music/Live Shows"
+    />);
+    expect(html).toContain('aria-label="Save to"');
+    expect(html).toContain('value="Live Shows"');
+  });
+
   it("resolves Save to to the linked physical playlist used by sync", () => {
     const roadTrip = { id: "p1", name: "Road trip", path: "/music/Road trip", url: "https://www.youtube.com/playlist?list=PL123", ordered_track_ids: [] };
     const unlinked = { id: "p2", name: "Unlinked", path: "/music/Unlinked", url: null, ordered_track_ids: [] };
@@ -144,7 +154,10 @@ describe("Gate 6 library view", () => {
     expect(html).toContain('aria-label="Play All Music"');
     expect(html).toContain('aria-label="Enable shuffle"');
     expect(html).not.toContain('aria-label="Scan library for changes"');
-    expect(html).toContain('aria-label="Sort tracks"');
+    expect(html).toContain('aria-label="Sort title Z to A"');
+    expect(html).toContain('aria-label="Sort latest added first"');
+    expect(html).toContain('aria-label="Sort shortest duration first"');
+    expect(html).not.toContain('aria-label="Filter tracks"');
     expect(html).toContain("luno-table-head");
   });
 

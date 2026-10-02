@@ -2,7 +2,7 @@ import { useEffect, useRef, type MouseEvent } from "react";
 import type { Playlist, Track } from "../shared/contracts";
 import { RecommendationArtworkImage } from "../components/RecommendationArtwork";
 import { PlaylistArtwork } from "../components/PlaylistArtwork";
-import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
+import { useTrackArtworkState, type ArtworkFetcher } from "../state/track_artwork";
 
 export interface PopularPlaylist { playlist: Playlist; plays: number }
 
@@ -95,7 +95,8 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
   // even for files with embedded covers. The hook's concurrency limiter (6)
   // further smooths the burst.
   const artworkIds = homeArtworkIds({ madeForYou, favorites, recentTracks, popularTracks, popularPlaylists, recentlyDownloaded });
-  const artwork = useTrackArtwork(artworkIds, onArtwork);
+  const artworkState = useTrackArtworkState(artworkIds, onArtwork);
+  const artwork = artworkState.artwork;
   const playFrom = (list: Track[]) => (track: Track) => { if (backendAvailable && onPlayTrack) onPlayTrack(track, list); };
 
   // SCROLL FIX: every card row is an `overflow-x: auto` strip, and WKWebView
@@ -122,7 +123,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
 
   const trackCard = (list: Track[], subtitle?: (track: Track) => string) => (track: Track) => (
     <button className="luno-card" type="button" key={track.id} onClick={() => playFrom(list)(track)} onContextMenu={(event) => onTrackContextMenu?.(event, track)} disabled={!backendAvailable}>
-      <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
+      <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} loading={artworkState.loading.has(track.id)} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
       <span className="luno-card-copy"><strong title={track.title}>{track.title}</strong><small>{subtitle?.(track) ?? track.artist ?? "Unknown artist"}</small></span>
     </button>
   );
@@ -152,7 +153,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
         : <div className="luno-card-row luno-scroll">{recentTracks.map((track, index) => (
           // History can legitimately contain a track twice — index keeps keys unique.
           <button className="luno-card" type="button" key={`${track.id}-${index}`} onClick={() => playFrom(recentTracks)(track)} onContextMenu={(event) => onTrackContextMenu?.(event, track)} disabled={!backendAvailable}>
-            <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
+            <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} loading={artworkState.loading.has(track.id)} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
             <span className="luno-card-copy"><strong title={track.title}>{track.title}</strong><small>{track.artist ?? "Unknown artist"}</small></span>
           </button>
         ))}</div>}
@@ -182,7 +183,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
               .map((id) => tracksById?.get(id))
               .filter((track): track is Track => !!track);
             return <button className="luno-card" type="button" key={playlist.id} onClick={() => onOpenPlaylist?.(playlist.id)}>
-              <PlaylistArtwork className="luno-card-artwork" tracks={playlistTracks} artwork={artwork} emptyFallback={<RecommendationArtworkImage artworkUrl={null} artist="" title={playlist.name} alt="" size="100%" />} />
+              <PlaylistArtwork className="luno-card-artwork" tracks={playlistTracks} artwork={artwork} loadingIds={artworkState.loading} emptyFallback={<RecommendationArtworkImage artworkUrl={null} artist="" title={playlist.name} alt="" size="100%" />} />
               <span className="luno-card-copy"><strong title={playlist.name}>{playlist.name}</strong><small>{plays} {plays === 1 ? "play" : "plays"}</small></span>
             </button>;
           })}

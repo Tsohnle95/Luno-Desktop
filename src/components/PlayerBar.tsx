@@ -8,6 +8,7 @@ export interface PlayerBarProps {
   track?: Track | null;
   playback?: PlaybackSnapshot | null;
   artwork?: string | null;
+  artworkLoading?: boolean;
   volume?: number;
   accent?: string;
   onPlayPause?: () => void;
@@ -52,7 +53,7 @@ const clamp = (value: number, min: number, max: number) => Math.min(Math.max(min
  * the committed position until the backend catches up (no snap-back). The
  * volume slider mirrors the persisted volume value when idle.
  */
-export function PlayerBar({ track = null, favoriteTrack: favoriteTrackProp, playback = null, artwork = null, volume = 1, accent = "var(--luno-green)", onPlayPause, onNext, onPrevious, onSeek, onVolume, onVolumeCommit, onFavoriteToggle, onOpenTrack, onTrackContextMenu, backendAvailable = true, shuffle = false, repeat = "off", onToggleShuffle, onCycleRepeat, queueOpen = true, onToggleQueue }: PlayerBarProps) {
+export function PlayerBar({ track = null, favoriteTrack: favoriteTrackProp, playback = null, artwork = null, artworkLoading = false, volume = 1, accent = "var(--luno-green)", onPlayPause, onNext, onPrevious, onSeek, onVolume, onVolumeCommit, onFavoriteToggle, onOpenTrack, onTrackContextMenu, backendAvailable = true, shuffle = false, repeat = "off", onToggleShuffle, onCycleRepeat, queueOpen = true, onToggleQueue }: PlayerBarProps) {
   const favoriteTrack = favoriteTrackProp === undefined ? (track?.path ? track : null) : favoriteTrackProp;
   const position = playback?.position_ms ?? 0;
   const duration = playback?.duration_ms ?? 0;
@@ -221,7 +222,7 @@ export function PlayerBar({ track = null, favoriteTrack: favoriteTrackProp, play
   return <div className="luno-player-bar" style={{ "--luno-player-accent": accent } as CSSProperties} aria-disabled={!backendAvailable}>
     <div className="luno-player-row">
       <button className="luno-player-track" type="button" disabled={!backendAvailable || !track} onClick={() => track && onOpenTrack?.(track)} onContextMenu={(event) => { if (track) onTrackContextMenu?.(event, track); }}>
-        {track ? <RecommendationArtworkImage artist={track.artist ?? ""} title={track.title} artworkUrl={artwork ?? track.artwork_url} alt="" size={52} /> : <Artwork alt="" size={52} />}
+        {track ? <RecommendationArtworkImage artist={track.artist ?? ""} title={track.title} artworkUrl={artwork ?? track.artwork_url} loading={artworkLoading} eager alt="" size={52} /> : <Artwork alt="" size={52} />}
         <span className="luno-player-copy"><strong title={track?.title ?? undefined}>{track?.title ?? "Nothing playing"}</strong><small>{track?.artist ?? ""}</small></span>
       </button>
       <div className="luno-transport" role="group" aria-label="Transport controls">

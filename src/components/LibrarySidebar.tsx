@@ -1,8 +1,9 @@
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { LibrarySnapshot, Playlist, Track } from "../shared/contracts";
 import { libraryAlbums, libraryPlaylists, playlistTracks, albumScope, type LibraryScope } from "../views/LibraryView";
-import { useTrackArtwork, type ArtworkFetcher } from "../state/track_artwork";
+import { useTrackArtworkState, type ArtworkFetcher } from "../state/track_artwork";
 import { PlaylistArtwork } from "./PlaylistArtwork";
+import { RecommendationArtworkImage } from "./RecommendationArtwork";
 import { IconDownload, IconHeart, IconMusicNote, IconPlus, IconSearch } from "./icons";
 
 interface SidebarEntry {
@@ -72,7 +73,8 @@ export const LibrarySidebar = memo(function LibrarySidebar({ snapshot, tracksByI
     const needle = query.trim().toLocaleLowerCase();
     return needle ? entries.filter((entry) => entry.label.toLocaleLowerCase().includes(needle)) : entries;
   }, [entries, query]);
-  const sidebarArtwork = useTrackArtwork(visibleEntries.flatMap((entry) => entry.artIds ?? (entry.artId ? [entry.artId] : [])), onArtwork, 0);
+  const sidebarArtworkState = useTrackArtworkState(visibleEntries.flatMap((entry) => entry.artIds ?? (entry.artId ? [entry.artId] : [])), onArtwork, 0);
+  const sidebarArtwork = sidebarArtworkState.artwork;
 
   const toggleSearch = () => {
     setSearchOpen((open) => !open);
@@ -95,7 +97,7 @@ export const LibrarySidebar = memo(function LibrarySidebar({ snapshot, tracksByI
     <div className="luno-playlist-list luno-scroll" data-slot="playlists" aria-label="Playlists">
       {visibleEntries.map((entry) => {
         const active = selectedScope === entry.scope;
-        const art = entry.artId ? sidebarArtwork[entry.artId] : undefined;
+        const artTrack = entry.artId ? tracksById.get(entry.artId) : undefined;
         const mosaicTracks = (entry.artIds ?? []).map((id) => tracksById.get(id)).filter((item): item is Track => !!item);
         return <button className="luno-playlist-card" type="button" key={`${entry.kind}-${entry.key}`} aria-current={active ? "page" : undefined}
           onContextMenu={(event) => {
@@ -115,6 +117,7 @@ export const LibrarySidebar = memo(function LibrarySidebar({ snapshot, tracksByI
                 className="luno-playlist-pin"
                 tracks={mosaicTracks}
                 artwork={sidebarArtwork}
+                loadingIds={sidebarArtworkState.loading}
                 emptyFallback={entry.kind === "unsorted" ? <IconDownload size={16} /> : entry.kind === "favorites" ? <IconHeart size={18} /> : entry.kind === "all" ? <IconMusicNote size={18} /> : "♫"}
               />
             : entry.kind === "favorites"
@@ -123,8 +126,8 @@ export const LibrarySidebar = memo(function LibrarySidebar({ snapshot, tracksByI
                 ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #1db954, #158a3e)" }}><IconMusicNote size={18} /></span>
                 : entry.kind === "unsorted"
                   ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #3e3e3e, #181818)" }}><IconDownload size={16} /></span>
-                  : art
-                    ? <span className="luno-artwork" style={{ width: 48, height: 48, flex: "0 0 48px", borderRadius: 5 }}><img src={art} alt="" decoding="async" /></span>
+                  : entry.kind === "album" && entry.artId && artTrack
+                    ? <span className="luno-playlist-pin"><RecommendationArtworkImage artworkUrl={sidebarArtwork[entry.artId] ?? artTrack.artwork_url} loading={sidebarArtworkState.loading.has(entry.artId)} artist={artTrack.artist ?? ""} title={entry.label} alt="" size="100%" /></span>
                     : <span className="luno-playlist-pin" style={{ fontSize: 20 }}>♫</span>}
           <span className="luno-playlist-copy"><strong title={entry.label}>{entry.label}</strong><small>{entry.subtitle}</small></span>
         </button>;
