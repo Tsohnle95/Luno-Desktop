@@ -125,6 +125,12 @@ What it does not own: library snapshots and track identity
 - Pause never gates staging: videos stage and publish `Ready` while
   paused; resume runs a catch-up pipeline pass when current video is
   unresolved. Dead `Loading` slots (no live worker) restage.
+- Song-page video staging starts on explicit user intent or while video mode
+  is enabled. Enabling mode admits staging for the audible track at the
+  command boundary and reports missing-helper or capacity failures to the UI;
+  repeated requests coalesce with that track's live worker even under task
+  pressure. Recommendation video preparation remains owned by the preview
+  pipeline and is adopted independently of song-page video mode.
 - Master volume is shared atomically with the macOS output callback. Mute
   applies during a slow producer shutdown or track load, without waiting for
   the backend mutex, and survives each output-state replacement.

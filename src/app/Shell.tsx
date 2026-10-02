@@ -209,6 +209,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   projectionRef.current = projection;
   const [migrationStatus, setMigrationStatus] = useState<MigrationStatus | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [videoRequestError, setVideoRequestError] = useState<{ trackId: string; message: string } | null>(null);
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; track?: Track; playlist?: Playlist; libraryTrack?: boolean } | null>(null);
   const [playlistPickerSelection, setPlaylistPickerSelection] = useState<{ tracks: Track[]; title: string } | null>(null);
@@ -337,6 +338,18 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const runCommand = (command: Promise<unknown> | null | undefined) => {
     if (!available || !command) return;
     void command.then(() => setCommandError(null)).catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
+  };
+  const changeVideoMode = (enabled: boolean) => {
+    if (!bridge || !available) return;
+    void bridge.setVideoMode(enabled)
+      .then(() => { setVideoMode(enabled); setVideoRequestError(null); setCommandError(null); })
+      .catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
+  };
+  const recordVideoRequestError = (trackId: string, error: unknown) => {
+    setVideoRequestError({
+      trackId,
+      message: normalizeRuntimeCommandError(error),
+    });
   };
   const showFinalCopyReview = (result: SafeDeleteResult, confirm: (reviewId: string) => Promise<SafeDeleteResult>, onDeleted: (result: SafeDeleteResult) => void) => {
     if (!result.needs_confirmation) { onDeleted(result); return; }
@@ -1071,38 +1084,51 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const saveLastfmKey = (key: string) => {
     runCommand(bridge?.saveDiscoveryKey(key).then((status) => setDiscoveryKeyConfigured(status.configured)));
   };
-  // Stage the song video when its page opens (worker runs on the backend).
+  const audibleRecommendationNeedsVideo = !!displayTrack
+    && recommendationTracks.has(displayTrack.id)
+    && (!!projection.preview?.current || !!projection.discover?.enabled);
+  // Stage a normal library track only when video mode is enabled. Active
+  // recommendations keep adopting their independently prefetched video even
+  // when song-page mode is off.
   useEffect(() => {
-    // Stage the song video when its page opens. The command RESPONSE carries
-    // the authoritative video state — absorb it so the page never depends
-    // solely on a pushed event (a lost video_state event used to strand the
-    // stage on "Loading video preview..." forever). While Loading, poll the
-    // snapshot as a self-healing reconciliation path.
+    if (route !== "song_page" || (!videoMode && !audibleRecommendationNeedsVideo)) return;
+    // The command response is authoritative too; absorb it so the page never
+    // depends solely on a pushed event. Keep polling an unresolved identity
+    // after retryable admission failures so staging resumes once capacity is
+    // available.
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
+    let terminalFailure = false;
+    let retryPending = false;
     const absorb = (snapshot: unknown) => {
       if (cancelled || !snapshot || typeof snapshot !== "object" || !("status" in (snapshot as Record<string, unknown>))) return;
+      retryPending = false;
       backendProjection?.applyVideoSnapshot?.(snapshot as NonNullable<BackendProjection["video"]>);
+      setVideoRequestError((current) => current?.trackId === displayTrack?.id ? null : current);
     };
     const request = () => {
       if (cancelled || !displayTrack || !available || !bridge) return;
       bridge.videoStage(displayTrack.id)
         .then(absorb)
-        .catch(() => undefined);
+        .catch((error: unknown) => {
+          if (cancelled) return;
+          const retryable = isRetryableRuntimeCommandError(error);
+          retryPending = retryable;
+          if (!retryable) terminalFailure = true;
+          recordVideoRequestError(displayTrack.id, error);
+        });
     };
     request();
     const tick = () => {
-      if (cancelled) return;
+      if (cancelled || terminalFailure) return;
       const id = displayTrack?.id;
       if (!id) return;
       // Keep re-requesting until THIS track holds a RESOLVED video state.
-      // Busy collisions are silent on the backend (by design — publishing
-      // pending states minted generations that poisoned event ordering), so
-      // "no state / another track's state / not_checked" must all keep the
-      // poll alive. Only genuine resolutions stop it: success OR a real
-      // Unavailable/error for this exact track.
+      // A retryable busy response does not own a video slot, and a snapshot
+      // may still belong to another track. Keep polling until this identity
+      // has a real terminal video state.
       const current = backendProjection?.getSnapshot().video ?? null;
-      const settled = current !== null
+      const settled = !retryPending && current !== null
         && current.track_id === id
         && ["ready", "playing", "paused", "unavailable", "error"].includes(current.status);
       if (settled) return;
@@ -1111,7 +1137,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     };
     timer = setTimeout(tick, 2000);
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [route, displayTrack?.id, available, bridge]);
+  }, [route, displayTrack?.id, available, bridge, videoMode, audibleRecommendationNeedsVideo]);
   useEffect(() => {
     // Only fetch while the Discover route is visible — otherwise every track
     // change fires an unseen network request.
@@ -1138,8 +1164,9 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [videoFailedFor, setVideoFailedFor] = useState<string | null>(null);
   useEffect(() => { setVideoFailedFor(null); }, [videoSrc]);
   const videoFailed = videoSrc !== null && videoFailedFor === videoSrc;
+  const hasVideoRequestError = !!displayTrack && videoRequestError?.trackId === displayTrack.id;
   const rawVideoStatus = (currentVideo?.status === "not_checked" ? "not-checked" : currentVideo?.status) as VideoStageStatus | undefined;
-  const videoStatus: VideoStageStatus | undefined = videoFailed ? "error" : rawVideoStatus;
+  const videoStatus: VideoStageStatus | undefined = videoFailed || hasVideoRequestError ? "error" : rawVideoStatus;
   // Video MODE is the user's intent: when it is OFF the song page shows
   // artwork, even if this track's video happens to be staged.
   // Keep the surface active while a source is being downloaded. The previous
@@ -1463,7 +1490,20 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
                       const target = playlists.find((playlist) => playlist.name.toLowerCase() !== "unsorted") ?? playlists[0];
                       if (!target) { setCommandError("Create a playlist before saving recommendations."); return; }
                       runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), target.id));
-                      }} preview={recommendationPreview} saved={projection.saved} playlists={projection.library?.playlists ?? []} jobs={projection.jobs} tracksById={tracksByIdForQueue} onArtwork={artworkFetcher} onCreatePlaylist={(item) => { if (!bridge || !available) return; createPlaylist([], (name) => runCommand(bridge.saveRecommendation(previewKey(item.artist, item.title), `playlist:${name}`))); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} onLoadVideo={() => { if (displayTrack && available) bridge?.videoStage(displayTrack.id).catch(() => undefined); }} videoMode={videoMode} onVideoModeChange={(enabled) => { setVideoMode(enabled); runCommand(bridge?.setVideoMode(enabled)); }} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
+                      }} preview={recommendationPreview} saved={projection.saved} playlists={projection.library?.playlists ?? []} jobs={projection.jobs} tracksById={tracksByIdForQueue} onArtwork={artworkFetcher} onCreatePlaylist={(item) => { if (!bridge || !available) return; createPlaylist([], (name) => runCommand(bridge.saveRecommendation(previewKey(item.artist, item.title), `playlist:${name}`))); }} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} video={video} videoConnection={connectedVideo ? "connected" : "disconnected"} videoRequestError={hasVideoRequestError ? videoRequestError.message : null} onLoadVideo={() => {
+                        if (!displayTrack || !bridge || !available) return;
+                        setVideoRequestError(null);
+                        const request = !videoMode
+                          ? bridge.setVideoMode(true).then(() => { setVideoMode(true); })
+                          : bridge.videoStage(displayTrack.id).then((snapshot) => {
+                              if (snapshot && typeof snapshot === "object" && "status" in snapshot) {
+                                backendProjection?.applyVideoSnapshot?.(snapshot as NonNullable<BackendProjection["video"]>);
+                              }
+                            });
+                        void request
+                          .then(() => setCommandError(null))
+                          .catch((error: unknown) => recordVideoRequestError(displayTrack.id, error));
+                      }} videoMode={videoMode} onVideoModeChange={changeVideoMode} /> : <div className="luno-route-empty">{routeLabels[route]}</div>);
 
   const showSidebar = !sidebarCollapsed && route !== "settings";
   const narrowViewport = shellWidth > 0 && shellWidth < 1100;

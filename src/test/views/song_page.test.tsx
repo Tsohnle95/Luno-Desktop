@@ -72,13 +72,11 @@ describe("Music-mode hover controls", () => {
     expect(withVideo).toContain("luno-video-fullscreen");
   });
 
-  it("never shows the ghost Load-music-video button while mode is off", () => {
-    // Regression: with videoMode off the button rendered whenever no src was
-    // set, resurrecting a stale control after the user turned mode off.
+  it("offers a direct video download action while mode is off", () => {
     const html = renderToStaticMarkup(
       <SongPageView track={track} backendAvailable videoConnection="connected" onLoadVideo={() => undefined} videoMode={false} onVideoModeChange={() => undefined} />
     );
-    expect(html).not.toContain("Load music video");
+    expect(html).toContain(">Download video</button>");
     expect(html).not.toContain("Retry music video");
     // A failed lookup stays inside the hover controls with its retry action;
     // it no longer leaves a persistent popup over the artwork.
@@ -92,10 +90,16 @@ describe("Music-mode hover controls", () => {
     const idleHtml = renderToStaticMarkup(
       <SongPageView track={track} backendAvailable videoConnection="connected" onLoadVideo={() => undefined} videoMode onVideoModeChange={() => undefined} />
     );
-    // No failure recorded => nothing to retry => no manual button at all.
-    // (Class-name greps hit the embedded stylesheet; assert on labels.)
+    // Mode on with no failure keeps the initial download action from
+    // appearing a second time.
     expect(idleHtml).not.toContain("Retry music video");
-    expect(idleHtml).not.toContain(">Load music video<");
+    expect(idleHtml).not.toContain(">Download video</button>");
+
+    const requestErrorHtml = renderToStaticMarkup(
+      <SongPageView track={track} backendAvailable videoConnection="connected" videoMode onLoadVideo={() => undefined} videoRequestError="video staging is busy; try again shortly" onVideoModeChange={() => undefined} />
+    );
+    expect(requestErrorHtml).toContain('role="alert">video staging is busy; try again shortly</span>');
+    expect(requestErrorHtml).toContain(">Retry</button>");
   });
 });
 

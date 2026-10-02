@@ -1047,13 +1047,27 @@ mod tests {
 
         // Hold the store exactly like a slow download would…
         let guard = state.video_stager.lock().unwrap_or_else(|e| e.into_inner());
+        state.video_stage_track(id.clone()).expect("initial request should start its waiter");
+        assert!(state.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).contains(&id), "the first request owns the inflight marker");
+        // Fill the registry while the first request is waiting on the store.
+        // Later song-page polls must coalesce with that live worker instead
+        // of surfacing a false Busy failure.
+        for i in 0..VIDEO_STAGE_PRESSURE_LIMIT {
+            state.submit(crate::runtime::task_registry::TaskSpec::new(format!("pressure-{i}"), crate::contracts::types::Generation(i as u64 + 900), None), |_token| {
+                while !_token.is_cancelled() {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }).expect("pressure task submit");
+        }
+        let active_before_repeats = state.tasks.active_count();
+        assert!(active_before_repeats >= VIDEO_STAGE_PRESSURE_LIMIT);
         // …then hammer it the way skip-storms + the 2 s poll do. EVERY
         // request must coalesce into the single waiting worker.
         for _ in 0..25 {
             state.video_stage_track(id.clone()).expect("busy store must not error");
         }
         let active_while_held = state.tasks.active_count();
-        assert!(active_while_held <= 2, "requests piled up: {active_while_held} active tasks");
+        assert_eq!(active_while_held, active_before_repeats, "inflight requests must coalesce under task pressure");
         assert!(state.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).contains(&id), "the single waiter keeps its inflight marker");
         // Release the store: the waiter must proceed to Ready on its own —
         // no second kick, no poll required.
@@ -1070,6 +1084,8 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         assert!(terminal.contains("Ready"), "waiter must complete once the store frees, got {terminal}");
+        let shutdown = state.tasks.shutdown(std::time::Duration::from_secs(1));
+        assert!(!shutdown.timed_out, "pressure tasks should stop cleanly");
         let _ = std::fs::remove_dir_all(&video_root);
         let _ = std::fs::remove_dir_all(&music_dir);
     }
@@ -1102,7 +1118,9 @@ mod tests {
         assert!(state.tasks.active_count() >= VIDEO_STAGE_PRESSURE_LIMIT);
         let before = state.tasks.active_count();
 
-        state.video_stage_track(id.clone()).expect("pressure must defer, not error");
+        let error = state.video_stage_track(id.clone()).expect_err("pressure must be reported as retryable busy");
+        assert_eq!(error.code, ErrorCode::Busy);
+        assert!(error.retryable);
         assert_eq!(state.tasks.active_count(), before, "staging must not spawn under pressure");
         assert!(!state.video_current.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|video| {
             video.track_id.as_ref() == Some(&id)
@@ -1520,40 +1538,55 @@ mod tests {
         assert_eq!(map.get(&queue[1]).as_deref(), Some(&song_b));
     }
 
-    /// DIAGNOSIS (2026-08-25): "when I pause a song its video never loads;
-    /// resuming much later finally loads it." Proves the REAL pipeline stages
-    /// AND publishes Ready while playback_status is PAUSED. The video is an
-    /// index-cached fixture (zero network — a nonexistent yt-dlp path proves
-    /// no search/download runs), so the only question under test is whether
-    /// pause state gates staging/publication. It must not.
+    /// The same SetVideoMode command used by the song page must start a real
+    /// lookup/download worker while audio is paused. The fake yt-dlp avoids
+    /// external network while exercising the complete uncached staging path.
     #[test]
-    fn video_stages_to_ready_while_playback_is_paused() {
+    #[cfg(unix)]
+    fn enabling_video_mode_downloads_the_current_video_while_playback_is_paused() {
+        use std::os::unix::fs::PermissionsExt;
+
         let state = AppState::new(8);
-        let video_root = std::env::temp_dir().join(format!("luno-video-pause-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&video_root);
-        state.set_video_runtime(video_root.clone(), Some(PathBuf::from("/nonexistent/yt-dlp")), None);
+        let root = std::env::temp_dir().join(format!("luno-video-paused-command-{}", std::process::id()));
+        let video_root = root.join("videos");
+        let music_root = root.join("library");
+        let helper = root.join("fake-yt-dlp");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&music_root.join("Unsorted")).unwrap();
+        std::fs::write(&helper, r#"#!/bin/sh
+case " $* " in
+  *" --dump-json "*)
+    printf '%s\n' '{"id":"paused-video","title":"Song official video","uploader":"Artist","webpage_url":"https://www.youtube.com/watch?v=paused-video"}'
+    ;;
+  *)
+    output=''
+    previous=''
+    for argument in "$@"; do
+      if [ "$previous" = 'output' ]; then output="$argument"; fi
+      if [ "$argument" = '-o' ]; then previous='output'; else previous=''; fi
+    done
+    printf 'synthetic mp4 bytes' > "$output"
+    ;;
+esac
+"#).unwrap();
+        let mut permissions = std::fs::metadata(&helper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&helper, permissions).unwrap();
+        state.set_video_runtime(video_root.clone(), Some(helper), None);
 
-        // Seed the persistent cache index + staged file for Artist/Song.
-        let stager = crate::video::staging::VideoStage::at(&video_root, None).expect("stager");
-        stager.record_index("artistsong", "abc123");
-        let cached = stager.external_destination(crate::video::staging::Slot::Current, "abc123").unwrap();
-        std::fs::write(&cached, b"fake mp4 bytes").unwrap();
-
-        // One-track library; title/artist fold to the seeded key.
-        let music_dir = std::env::temp_dir().join(format!("luno-video-pause-lib-{}", std::process::id()));
-        let playlist_dir = music_dir.join("Unsorted");
-        std::fs::create_dir_all(&playlist_dir).unwrap();
-        let track_path = playlist_dir.join("Artist - Song.m4a");
-        std::fs::write(&track_path, b"placeholder audio").unwrap();
+        let track_path = music_root.join("Unsorted/Artist - Song.wav");
+        write_wav_fixture(&track_path);
         let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), vec![track_path])]));
         let id = snapshot.tracks[0].id.clone();
 
         state.set_playing(id.clone(), vec![id.clone()]);
-        // THE CONDITION UNDER TEST: the user paused before/while staging.
+        *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
         *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Paused;
-        *state.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = true;
-
-        state.kick_video_pipeline();
+        state.dispatch(CommandEnvelope {
+            version: CONTRACT_VERSION,
+            request_id: "video-mode-paused".into(),
+            command: Command::SetVideoMode { enabled: true },
+        }).expect("enabling video mode should start staging while paused");
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut terminal = String::from("timeout");
@@ -1568,12 +1601,37 @@ mod tests {
             if terminal.contains("Ready") || terminal.contains("Unavailable") { break; }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        assert!(terminal.contains("Ready"), "staging must complete while paused, got {terminal}");
+        assert!(terminal.contains("Ready"), "download staging must complete while paused, got {terminal}");
         assert_eq!(*state.playback_status.lock().unwrap_or_else(|e| e.into_inner()), crate::contracts::types::PlaybackStatus::Paused);
         let current = state.video_current.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        assert!(current.map(|v| v.staged_path.is_some()).unwrap_or(false));
-        let _ = std::fs::remove_dir_all(&video_root);
-        let _ = std::fs::remove_dir_all(&music_dir);
+        assert!(current.as_ref().is_some_and(|video| video.track_id.as_ref() == Some(&id) && video.staged_path.as_ref().is_some_and(|path| std::path::Path::new(path).is_file())));
+        assert!(!state.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).contains(&id));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enabling_video_mode_reports_missing_runtime_for_an_audible_track() {
+        let state = AppState::new(8);
+        let music_root = std::env::temp_dir().join(format!("luno-video-no-helper-lib-{}", std::process::id()));
+        let playlist_dir = music_root.join("Unsorted");
+        std::fs::create_dir_all(&playlist_dir).unwrap();
+        let track_path = playlist_dir.join("Artist - Song.wav");
+        write_wav_fixture(&track_path);
+        let snapshot = state.replace_library(Generation(1), BTreeMap::from([(String::from("Unsorted"), vec![track_path])]));
+        let id = snapshot.tracks[0].id.clone();
+        state.set_playing(id.clone(), vec![id.clone()]);
+        *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
+        *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Paused;
+
+        let error = state.dispatch(CommandEnvelope {
+            version: CONTRACT_VERSION,
+            request_id: "video-mode-no-helper".into(),
+            command: Command::SetVideoMode { enabled: true },
+        }).expect_err("mode must not report success when the video runtime is missing");
+
+        assert_eq!(error.code, ErrorCode::Unavailable);
+        assert!(!state.video_mode_enabled());
+        let _ = std::fs::remove_dir_all(&music_root);
     }
 
     /// REGRESSION (2026-08-25): a Loading slot whose worker died (superseded
@@ -3051,6 +3109,12 @@ impl AppState {
                 }
             }
         }
+        // A live request already owns this track's Loading state. Coalesce
+        // before helper/admission checks so later polls cannot turn a valid
+        // paused download into a false Busy failure as the task registry fills.
+        if self.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).contains(&track_id) {
+            return Ok(self.video_snapshot_json());
+        }
         let helper = self.video_helper.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or_else(|| ContractError {
             code: ErrorCode::Unavailable,
             message: "video search is unavailable until the download helper is configured".into(),
@@ -3060,6 +3124,11 @@ impl AppState {
         // state is a promise that an inflight worker owns it; returning a
         // placeholder without a worker is how the permanent spinner formed.
         if self.tasks.active_count() >= VIDEO_STAGE_PRESSURE_LIMIT {
+            // Close the race where another request acquired the inflight slot
+            // after the early coalescing check but before this capacity read.
+            if self.video_staging_inflight.lock().unwrap_or_else(|e| e.into_inner()).contains(&track_id) {
+                return Ok(self.video_snapshot_json());
+            }
             let corpse_generation = self.video_current.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|video| {
                 let corpse = video.track_id.as_ref() == Some(&track_id)
                     && matches!(video.status, crate::contracts::events::VideoStatus::Loading)
@@ -3070,7 +3139,11 @@ impl AppState {
                 self.settle_video_loading(&track_id, generation);
             }
             eprintln!("[luno-video] runtime pressure high ({} tasks); deferring stage for {track_id:?}", self.tasks.active_count());
-            return Ok(self.video_snapshot_json());
+            return Err(ContractError {
+                code: ErrorCode::Busy,
+                message: "video staging is busy; try again shortly".into(),
+                retryable: true,
+            });
         }
         let (artist, title) = {
             let snapshot = self.library();
@@ -3424,6 +3497,15 @@ impl AppState {
     /// enabling, immediately stages the playing track plus prefetches the
     /// next five queue videos. Disabling cancels any prefetch in flight.
     fn set_video_mode(&self, enabled: bool) -> Result<Value, ContractError> {
+        if enabled {
+            // Start the audible item's request synchronously at the command
+            // boundary. The worker remains asynchronous, but a missing helper
+            // or saturated task registry now fails the user's action instead
+            // of returning success with no Loading state to observe.
+            if let Some(track_id) = self.audible_video_track() {
+                self.video_stage_track(track_id)?;
+            }
+        }
         *self.video_mode_enabled.lock().unwrap_or_else(|e| e.into_inner()) = enabled;
         if let Some(home) = self.settings_home.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             let settings = crate::contracts::types::SettingsInput {
@@ -3448,6 +3530,11 @@ impl AppState {
         }
         self.kick_video_pipeline();
         Ok(serde_json::json!({ "video_mode": true }))
+    }
+
+    fn audible_video_track(&self) -> Option<TrackId> {
+        let audible = self.current_track.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        audible.or_else(|| self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned())
     }
 
     pub fn video_mode_enabled(&self) -> bool {
@@ -3536,7 +3623,7 @@ impl AppState {
             let playback = self.playback.lock().unwrap_or_else(|e| e.into_inner());
             (playback.current_index(), playback.queue().to_vec())
         };
-        let audible = self.current_track.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        let audible = self.audible_video_track()
             .or_else(|| current.and_then(|index| queue.get(index).cloned()));
         let focused_preview = self
             .preview_session

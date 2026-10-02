@@ -44,12 +44,13 @@ export interface SongPageViewProps { track?: Track | null;
   videoConnection?: "connected" | "loading" | "disconnected";
   /** Requests (or retries) the music video for the current track. */
   onLoadVideo?: () => void;
+  videoRequestError?: string | null;
   /** Song-page video mode (auto-stage current + prefetch next 5). */
   videoMode?: boolean;
   onVideoModeChange?: (enabled: boolean) => void;
 }
 
-export function SongPageView({ track = null, nowPlaying = null, recommendations = [], recommendationState = "idle", recommendationError, recommendationLoadMoreError, recommendationsExhausted, recommendationsLoadingMore, discoverMode = false, onToggleDiscoverMode, onRetryRecommendations, onLoadMoreRecommendations, onPreviewRecommendation, onSaveRecommendation, onFavoriteToggle, backendAvailable = true, preview = null, saved = {}, playlists = [], jobs = {}, onCreatePlaylist, tracksById, onArtwork, video, videoConnection = "disconnected", onLoadVideo, videoMode = false, onVideoModeChange }: SongPageViewProps) {
+export function SongPageView({ track = null, nowPlaying = null, recommendations = [], recommendationState = "idle", recommendationError, recommendationLoadMoreError, recommendationsExhausted, recommendationsLoadingMore, discoverMode = false, onToggleDiscoverMode, onRetryRecommendations, onLoadMoreRecommendations, onPreviewRecommendation, onSaveRecommendation, onFavoriteToggle, backendAvailable = true, preview = null, saved = {}, playlists = [], jobs = {}, onCreatePlaylist, tracksById, onArtwork, video, videoConnection = "disconnected", onLoadVideo, videoRequestError, videoMode = false, onVideoModeChange }: SongPageViewProps) {
   const [lastTrack, setLastTrack] = useState<Track | null>(nowPlaying ?? track);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -98,7 +99,8 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
   const backdropArtwork = video?.artworkUrl ?? displayedTrack?.artwork_url;
   const hasBackdropArtwork = !!backdropArtwork && !isPlaceholderArtwork(backdropArtwork);
   const canRetryVideo = !!onLoadVideo && backendAvailable && videoConnection === "connected" && videoMode && !video?.src
-    && (video?.status === "unavailable" || video?.status === "error" || video?.status === "fallback");
+    && (!!videoRequestError || video?.status === "unavailable" || video?.status === "error" || video?.status === "fallback");
+  const canStartVideo = !!onLoadVideo && !!displayedTrack && backendAvailable && videoConnection === "connected" && !videoMode;
   return <div ref={pageRef} className="luno-song-page" data-testid="song-page">
     <style>{songPageStyles}</style>
     <div className="luno-song-page-backdrop" aria-hidden="true" style={hasBackdropArtwork ? { backgroundImage: `url(${backdropArtwork})` } : undefined}>
@@ -107,7 +109,7 @@ export function SongPageView({ track = null, nowPlaying = null, recommendations 
     {onVideoModeChange && backendAvailable && null}
     <div className="luno-song-page-scroll">
       <main className="luno-song-page-content">
-        <div className="luno-song-media-slot" data-video-slot="song-page"><VideoStage {...video} status={videoConnection === "loading" ? "loading" : videoConnection === "disconnected" ? "not-checked" : video?.status} artworkUrl={video?.artworkUrl ?? displayedTrack?.artwork_url} artworkAlt={displayedTrack ? `${displayedTrack.title} artwork` : "Artwork unavailable"} artworkArtist={displayedTrack?.artist} artworkTitle={displayedTrack?.title} videoModeEnabled={videoMode} onVideoModeChange={onVideoModeChange} onRetry={canRetryVideo ? onLoadVideo : undefined} /><span className="luno-video-connection" role="status">{videoConnection === "loading" ? "Connecting video preview..." : videoConnection === "disconnected" ? "Video preview unavailable; showing artwork." : null}</span></div>
+        <div className="luno-song-media-slot" data-video-slot="song-page"><VideoStage {...video} status={videoRequestError ? "error" : videoConnection === "loading" ? "loading" : videoConnection === "disconnected" ? "not-checked" : video?.status} artworkUrl={video?.artworkUrl ?? displayedTrack?.artwork_url} artworkAlt={displayedTrack ? `${displayedTrack.title} artwork` : "Artwork unavailable"} artworkArtist={displayedTrack?.artist} artworkTitle={displayedTrack?.title} videoModeEnabled={videoMode} onVideoModeChange={onVideoModeChange} onRetry={canRetryVideo ? onLoadVideo : undefined} /><span className="luno-video-connection" role="status">{videoConnection === "loading" ? "Connecting video preview..." : videoConnection === "disconnected" ? "Video preview unavailable; showing artwork." : null}</span>{videoRequestError && <span className="luno-video-request-error" role="alert">{videoRequestError}</span>}{canStartVideo && <button type="button" className="luno-video-load" onClick={onLoadVideo}>Download video</button>}</div>
         <div className="luno-song-meta">{displayedTrack ? <><h1>{displayedTrack.title}</h1><p>{displayedTrack.artist || "Unknown artist"}</p></> : <><h1>Nothing playing</h1><p>Play a song to open its page.</p></>}</div>
         {onToggleDiscoverMode && <div className="luno-discover-toggle">
           <button type="button" className={`luno-discovery-switch${discoverMode ? " is-on" : ""}`} role="switch" aria-checked={discoverMode} aria-label={`Discovery ${discoverMode ? "on" : "off"}`} disabled={!backendAvailable} onClick={onToggleDiscoverMode}>
@@ -148,6 +150,9 @@ const songPageStyles = `
 .luno-video-hover-error { padding:6px 9px; border-radius:6px; background:rgba(0,0,0,.75); color:var(--luno-text); font-size:12px; white-space:nowrap; }
 .luno-video-hover-retry { border:0; border-radius:6px; padding:6px 9px; color:var(--luno-text); background:rgba(0,0,0,.75); font-size:12px; cursor:pointer; }
 .luno-video-hover-retry:hover { background:var(--luno-bg-4); }
+.luno-video-load { position:absolute; left:12px; bottom:12px; z-index:7; border:0; border-radius:999px; padding:8px 13px; color:#001a08; background:var(--luno-green,#1db954); font-size:12px; font-weight:700; cursor:pointer; box-shadow:0 6px 16px rgba(0,0,0,.4); }
+.luno-video-load:hover { filter:brightness(1.08); }
+.luno-video-request-error { position:absolute; left:12px; bottom:54px; z-index:7; max-width:calc(100% - 24px); padding:7px 10px; border-radius:6px; background:rgba(0,0,0,.78); color:#ffd5d5; font-size:12px; overflow-wrap:anywhere; }
 .luno-video-volume { display:flex; align-items:center; gap:7px; min-height:30px; padding:0 9px; border-radius:6px; color:#fff; background:rgba(0,0,0,.7); }
 .luno-video-volume input { width:min(22vw,150px); accent-color:var(--luno-green,#1db954); }
 .luno-video-mode-mini { position:relative; width:38px; height:22px; border:0; border-radius:999px; background:rgba(255,255,255,.28); cursor:pointer; transition:background .15s ease; }
