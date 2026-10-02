@@ -498,6 +498,28 @@ fn ref_video_lookup_offers_relaxed_fallbacks_after_strict_matches() {
 }
 
 #[test]
+fn video_lookup_matches_canonically_equivalent_artist_and_title() {
+    let results = lookup(Some("L'inde\u{301}cis"), "Full Performance (Chillhop Live Session)", |_| vec![
+        VideoCandidate {
+            id: "lneQpcssBcA".into(),
+            title: "L'indécis - Full Performance (Chillhop Live Session)".into(),
+            artist: Some("Chillhop Music".into()),
+            url: String::new(),
+        },
+    ]);
+    assert_eq!(results.len(), 1, "macOS decomposed artist metadata must match YouTube's composed title");
+    assert_eq!(results[0].id, "lneQpcssBcA");
+
+    let reverse = lookup(Some("Beyoncé"), "Déjà Vu", |_| vec![VideoCandidate {
+        id: "composed-title".into(),
+        title: "Beyonce\u{301} - De\u{301}ja\u{300} Vu".into(),
+        artist: None,
+        url: String::new(),
+    }]);
+    assert_eq!(reverse.len(), 1, "normalization must cover candidate titles as well as artist metadata");
+}
+
+#[test]
 fn video_lookup_stops_after_three_strict_candidates() {
     let calls = std::cell::Cell::new(0usize);
     let results = lookup(Some("Artist"), "Song", |_query| {

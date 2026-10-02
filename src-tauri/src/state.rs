@@ -1945,7 +1945,9 @@ esac
         let music_dir = std::env::temp_dir().join(format!("luno-video-lib-{}", std::process::id()));
         let playlist_dir = music_dir.join("Unsorted");
         std::fs::create_dir_all(&playlist_dir).unwrap();
-        let track_path = playlist_dir.join("Rick Astley - Never Gonna Give You Up.m4a");
+        // This macOS decomposed artist spelling previously rejected the exact
+        // provider result before any downloader was started.
+        let track_path = playlist_dir.join("L'inde\u{301}cis - Full Performance (Chillhop Live Session).m4a");
         std::fs::write(&track_path, b"placeholder audio bytes").unwrap();
         state.replace_library(
             Generation(1),
@@ -1956,8 +1958,11 @@ esac
             paths.keys().next().cloned().expect("library must expose the fixture track")
         };
 
-        let result = state.dispatch(command("video-e2e", Command::VideoStage { track_id: track_id.clone() }));
+        state.set_playing(track_id.clone(), vec![track_id.clone()]);
+        *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Paused;
+        let result = state.dispatch(command("video-e2e", Command::SetVideoMode { enabled: true }));
         eprintln!("[e2e] dispatch acknowledged: {result:?}");
+        assert!(result.is_ok(), "the song-page mode command must succeed");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
         let mut final_status = String::from("timeout");
         let mut quick_ready = false;
@@ -1986,6 +1991,7 @@ esac
         eprintln!("[e2e] staged files: {entries:?}");
         assert!(quick_ready, "pipeline never published the quick tier: {final_status}");
         assert!(high_ready, "pipeline never published the high-tier replacement: {final_status}");
+        assert_eq!(*state.playback_status.lock().unwrap_or_else(|e| e.into_inner()), crate::contracts::types::PlaybackStatus::Paused);
         let staged_path = staged_path.expect("ready video path");
         let stream = crate::video::stream::response_for(
             &video_root,
@@ -2003,6 +2009,13 @@ esac
             .expect("ffprobe staged video");
         assert!(probe.status.success());
         assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "h264");
+        let probe = std::process::Command::new(bin.join("ffprobe"))
+            .args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0"])
+            .arg(&staged_path)
+            .output()
+            .expect("ffprobe staged audio");
+        assert!(probe.status.success());
+        assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "aac");
     }
 
     #[test]

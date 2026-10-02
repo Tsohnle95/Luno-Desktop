@@ -108,6 +108,9 @@ What it does not own: library snapshots and track identity
   spinners.
 - Video source lookup uses the fast public results path first, falls back to
   sequential yt-dlp queries, and stops after three strict candidates.
+  Artist/title relevance normalizes both library metadata and provider results
+  before tokenizing, so macOS decomposed accents match the equivalent composed
+  provider spelling without relaxing the relevance thresholds.
 - Prefetch plans the audible item plus exactly five authoritative successors:
   physical successors for focused preview, projected successors for Discover.
 - Current and successor downloads use a viewable H.264 quick tier: a

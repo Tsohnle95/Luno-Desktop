@@ -2,6 +2,7 @@
 //! candidates; this module owns query fallback, relevance, and identity rules.
 
 use std::collections::HashSet;
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoCandidate {
@@ -115,5 +116,9 @@ fn canonical_id(id: &str, url: &str) -> String {
 }
 
 fn words(value: &str) -> Vec<String> {
-    value.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty()).map(|word| word.to_lowercase()).collect()
+    // macOS filenames commonly decompose accents. Normalize before splitting:
+    // a combining mark would otherwise split an artist into different words
+    // than the canonically equivalent title returned by the video provider.
+    let normalized: String = value.nfkc().collect();
+    normalized.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty()).map(|word| word.to_lowercase()).collect()
 }
