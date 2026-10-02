@@ -1053,6 +1053,104 @@ mod tests {
         assert_ne!(first, second);
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn recommendation_prefetch_cannot_restore_an_old_queue_over_shuffle() {
+        let root = unique_home("shuffle-prefetch-policy");
+        std::fs::create_dir_all(&root).unwrap();
+        let state = AppState::new(16);
+        let original: Vec<_> = (0..12).map(|i| TrackId::new(format!("physical-{i}")).unwrap()).collect();
+        for id in &original {
+            let path = root.join(format!("{}.m4a", id.0));
+            std::fs::write(&path, b"fixture").unwrap();
+            state.track_paths.lock().unwrap().insert(id.clone(), path);
+        }
+        let probe = PlaybackProbe::default();
+        *state.audio.lock().unwrap() = Box::new(probe.clone());
+        state.play_with_context_from(original[5].clone(), original.clone(), None).unwrap();
+        wait_for_current_track(&state, &original[5]);
+        let recommendation = TrackId::new("recommendation").unwrap();
+        *state.preview_session.lock().unwrap() = PreviewSession::start_prefetch(
+            100, original.clone(), 5, vec![recommendation.clone()],
+        );
+        assert!(state.preview_step(true).is_err(), "prefetch cannot accept focused transport commands");
+        assert_eq!(state.playback.lock().unwrap().queue(), original);
+        state.dispatch(CommandEnvelope {
+            version: CONTRACT_VERSION, request_id: "shuffle-on".into(), command: Command::ToggleShuffle,
+        }).unwrap();
+        let shuffled = state.playback.lock().unwrap().queue().to_vec();
+        assert_ne!(shuffled, original);
+        for index in [1, 2] {
+            state.dispatch(CommandEnvelope {
+                version: CONTRACT_VERSION, request_id: format!("next-{index}").into(), command: Command::Next,
+            }).unwrap();
+            wait_for_current_track(&state, &shuffled[index]);
+            assert_eq!(state.playback.lock().unwrap().queue(), shuffled, "prefetch is not a queue owner");
+            // Simulate the next recommendation window arriving during playback.
+            *state.preview_session.lock().unwrap() = PreviewSession::start_prefetch(
+                100 + index as u64, original.clone(), 5, vec![recommendation.clone()],
+            );
+        }
+        state.dispatch(CommandEnvelope {
+            version: CONTRACT_VERSION, request_id: "previous".into(), command: Command::Previous,
+        }).unwrap();
+        wait_for_current_track(&state, &shuffled[1]);
+        assert_eq!(state.playback.lock().unwrap().queue(), shuffled);
+
+        let audio_before_cancel = probe.snapshot();
+        *state.preview_session.lock().unwrap() = PreviewSession::start_prefetch(
+            150, original.clone(), 5, vec![recommendation.clone()],
+        );
+        state.preview_cancel().unwrap();
+        assert_eq!(state.playback.lock().unwrap().queue(), shuffled);
+        assert_eq!(probe.snapshot(), audio_before_cancel, "cancelling prefetch must not reload audio");
+
+        // A focused preview may restore the shuffled traversal, but cannot
+        // redefine the original order used when shuffle is switched off.
+        *state.preview_session.lock().unwrap() = PreviewSession::start(
+            200, shuffled.clone(), 1, vec![recommendation.clone()], &recommendation,
+        );
+        state.dispatch(CommandEnvelope {
+            version: CONTRACT_VERSION, request_id: "focused-next".into(), command: Command::Next,
+        }).unwrap();
+        wait_for_current_track(&state, &shuffled[2]);
+        state.dispatch(CommandEnvelope {
+            version: CONTRACT_VERSION, request_id: "shuffle-off".into(), command: Command::ToggleShuffle,
+        }).unwrap();
+        assert_eq!(state.playback.lock().unwrap().queue(), original);
+        assert_eq!(state.playback.lock().unwrap().current(), Some(&shuffled[2]));
+        state.tasks.cancel_all();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disabling_shuffle_during_discovery_updates_only_physical_order() {
+        let state = AppState::new(8);
+        let original: Vec<_> = (0..12).map(|i| TrackId::new(format!("physical-{i}")).unwrap()).collect();
+        let shuffled = {
+            let mut queue = state.playback.lock().unwrap();
+            queue.play_with_context(original[5].clone(), original.clone());
+            queue.toggle_shuffle();
+            queue.queue().to_vec()
+        };
+        let recommendation = TrackId::new("recommendation").unwrap();
+        let mut mode = DiscoverMode::new_anchored(100, shuffled, 0, vec![recommendation.clone()], Some(&recommendation), None).unwrap();
+        mode.enable();
+        let (projected, index) = mode.projected();
+        state.playback.lock().unwrap().project(projected, index);
+        *state.current_track.lock().unwrap() = Some(recommendation.clone());
+        *state.discover.lock().unwrap() = Some(mode);
+        state.dispatch(CommandEnvelope {
+            version: CONTRACT_VERSION, request_id: "shuffle-off-discover".into(), command: Command::ToggleShuffle,
+        }).unwrap();
+        assert!(!state.playback.lock().unwrap().shuffle());
+        assert_eq!(state.playback.lock().unwrap().current(), Some(&recommendation));
+        assert!(state.discover.lock().unwrap().as_ref().unwrap().is_active());
+        state.discover_disable().unwrap();
+        assert_eq!(state.playback.lock().unwrap().queue(), original);
+        assert_eq!(state.playback.lock().unwrap().current(), Some(&original[5]));
+    }
+
     /// RED repro (2026-08-25): "skipped ahead with Shuffle on, then couldn't
     /// go back a couple songs." next/previous used to re-enter
     /// play_with_context, which under shuffle RE-SHUFFLED the whole queue
@@ -4113,10 +4211,10 @@ impl AppState {
                     retryable: false,
                 });
             };
-            if !session.is_active() {
+            if !session.is_active() || session.is_prefetch() {
                 return Err(ContractError {
                     code: ErrorCode::NotFound,
-                    message: "no active preview session".into(),
+                    message: "no focused preview session".into(),
                     retryable: false,
                 });
             }
@@ -4147,7 +4245,7 @@ impl AppState {
     }
 
     fn preview_cancel(&self) -> Result<Value, ContractError> {
-        let (generation, handoff) = {
+        let (generation, handoff, focused) = {
             let mut session = self.preview_session.lock().unwrap_or_else(|e| e.into_inner());
             let Some(session) = session.as_mut() else {
                 return Err(ContractError {
@@ -4156,13 +4254,14 @@ impl AppState {
                     retryable: false,
                 });
             };
+            let focused = !session.is_prefetch();
             let handoff = session.invalidate(self.next_generation().0);
-            (session.generation(), handoff)
+            (session.generation(), handoff, focused)
         };
         self.preview_cancelled.store(true, Ordering::Release);
         self.tasks.cancel_key("preview-heartbeat");
         self.cancel_preview_tasks();
-        self.restore_preview_queue(handoff.queue, handoff.index);
+        if focused { self.restore_preview_queue(handoff.queue, handoff.index); }
         self.publish_preview_snapshot(generation);
         self.preview_snapshot_value()
     }
@@ -4337,7 +4436,7 @@ impl AppState {
         #[cfg(target_os = "macos")]
         self.tasks.cancel_key("playback-heartbeat");
         if let Some(index) = index {
-            self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
+            self.playback.lock().unwrap_or_else(|e| e.into_inner()).project(queue, index);
         } else {
             self.playback.lock().unwrap_or_else(|e| e.into_inner()).clear();
         }
@@ -4846,7 +4945,7 @@ impl AppState {
         let projected = mode.projected();
         *self.discover.lock().unwrap_or_else(|e| e.into_inner()) = Some(mode);
         self.spawn_discover_driver(generation);
-        self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(projected.0, projected.1);
+        self.playback.lock().unwrap_or_else(|e| e.into_inner()).project(projected.0, projected.1);
         self.publish_queue_snapshot();
         self.discover_refill(generation);
         self.publish_discover_snapshot(generation);
@@ -4921,13 +5020,13 @@ impl AppState {
             let mut owner = self.playback_owner_lock();
             let playback_owner = Self::advance_playback_owner(&mut owner);
             self.tasks.cancel_key("playback-heartbeat");
-            self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
+            self.playback.lock().unwrap_or_else(|e| e.into_inner()).project(queue, index);
             self.publish_queue_snapshot();
             let _ = self.start_current_track_with_owner(playback_owner)?;
         }
         #[cfg(not(target_os = "macos"))]
         {
-            self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
+            self.playback.lock().unwrap_or_else(|e| e.into_inner()).project(queue, index);
             self.publish_queue_snapshot();
         }
         self.discover_snapshot_value()
@@ -5021,11 +5120,11 @@ impl AppState {
             Some(DiscoverAction::QueueChanged { queue, index }) => {
                 let current = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned();
                 let index = current.as_ref().and_then(|id| queue.iter().position(|candidate| candidate == id)).unwrap_or(index);
-                self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).project(queue, index);
                 self.publish_queue_snapshot();
             }
             Some(DiscoverAction::Restore { queue, index }) => {
-                self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).project(queue, index);
                 self.publish_queue_snapshot();
             }
             _ => {}
@@ -5153,7 +5252,7 @@ impl AppState {
                 .and_then(|current| projected.0.iter().position(|id| id == current))
                 .unwrap_or(projected.1);
             if projected.0 != live || Some(index) != live_index {
-                self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(projected.0, index);
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).project(projected.0, index);
                 true
             } else {
                 false
@@ -6661,6 +6760,10 @@ impl AppState {
                 }
                 self.playback.lock().unwrap_or_else(|e| e.into_inner()).toggle_shuffle();
                 if disabling_shuffle_during_discover {
+                    let physical = self.playback.lock().unwrap_or_else(|e| e.into_inner()).queue().to_vec();
+                    if let Some(mode) = self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                        mode.update_physical_order(physical);
+                    }
                     self.discover_sync_queue();
                 }
                 self.sync_preview_physical_queue();
@@ -8507,12 +8610,20 @@ fn promotion_error(error: PromotionError) -> ContractError {
             .unwrap_or_else(|e| e.into_inner())
             .as_mut()
             .filter(|session| session.is_active())
-            .map(|session| session.invalidate(generation));
+            .and_then(|session| {
+                let focused = !session.is_prefetch();
+                let handoff = session.invalidate(generation);
+                // Prefetch never owns playback. Its captured queue may predate
+                // shuffle or queue edits, so it must never be restored.
+                focused.then_some(handoff)
+            });
         self.cancel_preview_tasks();
         // Completed recommendation files belong to the active seed, not to
         // the focused presentation mode. Keep them available for replay,
         // discovery handoff, and Save; a new seed or shutdown owns cleanup.
-        if let Ok(mut backend) = self.audio.lock() { let _ = backend.stop(); }
+        if handoff.is_some() {
+            if let Ok(mut backend) = self.audio.lock() { let _ = backend.stop(); }
+        }
         self.publish_preview_snapshot(generation);
         handoff
     }
@@ -8537,7 +8648,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         } else { None };
         if let Some(handoff) = handoff {
             if let Some(index) = handoff.index {
-                self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(handoff.queue, index);
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).project(handoff.queue, index);
             }
         }
         let advanced = self.playback.lock().unwrap_or_else(|e| e.into_inner()).next().cloned();
@@ -8577,7 +8688,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         } else { None };
         if let Some(handoff) = handoff {
             if let Some(index) = handoff.index {
-                self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(handoff.queue, index);
+                self.playback.lock().unwrap_or_else(|e| e.into_inner()).project(handoff.queue, index);
             }
         }
         let went_back = self.playback.lock().unwrap_or_else(|e| e.into_inner()).previous().cloned();

@@ -121,6 +121,13 @@ impl DiscoverMode {
     pub fn physical_queue(&self) -> &[TrackId] {
         &self.physical_queue
     }
+    pub fn update_physical_order(&mut self, queue: Vec<TrackId>) {
+        let anchor = &self.physical_queue[self.physical_index];
+        if let Some(index) = queue.iter().position(|id| id == anchor) {
+            self.physical_queue = queue;
+            self.physical_index = index;
+        }
+    }
     pub fn physical_index_for_projected(&self, index: usize) -> Option<usize> {
         let physical = if index <= self.physical_index { index }
             else if index < self.physical_index + 1 + self.queued.len() { return None }

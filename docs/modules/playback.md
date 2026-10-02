@@ -55,6 +55,11 @@ What it does not own: library snapshots and track identity
 
 - Skips walk the existing shuffled order — `Next`/`Previous` never
   rebuild or re-shuffle. Toggling shuffle off restores true playlist order.
+- Library context selection owns the unshuffled source order. Temporary
+  preview/Discover queue projections preserve it; recommendation prefetch
+  never owns playback and cannot restore its captured queue on skip or cancel.
+  Switching shuffle off during Discover updates the physical order while
+  preserving the audible recommendation and active projection.
 - Focused recommendation playback captures the physical queue. With Discover
   off, Previous/Next and natural completion restore that queue and move through
   its physical order even while a recommendation is audible. Prepared

@@ -141,17 +141,20 @@ impl QueueState {
         }
         true
     }
-    /// Replaces the visible queue wholesale while keeping the clock position.
-    /// Discover-mode adoption, restoration and handoff rebuild the queue
-    /// through this single entry so the captured physical queue always stays
-    /// restorable.
+    /// Establishes a new physical queue and its unshuffled source order.
     pub fn replace(&mut self, queue: Vec<TrackId>, index: usize) {
+        self.original = queue.clone();
+        self.project(queue, index);
+    }
+
+    /// Applies a temporary traversal or restores it after a recommendation.
+    /// Only an explicit library context may redefine the unshuffled order.
+    pub fn project(&mut self, queue: Vec<TrackId>, index: usize) {
         if index >= queue.len() {
             self.clear();
             return;
         }
         self.physical = queue;
-        self.original = self.physical.clone();
         self.current_index = Some(index);
         self.user_queue_count = 0;
     }
@@ -211,5 +214,23 @@ mod shuffle_tests {
         assert_ne!(q.queue(), &original);
         q.toggle_shuffle(); // OFF
         assert_eq!(q.queue(), &original, "original order must survive repeated shuffles");
+    }
+
+    #[test]
+    fn temporary_recommendation_projection_preserves_shuffle_source_order() {
+        let original: Vec<_> = ["a", "b", "c", "d", "e"].into_iter().map(id).collect();
+        let mut q = QueueState::new();
+        q.play_with_context(id("c"), original.clone());
+        q.toggle_shuffle();
+        let shuffled = q.queue().to_vec();
+        let mut projected = shuffled.clone();
+        projected.insert(1, id("recommendation"));
+        q.project(projected, 1);
+        assert!(q.shuffle());
+        q.project(shuffled.clone(), 2);
+        let selected = shuffled[2].clone();
+        q.toggle_shuffle();
+        assert_eq!(q.queue(), original);
+        assert_eq!(q.current(), Some(&selected));
     }
 }
