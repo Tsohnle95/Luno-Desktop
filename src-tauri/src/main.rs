@@ -496,6 +496,11 @@ fn main() {
                     })
                 }));
             app.state::<AppState>().replay_latest();
+            if let Ok(cache_dir) = app.path().app_cache_dir() {
+                if let Err(error) = app.state::<AppState>().set_artwork_cache_directory(cache_dir.join("track-artwork-v1")) {
+                    eprintln!("[luno-artwork] persistent thumbnail cache unavailable: {error}");
+                }
+            }
             // Hardware media keys (play/pause/next/previous): claim them via
             // MPRemoteCommandCenter so they control Luno instead of falling
             // through to Apple Music. Honors Settings ▸ Playback live.

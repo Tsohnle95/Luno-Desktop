@@ -1,17 +1,20 @@
-//! Bounded, lazy embedded-artwork extraction for library tracks.
+//! Bounded embedded-artwork extraction and thumbnail caching for library tracks.
 //!
 //! The desktop library scan deliberately does not read audio metadata for
 //! every file (that would slow first scan significantly), so library tracks
-//! carry no `artwork_url`. Instead, artwork is extracted on demand for the
-//! rows the UI actually shows, embedded in the file's tags (ID3 APIC, ISO-BMFF
-//! `covr`, FLAC `PICTURE`), and served to the webview as a `data:` URL.
+//! carry no `artwork_url`. The frontend warms artwork in bounded background
+//! batches; visible rows raise their requests above that work. Extracted,
+//! downscaled covers are kept in a bounded process cache and a versioned
+//! persistent cache outside the music library, then served as `data:` URLs.
 
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Bounded in-memory cache of extracted artwork `data:` URLs, keyed by track
 /// id. Entries are evicted oldest-first once the total payload exceeds
@@ -20,6 +23,9 @@ pub const ARTWORK_CACHE_BYTES: usize = 32 * 1024 * 1024;
 /// Single artwork larger than this is rejected to avoid a single 10 MB JPEG
 /// becoming a 14 MB base64 string and spiking the WebView heap.
 pub const MAX_SINGLE_ARTWORK_BYTES: usize = 2 * 1024 * 1024;
+const DISK_ARTWORK_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+const DISK_ARTWORK_CACHE_TARGET_BYTES: u64 = DISK_ARTWORK_CACHE_BYTES * 3 / 4;
+const NO_ARTWORK_MARKER: &str = "luno:no-embedded-artwork";
 static NEXT_ARTWORK_STAGE: AtomicU64 = AtomicU64::new(1);
 /// Display size served to the webview. Embedded covers are routinely
 /// 1400–3000 px, and every rendered row decodes its own bitmap (a 3000 px
@@ -458,12 +464,19 @@ pub fn embedded_artwork_data_url(_path: &Path) -> Option<String> {
     None
 }
 
-/// Resolve artwork for a track id through the process-wide cache, extracting
-/// on first request. The track must be part of the current library snapshot.
+/// Resolve artwork for a track through the process and persistent caches,
+/// extracting on first cache miss. The track must be in the current snapshot.
 pub struct TrackArtwork {
     pub cache: Mutex<ArtworkCache>,
     pub resolve: Box<dyn Fn(&str) -> Option<std::path::PathBuf> + Send + Sync>,
     revision: AtomicU64,
+    disk_cache: Mutex<ArtworkDiskCache>,
+}
+
+#[derive(Default)]
+struct ArtworkDiskCache {
+    root: Option<PathBuf>,
+    total_bytes: u64,
 }
 
 impl TrackArtwork {
@@ -474,6 +487,99 @@ impl TrackArtwork {
             cache: Mutex::new(ArtworkCache::default()),
             resolve: Box::new(resolve),
             revision: AtomicU64::new(0),
+            disk_cache: Mutex::new(ArtworkDiskCache::default()),
+        }
+    }
+
+    /// Configure a bounded, versioned cache outside the user's music folder.
+    pub fn set_cache_directory(&self, root: PathBuf) -> Result<(), String> {
+        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        let total_bytes = fs::read_dir(&root)
+            .map_err(|error| error.to_string())?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                (entry.path().extension().and_then(|extension| extension.to_str()) == Some("cache"))
+                    .then(|| entry.metadata().ok().map(|metadata| metadata.len()))
+                    .flatten()
+            })
+            .sum();
+        let mut cache = self.disk_cache.lock().unwrap_or_else(|error| error.into_inner());
+        cache.root = Some(root);
+        cache.total_bytes = total_bytes;
+        if cache.total_bytes > DISK_ARTWORK_CACHE_BYTES {
+            Self::prune_disk_cache(&mut cache);
+        }
+        Ok(())
+    }
+
+    fn cache_file(&self, source: &Path) -> Option<PathBuf> {
+        let root = self.disk_cache.lock().ok()?.root.clone()?;
+        let metadata = fs::metadata(source).ok()?;
+        let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
+        let mut hasher = Sha256::new();
+        hasher.update(source.as_os_str().as_encoded_bytes());
+        hasher.update(metadata.len().to_le_bytes());
+        hasher.update(modified.to_le_bytes());
+        Some(root.join(format!("{:x}.cache", hasher.finalize())))
+    }
+
+    fn read_cache_file(path: &Path) -> Option<Option<String>> {
+        let value = fs::read_to_string(path).ok()?;
+        if value == NO_ARTWORK_MARKER {
+            return Some(None);
+        }
+        if value.starts_with("data:image/") && value.len() <= MAX_SINGLE_ARTWORK_BYTES * 2 {
+            return Some(Some(value));
+        }
+        let _ = fs::remove_file(path);
+        None
+    }
+
+    fn write_cache_file(&self, path: &Path, value: Option<&str>) {
+        let Ok(mut cache) = self.disk_cache.lock() else { return };
+        let Some(root) = cache.root.as_ref() else { return };
+        if !path.starts_with(root) || path.exists() {
+            return;
+        }
+        let bytes = value.unwrap_or(NO_ARTWORK_MARKER).as_bytes();
+        let sequence = NEXT_ARTWORK_STAGE.fetch_add(1, Ordering::Relaxed);
+        let temporary = root.join(format!(".luno-artwork-cache-{}-{sequence}.tmp", std::process::id()));
+        if fs::write(&temporary, bytes).is_err() {
+            let _ = fs::remove_file(&temporary);
+            return;
+        }
+        if fs::rename(&temporary, path).is_err() {
+            let _ = fs::remove_file(&temporary);
+            return;
+        }
+        cache.total_bytes = cache.total_bytes.saturating_add(bytes.len() as u64);
+        if cache.total_bytes > DISK_ARTWORK_CACHE_BYTES {
+            Self::prune_disk_cache(&mut cache);
+        }
+    }
+
+    fn prune_disk_cache(cache: &mut ArtworkDiskCache) {
+        let Some(root) = cache.root.as_ref() else { return };
+        let Ok(entries) = fs::read_dir(root) else { return };
+        let mut files = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().and_then(|extension| extension.to_str()) != Some("cache") {
+                    return None;
+                }
+                let metadata = entry.metadata().ok()?;
+                Some((metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH), path, metadata.len()))
+            })
+            .collect::<Vec<_>>();
+        files.sort_by_key(|(modified, _, _)| *modified);
+        for (_, path, size) in files {
+            if cache.total_bytes <= DISK_ARTWORK_CACHE_TARGET_BYTES {
+                break;
+            }
+            if fs::remove_file(path).is_ok() {
+                cache.total_bytes = cache.total_bytes.saturating_sub(size);
+            }
         }
     }
 
@@ -484,6 +590,30 @@ impl TrackArtwork {
             return Some(url);
         }
         let path = (self.resolve)(track_id)?;
+        if let Some(cache_file) = self.cache_file(&path) {
+            if let Some(url) = Self::read_cache_file(&cache_file) {
+                if self.revision.load(Ordering::Acquire) == revision {
+                    if let Some(url) = &url {
+                        if let Ok(mut cache) = self.cache.lock() {
+                            cache.insert(track_id.to_string(), url.clone());
+                        }
+                    }
+                }
+                return url;
+            }
+            let url = embedded_artwork_data_url(&path);
+            if self.revision.load(Ordering::Acquire) == revision {
+                self.write_cache_file(&cache_file, url.as_deref());
+            }
+            if let Some(url) = &url {
+                if self.revision.load(Ordering::Acquire) == revision {
+                    if let Ok(mut cache) = self.cache.lock() {
+                        cache.insert(track_id.to_string(), url.clone());
+                    }
+                }
+            }
+            return url;
+        }
         let url = embedded_artwork_data_url(&path)?;
         if self.revision.load(Ordering::Acquire) == revision {
             if let Ok(mut cache) = self.cache.lock() {
@@ -560,5 +690,41 @@ mod artwork_tests {
         let junk = vec![0xFF, 0xD8, 0x00, 0x01, 0x02, 0x03];
         let url = picture_data_url("image/jpeg", &junk).expect("fallback serves");
         assert!(url.starts_with("data:image/jpeg;base64,"));
+    }
+}
+
+#[cfg(test)]
+mod artwork_disk_cache_tests {
+    use super::*;
+
+    fn test_root() -> PathBuf {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        std::env::temp_dir().join(format!("luno-artwork-cache-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn disk_cache_round_trips_art_and_definitive_no_art() {
+        let root = test_root();
+        let source = root.join("song.mp3");
+        let cache_dir = root.join("cache");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&source, b"audio source").unwrap();
+        let artwork = TrackArtwork::new({
+            let source = source.clone();
+            move |_| Some(source.clone())
+        });
+        artwork.set_cache_directory(cache_dir.clone()).unwrap();
+
+        let art_file = artwork.cache_file(&source).unwrap();
+        artwork.write_cache_file(&art_file, Some("data:image/jpeg;base64,Y292ZXI="));
+        assert_eq!(TrackArtwork::read_cache_file(&art_file), Some(Some("data:image/jpeg;base64,Y292ZXI=".into())));
+
+        let no_art_file = cache_dir.join("no-art.cache");
+        artwork.write_cache_file(&no_art_file, None);
+        assert_eq!(TrackArtwork::read_cache_file(&no_art_file), Some(None));
+
+        fs::write(&source, b"audio source replaced").unwrap();
+        assert_ne!(art_file, artwork.cache_file(&source).unwrap());
+        let _ = fs::remove_dir_all(root);
     }
 }

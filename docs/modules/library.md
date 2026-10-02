@@ -10,7 +10,8 @@ It owns the guarantees behind every library snapshot the UI renders.
 - Stable media-key derivation and collision handling.
 - Library mutations (playlists, favorites, deletes, markers) with
   safe-root containment and atomic writes.
-- Lazy artwork extraction and the bounded backend cache.
+- Embedded-artwork extraction, the bounded process cache, and the bounded
+  persistent thumbnail cache.
 - Settings/config persistence, first-run migration, keychain and legacy
   readers, recovery.
 
@@ -32,8 +33,10 @@ transfer manifests (`docs/modules/contracts.md`).
 - `src-tauri/src/library/metadata.rs` — versioned portable per-track metadata
   in `.luno_track_metadata.json` at the music root.
 - `src-tauri/src/library/artwork.rs` — bounded embedded-artwork extraction
-  served as data URLs over the `track_artwork` command, missing-art detection,
-  cache invalidation, and staged metadata writes.
+  served as data URLs over the `track_artwork` command, background warmup,
+  cache invalidation, and staged metadata writes. Downscaled results and
+  definitive no-art results are stored in the versioned app-cache directory;
+  source path, size, and modification time select each entry.
 - `src-tauri/src/library/artwork_search.rs` — user-triggered MusicBrainz
   recording search, linked release-group lookup, and Cover Art Archive candidate images. It applies an
   identified User-Agent, spaces provider requests by at least one second, and
@@ -160,12 +163,15 @@ transfer manifests (`docs/modules/contracts.md`).
 - Frontend artwork requests have view-scoped demand leases: queued offscreen
   work is removed when no mounted view needs it, duplicate requests share one
   job, and the audible track and visible library rows receive higher queue
-  priority than static sidebar mosaics. Concurrency and cache budgets are
-  unchanged.
+  priority than static sidebar mosaics. A low-priority library-wide warmup
+  submits bounded batches, with at most two background requests active. The
+  process cache remains bounded at 32 MiB and the disk cache at 512 MiB.
 - Missing table durations are probed lazily for virtualized visible rows
   through `track_duration`, on a blocking worker. Probed values stay in the
-  current frontend view cache; they do not change filename-derived IDs or the
-  portable metadata sidecar, and library scans do not probe every audio file.
+  bounded frontend session cache across route changes and snapshot generations;
+  they do not change filename-derived IDs or the portable metadata sidecar, and
+  library scans do not probe every audio file. Duration sorting reorders known
+  results as they arrive and keeps unresolved tracks after the known group.
 - Library track rows, home song and playlist cards, and playlist cover mosaics use the
   deterministic generated Luno artwork when a file has no usable embedded
   cover, including recommendations saved to a physical playlist.
@@ -186,7 +192,8 @@ scan_async → validate/canonicalize roots → off-thread scan → stable keys
 → generation-guarded snapshot → library event (or keep-previous + error
 event when all roots unreadable)
 play_with_context → heal ids vs current map → queue → playback
-visible row → track_artwork command → bounded extract → data URL
+library snapshot → low-priority artwork warmup → bounded disk/process cache
+visible row → prioritized track_artwork command → cached/extracted data URL
 visible library row → track_duration command → blocking container probe
 playlist artwork menu/Settings → local missing-art scan → selected song
 → MusicBrainz/CAA candidate review → staged tag write → atomic replace

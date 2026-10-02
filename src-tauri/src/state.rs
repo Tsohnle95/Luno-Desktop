@@ -2808,6 +2808,10 @@ impl AppState {
         Ok(self.artwork.artwork(track_id))
     }
 
+    pub fn set_artwork_cache_directory(&self, path: PathBuf) -> Result<(), String> {
+        self.artwork.set_cache_directory(path)
+    }
+
     /// Returns current library ids that have no readable embedded picture.
     /// The scan avoids constructing webview data URLs and caps untrusted IPC
     /// input before touching the filesystem.
