@@ -117,12 +117,16 @@ envelope shapes (`docs/modules/contracts.md`).
   its successors remain the captured physical context. Discover queue rows
   resolve recommendation keys and keep placeholder slots for unresolvable ids
   so row indices stay aligned with the backend queue.
-- Video staging requests use that same audible identity, including focused
-  recommendation keys. Embedded artwork is requested for the displayed
-  library track, including when the physical queue points elsewhere; the
-  resolved image feeds both the backdrop and media stage. Missing artwork
-  renders the same deterministic custom design, which stays visible until a
-  staged video decodes its first frame.
+- Video staging follows the backend's active selection owner during a pending
+  transition: Discover's projected row, a focused preview, then the selected
+  library queue row before the last confirmed audible ID. Embedded artwork is
+  still requested for the displayed library track, including when the
+  physical queue points elsewhere; the resolved image feeds the backdrop and
+  media stage. Missing artwork renders the same deterministic custom design,
+  which stays visible until a staged video decodes its first frame.
+- The single-song artwork's Download video action stays in its lower-left
+  position and follows the stage's existing hover/focus reveal; retry/error
+  details remain in the hover controls. The action is not shown permanently.
 - Recommendation rows select through `discover_select` while Discover is
   enabled and through focused preview otherwise. Their Add to playlist action
   remains available while audio is pending or unavailable; the backend reuses

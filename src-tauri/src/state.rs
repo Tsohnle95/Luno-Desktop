@@ -116,6 +116,7 @@ mod tests {
         loads: usize,
         stops: usize,
         playing: bool,
+        finished: bool,
     }
 
     #[cfg(target_os = "macos")]
@@ -123,6 +124,10 @@ mod tests {
         fn snapshot(&self) -> (Option<PathBuf>, Duration, usize, usize, bool) {
             let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
             (state.path.clone(), state.position, state.loads, state.stops, state.playing)
+        }
+
+        fn set_finished(&self, finished: bool) {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).finished = finished;
         }
     }
 
@@ -158,6 +163,9 @@ mod tests {
         fn duration(&self) -> Result<Option<Duration>, BackendError> {
             Ok(Some(Duration::from_secs(120)))
         }
+        fn is_finished(&self) -> Option<bool> {
+            Some(self.0.lock().unwrap_or_else(|e| e.into_inner()).finished)
+        }
         fn stop(&mut self) {
             let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
             state.stops += 1;
@@ -175,6 +183,94 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("timed out waiting for {track_id:?} to start");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stale_eof_heartbeat_and_load_error_cannot_replace_a_made_for_you_selection() {
+        let root = unique_home("playback-owner-race");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let state = AppState::with_preview_store(PreviewAssetStore::at(root.join("previews")).unwrap(), 8);
+        let old = TrackId::new("old-audible").unwrap();
+        let selected = TrackId::new("made-for-you-selection").unwrap();
+        let after = TrackId::new("next-in-context").unwrap();
+        let old_path = root.join("old.m4a");
+        let selected_path = root.join("selected.m4a");
+        let after_path = root.join("after.m4a");
+        for path in [&old_path, &selected_path, &after_path] { std::fs::write(path, b"fixture").unwrap(); }
+        state.track_paths.lock().unwrap_or_else(|e| e.into_inner()).extend([
+            (old.clone(), old_path.clone()),
+            (selected.clone(), selected_path.clone()),
+            (after.clone(), after_path),
+        ]);
+        state.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(vec![old.clone(), selected.clone(), after.clone()], 0);
+        let probe = PlaybackProbe::default();
+        let mut backend = probe.clone();
+        backend.load(&old_path).unwrap();
+        backend.play().unwrap();
+        *state.audio.lock().unwrap_or_else(|e| e.into_inner()) = Box::new(probe.clone());
+        *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(old.clone());
+        *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Playing;
+        *state.clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlaybackClock::new(Some(Duration::from_secs(120))));
+        state.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut().unwrap().start(0.0);
+        let old_owner = *state.playback_owner.lock().unwrap_or_else(|e| e.into_inner());
+        probe.set_finished(true);
+
+        state.play_with_context_from(selected.clone(), vec![old.clone(), selected.clone(), after], None).unwrap();
+        assert_eq!(state.playback.lock().unwrap_or_else(|e| e.into_inner()).current(), Some(&selected));
+        assert!(!state.heartbeat_tick(old_owner, &old).unwrap(), "a tick already in flight must retire after the click claims playback");
+        assert!(!state.recover_from_backend_error_if_owner(BackendError::Decode("late old-track failure".into()), old_owner), "a superseded decoder error must not run failure-recovery against the new queue");
+
+        probe.set_finished(false);
+        wait_for_current_track(&state, &selected);
+        assert_eq!(state.playback.lock().unwrap_or_else(|e| e.into_inner()).current(), Some(&selected));
+        assert_eq!(probe.snapshot().0.as_deref(), Some(selected_path.as_path()));
+        state.tasks.cancel_all();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stale_recommendation_action_cannot_reclaim_audio_after_library_selection() {
+        let root = unique_home("preview-owner-race");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let state = AppState::with_preview_store(PreviewAssetStore::at(root.join("previews")).unwrap(), 8);
+        let seed = TrackId::new("preview-seed").unwrap();
+        let selected = TrackId::new("library-selection").unwrap();
+        let recommendation = TrackId::new("stale-recommendation").unwrap();
+        let seed_path = root.join("seed.m4a");
+        let selected_path = root.join("selected.m4a");
+        std::fs::write(&seed_path, b"fixture").unwrap();
+        std::fs::write(&selected_path, b"fixture").unwrap();
+        state.track_paths.lock().unwrap_or_else(|e| e.into_inner()).extend([
+            (seed.clone(), seed_path.clone()),
+            (selected.clone(), selected_path.clone()),
+        ]);
+        let physical = vec![seed.clone(), selected.clone()];
+        state.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(physical.clone(), 0);
+        let recommendation_path = state.preview_store.lock().unwrap_or_else(|e| e.into_inner()).ready_path(&recommendation.0).unwrap();
+        std::fs::write(&recommendation_path, b"ID3 fixture").unwrap();
+        let mut preview = PreviewSession::start(1, physical, 0, vec![recommendation.clone()], &recommendation).unwrap();
+        assert_eq!(preview.prepared_asset(1, recommendation.clone(), recommendation_path), SessionAction::Play(recommendation.clone()));
+        *state.preview_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(preview);
+
+        let probe = PlaybackProbe::default();
+        let mut backend = probe.clone();
+        backend.load(&seed_path).unwrap();
+        backend.play().unwrap();
+        *state.audio.lock().unwrap_or_else(|e| e.into_inner()) = Box::new(probe.clone());
+        *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(seed.clone());
+        *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Playing;
+
+        state.play_with_context_from(selected.clone(), vec![seed, selected.clone()], None).unwrap();
+        state.handle_session_action(SessionAction::Play(recommendation), 1);
+        wait_for_current_track(&state, &selected);
+        assert_eq!(probe.snapshot().0.as_deref(), Some(selected_path.as_path()));
+        assert_eq!(probe.snapshot().2, 2, "the stale recommendation must not cause a third backend load");
+        state.tasks.cancel_all();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(target_os = "macos")]
@@ -394,6 +490,27 @@ mod tests {
         assert!(completion_may_publish(Some(&video("t-other", 5)), &worker_track, 7));
         // Another track with a NEWER generation (a newer claim): DO NOT publish.
         assert!(!completion_may_publish(Some(&video("t-other", 9)), &worker_track, 7));
+    }
+
+    #[test]
+    fn video_target_uses_the_active_selection_owner() {
+        let id = |value: &str| Some(TrackId::new(value).unwrap());
+        assert_eq!(
+            selected_video_target(true, id("discover-item"), None, id("projected-selection"), id("old-audible")),
+            id("projected-selection"),
+            "Discover's projected selection wins over the last audible track",
+        );
+        assert_eq!(
+            selected_video_target(false, None, id("focused-preview"), id("library-seed"), id("old-audible")),
+            id("focused-preview"),
+            "a focused recommendation owns video staging outside the physical queue",
+        );
+        assert_eq!(
+            selected_video_target(false, None, None, id("pending-library-selection"), id("old-audible")),
+            id("pending-library-selection"),
+            "a pending library load must stage its selected row rather than the previous output",
+        );
+        assert_eq!(selected_video_target(false, None, None, None, id("old-audible")), id("old-audible"));
     }
 
     #[test]
@@ -1580,7 +1697,9 @@ esac
         let id = snapshot.tracks[0].id.clone();
 
         state.set_playing(id.clone(), vec![id.clone()]);
-        *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
+        // The prior audible ID remains authoritative until an async selected
+        // queue load commits. Video mode must stage the selected row here.
+        *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(TrackId::new("previous-audible").unwrap());
         *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Paused;
         state.dispatch(CommandEnvelope {
             version: CONTRACT_VERSION,
@@ -2522,6 +2641,10 @@ pub struct AppState {
     scan: Arc<Mutex<ScanState>>,
     #[cfg(target_os = "macos")]
     playback_status: Arc<Mutex<crate::contracts::types::PlaybackStatus>>,
+    /// Serializes ownership changes with heartbeat commits. Decode work stays
+    /// outside this lock; only the short queue/audio state transition is held.
+    #[cfg(target_os = "macos")]
+    playback_owner: Arc<Mutex<u64>>,
     #[cfg(target_os = "macos")]
     audio: Arc<Mutex<Box<dyn AudioBackend + Send>>>,
     /// Master volume shared with the output callback. A mute must not wait
@@ -2707,6 +2830,24 @@ pub fn audible_video_plan(
     plan
 }
 
+/// Resolve the song whose video request is intended during async playback
+/// transitions. Discover follows its projected queue; focused previews own
+/// their temporary current item; regular playback follows the selected queue
+/// row before falling back to the last confirmed audible identity.
+pub fn selected_video_target(
+    discover_active: bool,
+    discover_selected: Option<TrackId>,
+    focused_preview_selected: Option<TrackId>,
+    queue_selected: Option<TrackId>,
+    last_audible: Option<TrackId>,
+) -> Option<TrackId> {
+    if discover_active {
+        queue_selected.or(discover_selected).or(last_audible)
+    } else {
+        focused_preview_selected.or(queue_selected).or(last_audible)
+    }
+}
+
 /// Video plan for an initial recommendation prefetch window. The audible
 /// library item remains first so its quick stage and quality upgrade retain
 /// admission priority; recommendation ids follow in their temporary-window
@@ -2826,6 +2967,8 @@ impl AppState {
             })),
             #[cfg(target_os = "macos")]
             playback_status: Arc::new(Mutex::new(crate::contracts::types::PlaybackStatus::Stopped)),
+            #[cfg(target_os = "macos")]
+            playback_owner: Arc::new(Mutex::new(0)),
             #[cfg(target_os = "macos")]
             audio: Arc::new(Mutex::new({
                 #[cfg(test)]
@@ -3533,8 +3676,25 @@ impl AppState {
     }
 
     fn audible_video_track(&self) -> Option<TrackId> {
-        let audible = self.current_track.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        audible.or_else(|| self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned())
+        // Resolve the selected owner before the last audible identity. During
+        // an asynchronous queue load, current_track intentionally stays on the
+        // old output until the replacement starts; staging that old ID races
+        // the song page's request for the selected track.
+        let (discover_active, discover_item) = self.discover.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|mode| mode.is_active())
+            .map(|mode| (
+                true,
+                mode.current_recommendation().or_else(|| mode.pending_focus()).cloned(),
+            ))
+            .unwrap_or((false, None));
+        let queued = self.playback.lock().unwrap_or_else(|e| e.into_inner()).current().cloned();
+        let focused_preview = self.preview_session.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|session| session.is_active() && !session.is_prefetch())
+            .and_then(|session| session.current().cloned());
+        let last_audible = self.current_track.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        selected_video_target(discover_active, discover_item, focused_preview, queued, last_audible)
     }
 
     pub fn video_mode_enabled(&self) -> bool {
@@ -4115,8 +4275,14 @@ impl AppState {
     }
 
     fn handle_session_action(&self, action: SessionAction, generation: u64) {
+        let owns_generation = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            .is_some_and(|session| session.generation() == generation);
+        if !owns_generation { return; }
         match action {
             SessionAction::Play(key) => {
+                let is_current = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                    .is_some_and(|session| session.is_active() && session.current() == Some(&key));
+                if !is_current { return; }
                 // A preserved focused session can finish after Discover has
                 // selected another row. Its file remains reusable, but it
                 // must not take audio ownership back from that selection.
@@ -4158,6 +4324,12 @@ impl AppState {
     }
 
     fn restore_preview_queue(&self, queue: Vec<TrackId>, index: Option<usize>) {
+        #[cfg(target_os = "macos")]
+        let mut owner = self.playback_owner_lock();
+        #[cfg(target_os = "macos")]
+        let playback_owner = Self::advance_playback_owner(&mut owner);
+        #[cfg(target_os = "macos")]
+        self.tasks.cancel_key("playback-heartbeat");
         if let Some(index) = index {
             self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
         } else {
@@ -4165,7 +4337,7 @@ impl AppState {
         }
         self.publish_queue_snapshot();
         #[cfg(target_os = "macos")]
-        if index.is_some() { let _ = self.start_current_track(); }
+        if index.is_some() { let _ = self.start_current_track_with_owner(playback_owner); }
     }
 
     /// A preview asset that could not be loaded/played must stop the transport
@@ -4191,7 +4363,13 @@ impl AppState {
 
     #[cfg(target_os = "macos")]
     fn play_preview_audio(&self, key: TrackId, path: PathBuf, generation: u64) {
+        let mut owner = self.playback_owner_lock();
+        let still_selected = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            .is_some_and(|session| session.is_active() && session.generation() == generation && session.current() == Some(&key));
+        if !still_selected { return; }
+        let playback_owner = Self::advance_playback_owner(&mut owner);
         self.tasks.cancel_key("playback-heartbeat");
+        self.tasks.cancel_key("playback-load");
         self.tasks.cancel_key("preview-heartbeat");
         // The backend handoff can wait for a cold producer. Keep it on the
         // playback worker so a ready-row tap returns before that wait.
@@ -4201,6 +4379,12 @@ impl AppState {
         let rejected_key = key.clone();
         let admitted = self.submit(self.generation(task_key, Generation(generation)), move |token| {
             if token.is_cancelled() { return; }
+            let selected_owner = {
+                let owner = state.playback_owner_lock();
+                *owner == playback_owner && state.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                    .is_some_and(|session| session.is_active() && session.generation() == generation && session.current() == Some(&key))
+            };
+            if !selected_owner { return; }
             let loaded = {
                 let mut backend = match state.audio.lock() { Ok(backend) => backend, Err(_) => return };
                 match backend.load_streaming(&path) {
@@ -4208,6 +4392,10 @@ impl AppState {
                     Err(error) => {
                         eprintln!("[luno-preview] audio load failed for {}: {error:?}", key.0);
                         drop(backend);
+                        let owner = state.playback_owner_lock();
+                        let still_selected = state.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                            .is_some_and(|session| session.is_active() && session.generation() == generation && session.current() == Some(&key));
+                        if token.is_cancelled() || *owner != playback_owner || !still_selected { return; }
                         // Truthful failure: mark the asset unavailable so the row
                         // reads "Preview unavailable" instead of sticking on
                         // "Previewing now" with a frozen footer tracker.
@@ -4218,12 +4406,17 @@ impl AppState {
                         // stream was stopped before the load attempt.
                         state.publish_preview_snapshot(generation);
                         state.publish_preview_failure_status();
+                        drop(owner);
                         state.handle_session_action(action, generation);
                         return;
                     }
                 }
             };
             if token.is_cancelled() { return; }
+            let owner = state.playback_owner_lock();
+            let still_selected = state.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                .is_some_and(|session| session.is_active() && session.generation() == generation && session.current() == Some(&key));
+            if token.is_cancelled() || *owner != playback_owner || !still_selected { return; }
             {
                 let mut backend = match state.audio.lock() { Ok(backend) => backend, Err(_) => return };
                 if token.is_cancelled() { return; }
@@ -4233,6 +4426,7 @@ impl AppState {
                     let action = state.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|s| s.failed_asset(generation, &key)).unwrap_or(SessionAction::Ended);
                     state.publish_preview_snapshot(generation);
                     state.publish_preview_failure_status();
+                    drop(owner);
                     state.handle_session_action(action, generation);
                     return;
                 }
@@ -4253,6 +4447,7 @@ impl AppState {
                 loaded.duration,
             );
             state.publish_playback(snapshot, Some(key.clone()));
+            drop(owner);
             let heartbeat_key = key.clone();
             // Keep the clock on the admitted audio worker. A second registry
             // admission could fail under preview/video load and silently
@@ -4270,6 +4465,11 @@ impl AppState {
                         let duration = backend.duration().ok().flatten();
                         (position, duration)
                     };
+                    let mut owner = state.playback_owner_lock();
+                    if *owner != playback_owner || token.is_cancelled() { break; }
+                    let preview_still_current = state.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                        .is_some_and(|session| session.is_active() && session.generation() == generation && session.current() == Some(&heartbeat_key));
+                    if !preview_still_current { break; }
                     let status = *state.playback_status.lock().unwrap_or_else(|e| e.into_inner());
                     let due = state.clock.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|clock| clock.completion_due(position, true, position));
                     if due && state.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut().is_some_and(|clock| clock.dispatch_completion()) {
@@ -4277,15 +4477,23 @@ impl AppState {
                         // completion follows the same physical Next policy as
                         // the global transport; only Discover mode autoplays
                         // recommendation successors.
-                        let _ = state.next_track();
+                        let next_owner = AppState::advance_playback_owner(&mut owner);
+                        state.tasks.cancel_key("preview-heartbeat");
+                        let _ = state.next_track_with_owner(next_owner);
                         break;
                     }
                     let snapshot = state.playback_snapshot(status, position, duration);
                     state.publish_playback(snapshot, None);
+                    drop(owner);
                 }
         });
+        drop(owner);
         if let Err(error) = admitted {
             eprintln!("[luno-preview] audio worker unavailable for {}: {error:?}", rejected_key.0);
+            let owner = self.playback_owner_lock();
+            let still_selected = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                .is_some_and(|session| session.is_active() && session.generation() == generation && session.current() == Some(&rejected_key));
+            if *owner != playback_owner || !still_selected { return; }
             let _ = self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
                 .map(|session| session.failed_asset(generation, &rejected_key));
             self.publish_preview_snapshot(generation);
@@ -4702,11 +4910,19 @@ impl AppState {
             })?;
             (queue, index)
         };
-        self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
-        self.publish_queue_snapshot();
         #[cfg(target_os = "macos")]
         {
-            let _ = self.start_current_track()?;
+            let mut owner = self.playback_owner_lock();
+            let playback_owner = Self::advance_playback_owner(&mut owner);
+            self.tasks.cancel_key("playback-heartbeat");
+            self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
+            self.publish_queue_snapshot();
+            let _ = self.start_current_track_with_owner(playback_owner)?;
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.playback.lock().unwrap_or_else(|e| e.into_inner()).replace(queue, index);
+            self.publish_queue_snapshot();
         }
         self.discover_snapshot_value()
     }
@@ -6408,6 +6624,15 @@ impl AppState {
             Command::RemoveFromQueue { index } => self.queue_remove(index),
             Command::ReorderQueue { from, to } => self.queue_reorder(from, to),
             Command::ClearQueue => {
+                #[cfg(target_os = "macos")]
+                let mut owner = self.playback_owner_lock();
+                #[cfg(target_os = "macos")]
+                {
+                    Self::advance_playback_owner(&mut owner);
+                    self.tasks.cancel_key("playback-heartbeat");
+                    self.tasks.cancel_key("playback-load");
+                    self.tasks.cancel_key("preview-heartbeat");
+                }
                 self.end_discover(false);
                 self.invalidate_preview_without_restore();
                 self.playback.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -7558,6 +7783,24 @@ fn promotion_error(error: PromotionError) -> ContractError {
 
     #[cfg(target_os = "macos")]
     fn recover_from_backend_error(&self, error: BackendError) {
+        let mut owner = self.playback_owner_lock();
+        let playback_owner = Self::advance_playback_owner(&mut owner);
+        self.tasks.cancel_key("playback-heartbeat");
+        self.recover_from_backend_error_with_owner(error, playback_owner);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn recover_from_backend_error_if_owner(&self, error: BackendError, expected_owner: u64) -> bool {
+        let mut owner = self.playback_owner_lock();
+        if *owner != expected_owner { return false; }
+        let recovery_owner = Self::advance_playback_owner(&mut owner);
+        self.tasks.cancel_key("playback-heartbeat");
+        self.recover_from_backend_error_with_owner(error, recovery_owner);
+        true
+    }
+
+    #[cfg(target_os = "macos")]
+    fn recover_from_backend_error_with_owner(&self, error: BackendError, playback_owner: u64) {
         let contract = Self::playback_error(error);
         self.publish(self.event(self.library().generation, Event::Error { error: contract }));
         let action = self.recovery.lock().unwrap_or_else(|e| e.into_inner()).record_failure();
@@ -7565,7 +7808,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
             *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Failed;
             self.publish_queue_snapshot();
         } else {
-            let _ = self.next_track();
+            let _ = self.next_track_with_owner(playback_owner);
         }
     }
 
@@ -7796,9 +8039,18 @@ fn promotion_error(error: PromotionError) -> ContractError {
     fn queue_remove(&self, index: usize) -> Result<Value, ContractError> {
         let index = self.physical_queue_edit_index(index)?;
         self.end_discover(true);
+        #[cfg(target_os = "macos")]
+        let mut owner = self.playback_owner_lock();
+        #[cfg(target_os = "macos")]
+        let mut replacement_owner = None;
         let was_current = {
             let mut queue = self.playback.lock().unwrap_or_else(|e| e.into_inner());
             let was_current = queue.current_index() == Some(index);
+            #[cfg(target_os = "macos")]
+            if was_current {
+                replacement_owner = Some(Self::advance_playback_owner(&mut owner));
+                self.tasks.cancel_key("playback-heartbeat");
+            }
             if !queue.remove(index) {
                 return Err(ContractError::invalid("queue index is out of range"));
             }
@@ -7816,7 +8068,8 @@ fn promotion_error(error: PromotionError) -> ContractError {
             if has_current {
                 // Even if the replacement track cannot start, the removal must
                 // still be published so the panel drops the removed row.
-                return self.start_current_track().inspect_err(|_| self.publish_queue_snapshot());
+                return self.start_current_track_with_owner(replacement_owner.expect("current removal claimed a playback owner"))
+                    .inspect_err(|_| self.publish_queue_snapshot());
             }
             if let Ok(mut backend) = self.audio.lock() {
                 let _ = backend.stop();
@@ -7872,6 +8125,18 @@ fn promotion_error(error: PromotionError) -> ContractError {
             return Err(ContractError::invalid("playback context is not from the selected playlist"));
         }
         self.play_with_context_from(track_id, context, Some(playlist_id))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn playback_owner_lock(&self) -> std::sync::MutexGuard<'_, u64> {
+        self.playback_owner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn advance_playback_owner(owner: &mut u64) -> u64 {
+        *owner = owner.wrapping_add(1);
+        if *owner == 0 { *owner = 1; }
+        *owner
     }
 
     #[cfg(target_os = "macos")]
@@ -7935,16 +8200,24 @@ fn promotion_error(error: PromotionError) -> ContractError {
             (effective, healed_context, path)
         };
         eprintln!("[luno-play] resolved -> {} queue_len={}", path.display(), context.len());
-        // A library selection is an explicit ownership transfer. End either
-        // temporary presentation before replacing the queue so stale workers
-        // cannot keep publishing against the new physical context.
+        // A library selection is an explicit ownership transfer. Claim it
+        // before tearing down temporary presentation so a heartbeat already
+        // between ticks cannot advance or publish through the transition.
+        let mut owner = self.playback_owner_lock();
+        let playback_owner = Self::advance_playback_owner(&mut owner);
+        self.tasks.cancel_key("playback-heartbeat");
+        self.tasks.cancel_key("playback-load");
+        self.tasks.cancel_key("preview-heartbeat");
         if self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active()) {
             let _ = self.leave_preview_for_library();
         }
         if self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|mode| mode.is_active()) {
             self.end_discover(false);
         }
-        self.tasks.cancel_key("preview-heartbeat");
+        // The queue selection and the generation seen by a heartbeat are one
+        // transition. A tick already past its sleep must either commit before
+        // this click or observe the new owner and leave the selected queue
+        // untouched.
         {
             let mut queue = self.playback.lock().unwrap_or_else(|e| e.into_inner());
             queue.play_with_context(track_id.clone(), context);
@@ -7967,7 +8240,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         let load_state = self.clone();
         let generation = ack.generation;
         self.submit(self.generation("playback-load", generation), move |token| {
-            load_state.start_selected_track(track_id, path, source_playlist_id, token);
+            load_state.start_selected_track(track_id, path, source_playlist_id, playback_owner, token);
         })
         .map_err(|_| ContractError {
             code: ErrorCode::Busy,
@@ -7991,9 +8264,12 @@ fn promotion_error(error: PromotionError) -> ContractError {
         track_id: TrackId,
         path: PathBuf,
         source_playlist_id: Option<PlaylistId>,
+        playback_owner: u64,
         token: crate::runtime::task_registry::CancellationToken,
     ) {
-        if token.is_cancelled() || self.is_closing() {
+        if token.is_cancelled() || self.is_closing()
+            || *self.playback_owner.lock().unwrap_or_else(|e| e.into_inner()) != playback_owner
+        {
             eprintln!("[luno-play] load cancelled for {track_id:?}");
             return;
         }
@@ -8018,12 +8294,19 @@ fn promotion_error(error: PromotionError) -> ContractError {
                     return;
                 }
             };
+            // A worker may have been waiting for the backend mutex when a new
+            // click superseded it. Recheck after acquiring the lock so it
+            // cannot load or fail against the replacement selection.
+            if token.is_cancelled() || self.is_closing() {
+                return;
+            }
             match backend.load_streaming_with_duration(&path, known_duration) {
                 Ok(info) => info,
                 Err(error) => {
                     drop(backend);
+                    if token.is_cancelled() || self.is_closing() { return; }
                     eprintln!("[luno-play] load_streaming failed: {error:?}");
-                    self.recover_from_backend_error(error);
+                    let _ = self.recover_from_backend_error_if_owner(error, playback_owner);
                     return;
                 }
             }
@@ -8031,41 +8314,55 @@ fn promotion_error(error: PromotionError) -> ContractError {
         if token.is_cancelled() || self.is_closing() {
             return;
         }
-        {
-            let mut backend = match self.audio.lock() {
-                Ok(backend) => backend,
-                Err(_) => return,
-            };
-            if let Err(error) = backend.play() {
-                drop(backend);
-                eprintln!("[luno-play] backend.play failed: {error:?}");
-                self.recover_from_backend_error(error);
-                return;
-            }
+        // Claim the short start-and-publish transition. A newer selection can
+        // proceed during decode, but it cannot be overwritten by a stale load
+        // that finishes afterward.
+        let mut owner = self.playback_owner_lock();
+        if token.is_cancelled() || self.is_closing() || *owner != playback_owner {
+            return;
         }
+        let mut backend = match self.audio.lock() {
+            Ok(backend) => backend,
+            Err(_) => return,
+        };
+        if token.is_cancelled() {
+            return;
+        }
+        if let Err(error) = backend.play() {
+            drop(backend);
+            eprintln!("[luno-play] backend.play failed: {error:?}");
+            let recovery_owner = Self::advance_playback_owner(&mut owner);
+            self.tasks.cancel_key("playback-heartbeat");
+            self.recover_from_backend_error_with_owner(error, recovery_owner);
+            return;
+        }
+        drop(backend);
         eprintln!("[luno-play] playing {track_id:?} ({}ms)", info.duration.map(|d| d.as_millis()).unwrap_or(0));
         self.playback.lock().unwrap_or_else(|e| e.into_inner()).record_started(track_id.clone(), false);
         self.discover_track_started(&track_id);
         self.record_recent(track_id.clone());
         self.record_successful_track_start(&track_id, source_playlist_id.as_ref());
-        // Auto-advance reached a new track: keep video mode in lockstep
-        // (stage the new current, prefetch its successors).
-        if self.video_mode_enabled() {
-            self.kick_video_pipeline();
-        }
         *self.clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlaybackClock::new(info.duration));
         if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.start(0.0); }
+        *self.playback_stall.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.recovery.lock().unwrap_or_else(|e| e.into_inner()).record_success();
         *self.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(track_id.clone());
         *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Playing;
+        // Stage only after the audible identity has committed. Kicking before
+        // current_track changed could start a competing video search for the
+        // song that just stopped.
+        if self.video_mode_enabled() {
+            self.kick_video_pipeline();
+        }
         let snapshot = self.playback_snapshot(
             crate::contracts::types::PlaybackStatus::Playing,
             Duration::ZERO,
             info.duration,
         );
-        self.publish_playback(snapshot.clone(), Some(track_id));
+        self.publish_playback(snapshot.clone(), Some(track_id.clone()));
         let heartbeat_state = self.clone();
         let generation = snapshot.generation;
+        let heartbeat_track = track_id;
         let _ = self.submit(self.generation("playback-heartbeat", generation), move |token| {
             // One transient tick failure must NEVER kill the heartbeat: a dead
             // heartbeat froze every snapshot (scrubber, status, queue) until
@@ -8074,8 +8371,9 @@ fn promotion_error(error: PromotionError) -> ContractError {
             while !token.is_cancelled() && !heartbeat_state.is_closing() {
                 std::thread::sleep(crate::playback::clock::HEARTBEAT);
                 if token.is_cancelled() || heartbeat_state.is_closing() { break; }
-                match heartbeat_state.heartbeat_tick() {
-                    Ok(()) => consecutive_errors = 0,
+                match heartbeat_state.heartbeat_tick(playback_owner, &heartbeat_track) {
+                    Ok(true) => consecutive_errors = 0,
+                    Ok(false) => break,
                     Err(error) => {
                         eprintln!("[luno-play] heartbeat tick failed: {error:?}");
                         consecutive_errors += 1;
@@ -8096,9 +8394,17 @@ fn promotion_error(error: PromotionError) -> ContractError {
     /// order so toggling shuffle off restored the shuffled sequence.
     #[cfg(target_os = "macos")]
     fn start_current_track(&self) -> Result<Value, ContractError> {
+        let mut owner = self.playback_owner_lock();
+        let playback_owner = Self::advance_playback_owner(&mut owner);
+        self.start_current_track_with_owner(playback_owner)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn start_current_track_with_owner(&self, playback_owner: u64) -> Result<Value, ContractError> {
         // The old track's heartbeat must not keep publishing or attempt a
         // second advance while this selection loads asynchronously.
         self.tasks.cancel_key("playback-heartbeat");
+        self.tasks.cancel_key("playback-load");
         let (Some(track_id), source_playlist_id) = ({
             let queue = self.playback.lock().unwrap_or_else(|e| e.into_inner());
             (queue.current().cloned(), queue.source_playlist_id().cloned())
@@ -8172,7 +8478,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         let load_state = self.clone();
         let generation = ack.generation;
         self.submit(self.generation("playback-load", generation), move |token| {
-            load_state.start_selected_track(track_id, path, source_playlist_id, token);
+            load_state.start_selected_track(track_id, path, source_playlist_id, playback_owner, token);
         })
         .map_err(|_| ContractError {
             code: ErrorCode::Busy,
@@ -8207,6 +8513,17 @@ fn promotion_error(error: PromotionError) -> ContractError {
 
     #[cfg(target_os = "macos")]
     fn next_track(&self) -> Result<Value, ContractError> {
+        let mut owner = self.playback_owner_lock();
+        let playback_owner = Self::advance_playback_owner(&mut owner);
+        self.tasks.cancel_key("playback-heartbeat");
+        self.tasks.cancel_key("playback-load");
+        self.next_track_with_owner(playback_owner)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn next_track_with_owner(&self, playback_owner: u64) -> Result<Value, ContractError> {
+        self.tasks.cancel_key("playback-heartbeat");
+        self.tasks.cancel_key("playback-load");
         let handoff = if self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active())
             && !self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|mode| mode.is_active())
         {
@@ -8219,7 +8536,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         }
         let advanced = self.playback.lock().unwrap_or_else(|e| e.into_inner()).next().cloned();
         if advanced.is_some() {
-            self.start_current_track()
+            self.start_current_track_with_owner(playback_owner)
         } else {
             // The queue is exhausted. An active Discover session hands the
             // block back: restore the captured queue at the seed position so
@@ -8236,6 +8553,17 @@ fn promotion_error(error: PromotionError) -> ContractError {
 
     #[cfg(target_os = "macos")]
     fn previous_track(&self) -> Result<Value, ContractError> {
+        let mut owner = self.playback_owner_lock();
+        let playback_owner = Self::advance_playback_owner(&mut owner);
+        self.tasks.cancel_key("playback-heartbeat");
+        self.tasks.cancel_key("playback-load");
+        self.previous_track_with_owner(playback_owner)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn previous_track_with_owner(&self, playback_owner: u64) -> Result<Value, ContractError> {
+        self.tasks.cancel_key("playback-heartbeat");
+        self.tasks.cancel_key("playback-load");
         let handoff = if self.preview_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|session| session.is_active())
             && !self.discover.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|mode| mode.is_active())
         {
@@ -8248,11 +8576,11 @@ fn promotion_error(error: PromotionError) -> ContractError {
         }
         let went_back = self.playback.lock().unwrap_or_else(|e| e.into_inner()).previous().cloned();
         if went_back.is_some() {
-            self.start_current_track()
+            self.start_current_track_with_owner(playback_owner)
         } else {
             // At the start of the physical queue, Previous restores/restarts
             // the seed. Leaving a preview must never stop output silently.
-            self.start_current_track()
+            self.start_current_track_with_owner(playback_owner)
         }
     }
 
@@ -8481,36 +8809,48 @@ fn promotion_error(error: PromotionError) -> ContractError {
     }
 
     #[cfg(target_os = "macos")]
-    fn heartbeat_tick(&self) -> Result<(), ContractError> {
-        let mut backend = self.audio.lock().map_err(|_| ContractError { code: ErrorCode::Internal, message: "audio backend lock failed".into(), retryable: false })?;
-        let position = match backend.position() {
-            Ok(position) => position,
+    fn heartbeat_tick(&self, playback_owner: u64, track_id: &TrackId) -> Result<bool, ContractError> {
+        // Sample the backend without the ownership lock. Loading a cold track
+        // can hold the backend mutex for a while; queue clicks must remain free
+        // to claim the next owner during that work.
+        let sample = {
+            let backend = self.audio.lock().map_err(|_| ContractError { code: ErrorCode::Internal, message: "audio backend lock failed".into(), retryable: false })?;
+            backend.position().and_then(|position| {
+                backend.duration().map(|duration| (position, duration, backend.is_finished()))
+            })
+        };
+        let (position, duration, completion_state) = match sample {
+            Ok(sample) => sample,
             Err(error) => {
-                drop(backend);
-                self.recover_from_backend_error(error);
-                return Err(ContractError { code: ErrorCode::Unavailable, message: "audio position is unavailable".into(), retryable: true });
+                let mut owner = self.playback_owner_lock();
+                if *owner != playback_owner { return Ok(false); }
+                let recovery_owner = Self::advance_playback_owner(&mut owner);
+                self.tasks.cancel_key("playback-heartbeat");
+                self.recover_from_backend_error_with_owner(error, recovery_owner);
+                return Err(ContractError { code: ErrorCode::Unavailable, message: "audio position or duration is unavailable".into(), retryable: true });
             }
         };
-        let duration = match backend.duration() {
-            Ok(duration) => duration,
-            Err(error) => {
-                drop(backend);
-                self.recover_from_backend_error(error);
-                return Err(ContractError { code: ErrorCode::Unavailable, message: "audio duration is unavailable".into(), retryable: true });
-            }
-        };
+        // A heartbeat can finish its sleep just as a click replaces the queue.
+        // The lock makes its commit atomic with that selection: it either
+        // finishes first, or observes the new owner and cannot advance/publish.
+        let mut owner = self.playback_owner_lock();
+        if *owner != playback_owner
+            || self.current_track.lock().unwrap_or_else(|e| e.into_inner()).as_ref() != Some(track_id)
+        {
+            return Ok(false);
+        }
         let status = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner());
         let elapsed = position;
-        let completion_state = backend.is_finished();
         if status == crate::contracts::types::PlaybackStatus::Playing
             && completion_state == Some(true)
             && self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
                 .is_some_and(|clock| clock.dispatch_completion())
         {
-            drop(backend);
             *self.playback_stall.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            let _ = self.next_track()?;
-            return Ok(());
+            let next_owner = Self::advance_playback_owner(&mut owner);
+            self.tasks.cancel_key("playback-heartbeat");
+            self.next_track_with_owner(next_owner)?;
+            return Ok(false);
         }
         // ---- Video follow: auto-play/pause + COARSE clock sync --------------
         // Event-driven, not poll-driven: publish ONLY on play/pause transitions
@@ -8521,7 +8861,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         let mut video_needs_publish = false;
         {
             let mut video = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(state) = video.as_mut() {
+            if let Some(state) = video.as_mut().filter(|state| state.track_id.as_ref() == Some(track_id)) {
                 match (status, state.status) {
                     (crate::contracts::types::PlaybackStatus::Playing, crate::contracts::events::VideoStatus::Ready) => {
                         state.status = crate::contracts::events::VideoStatus::Playing;
@@ -8597,11 +8937,14 @@ fn promotion_error(error: PromotionError) -> ContractError {
             StallAction::None
         };
         match stall_action {
-            StallAction::Rebuild => { let _ = backend.play(); }
+            StallAction::Rebuild => {
+                if let Ok(mut backend) = self.audio.lock() { let _ = backend.play(); }
+            }
             StallAction::Advance => {
-                drop(backend);
-                let _ = self.next_track()?;
-                return Ok(());
+                let next_owner = Self::advance_playback_owner(&mut owner);
+                self.tasks.cancel_key("playback-heartbeat");
+                self.next_track_with_owner(next_owner)?;
+                return Ok(false);
             }
             StallAction::None => {}
         }
@@ -8610,13 +8953,15 @@ fn promotion_error(error: PromotionError) -> ContractError {
             && self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
                 .is_some_and(|clock| clock.completion_due(elapsed, true, elapsed));
         if due && self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut().is_some_and(|clock| clock.dispatch_completion()) {
-            drop(backend);
-            let _ = self.next_track()?;
+            let next_owner = Self::advance_playback_owner(&mut owner);
+            self.tasks.cancel_key("playback-heartbeat");
+            self.next_track_with_owner(next_owner)?;
+            return Ok(false);
         } else {
             let snapshot = self.playback_snapshot(status, position, duration);
             self.publish_playback(snapshot, None);
         }
-        Ok(())
+        Ok(true)
     }
 
     pub fn shutdown_events(

@@ -72,11 +72,17 @@ describe("Music-mode hover controls", () => {
     expect(withVideo).toContain("luno-video-fullscreen");
   });
 
-  it("offers a direct video download action while mode is off", () => {
+  it("keeps the video download action inside the artwork hover controls", () => {
     const html = renderToStaticMarkup(
       <SongPageView track={track} backendAvailable videoConnection="connected" onLoadVideo={() => undefined} videoMode={false} onVideoModeChange={() => undefined} />
     );
-    expect(html).toContain(">Download video</button>");
+    const controlsStart = html.indexOf('data-testid="video-hover-controls"');
+    const controlsEnd = html.indexOf("</div>", controlsStart);
+    expect(controlsStart).toBeGreaterThanOrEqual(0);
+    const downloadAction = html.indexOf('class="luno-video-load"');
+    expect(downloadAction).toBeGreaterThan(controlsEnd);
+    expect(html.slice(downloadAction)).toContain(">Download video</button>");
+    expect(html).toContain(".luno-video-stage:hover .luno-video-load");
     expect(html).not.toContain("Retry music video");
     // A failed lookup stays inside the hover controls with its retry action;
     // it no longer leaves a persistent popup over the artwork.
@@ -98,8 +104,11 @@ describe("Music-mode hover controls", () => {
     const requestErrorHtml = renderToStaticMarkup(
       <SongPageView track={track} backendAvailable videoConnection="connected" videoMode onLoadVideo={() => undefined} videoRequestError="video staging is busy; try again shortly" onVideoModeChange={() => undefined} />
     );
-    expect(requestErrorHtml).toContain('role="alert">video staging is busy; try again shortly</span>');
+    const errorControlsStart = requestErrorHtml.indexOf('data-testid="video-hover-controls"');
+    const errorControlsEnd = requestErrorHtml.indexOf("</div>", errorControlsStart);
+    expect(requestErrorHtml.slice(errorControlsStart, errorControlsEnd)).toContain('role="alert">video staging is busy; try again shortly</span>');
     expect(requestErrorHtml).toContain(">Retry</button>");
+    expect(requestErrorHtml).not.toContain("luno-video-request-error");
   });
 });
 

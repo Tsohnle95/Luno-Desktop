@@ -73,6 +73,11 @@ What it does not own: library snapshots and track identity
   never re-derives it from `track_started` (duplicate ids made first-occurrence
   `indexOf` regress the queue panel). `audible_track_id` is separately
   authoritative for the sounding item when it is outside the physical queue.
+- Each async audio start and heartbeat carries a playback-owner generation.
+  Selecting a queue item claims the new owner before replacing the queue;
+  stale load failures, EOF callbacks, and stall recovery cannot advance or
+  publish against that replacement. File decoding stays outside the short
+  ownership lock, and only the matching owner may start and publish audio.
 - Focused and Discover recommendation IDs are temporary keys derived from the
   trimmed artist/title pair. Frontend key sanitization follows Rust's Unicode
   code-point `safe_key`, so queue IDs resolve to the matching recommendation
@@ -131,6 +136,11 @@ What it does not own: library snapshots and track identity
   repeated requests coalesce with that track's live worker even under task
   pressure. Recommendation video preparation remains owned by the preview
   pipeline and is adopted independently of song-page video mode.
+- During a track transition, video staging follows the active selection owner:
+  Discover's projected current row, then a focused preview, then the selected
+  library queue row, with the last confirmed audible ID as fallback. The
+  playback pipeline updates audible identity before kicking video staging, so
+  a previous track cannot start a competing lookup for the new selection.
 - Master volume is shared atomically with the macOS output callback. Mute
   applies during a slow producer shutdown or track load, without waiting for
   the backend mutex, and survives each output-state replacement.
@@ -165,7 +175,8 @@ What it does not own: library snapshots and track identity
 ## Core flows
 
 ```text
-play_with_context → healed queue → backend load → clock → heartbeat
+play_with_context → claim playback owner → healed queue → backend load
+→ owner-checked start → clock → owner-checked heartbeat
 → auto-advance / repeat / failure-recovery skip
 next/previous → index walk (no rebuild) → backend load → video pipeline kick
 kick_video_pipeline → prefetch plan → dedupe/inflight → stage → Ready event

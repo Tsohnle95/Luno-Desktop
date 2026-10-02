@@ -23,6 +23,8 @@ export interface VideoStageProps {
   onEnded?: () => void;
   onError?: () => void;
   onRetry?: () => void;
+  onDownloadVideo?: () => void;
+  videoRequestError?: string | null;
   onFullscreenChange?: (fullscreen: boolean) => void;
   /** Master audio volume shown with the fullscreen hover controls. */
   volume?: number;
@@ -164,7 +166,7 @@ const stageChromeStyles = `
 `;
 
 /** Presentation-only video surface. The supplied audio position remains authoritative. */
-export function VideoStage({ src, status = "not-checked", positionMs = 0, playing = false, artworkUrl, artworkLoading = false, artworkAlt = "Album artwork", artworkArtist = "", artworkTitle = "", onResize, onSeek, onPause, onResume, onEnded, onError, onRetry, onFullscreenChange, volume = 1, onVolume, onVolumeCommit, videoModeEnabled, onVideoModeChange, downloadProgress: videoProgress }: VideoStageProps & { downloadProgress?: number | null }) {
+export function VideoStage({ src, status = "not-checked", positionMs = 0, playing = false, artworkUrl, artworkLoading = false, artworkAlt = "Album artwork", artworkArtist = "", artworkTitle = "", onResize, onSeek, onPause, onResume, onEnded, onError, onRetry, onDownloadVideo, videoRequestError, onFullscreenChange, volume = 1, onVolume, onVolumeCommit, videoModeEnabled, onVideoModeChange, downloadProgress: videoProgress }: VideoStageProps & { downloadProgress?: number | null }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   // Position we last pushed INTO the element. Every programmatic currentTime
@@ -220,8 +222,8 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
   // Hover controls are pure CSS (opacity on .luno-video-stage:hover), so they
   // work identically over video and over artwork, and are unit-testable.
   const hoverControls = <div className="luno-video-hover-controls" data-testid="video-hover-controls">
-    {videoError && <span className="luno-video-hover-error" role="status">Error loading video</span>}
-    {videoError && onRetry && <button type="button" className="luno-video-hover-retry" onClick={onRetry}>Retry</button>}
+    {(videoRequestError || videoError) && <span className="luno-video-hover-error" role={videoRequestError ? "alert" : "status"}>{videoRequestError || "Error loading video"}</span>}
+    {(videoError || videoRequestError) && onRetry && <button type="button" className="luno-video-hover-retry" onClick={onRetry}>Retry</button>}
     {fullscreenWanted && onVolume && <label className="luno-video-volume"><IconVolume size={16} /><span className="sr-only">Volume</span><input aria-label="Fullscreen volume" type="range" min="0" max="1" step="0.01" value={Math.min(1, Math.max(0, volumeDraft))} onChange={(event) => { const next = Number(event.currentTarget.value); setVolumeDraft(next); onVolume(next); }} onPointerUp={(event) => onVolumeCommit?.(Number(event.currentTarget.value))} onKeyUp={(event) => onVolumeCommit?.(Number(event.currentTarget.value))} /></label>}
     {onVideoModeChange !== undefined && <button type="button" className={`luno-video-mode-mini${videoModeEnabled ? " is-on" : ""}`} role="switch" aria-checked={!!videoModeEnabled} aria-label={videoModeEnabled ? "Music mode on" : "Music mode off"} title="Music mode" onClick={() => onVideoModeChange(!videoModeEnabled)}><span className="luno-video-mode-mini-knob" aria-hidden="true" /></button>}
     {showVideo && <button type="button" className="luno-video-fullscreen" aria-label={fullscreenWanted ? "Exit fullscreen" : "Enter fullscreen"} onClick={toggleFullscreen}>⛶</button>}
@@ -312,5 +314,6 @@ export function VideoStage({ src, status = "not-checked", positionMs = 0, playin
       <DownloadRing progress={typeof videoProgress === "number" ? videoProgress : null} />
     </div>}
     {hoverControls}
+    {onDownloadVideo && <button type="button" className="luno-video-load" onClick={onDownloadVideo}>Download video</button>}
   </div>;
 }
