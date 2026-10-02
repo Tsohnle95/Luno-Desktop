@@ -158,6 +158,10 @@ What it does not own: library snapshots and track identity
   a registered audio codec from the container's tracks, skips video tracks,
   and keeps streaming output normalized to 44.1 kHz. Opus decoder state is
   reset after seeks; start-of-stream pre-skip is not applied again.
+- Symphonia metadata readers (ID3v1, ID3v2, APE) are explicitly enabled
+  alongside audio formats. In particular, large embedded MP3 covers must be
+  consumed as ID3 metadata before probing the audio, rather than searched as
+  junk within the probe's bounded search window.
 - Video responses are small ranged windows (stock asset protocol buffered
   whole files and froze the window on 100 MB+ MP4s).
 - Media keys control Luno via MPRemoteCommandCenter instead of falling

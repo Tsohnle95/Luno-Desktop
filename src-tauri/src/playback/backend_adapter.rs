@@ -540,6 +540,39 @@ impl Drop for CpalSymphoniaBackend {
 mod tests {
     use super::*;
 
+    #[test]
+    fn mp3_with_large_id3_tag_decodes_without_an_output_device() {
+        let root = std::env::temp_dir().join(format!("luno-large-id3-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("track.mp3");
+        // Embedded covers can put the first audio frame beyond the probe's
+        // junk-search limit. Registered ID3 readers must consume the whole tag.
+        let tag_size = 2 * 1024 * 1024u32;
+        let mut bytes = b"ID3\x03\x00\x00".to_vec();
+        for shift in [21, 14, 7, 0] {
+            bytes.push(((tag_size >> shift) & 0x7f) as u8);
+        }
+        bytes.resize(10 + tag_size as usize, 0);
+        // MPEG-1 Layer III, 128 kbps, 44.1 kHz stereo silent frames.
+        for _ in 0..8 {
+            bytes.extend_from_slice(&[0xff, 0xfb, 0x90, 0x00]);
+            bytes.resize(bytes.len() + 413, 0);
+        }
+        std::fs::write(&path, bytes).unwrap();
+        let result = CpalSymphoniaBackend::open_track(&path);
+        std::fs::remove_file(&path).unwrap();
+        let (mut format, track_id, _) = result.expect("tagged MP3 must be recognized");
+        let mut decoder = CpalSymphoniaBackend::make_decoder(format.as_ref(), track_id).unwrap();
+        let mut decoded_packets = 0;
+        while let Some(packet) = format.next_packet().unwrap() {
+            if packet.track_id == track_id {
+                decoder.decode(&packet).expect("MP3 audio must decode after the tag");
+                decoded_packets += 1;
+            }
+        }
+        assert!(decoded_packets > 0);
+    }
+
     /// Deterministic 44.1 kHz stereo PCM WAV, valid enough for the Symphonia
     /// probe used by `open_track`.
     fn wav_fixture(label: &str) -> PathBuf {
