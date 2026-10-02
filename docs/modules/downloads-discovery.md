@@ -113,6 +113,11 @@ What it does not own: library snapshots and promotion targets
   published by the active preview driver. Queue handoff recognizes an earlier
   ordered projection from the same session when an asynchronous asset update
   races a selection, while unrelated or reordered queues still end the session.
+  When playback reaches a physical library row after the recommendation block,
+  the backend ends that session and restores the physical queue at the row that
+  just started. If the user left Discover enabled, the frontend fetches
+  recommendations for that physical track and starts a fresh session for it;
+  turning Discover off cancels this continuation.
 - Each presentation mode has one serialized completion driver. The active
   PreviewSession owns preparation for its window while Discover is enabled;
   Discover adopts those completions and waits before launching work outside

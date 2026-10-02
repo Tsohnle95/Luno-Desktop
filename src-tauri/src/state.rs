@@ -273,6 +273,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn discover_exhaustion_restores_the_physical_successor_and_clears_recommendation_identity() {
+        let state = AppState::new(1);
+        let seed = TrackId::new("physical-seed").unwrap();
+        let next = TrackId::new("physical-next").unwrap();
+        let after = TrackId::new("physical-after").unwrap();
+        let physical = vec![seed.clone(), next.clone(), after];
+        let recommendations = vec![
+            TrackId::new("recommendation-one").unwrap(),
+            TrackId::new("recommendation-two").unwrap(),
+        ];
+        let mut mode = DiscoverMode::new_anchored(
+            12,
+            physical.clone(),
+            0,
+            recommendations.clone(),
+            Some(&recommendations[1]),
+            None,
+        )
+        .unwrap();
+        mode.enable();
+        let projected = mode.projected_queue();
+        let next_projected_index = projected.iter().position(|id| id == &next).unwrap();
+        state
+            .playback
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .project(projected, next_projected_index);
+        *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(recommendations[1].clone());
+        *state.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Playing;
+        *state.discover_seeds.lock().unwrap_or_else(|e| e.into_inner()) = recommendations
+            .iter()
+            .enumerate()
+            .map(|(index, _)| PreviewSeed {
+                artist: "Fixture artist".into(),
+                title: format!("Recommendation {index}"),
+            })
+            .collect();
+        *state.discover.lock().unwrap_or_else(|e| e.into_inner()) = Some(mode);
+
+        // The physical successor has started, but the old recommendation is
+        // still the last confirmed audible identity during this callback.
+        state.discover_track_started(&next);
+
+        let playback = state.playback.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(playback.queue(), physical.as_slice());
+        assert_eq!(playback.current_index(), Some(1));
+        drop(playback);
+        assert!(state.discover_snapshot().is_some_and(|snapshot| !snapshot.enabled));
+
+        *state.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(next.clone());
+        assert_eq!(
+            state
+                .playback_snapshot(
+                    crate::contracts::types::PlaybackStatus::Playing,
+                    Duration::ZERO,
+                    None,
+                )
+                .audible_track_id,
+            Some(next),
+            "the next seed must resolve to the physical library track after handoff",
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn discovery_toggle_preserves_preview_audio_and_switches_next_previous_policy() {
@@ -5039,7 +5103,10 @@ impl AppState {
             Some(mode) if mode.is_active() => mode.generation(),
             _ => return,
         };
-        let queue = self.playback.lock().unwrap_or_else(|e| e.into_inner()).queue().to_vec();
+        let (queue, current_index) = {
+            let playback = self.playback.lock().unwrap_or_else(|e| e.into_inner());
+            (playback.queue().to_vec(), playback.current_index())
+        };
         // Bind the action before matching: the lock guard from the scrutinee
         // would otherwise stay held for the whole match, deadlocking the arms.
         let handoff = self
@@ -5047,14 +5114,25 @@ impl AppState {
             .lock()
             .unwrap()
             .as_mut()
-            .map(|mode| mode.handoff(&queue));
+            .map(|mode| {
+                let action = mode.handoff(&queue, current_index, track_id);
+                (action, mode.is_active())
+            });
         match handoff {
-            Some(DiscoverAction::Noop) => {
+            Some((DiscoverAction::Noop, _)) => {
                 // A user-owned queue replaced the projection: end the session
                 // without touching that queue.
                 self.end_discover(false);
             }
-            Some(DiscoverAction::Restore { .. }) => {
+            Some((action @ DiscoverAction::Restore { .. }, false)) => {
+                // The projected recommendation block has reached a physical
+                // library track. Restore at that track so its metadata and
+                // artwork become authoritative before the next seed is read.
+                self.apply_discover_action(Some(action));
+                self.cancel_discover_tasks();
+                self.publish_discover_snapshot(generation);
+            }
+            Some((DiscoverAction::Restore { .. }, true)) => {
                 let prepared = self
                     .discover
                     .lock()

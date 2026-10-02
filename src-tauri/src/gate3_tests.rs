@@ -296,7 +296,7 @@ fn ref_discover_handoff_restores_physical_queue_and_keeps_assets_temporary() {
     let projected = mode.projected_queue();
     assert_ne!(projected, physical);
     assert!(
-        matches!(mode.handoff(&physical), DiscoverAction::Restore { queue, .. } if queue == physical)
+        matches!(mode.handoff(&physical, None, &id("seed")), DiscoverAction::Restore { queue, .. } if queue == physical)
     );
     assert!(heartbeat_should_continue(false));
     assert!(!heartbeat_should_continue(true));

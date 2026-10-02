@@ -901,31 +901,70 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const queueVersion = useRef<{ queue: string[]; tracks: Track[]; byId: Map<string, Track> | null; recs: Map<string, Track> | null }>({ queue: [], tracks: [], byId: null, recs: null });
   const connectedVideo = videoConnected === true;
   const discoverSeed = seedTrack?.artist && seedTrack.title ? { artist: seedTrack.artist, title: seedTrack.title } : null;
+  const discoverSeedKey = discoverSeed ? `${discoverSeed.artist}\u0000${discoverSeed.title}` : null;
+  const discoverOccurrenceKey = seedTrack
+    ? `${seedTrack.id}\u0000${projection.playback?.current_index ?? -1}`
+    : null;
   // ---- Song Page recommendations (Last.fm similar tracks, mobile parity) ----
-  const [songRecs, setSongRecs] = useState<{ items: Recommendation[]; state: RecommendationState; error: string | null }>({ items: [], state: "idle", error: null });
+  const [songRecs, setSongRecs] = useState<{ items: Recommendation[]; state: RecommendationState; error: string | null; seedKey: string | null }>({ items: [], state: "idle", error: null, seedKey: null });
   const [songRecRefresh, setSongRecRefresh] = useState(0);
   const autoDiscoveryKey = useRef<string | null>(null);
+  const [discoverRequested, setDiscoverRequested] = useState(false);
+  const discoverSessionSeedKey = useRef<string | null>(null);
   useEffect(() => {
     // Recommendations are also the source for the automatic temporary
     // queue, so fetch them when playback changes, not only when the Song Page
     // happens to be open.
     if (!discoverSeed || !bridge) {
-      setSongRecs((current) => (current.state === "idle" ? current : { items: [], state: "idle", error: null }));
+      setSongRecs((current) => current.state === "idle" && current.seedKey === null
+        ? current
+        : { items: [], state: "idle", error: null, seedKey: null });
       return;
     }
+    const seedKey = discoverSeedKey;
+    if (!seedKey) return;
     let active = true;
-    setSongRecs((current) => ({ items: current.items, state: "loading", error: null }));
+    setSongRecs((current) => ({ items: current.items, state: "loading", error: null, seedKey }));
      bridge.discover(discoverSeed.artist, discoverSeed.title, 20)
-      .then((items) => { if (active) setSongRecs({ items, state: "ready", error: null }); })
-      .catch((error) => { if (active) setSongRecs({ items: [], state: "error", error: normalizeRuntimeCommandError(error) }); });
+      .then((items) => { if (active) setSongRecs({ items, state: "ready", error: null, seedKey }); })
+      .catch((error) => { if (active) setSongRecs({ items: [], state: "error", error: normalizeRuntimeCommandError(error), seedKey }); });
     return () => { active = false; };
-  }, [route, discoverSeed?.artist, discoverSeed?.title, songRecRefresh, bridge]);
+  }, [route, discoverSeed?.artist, discoverSeed?.title, songRecRefresh, bridge, discoverSeedKey]);
+  useEffect(() => {
+    if (!discoverRequested || !bridge || !available || projection.discover?.enabled) return;
+    if (!discoverSeedKey || !discoverOccurrenceKey || songRecs.seedKey !== discoverSeedKey || songRecs.state !== "ready" || songRecs.items.length === 0) return;
+    if (discoverSessionSeedKey.current === discoverOccurrenceKey) return;
+    const occurrenceKey = discoverOccurrenceKey;
+    const seeds = songRecs.items.slice(0, 10).map((item) => ({ artist: item.artist, title: item.title }));
+    discoverSessionSeedKey.current = occurrenceKey;
+    let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+    const attempt = () => {
+      void bridge.discoverEnable(seeds).then(() => {
+        if (!cancelled) setCommandError(null);
+      }).catch((error: unknown) => {
+        if (cancelled) return;
+        attempts += 1;
+        if (attempts < 5 || isRetryableRuntimeCommandError(error)) {
+          const delay = attempts < 5 ? 500 : Math.min(30_000, 500 * (2 ** Math.min(attempts - 5, 6)));
+          retry = setTimeout(attempt, delay);
+        } else {
+          if (discoverSessionSeedKey.current === occurrenceKey) discoverSessionSeedKey.current = null;
+          setCommandError(normalizeRuntimeCommandError(error));
+        }
+      });
+    };
+    attempt();
+    return () => { cancelled = true; if (retry) clearTimeout(retry); };
+  }, [discoverRequested, bridge, available, projection.discover?.enabled, songRecs, discoverSeedKey, discoverOccurrenceKey]);
   useEffect(() => {
     // Discover mode owns the temporary queue while enabled; a prefetch session
     // must not race it for the asset store.
-    if (projection.discover?.enabled) return;
-    if (!bridge || !available || songRecs.state !== "ready" || songRecs.items.length === 0 || !discoverSeed) return;
-    const seedKey = `${discoverSeed.artist}\u0000${discoverSeed.title}`;
+    if (discoverRequested || projection.discover?.enabled) return;
+    if (!bridge || !available || songRecs.state !== "ready" || songRecs.seedKey !== discoverSeedKey || songRecs.items.length === 0 || !discoverSeed) return;
+    const seedKey = discoverSeedKey;
+    if (!seedKey) return;
     // The key alone is insufficient: enabling Discover invalidates the
     // prefetch session. When Discover is disabled for the same song, rebuild
     // the five-item temporary window instead of assuming the old session is
@@ -956,7 +995,40 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     };
     attempt();
     return () => { cancelled = true; if (retry) clearTimeout(retry); };
-  }, [route, bridge, available, songRecs, discoverSeed?.artist, discoverSeed?.title, projection.discover?.enabled, projection.preview?.active]);
+  }, [route, bridge, available, songRecs, discoverSeed?.artist, discoverSeed?.title, discoverSeedKey, discoverRequested, projection.discover?.enabled, projection.preview?.active]);
+  const toggleDiscoverMode = () => {
+    if (!bridge || !available) return;
+    if (discoverRequested || projection.discover?.enabled) {
+      setDiscoverRequested(false);
+      discoverSessionSeedKey.current = null;
+      if (projection.discover?.enabled) runCommand(bridge.discoverDisable());
+      return;
+    }
+    if (discoveryKeyConfigured === false) {
+      setCommandError("Add a Last.fm API key in Settings to enable discovery mode.");
+      return;
+    }
+    if (track && !track.artist) {
+      setCommandError(`“${track.title}” has no artist info, so there are no recommendations to play yet.`);
+      return;
+    }
+    if (songRecs.state !== "ready" || songRecs.seedKey !== discoverSeedKey) {
+      setCommandNotice("Still finding recommendations for this song…");
+      return;
+    }
+    if (songRecs.items.length === 0) {
+      setCommandError("No recommendations to play yet.");
+      return;
+    }
+    discoverSessionSeedKey.current = null;
+    setDiscoverRequested(true);
+  };
+  const stopDiscoverMode = () => {
+    setDiscoverRequested(false);
+    discoverSessionSeedKey.current = null;
+    if (projection.discover?.enabled) runCommand(bridge?.discoverDisable());
+    else runCommand(bridge?.previewCancel());
+  };
   const previewItem = projection.preview?.active && projection.preview.current
     ? [...songRecs.items, ...discover.items].find((item) => previewKey(item.artist, item.title) === projection.preview?.current)
     : undefined;
@@ -1363,7 +1435,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
 
   const homeViewEl = <HomeView allTracksCount={tracks.length} madeForYou={madeForYouTracks} favorites={tracks.filter((track) => track.favorite)} recentTracks={recentTracks} popularTracks={popularTracks} playCounts={playCounts} popularPlaylists={popularPlaylists} recentlyDownloaded={downloadedTracks} tracksById={tracksByIdForQueue} onPlayTrack={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onTrackContextMenu={openTrackMenu} onOpenLibrary={() => setLibraryHome(false)} onOpenRecent={() => navigate("recent")} onOpenDownloader={() => navigate("downloader")} onOpenPlaylist={(playlistId) => { setLibraryScope(playlistId); setLibraryHome(false); navigate("library"); }} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} backendAvailable={available} />;
   const recentViewEl = <RecentView tracks={recentTracks} playback={projection.playback} backendAvailable={available} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onContextMenu={openTrackMenu} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />;
-  const discoverViewEl = <DiscoverView seed={discoverSeed} artistMissingTitle={track && !track.artist ? track.title : null} recommendations={discover.items} session={recommendationPreview} saved={projection.saved} playlists={projection.library?.playlists ?? []} loading={discover.loading} error={discover.error} onRefresh={() => setDiscoverRefresh((value) => value + 1)} onTap={(key) => runCommand(projection.discover?.enabled ? bridge?.discoverSelect(key) : bridge?.previewTap(discover.items.slice(0, 50).map((item) => ({ artist: item.artist, title: item.title })), key))} onNext={() => runCommand(projection.discover?.enabled ? bridge?.next() : bridge?.previewNext())} onPrevious={() => runCommand(projection.discover?.enabled ? bridge?.previous() : bridge?.previewPrevious())} onCancel={() => runCommand(projection.discover?.enabled ? bridge?.discoverDisable() : bridge?.previewCancel())} onSave={(key, playlistId) => runCommand(bridge?.saveRecommendation(key, playlistId))} />;
+  const discoverViewEl = <DiscoverView seed={discoverSeed} artistMissingTitle={track && !track.artist ? track.title : null} recommendations={discover.items} session={recommendationPreview} saved={projection.saved} playlists={projection.library?.playlists ?? []} loading={discover.loading} error={discover.error} onRefresh={() => setDiscoverRefresh((value) => value + 1)} onTap={(key) => runCommand(projection.discover?.enabled ? bridge?.discoverSelect(key) : bridge?.previewTap(discover.items.slice(0, 50).map((item) => ({ artist: item.artist, title: item.title })), key))} onNext={() => runCommand(projection.discover?.enabled ? bridge?.next() : bridge?.previewNext())} onPrevious={() => runCommand(projection.discover?.enabled ? bridge?.previous() : bridge?.previewPrevious())} onCancel={stopDiscoverMode} onSave={(key, playlistId) => runCommand(bridge?.saveRecommendation(key, playlistId))} />;
   const createDownloadDestination = () => {
     if (!libraryRootPath) { setCommandError("Create a library folder in Settings first."); return; }
     createPlaylist();
@@ -1481,7 +1553,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   }} onRefresh={() => setPlaylistSyncReviewSummaryRefresh((current) => current + 1)} />;
  const settingsScreens: Record<SettingsNavLink, ReactNode> = { home: homeViewEl, downloader: downloaderViewEl, sync_review: playlistSyncReviewViewEl, artwork: <ArtworkManager key={`artwork-${artworkScope}`} snapshot={projection.library} initialScope={artworkScope} bridge={available ? bridge : undefined} onArtworkApplied={storeTrackArtwork} /> };
 
-  const content = views[route] ?? (route === "library" ? (libraryHome ? homeViewEl : <LibraryView snapshot={projection.library} loading={!projection.library || projection.library.generation <= 0} playback={projection.playback} backendAvailable={available} selectedScope={libraryScope} query={libraryQuery} sort={librarySorts[libraryScope] ?? defaultLibrarySort(libraryScope)} onSortChange={(next) => setLibrarySorts((current) => ({ ...current, [libraryScope]: next }))} onPlay={(item, context, sourcePlaylistId) => runCommand(sourcePlaylistId ? bridge?.playFromPlaylist(item.id, context.map((track) => track.id), sourcePlaylistId) : bridge?.playWithContext(item.id, context.map((track) => track.id)))} onShuffle={() => runCommand(bridge?.toggleShuffle())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onContextMenu={openTrackMenu} onScan={() => runCommand(bridge?.scanLibrary())} onProbeDuration={(id) => bridge ? bridge.trackDuration(id) : Promise.resolve(null)} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onOpenArtwork={(scope) => { setArtworkScope(scope); setSettingsScreen("artwork"); navigate("settings"); }} />) : route === "recent" ? recentViewEl : route === "discover" ? discoverViewEl : route === "downloader" ? downloaderViewEl : route === "settings" ? <SettingsView lastfmKey="" keychainStatus={discoveryKeyConfigured === null ? "loading" : discoveryKeyConfigured ? "available" : "missing"} onSaveLastfmKey={available ? saveLastfmKey : undefined} musicRoot={musicRoot} autoDiscovery={settings.auto_discovery ?? false} transferManifest={transferManifest} transferDestination={transferDestination} transferResult={transferResult} error={commandError} libraryRootPath={viteEnv?.DEV ? undefined : libraryRootPath ?? undefined} onLibraryRootSubmit={viteEnv?.DEV ? undefined : submitLibraryRoot} onChooseMusicRoot={viteEnv?.DEV ? chooseRoot : undefined} onAutoDiscoveryChange={(value) => saveSettings({ ...settings, auto_discovery: value })} onTransferManifestChange={setTransferManifest} onTransferDestinationChange={setTransferDestination} onTransferPreview={() => runCommand(bridge?.transferPreview(transferManifest, transferDestination).then((result) => setTransferResult(JSON.stringify(result))))} onTransferApply={() => runCommand(bridge?.transferApply(transferManifest, transferDestination, {}).then((result) => setTransferResult(JSON.stringify(result))))} onTransferExport={() => { if (!available) { setCommandError("Transfer export is unavailable until the backend is connected."); return; } runCommand(bridge?.transferExport().then((result) => { const manifest = (result as { manifest?: string }).manifest ?? ""; setTransferManifest(manifest); setTransferResult(manifest ? "Exported manifest is ready for review." : "Export returned no manifest."); })); }} activeScreen={settingsScreen} screen={settingsScreen ? settingsScreens[settingsScreen] : null} onNavigate={(target) => { if (target === "home") { setSettingsScreen(null); navigate("library"); setLibraryHome(true); } else setSettingsScreen(target); }} onScreenClosed={() => setSettingsScreen(null)} /> : route === "error_log" ? errorLogViewEl : route === "song_page" ? <SongPageView track={seedTrack} nowPlaying={displayTrack} backendAvailable={available} recommendations={songRecs.items} recommendationState={songRecs.state} recommendationError={songRecs.error} discoverMode={!!projection.discover?.enabled} onToggleDiscoverMode={() => { if (!bridge || !available) return; if (projection.discover?.enabled) { runCommand(bridge.discoverDisable()); return; } if (discoveryKeyConfigured === false) { setCommandError("Add a Last.fm API key in Settings to enable discovery mode."); return; } if (track && !track.artist) { setCommandError(`“${track.title}” has no artist info, so there are no recommendations to play yet.`); return; } if (songRecs.state === "loading") { setCommandNotice("Still finding recommendations for this song…"); return; } if (songRecs.items.length === 0) { setCommandError("No recommendations to play yet."); return; } runCommand(bridge.discoverEnable(songRecs.items.slice(0, 10).map((entry) => ({ artist: entry.artist, title: entry.title })))); }} onRetryRecommendations={() => setSongRecRefresh((value) => value + 1)} onPreviewRecommendation={(item) => { const key = previewKey(item.artist, item.title); runCommand(projection.discover?.enabled ? bridge?.discoverSelect(key) : bridge?.previewTap(songRecs.items.slice(0, 50).map((entry) => ({ artist: entry.artist, title: entry.title })), key)); }} onSaveRecommendation={(item, playlistId) => {
+  const content = views[route] ?? (route === "library" ? (libraryHome ? homeViewEl : <LibraryView snapshot={projection.library} loading={!projection.library || projection.library.generation <= 0} playback={projection.playback} backendAvailable={available} selectedScope={libraryScope} query={libraryQuery} sort={librarySorts[libraryScope] ?? defaultLibrarySort(libraryScope)} onSortChange={(next) => setLibrarySorts((current) => ({ ...current, [libraryScope]: next }))} onPlay={(item, context, sourcePlaylistId) => runCommand(sourcePlaylistId ? bridge?.playFromPlaylist(item.id, context.map((track) => track.id), sourcePlaylistId) : bridge?.playWithContext(item.id, context.map((track) => track.id)))} onShuffle={() => runCommand(bridge?.toggleShuffle())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onContextMenu={openTrackMenu} onScan={() => runCommand(bridge?.scanLibrary())} onProbeDuration={(id) => bridge ? bridge.trackDuration(id) : Promise.resolve(null)} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onOpenArtwork={(scope) => { setArtworkScope(scope); setSettingsScreen("artwork"); navigate("settings"); }} />) : route === "recent" ? recentViewEl : route === "discover" ? discoverViewEl : route === "downloader" ? downloaderViewEl : route === "settings" ? <SettingsView lastfmKey="" keychainStatus={discoveryKeyConfigured === null ? "loading" : discoveryKeyConfigured ? "available" : "missing"} onSaveLastfmKey={available ? saveLastfmKey : undefined} musicRoot={musicRoot} autoDiscovery={settings.auto_discovery ?? false} transferManifest={transferManifest} transferDestination={transferDestination} transferResult={transferResult} error={commandError} libraryRootPath={viteEnv?.DEV ? undefined : libraryRootPath ?? undefined} onLibraryRootSubmit={viteEnv?.DEV ? undefined : submitLibraryRoot} onChooseMusicRoot={viteEnv?.DEV ? chooseRoot : undefined} onAutoDiscoveryChange={(value) => saveSettings({ ...settings, auto_discovery: value })} onTransferManifestChange={setTransferManifest} onTransferDestinationChange={setTransferDestination} onTransferPreview={() => runCommand(bridge?.transferPreview(transferManifest, transferDestination).then((result) => setTransferResult(JSON.stringify(result))))} onTransferApply={() => runCommand(bridge?.transferApply(transferManifest, transferDestination, {}).then((result) => setTransferResult(JSON.stringify(result))))} onTransferExport={() => { if (!available) { setCommandError("Transfer export is unavailable until the backend is connected."); return; } runCommand(bridge?.transferExport().then((result) => { const manifest = (result as { manifest?: string }).manifest ?? ""; setTransferManifest(manifest); setTransferResult(manifest ? "Exported manifest is ready for review." : "Export returned no manifest."); })); }} activeScreen={settingsScreen} screen={settingsScreen ? settingsScreens[settingsScreen] : null} onNavigate={(target) => { if (target === "home") { setSettingsScreen(null); navigate("library"); setLibraryHome(true); } else setSettingsScreen(target); }} onScreenClosed={() => setSettingsScreen(null)} /> : route === "error_log" ? errorLogViewEl : route === "song_page" ? <SongPageView track={seedTrack} nowPlaying={displayTrack} backendAvailable={available} recommendations={songRecs.items} recommendationState={songRecs.state} recommendationError={songRecs.error} discoverMode={discoverRequested || !!projection.discover?.enabled} onToggleDiscoverMode={toggleDiscoverMode} onRetryRecommendations={() => setSongRecRefresh((value) => value + 1)} onPreviewRecommendation={(item) => { const key = previewKey(item.artist, item.title); runCommand(projection.discover?.enabled ? bridge?.discoverSelect(key) : bridge?.previewTap(songRecs.items.slice(0, 50).map((entry) => ({ artist: entry.artist, title: entry.title })), key)); }} onSaveRecommendation={(item, playlistId) => {
                       if (playlistId) {
                         runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), playlistId));
                         return;

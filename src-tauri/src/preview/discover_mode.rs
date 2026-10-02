@@ -255,9 +255,15 @@ impl DiscoverMode {
             .map_or(DiscoverAction::Noop, |id| DiscoverAction::Prepare { id })
     }
 
-    /// A natural handoff or queue replacement ends Discover without mutating
-    /// a queue owned by somebody else.
-    pub fn handoff(&mut self, queue: &[TrackId]) -> DiscoverAction {
+    /// Tracks which start in the projected queue either advance Discover or
+    /// hand it back to the physical library at that track's actual position.
+    /// A queue replacement remains caller-owned and is never overwritten.
+    pub fn handoff(
+        &mut self,
+        queue: &[TrackId],
+        current_index: Option<usize>,
+        track_id: &TrackId,
+    ) -> DiscoverAction {
         if !self.owns_projection(queue) {
             self.active = false;
             self.discover = false;
@@ -265,10 +271,46 @@ impl DiscoverMode {
             // A caller-owned replacement queue must never be overwritten by restoration.
             return DiscoverAction::Noop;
         }
+        if let Some(physical_index) =
+            self.physical_index_for_started_track(queue, current_index, track_id)
+        {
+            self.physical_index = physical_index;
+            self.active = false;
+            self.discover = false;
+            self.queued.clear();
+            self.current_recommendation = None;
+            self.pending_focus = None;
+        }
         DiscoverAction::Restore {
             queue: self.physical_queue.clone(),
             index: self.physical_index,
         }
+    }
+
+    fn physical_index_for_started_track(
+        &self,
+        queue: &[TrackId],
+        current_index: Option<usize>,
+        track_id: &TrackId,
+    ) -> Option<usize> {
+        let current_index = current_index?;
+        if queue.get(current_index) != Some(track_id) {
+            return None;
+        }
+        let prefix_len = self.physical_index.saturating_add(1);
+        let suffix_len = self.physical_queue.len().saturating_sub(prefix_len);
+        let middle_end = queue.len().checked_sub(suffix_len)?;
+        let physical_index = if current_index < prefix_len {
+            current_index
+        } else if current_index >= middle_end {
+            let recommendation_count = middle_end.saturating_sub(prefix_len);
+            current_index.checked_sub(recommendation_count)?
+        } else {
+            return None;
+        };
+        ((physical_index != self.physical_index || self.current_recommendation.is_some())
+            && self.physical_queue.get(physical_index) == Some(track_id))
+            .then_some(physical_index)
     }
 
     /// Async preparation can update the projection between a UI selection and
@@ -474,7 +516,7 @@ mod tests {
         // selected it but before playback reports that its audio started.
         mode.failed_asset(5, &recs[0]);
         assert!(matches!(
-            mode.handoff(&selected_queue),
+            mode.handoff(&selected_queue, Some(2), &recs[0]),
             DiscoverAction::Restore { queue, index } if queue == physical && index == 1
         ));
         assert!(mode.is_active(), "a stale projection is still owned by Discover");
@@ -485,8 +527,54 @@ mod tests {
         let recs = vec![id("r0"), id("r1")];
         let mut mode = DiscoverMode::new(6, vec![id("seed"), id("next")], 0, recs).unwrap();
         mode.enable();
-        assert_eq!(mode.handoff(&[id("seed"), id("r1"), id("r0"), id("next")]), DiscoverAction::Noop);
+        assert_eq!(
+            mode.handoff(
+                &[id("seed"), id("r1"), id("r0"), id("next")],
+                Some(1),
+                &id("r1"),
+            ),
+            DiscoverAction::Noop
+        );
         assert!(!mode.is_active());
+    }
+
+    #[test]
+    fn exhausted_recommendations_restore_the_physical_track_that_started() {
+        let physical = vec![id("seed"), id("next"), id("after")];
+        let recs = vec![id("r0"), id("r1")];
+        let mut mode = DiscoverMode::new(7, physical.clone(), 0, recs).unwrap();
+        mode.enable();
+        let (projected, _) = mode.projected();
+        let next_index = projected.iter().position(|track| track == &id("next")).unwrap();
+
+        assert_eq!(
+            mode.handoff(&projected, Some(next_index), &id("next")),
+            DiscoverAction::Restore {
+                queue: physical.clone(),
+                index: 1
+            },
+        );
+        assert!(!mode.is_active());
+
+        let next_recommendations = vec![id("new-r0"), id("new-r1")];
+        let mut next_mode = DiscoverMode::new(8, physical, 1, next_recommendations).unwrap();
+        next_mode.enable();
+        let (reseeded, current) = next_mode.projected();
+        assert_eq!(
+            reseeded,
+            vec![
+                id("seed"),
+                id("next"),
+                id("new-r0"),
+                id("new-r1"),
+                id("after")
+            ]
+        );
+        assert_eq!(
+            reseeded[current],
+            id("next"),
+            "the new physical seed remains audible while its recommendations are prepared"
+        );
     }
 
     #[test]

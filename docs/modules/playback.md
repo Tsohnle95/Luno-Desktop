@@ -73,7 +73,10 @@ What it does not own: library snapshots and track identity
   queue policy only: it keeps the backend stream, playback clock, and audible
   item running. Disabling restores the exact captured physical queue and index
   while the recommendation continues; later Previous/Next and natural
-  completion follow the physical queue.
+  completion follow the physical queue. When traversal reaches a physical row
+  after the projected recommendation block, Discover ends and restores the
+  physical queue at that row's actual index before the new track is published
+  as audible.
 - The backend `PlaybackSnapshot.current_index` is authoritative; the frontend
   never re-derives it from `track_started` (duplicate ids made first-occurrence
   `indexOf` regress the queue panel). `audible_track_id` is separately

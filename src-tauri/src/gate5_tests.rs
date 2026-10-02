@@ -301,7 +301,7 @@ fn ref_preview_session_and_discover_mode_cover_windows_handoff_and_intervention(
             if queue == vec![id("seed"), id("next")]
     ));
     let replacement = vec![id("user-owned")];
-    assert_eq!(mode.handoff(&replacement), DiscoverAction::Noop);
+    assert_eq!(mode.handoff(&replacement, None, &id("user-owned")), DiscoverAction::Noop);
     assert!(!mode.is_active());
 }
 
