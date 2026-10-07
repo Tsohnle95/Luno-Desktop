@@ -127,6 +127,25 @@ fn scan_roots_order_and_status_match_corpus() {
 }
 
 #[test]
+fn empty_playlist_keeps_its_folder_path_for_download_destinations() {
+    let root = fixture_dir("empty-playlist-destination");
+    let playlist_dir = root.join("Reggae");
+    fs::create_dir_all(&playlist_dir).unwrap();
+
+    let state = AppState::new(1);
+    state.set_scan_roots(vec![root.clone()]);
+    let outcome = scan_library(&[root.clone()], &OsFileSystem);
+    let snapshot = state.replace_library(Generation(1), outcome.playlists);
+
+    let playlist = snapshot.playlists.iter().find(|playlist| playlist.name == "Reggae").unwrap();
+    assert!(playlist.ordered_track_ids.is_empty());
+    let expected_path = playlist_dir.to_string_lossy().into_owned();
+    assert_eq!(playlist.path.as_deref(), Some(expected_path.as_str()));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn real_missing_root_is_classified_as_missing() {
     let root = fixture_dir("missing-root").join("does-not-exist");
     let outcome = scan_library(&[root.clone()], &crate::library::scanner::OsFileSystem);

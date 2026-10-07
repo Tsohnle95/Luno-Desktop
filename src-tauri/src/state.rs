@@ -6337,10 +6337,17 @@ impl AppState {
             let mut ids = Vec::new();
             // Playlists are folders under the library root; the folder is
             // the destination directory for explicit save-to-playlist.
-            let directory = files
-                .first()
-                .and_then(|first| first.parent().map(|p| p.to_path_buf()))
-                .filter(|dir| files.iter().all(|path| path.parent() == Some(dir.as_path())));
+            let directory = if files.is_empty() {
+                library_roots.iter().find_map(|root| {
+                    let candidate = root.join(&name);
+                    candidate.is_dir().then_some(candidate)
+                })
+            } else {
+                files
+                    .first()
+                    .and_then(|first| first.parent().map(|p| p.to_path_buf()))
+                    .filter(|dir| files.iter().all(|path| path.parent() == Some(dir.as_path())))
+            };
             for path in files {
                 if let Some(existing) = paths.get(&path) {
                     ids.push(existing.clone());
