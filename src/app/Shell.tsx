@@ -9,7 +9,7 @@ import { HomeView } from "../views/HomeView";
 import { defaultLibrarySort, LibraryView, playlistTracks, RECENT_DOWNLOADS_SCOPE, shuffledFirstTrack, type LibraryScope, type LibrarySort } from "../views/LibraryView";
 import { RecentView } from "../views/RecentView";
 import { SongPageView } from "../views/SongPageView";
-import { DownloaderView } from "../views/DownloaderView";
+import { destinationName, DownloaderView } from "../views/DownloaderView";
 import { DiscoverView } from "../views/DiscoverView";
 import { PlaylistSyncReviewView } from "../views/PlaylistSyncReviewView";
 import { ArtworkManager } from "../views/ArtworkManager";
@@ -762,25 +762,33 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const reviewDownloadTargetsRef = useRef(new Map<string, { playlist: Playlist; videoId: string; title: string }>());
   const downloadQueueRef = useRef<Array<{ id: string; source: string; destination: string; playlistReviewTarget?: { playlist: Playlist; videoId: string; title: string } } & DownloadMetadata>>([]);
   const downloadHelperPath = fixtureHelper ?? bundleHelperPath;
-  // Destinations are concrete folders under the library root. The default is
-  // `Unsorted` (created inside the root when missing); playlist folders that
-  // the scanner already discovered appear as additional choices.
+  // Snapshot paths come from the backend's library scan. Keep those paths as
+  // authoritative: the frontend root can retain a symlink spelling while the
+  // backend returns canonical folder paths, so string-prefix checks hide valid
+  // playlists.
   const downloadDestinations = useMemo(() => {
     if (fixtureDestination) return [fixtureDestination];
     if (!libraryRootPath) return [];
     const unsorted = `${libraryRootPath}/Unsorted`;
     const scannedDirs = (projection.library?.playlists ?? [])
+      .filter((playlist) => playlist.name.toLowerCase() !== "unsorted")
       .map((playlist) => playlist.path)
-      .filter((path): path is string => !!path && path.startsWith(`${libraryRootPath}/`) && path !== unsorted)
-    const playlistDirs = [...new Set([...scannedDirs, ...pendingDownloadDestinations.filter((path) => path.startsWith(`${libraryRootPath}/`))])]
-      .filter((path) => path !== unsorted)
+      .filter((path): path is string => !!path);
+    const playlistDirs = [...new Set([...scannedDirs, ...pendingDownloadDestinations])]
+      .filter((path) => destinationName(path).toLowerCase() !== "unsorted")
       .sort((a, b) => a.localeCompare(b));
     return [unsorted, ...playlistDirs];
   }, [fixtureDestination, libraryRootPath, projection.library, pendingDownloadDestinations]);
   useEffect(() => {
     if (!projection.library) return;
     const indexed = new Set(projection.library.playlists.map((playlist) => playlist.path).filter((path): path is string => !!path));
-    setPendingDownloadDestinations((pending) => pending.filter((path) => !indexed.has(path)));
+    const indexedNames = new Set(projection.library.playlists.map((playlist) => playlist.name.toLowerCase()));
+    setPendingDownloadDestinations((pending) => pending.filter((path) => !indexed.has(path) && !indexedNames.has(destinationName(path).toLowerCase())));
+    setDownloadDestination((current) => {
+      if (!current) return current;
+      const playlist = projection.library?.playlists.find((item) => item.name.toLowerCase() === destinationName(current).toLowerCase());
+      return playlist?.path ?? current;
+    });
   }, [projection.library]);
   const downloadBase = downloadDestinations[0] ?? null;
   const sourceForDownload = (id: string) => csvPreview.find((item) => item.id === id)?.source ?? downloadSources.find((item) => item.query === id || item.url === id)?.url ?? downloadSources.find((item) => item.query === id || item.url === id)?.query ?? id;
@@ -1484,8 +1492,6 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const selectDownloadDestination = (name: string, path?: string) => {
     if (!libraryRootPath || fixtureDestination) return;
     const destination = path ?? `${libraryRootPath}/${name}`;
-    const rootPrefix = `${libraryRootPath}/`;
-    if (!destination.startsWith(rootPrefix)) return;
     const alreadyIndexed = projectionRef.current.library?.playlists.some((playlist) => playlist.path === destination) ?? false;
     if (!alreadyIndexed) {
       setPendingDownloadDestinations((current) => current.includes(destination) ? current : [...current, destination]);
