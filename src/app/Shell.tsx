@@ -222,7 +222,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [finalCopyDelete, setFinalCopyDelete] = useState<{ files: string[]; reviewId: string; verificationIncomplete: boolean; confirm: (reviewId: string) => Promise<SafeDeleteResult>; onDeleted: (result: SafeDeleteResult) => void } | null>(null);
   const [finalCopyDeleteBusy, setFinalCopyDeleteBusy] = useState(false);
   const [finalCopyDeleteError, setFinalCopyDeleteError] = useState<string | null>(null);
-  const [playlistCreateRequest, setPlaylistCreateRequest] = useState<{ tracks: Track[]; onCreated?: (name: string) => void } | null>(null);
+  const [playlistCreateRequest, setPlaylistCreateRequest] = useState<{ tracks: Track[]; onCreated?: (name: string, path?: string) => void } | null>(null);
   const [playlistCreateBusy, setPlaylistCreateBusy] = useState(false);
   const [playlistCreateError, setPlaylistCreateError] = useState<string | null>(null);
   const [playlistUrlRequest, setPlaylistUrlRequest] = useState<{ playlist: Playlist; urls: string[] } | null>(null);
@@ -303,6 +303,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [downloadSources, setDownloadSources] = useState<SearchResult[]>([]);
   const [downloadSearchLoading, setDownloadSearchLoading] = useState(false);
   const [downloadDestination, setDownloadDestination] = useState<string | null>(null);
+  const [pendingDownloadDestinations, setPendingDownloadDestinations] = useState<string[]>([]);
   const [queuedDownloadUrls, setQueuedDownloadUrls] = useState<string[]>([]);
   const [discover, setDiscover] = useState<{ items: Recommendation[]; loading: boolean; error: string | null }>({ items: [], loading: false, error: null });
   const [discoverRefresh, setDiscoverRefresh] = useState(0);
@@ -430,7 +431,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       })
       .catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
   };
-  const createPlaylist = useCallback((tracksToAdd: Track[] = [], onCreated?: (name: string) => void) => {
+  const createPlaylist = useCallback((tracksToAdd: Track[] = [], onCreated?: (name: string, path?: string) => void) => {
     if (!bridge || !available) return;
     // Tauri's webview has no native window.prompt; collect the name in-app.
     setPlaylistCreateError(null);
@@ -444,13 +445,16 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     setPlaylistCreateBusy(true);
     setPlaylistCreateError(null);
     void bridge.createPlaylist(name)
-      .then(() => {
+      .then((result) => {
+        const createdPath = result && typeof result === "object" && "path" in result && typeof result.path === "string"
+          ? result.path
+          : undefined;
         setPlaylistCreateBusy(false);
         setPlaylistCreateRequest(null);
         setCommandError(null);
         if (request?.tracks.length) addTracksToPlaylist(request.tracks, { id: `playlist:${name}`, name });
         else if (!request?.onCreated) setCommandNotice(`Created playlist “${name}”.`);
-        request?.onCreated?.(name);
+        request?.onCreated?.(name, createdPath);
       })
       .catch((error: unknown) => { setPlaylistCreateBusy(false); setPlaylistCreateError(normalizeRuntimeCommandError(error)); });
   };
@@ -742,12 +746,19 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     if (fixtureDestination) return [fixtureDestination];
     if (!libraryRootPath) return [];
     const unsorted = `${libraryRootPath}/Unsorted`;
-    const playlistDirs = (projection.library?.playlists ?? [])
+    const scannedDirs = (projection.library?.playlists ?? [])
       .map((playlist) => playlist.path)
       .filter((path): path is string => !!path && path.startsWith(`${libraryRootPath}/`) && path !== unsorted)
+    const playlistDirs = [...new Set([...scannedDirs, ...pendingDownloadDestinations.filter((path) => path.startsWith(`${libraryRootPath}/`))])]
+      .filter((path) => path !== unsorted)
       .sort((a, b) => a.localeCompare(b));
     return [unsorted, ...playlistDirs];
-  }, [fixtureDestination, libraryRootPath, projection.library]);
+  }, [fixtureDestination, libraryRootPath, projection.library, pendingDownloadDestinations]);
+  useEffect(() => {
+    if (!projection.library) return;
+    const indexed = new Set(projection.library.playlists.map((playlist) => playlist.path).filter((path): path is string => !!path));
+    setPendingDownloadDestinations((pending) => pending.filter((path) => !indexed.has(path)));
+  }, [projection.library]);
   const downloadBase = downloadDestinations[0] ?? null;
   const sourceForDownload = (id: string) => csvPreview.find((item) => item.id === id)?.source ?? downloadSources.find((item) => item.query === id || item.url === id)?.url ?? downloadSources.find((item) => item.query === id || item.url === id)?.query ?? id;
   const removeActiveDownload = (jobId: string) => {
@@ -1449,7 +1460,17 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const discoverViewEl = <DiscoverView seed={discoverSeed} artistMissingTitle={track && !track.artist ? track.title : null} recommendations={discover.items} session={recommendationPreview} saved={projection.saved} playlists={projection.library?.playlists ?? []} loading={discover.loading} error={discover.error} onRefresh={() => setDiscoverRefresh((value) => value + 1)} onTap={(key) => runCommand(projection.discover?.enabled ? bridge?.discoverSelect(key) : bridge?.previewTap(discover.items.slice(0, 50).map((item) => ({ artist: item.artist, title: item.title })), key))} onNext={() => runCommand(projection.discover?.enabled ? bridge?.next() : bridge?.previewNext())} onPrevious={() => runCommand(projection.discover?.enabled ? bridge?.previous() : bridge?.previewPrevious())} onCancel={stopDiscoverMode} onSave={(key, playlistId) => runCommand(bridge?.saveRecommendation(key, playlistId))} />;
   const createDownloadDestination = () => {
     if (!libraryRootPath) { setCommandError("Create a library folder in Settings first."); return; }
-    createPlaylist();
+    createPlaylist([], (_name, path) => {
+      if (!path || !libraryRootPath || fixtureDestination) return;
+      const rootPrefix = `${libraryRootPath}/`;
+      if (!path.startsWith(rootPrefix)) return;
+      const alreadyIndexed = projectionRef.current.library?.playlists.some((playlist) => playlist.path === path) ?? false;
+      if (!alreadyIndexed) {
+        setPendingDownloadDestinations((current) => current.includes(path) ? current : [...current, path]);
+      }
+      setDownloadDestination(path);
+      setCommandNotice(null);
+    });
   };
   const downloaderViewEl = <DownloaderView
     error={commandError}

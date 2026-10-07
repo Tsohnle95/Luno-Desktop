@@ -8526,7 +8526,6 @@ fn promotion_error(error: PromotionError) -> ContractError {
         drop(backend);
         eprintln!("[luno-play] playing {track_id:?} ({}ms)", info.duration.map(|d| d.as_millis()).unwrap_or(0));
         self.playback.lock().unwrap_or_else(|e| e.into_inner()).record_started(track_id.clone(), false);
-        self.discover_track_started(&track_id);
         self.record_recent(track_id.clone());
         self.record_successful_track_start(&track_id, source_playlist_id.as_ref());
         *self.clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlaybackClock::new(info.duration));
@@ -8535,6 +8534,11 @@ fn promotion_error(error: PromotionError) -> ContractError {
         self.recovery.lock().unwrap_or_else(|e| e.into_inner()).record_success();
         *self.current_track.lock().unwrap_or_else(|e| e.into_inner()) = Some(track_id.clone());
         *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Playing;
+        // Commit the audible identity before Discover publishes its restored
+        // physical queue. Otherwise that queue snapshot combines the new
+        // current index with the previous recommendation's audible ID, briefly
+        // projecting stale recommendation metadata onto the player.
+        self.discover_track_started(&track_id);
         // Stage only after the audible identity has committed. Kicking before
         // current_track changed could start a competing video search for the
         // song that just stopped.
