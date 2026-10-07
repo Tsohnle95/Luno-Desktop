@@ -1,5 +1,5 @@
 import type { LibrarySnapshot, Track } from "../../shared/contracts";
-import { libraryPlaylists, sortLibraryTracks } from "../../views/LibraryView";
+import { defaultLibrarySort, libraryPlaylists, RECENT_DOWNLOADS_SCOPE, sortLibraryTracks } from "../../views/LibraryView";
 
 const track = (id: string, title: string, favorite = false): Track => ({ id, path: null, title, artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite, provider: null });
 const snapshot: LibrarySnapshot = { version: 1, generation: 1, tracks: [track("a", "Zed"), track("b", "Alpha", true)], playlists: [{ id: "u", name: "Unsorted", path: null, url: null, ordered_track_ids: ["a", "b"] }] };
@@ -17,6 +17,7 @@ if (!libraryViewChecks.favorites || !libraryViewChecks.sort || libraryViewChecks
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LibraryView, normalizeFilterText, shuffledFirstTrack, virtualWindow } from "../../views/LibraryView";
+import { LibrarySidebar } from "../../components/LibrarySidebar";
 import { HomeView } from "../../views/HomeView";
 import { formatAddedDate } from "../../components/TrackRow";
 
@@ -47,6 +48,38 @@ describe("zero-match state", () => {
     const html = renderToStaticMarkup(<LibraryView snapshot={snapshot} query="alpha" />);
     expect(html).toContain("Alpha");
     expect(html).not.toContain("No matches for");
+  });
+});
+
+describe("Recently downloaded library collection", () => {
+  const downloads: Track[] = [
+    { ...track("download-new", "Fresh download"), added_ms: 200 },
+    { ...track("download-old", "Older download"), added_ms: 100 },
+  ];
+  const downloadedSnapshot: LibrarySnapshot = { ...snapshot, tracks: [...snapshot.tracks, ...downloads] };
+
+  it("renders the complete collection in recent-download order", () => {
+    expect(defaultLibrarySort(RECENT_DOWNLOADS_SCOPE)).toBe("Recently added");
+    const html = renderToStaticMarkup(<LibraryView snapshot={downloadedSnapshot} selectedScope={RECENT_DOWNLOADS_SCOPE} recentlyDownloadedTracks={downloads} />);
+    expect(html).toContain(">Collection</p>");
+    expect(html).toContain("Recently downloaded tracks");
+    expect(html.indexOf("Fresh download")).toBeLessThan(html.indexOf("Older download"));
+  });
+
+  it("pins the collection in the library sidebar with its current count", () => {
+    const html = renderToStaticMarkup(<LibrarySidebar
+      snapshot={downloadedSnapshot}
+      tracksById={new Map(downloadedSnapshot.tracks.map((item) => [item.id, item]))}
+      selectedScope={RECENT_DOWNLOADS_SCOPE}
+      available={false}
+      recentlyDownloadedTracks={downloads}
+      onCreatePlaylist={() => {}}
+      onSelectScope={() => {}}
+      onPlaylistContextMenu={() => {}}
+    />);
+    expect(html).toContain('aria-current="page"');
+    expect(html).toContain('title="Recently downloaded"');
+    expect(html).toContain("2 songs");
   });
 });
 

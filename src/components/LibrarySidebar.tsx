@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { LibrarySnapshot, Playlist, Track } from "../shared/contracts";
-import { libraryAlbums, libraryPlaylists, playlistTracks, albumScope, type LibraryScope } from "../views/LibraryView";
+import { libraryAlbums, libraryPlaylists, playlistTracks, albumScope, RECENT_DOWNLOADS_SCOPE, type LibraryScope } from "../views/LibraryView";
 import { useTrackArtworkState, type ArtworkFetcher } from "../state/track_artwork";
 import { PlaylistArtwork } from "./PlaylistArtwork";
 import { RecommendationArtworkImage } from "./RecommendationArtwork";
@@ -11,7 +11,7 @@ interface SidebarEntry {
   label: string;
   subtitle: string;
   scope: LibraryScope;
-  kind: "all" | "favorites" | "unsorted" | "playlist" | "album";
+  kind: "all" | "favorites" | "unsorted" | "recent-downloads" | "playlist" | "album";
   artId?: string;
   artIds?: string[];
 }
@@ -21,6 +21,7 @@ interface LibrarySidebarProps {
   tracksById: ReadonlyMap<string, Track>;
   selectedScope: LibraryScope;
   available: boolean;
+  recentlyDownloadedTracks: Track[];
   onArtwork?: ArtworkFetcher;
   onCreatePlaylist: () => void;
   onSelectScope: (scope: LibraryScope) => void;
@@ -29,13 +30,14 @@ interface LibrarySidebarProps {
 
 const songs = (count: number) => `${count} ${count === 1 ? "song" : "songs"}`;
 
-function buildSidebarEntries(snapshot: LibrarySnapshot | null, chip: "playlists" | "albums"): SidebarEntry[] {
+function buildSidebarEntries(snapshot: LibrarySnapshot | null, chip: "playlists" | "albums", recentlyDownloadedTracks: Track[]): SidebarEntry[] {
   const unsorted = snapshot?.playlists.find((playlist) => playlist.name.toLowerCase() === "unsorted");
   const favoriteTracks = snapshot?.tracks.filter((track) => track.favorite) ?? [];
   const entries: SidebarEntry[] = [
     { key: "pin-all", label: "All Music", subtitle: songs(snapshot?.tracks.length ?? 0), scope: "all", kind: "all", artIds: snapshot?.tracks.slice(0, 4).map((track) => track.id) ?? [] },
     { key: "pin-favorites", label: "Favorites", subtitle: songs(favoriteTracks.length), scope: "favorites", kind: "favorites", artIds: favoriteTracks.slice(0, 4).map((track) => track.id) },
     { key: "pin-unsorted", label: "Unsorted", subtitle: songs(unsorted?.ordered_track_ids.length ?? 0), scope: "unsorted", kind: "unsorted", artIds: unsorted?.ordered_track_ids.slice(0, 4) ?? [] },
+    { key: "pin-recent-downloads", label: "Recently downloaded", subtitle: songs(recentlyDownloadedTracks.length), scope: RECENT_DOWNLOADS_SCOPE, kind: "recent-downloads", artIds: recentlyDownloadedTracks.slice(0, 4).map((track) => track.id) },
   ];
   if (chip === "playlists") {
     for (const playlist of libraryPlaylists(snapshot)) entries.push({ key: playlist.id, label: playlist.name, subtitle: songs(playlistTracks(snapshot, playlist).length), scope: playlist.id, kind: "playlist", artIds: playlist.ordered_track_ids.slice(0, 4) });
@@ -45,7 +47,7 @@ function buildSidebarEntries(snapshot: LibrarySnapshot | null, chip: "playlists"
   return entries;
 }
 
-export const LibrarySidebar = memo(function LibrarySidebar({ snapshot, tracksById, selectedScope, available, onArtwork, onCreatePlaylist, onSelectScope, onPlaylistContextMenu }: LibrarySidebarProps) {
+export const LibrarySidebar = memo(function LibrarySidebar({ snapshot, tracksById, selectedScope, available, recentlyDownloadedTracks, onArtwork, onCreatePlaylist, onSelectScope, onPlaylistContextMenu }: LibrarySidebarProps) {
   const [chip, setChip] = useState<"playlists" | "albums">("playlists");
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -68,7 +70,7 @@ export const LibrarySidebar = memo(function LibrarySidebar({ snapshot, tracksByI
     return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
   }, [searchOpen]);
 
-  const entries = useMemo(() => buildSidebarEntries(snapshot, chip), [snapshot, chip]);
+  const entries = useMemo(() => buildSidebarEntries(snapshot, chip, recentlyDownloadedTracks), [snapshot, chip, recentlyDownloadedTracks]);
   const visibleEntries = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return needle ? entries.filter((entry) => entry.label.toLocaleLowerCase().includes(needle)) : entries;
@@ -112,19 +114,19 @@ export const LibrarySidebar = memo(function LibrarySidebar({ snapshot, tracksByI
               setQuery("");
             }
           }}>
-          {(entry.kind === "all" || entry.kind === "favorites" || entry.kind === "unsorted" || entry.kind === "playlist") && mosaicTracks.length > 0
+          {(entry.kind === "all" || entry.kind === "favorites" || entry.kind === "unsorted" || entry.kind === "recent-downloads" || entry.kind === "playlist") && mosaicTracks.length > 0
             ? <PlaylistArtwork
                 className="luno-playlist-pin"
                 tracks={mosaicTracks}
                 artwork={sidebarArtwork}
                 loadingIds={sidebarArtworkState.loading}
-                emptyFallback={entry.kind === "unsorted" ? <IconDownload size={16} /> : entry.kind === "favorites" ? <IconHeart size={18} /> : entry.kind === "all" ? <IconMusicNote size={18} /> : "♫"}
+                emptyFallback={entry.kind === "unsorted" || entry.kind === "recent-downloads" ? <IconDownload size={16} /> : entry.kind === "favorites" ? <IconHeart size={18} /> : entry.kind === "all" ? <IconMusicNote size={18} /> : "♫"}
               />
             : entry.kind === "favorites"
               ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #4c8bf5, #b3b3b3)" }}><IconHeart size={18} /></span>
               : entry.kind === "all"
                 ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #1db954, #158a3e)" }}><IconMusicNote size={18} /></span>
-                : entry.kind === "unsorted"
+                : entry.kind === "unsorted" || entry.kind === "recent-downloads"
                   ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #3e3e3e, #181818)" }}><IconDownload size={16} /></span>
                   : entry.kind === "album" && entry.artId && artTrack
                     ? <span className="luno-playlist-pin"><RecommendationArtworkImage artworkUrl={sidebarArtwork[entry.artId] ?? artTrack.artwork_url} loading={sidebarArtworkState.loading.has(entry.artId)} artist={artTrack.artist ?? ""} title={entry.label} alt="" size="100%" /></span>

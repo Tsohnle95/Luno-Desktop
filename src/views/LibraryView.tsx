@@ -6,12 +6,13 @@ import { useTrackArtworkState, type ArtworkFetcher } from "../state/track_artwor
 import { cachedTrackDuration, requestTrackDuration } from "../state/track_durations";
 import { PlaylistArtwork } from "../components/PlaylistArtwork";
 
-export type LibraryScope = "all" | "unsorted" | "favorites" | string;
+export const RECENT_DOWNLOADS_SCOPE = "recent-downloads" as const;
+export type LibraryScope = "all" | "unsorted" | "favorites" | typeof RECENT_DOWNLOADS_SCOPE | string;
 export type LibrarySort = "A-Z" | "Z-A" | "Recently added" | "Oldest added" | "Duration" | "Longest duration";
 const EMPTY_DURATION_MAP: Readonly<Record<string, number | null | undefined>> = {};
 
 export function defaultLibrarySort(scope: LibraryScope): LibrarySort {
-  return scope === "unsorted" ? "Recently added" : "A-Z";
+  return scope === "unsorted" || scope === RECENT_DOWNLOADS_SCOPE ? "Recently added" : "A-Z";
 }
 
 /** Playlist navigation entries shared by the shell sidebar and the view header. */
@@ -84,6 +85,7 @@ export interface LibraryViewProps {
   loading?: boolean;
   error?: string | null;
   selectedScope?: LibraryScope;
+  recentlyDownloadedTracks?: Track[];
   onScopeChange?: (scope: LibraryScope) => void;
   /** Search text from the context-aware app search in the top bar. */
   query?: string | null;
@@ -100,9 +102,10 @@ export interface LibraryViewProps {
   backendAvailable?: boolean;
 }
 
-function scopeTracks(snapshot: LibrarySnapshot | null | undefined, scope: LibraryScope): Track[] {
+function scopeTracks(snapshot: LibrarySnapshot | null | undefined, scope: LibraryScope, recentlyDownloadedTracks: Track[] = []): Track[] {
   if (!snapshot) return [];
   if (scope === "all") return snapshot.tracks;
+  if (scope === RECENT_DOWNLOADS_SCOPE) return recentlyDownloadedTracks;
   if (scope === "favorites") return snapshot.tracks.filter((track) => track.favorite);
   if (scope === "unsorted") {
     const playlist = snapshot.playlists.find((item) => item.name.toLowerCase() === "unsorted");
@@ -178,7 +181,7 @@ function formatTotal(ms: number) {
  * song rows slide beneath it. The virtualization window therefore subtracts
  * the measured anchor height from the live scroll position.
  */
-export function LibraryView({ snapshot, playback, loading = false, error = null, selectedScope = "all", onScopeChange, query: externalQuery, sort: controlledSort, onSortChange, onPlay, onShuffle, onFavoriteToggle, onScan, onProbeDuration, onContextMenu, onArtwork, onOpenArtwork, backendAvailable = true }: LibraryViewProps) {
+export function LibraryView({ snapshot, playback, loading = false, error = null, selectedScope = "all", recentlyDownloadedTracks = [], onScopeChange, query: externalQuery, sort: controlledSort, onSortChange, onPlay, onShuffle, onFavoriteToggle, onScan, onProbeDuration, onContextMenu, onArtwork, onOpenArtwork, backendAvailable = true }: LibraryViewProps) {
   const query = externalQuery ?? "";
   const [internalSort, setInternalSort] = useState<LibrarySort>(() => defaultLibrarySort(selectedScope));
   const sort = controlledSort ?? internalSort;
@@ -200,8 +203,8 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
   const artworkMenuRef = useRef<HTMLDivElement | null>(null);
   const needle = useMemo(() => normalizeFilterText(query), [query]);
   const filteredTracks = useMemo(() => {
-    return scopeTracks(snapshot, selectedScope).filter((track) => normalizeFilterText(`${track.title} ${track.artist ?? ""} ${track.album ?? ""}`).includes(needle));
-  }, [snapshot, selectedScope, needle]);
+    return scopeTracks(snapshot, selectedScope, recentlyDownloadedTracks).filter((track) => normalizeFilterText(`${track.title} ${track.artist ?? ""} ${track.album ?? ""}`).includes(needle));
+  }, [snapshot, selectedScope, recentlyDownloadedTracks, needle]);
   const durationSort = sort === "Duration" || sort === "Longest duration";
   // Apply each known result immediately. Holding an old title sort until every
   // unknown track is probed made the duration header look broken on large lists.
@@ -216,8 +219,9 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
     return values;
   }, [durationSort, filteredTracks, probedDurations]);
   const tracks = useMemo(() => {
+    if (selectedScope === RECENT_DOWNLOADS_SCOPE && sort === "Recently added") return filteredTracks;
     return sortLibraryTracks(filteredTracks, sort, durationValues);
-  }, [filteredTracks, sort, durationValues]);
+  }, [filteredTracks, selectedScope, sort, durationValues]);
   const playlistNamesByTrackId = useMemo(() => {
     const names = new Map<string, string[]>();
     for (const playlist of snapshot?.playlists ?? []) {
@@ -233,22 +237,24 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
   // active query matches nothing — a zero-match filter previously made the hero
   // read "0 songs" and the empty state claim "No songs in All Music", which
   // looked exactly like the library had been wiped.
-  const scopeSize = useMemo(() => scopeTracks(snapshot, selectedScope).length, [snapshot, selectedScope]);
+  const scopeSize = useMemo(() => scopeTracks(snapshot, selectedScope, recentlyDownloadedTracks).length, [snapshot, selectedScope, recentlyDownloadedTracks]);
   const playlists = libraryPlaylists(snapshot);
   const playing = playback?.current_index == null ? null : playback.queue[playback.current_index];
   const isAlbumScope = selectedScope.startsWith(ALBUM_SCOPE_PREFIX);
-  const scopeName = selectedScope === "all"
-    ? "All Music"
-    : selectedScope === "favorites"
-      ? "Favorites"
-      : selectedScope === "unsorted"
-        ? "Unsorted"
-        : isAlbumScope
-          ? selectedScope.slice(ALBUM_SCOPE_PREFIX.length)
-          : playlists.find((item) => item.id === selectedScope || item.name === selectedScope)?.name ?? String(selectedScope);
-  const eyebrow = isAlbumScope ? "Album" : selectedScope === "all" || selectedScope === "unsorted" ? "Library" : "Playlist";
+  const scopeName = selectedScope === RECENT_DOWNLOADS_SCOPE
+    ? "Recently downloaded"
+    : selectedScope === "all"
+      ? "All Music"
+      : selectedScope === "favorites"
+        ? "Favorites"
+        : selectedScope === "unsorted"
+          ? "Unsorted"
+          : isAlbumScope
+            ? selectedScope.slice(ALBUM_SCOPE_PREFIX.length)
+            : playlists.find((item) => item.id === selectedScope || item.name === selectedScope)?.name ?? String(selectedScope);
+  const eyebrow = isAlbumScope ? "Album" : selectedScope === RECENT_DOWNLOADS_SCOPE ? "Collection" : selectedScope === "all" || selectedScope === "unsorted" ? "Library" : "Playlist";
   const gradient = scopeGradient(scopeName);
-  const canOpenArtworkManager = !!onOpenArtwork && !isAlbumScope && (selectedScope === "all" || selectedScope === "favorites" || selectedScope === "unsorted" || !!snapshot?.playlists.some((playlist) => playlist.id === selectedScope));
+  const canOpenArtworkManager = !!onOpenArtwork && !isAlbumScope && selectedScope !== RECENT_DOWNLOADS_SCOPE && (selectedScope === "all" || selectedScope === "favorites" || selectedScope === "unsorted" || !!snapshot?.playlists.some((playlist) => playlist.id === selectedScope));
 
   useEffect(() => {
     if (!artworkMenuOpen) return;

@@ -68,7 +68,7 @@ export interface HomeViewProps {
   onTrackContextMenu?: (event: MouseEvent, track: Track) => void;
   onOpenLibrary?: () => void;
   onOpenRecent?: () => void;
-  onOpenDownloader?: () => void;
+  onOpenRecentlyDownloaded?: () => void;
   onOpenPlaylist?: (playlistId: string) => void;
   onArtwork?: ArtworkFetcher;
   backendAvailable?: boolean;
@@ -87,7 +87,7 @@ function greeting() {
  * Made for you → Recently played → Most popular songs → Favorite songs →
  * Most popular playlists → Recently downloaded.
  */
-export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, popularTracks, playCounts = {}, popularPlaylists, recentlyDownloaded, tracksById, onPlayTrack, onTrackContextMenu, onOpenLibrary, onOpenRecent, onOpenDownloader, onOpenPlaylist, onArtwork, backendAvailable = true }: HomeViewProps) {
+export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, popularTracks, playCounts = {}, popularPlaylists, recentlyDownloaded, tracksById, onPlayTrack, onTrackContextMenu, onOpenLibrary, onOpenRecent, onOpenRecentlyDownloaded, onOpenPlaylist, onArtwork, backendAvailable = true }: HomeViewProps) {
   // One lazy artwork pass for every card on the page, budgeted FAIRLY
   // across sections: previously the first 40 deduplicated ids (Made-for-you
   // order) consumed the whole budget, so Favorites / Recently played / Most
@@ -191,7 +191,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
     </section>
 
     <section className="luno-home-section" aria-label="Recently downloaded">
-      {sectionHead("Recently downloaded", recentlyDownloaded.length > 0 ? { label: "Show all", onAction: () => onOpenDownloader?.() } : undefined)}
+      {sectionHead("Recently downloaded", recentlyDownloaded.length > 0 ? { label: "Show all", onAction: () => onOpenRecentlyDownloaded?.() } : undefined)}
       {recentlyDownloaded.length === 0
         ? <p className="luno-empty-note">Your latest downloads will appear here.</p>
         : <div className="luno-card-row luno-scroll">{recentlyDownloaded.map(trackCard(recentlyDownloaded))}</div>}
