@@ -68,9 +68,12 @@ transfer manifests (`docs/modules/contracts.md`).
 
 ## Invariants
 
-- Track IDs are filename-metadata-derived and stable across rescans when
-  no files are added/removed. Same-stem collisions gain a `#<path-hash>`
-  discriminator; cross-folder same-stem files stay distinct tracks.
+- Track IDs are filename-metadata-derived. Existing paths keep their prior
+  collision ID across rescans while their filename metadata identity remains
+  the same, even when duplicate siblings are added or removed. IDs still held
+  by the live queue are not reused for a different path during that rebuild.
+  Same-stem collisions gain a `#<path-hash>` discriminator; cross-folder
+  same-stem files stay distinct tracks.
 - Clicks racing a rescan carry stale IDs: `PlayWithContext` heals every
   context entry onto the current map under one lock; ambiguous siblings
   must fail rather than guess.

@@ -659,6 +659,92 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn a_surviving_duplicate_keeps_its_id_and_discover_anchor_after_sibling_removal() {
+        let state = AppState::new(1);
+        let removed = PathBuf::from("/music/Unsorted/Dup Artist - Same Song.mp3");
+        let survivor = PathBuf::from("/music/Unsorted/Dup Artist - Same Song.m4a");
+        state.replace_library(
+            Generation(1),
+            BTreeMap::from([(String::from("Unsorted"), vec![removed.clone(), survivor.clone()])]),
+        );
+
+        let survivor_id = state
+            .track_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|(_, path)| *path == &survivor)
+            .map(|(id, _)| id.clone())
+            .expect("surviving duplicate must be indexed");
+        assert!(
+            survivor_id.0.contains('#'),
+            "second copy starts with a path discriminator"
+        );
+
+        state
+            .playback
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(vec![survivor_id.clone()], 0);
+        let recommendation = TrackId::new("preview:fixture-recommendation").unwrap();
+        let mut discover = DiscoverMode::new(
+            1,
+            vec![survivor_id.clone()],
+            0,
+            vec![recommendation],
+        )
+        .expect("Discover captures the physical queue");
+        discover.enable();
+        let (projected, index) = discover.projected();
+        state
+            .playback
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .project(projected.clone(), index);
+        *state.discover.lock().unwrap_or_else(|e| e.into_inner()) = Some(discover);
+
+        // The first duplicate disappears. The survivor used to be promoted
+        // from `base#path` to `base`, which stranded both the live queue and
+        // Discover's captured physical queue on the old id.
+        let snapshot = state.replace_library(
+            Generation(2),
+            BTreeMap::from([(String::from("Unsorted"), vec![survivor.clone()])]),
+        );
+
+        assert_eq!(
+            state
+                .track_paths
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&survivor_id),
+            Some(&survivor),
+            "a surviving path must retain the ID already held by playback",
+        );
+        assert!(snapshot.tracks.iter().any(|track| track.id == survivor_id));
+        let queue_after_rescan = state
+            .playback
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .queue()
+            .to_vec();
+        assert_eq!(
+            queue_after_rescan,
+            projected,
+            "the projected queue keeps its physical anchor resolvable",
+        );
+        assert_eq!(
+            state
+                .discover
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .unwrap()
+                .physical_queue(),
+            &[survivor_id],
+        );
+    }
+
     /// Video mode must survive a save→load round trip and the backend-side
     /// toggle must persist immediately.
     #[test]
@@ -2925,22 +3011,44 @@ pub fn completion_may_publish(
 ///
 /// Track ids are `metadata:<key>:<duration>` (or `provider:…`), and files
 /// whose metadata cannot distinguish them append a `#<8-hex path hash>`.
-/// WHICH copy keeps the unsuffixed id depends on scan order, so adding,
-/// removing, or re-downloading a duplicate can flip ids between scans —
-/// ids captured by the queue panel, recent history, Home cards, or a click
-/// that raced a rescan then dangle. When the EXACT id misses but another id
-/// sharing its base exists, play that file instead of rejecting:
+/// A fresh scan still chooses the first unsuffixed copy by scan order, but
+/// subsequent scans retain IDs for existing paths. When a stale requested ID
+/// misses but another ID sharing its base exists, play that file instead of
+/// rejecting:
 /// - exact base present → use it (the canonical copy won a rescan);
 /// - exactly ONE suffixed sibling → use it (the clicked row gained a
 ///   discriminator);
 /// - zero or several siblings → still fail (ambiguous).
-pub fn heal_track_id(candidates: &std::collections::BTreeMap<TrackId, PathBuf>, requested: &TrackId) -> Option<TrackId> {    let base = requested.0.split('#').next()?.to_string();
+pub fn heal_track_id(
+    candidates: &std::collections::BTreeMap<TrackId, PathBuf>,
+    requested: &TrackId,
+) -> Option<TrackId> {
+    let base = requested.0.split('#').next()?.to_string();
     if base.is_empty() { return None; }
     let base_id = TrackId(base.clone());
     if candidates.contains_key(&base_id) { return Some(base_id); }
     let matches: Vec<&TrackId> = candidates.keys().filter(|id| id.0.split('#').next() == Some(base.as_str())).collect();
     if matches.len() == 1 { return Some(matches[0].clone()); }
     None
+}
+
+fn track_id_matches_path_candidate(existing: &TrackId, candidate: &TrackId, path: &Path) -> bool {
+    if existing == candidate {
+        return true;
+    }
+    let path_id = format!(
+        "{}#{}",
+        candidate.0,
+        crate::domain::identity::path_discriminator(path)
+    );
+    existing.0 == path_id
+        || existing
+            .0
+            .strip_prefix(&path_id)
+            .and_then(|suffix| suffix.strip_prefix('-'))
+            .is_some_and(|suffix| {
+                !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
+            })
 }
 
 /// How many UPCOMING context tracks get a quick-tier video pre-download (the
@@ -6310,6 +6418,36 @@ impl AppState {
         // window where play commands for rows still on screen resolved
         // against an EMPTY map and failed with "track is not available
         // locally" — the flaky search-click rejection.
+        let previous_ids_by_path: BTreeMap<PathBuf, TrackId> = self
+            .track_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(id, path)| (path.clone(), id.clone()))
+            .collect();
+        // IDs belonging to the previous scan, or still referenced by the
+        // live queue, must not be handed to a different file during this
+        // rebuild. In particular, removing the file that owned the plain
+        // metadata ID must not make a remaining duplicate steal it while a
+        // queue or Discover session still refers to that old ID.
+        let mut reserved_ids: std::collections::HashSet<String> = previous_ids_by_path
+            .values()
+            .map(|id| id.0.clone())
+            .collect();
+        {
+            let playback = self.playback.lock().unwrap_or_else(|e| e.into_inner());
+            reserved_ids.extend(playback.queue().iter().map(|id| id.0.clone()));
+            reserved_ids.extend(playback.history().iter().map(|id| id.0.clone()));
+            reserved_ids.extend(playback.previews().iter().map(|id| id.0.clone()));
+        }
+        if let Some(current) = self
+            .current_track
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            reserved_ids.insert(current.0.clone());
+        }
         let library_roots = self.scan_roots();
         let mut metadata_stores = BTreeMap::new();
         for root in &library_roots {
@@ -6390,21 +6528,33 @@ impl AppState {
                     }
                 }
                 let candidate = TrackId(crate::domain::identity::track_id(&metadata));
-                // Filename-only metadata cannot distinguish "Unsorted/song.m4a"
-                // from "Favorites/song.m4a" (or repeated downloads of one
-                // source): both derive the SAME metadata id, which previously
-                // collapsed them into one logical track — duplicated rows,
-                // queues that always play the first copy. Keep the FIRST
-                // occurrence canonical (persisted favorite ids survive);
-                // discriminate every later collision by path hash.
-                let id = if seen_ids.contains(candidate.0.as_str()) {
-                    TrackId(format!(
-                        "{}#{}",
-                        candidate.0,
-                        crate::domain::identity::path_discriminator(&path)
-                    ))
+                // Keep an existing path's ID when it still has the same
+                // metadata identity. Otherwise duplicate scan order could
+                // reassign the plain ID to another copy (or promote a
+                // surviving suffixed ID when its sibling disappears), leaving
+                // active playback and Discover with keys absent from the new
+                // library snapshot. New collisions remain path-discriminated.
+                let prior_id = previous_ids_by_path
+                    .get(&path)
+                    .filter(|id| track_id_matches_path_candidate(id, &candidate, &path));
+                let id = if let Some(prior_id) = prior_id {
+                    prior_id.clone()
+                } else if !seen_ids.contains(candidate.0.as_str())
+                    && !reserved_ids.contains(candidate.0.as_str())
+                {
+                    candidate.clone()
                 } else {
-                    candidate
+                    let discriminator = crate::domain::identity::path_discriminator(&path);
+                    let base = format!("{}#{discriminator}", candidate.0);
+                    let mut value = base.clone();
+                    let mut collision = 2_u64;
+                    while seen_ids.contains(value.as_str())
+                        || reserved_ids.contains(value.as_str())
+                    {
+                        value = format!("{base}-{collision}");
+                        collision = collision.saturating_add(1);
+                    }
+                    TrackId(value)
                 };
                 seen_ids.insert(id.0.clone());
                 paths.insert(path.clone(), id.clone());

@@ -60,6 +60,9 @@ What it does not own: library snapshots and track identity
   never owns playback and cannot restore its captured queue on skip or cancel.
   Switching shuffle off during Discover updates the physical order while
   preserving the audible recommendation and active projection.
+- Library rescans keep IDs for surviving paths stable across duplicate-set
+  changes, so the physical queue, its Discover capture, and the current-track
+  projection continue resolving to the same files.
 - Focused recommendation playback captures the physical queue. With Discover
   off, Previous/Next and natural completion restore that queue and move through
   its physical order even while a recommendation is audible. Prepared
