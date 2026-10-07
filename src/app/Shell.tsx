@@ -222,7 +222,11 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [finalCopyDelete, setFinalCopyDelete] = useState<{ files: string[]; reviewId: string; verificationIncomplete: boolean; confirm: (reviewId: string) => Promise<SafeDeleteResult>; onDeleted: (result: SafeDeleteResult) => void } | null>(null);
   const [finalCopyDeleteBusy, setFinalCopyDeleteBusy] = useState(false);
   const [finalCopyDeleteError, setFinalCopyDeleteError] = useState<string | null>(null);
-  const [playlistCreateRequest, setPlaylistCreateRequest] = useState<{ tracks: Track[]; onCreated?: (name: string, path?: string) => void } | null>(null);
+  const [playlistCreateRequest, setPlaylistCreateRequest] = useState<{
+    tracks: Track[];
+    onCreated?: (name: string, path?: string) => void;
+    onAlreadyExists?: (name: string) => void;
+  } | null>(null);
   const [playlistCreateBusy, setPlaylistCreateBusy] = useState(false);
   const [playlistCreateError, setPlaylistCreateError] = useState<string | null>(null);
   const [playlistUrlRequest, setPlaylistUrlRequest] = useState<{ playlist: Playlist; urls: string[] } | null>(null);
@@ -431,11 +435,15 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       })
       .catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
   };
-  const createPlaylist = useCallback((tracksToAdd: Track[] = [], onCreated?: (name: string, path?: string) => void) => {
+  const createPlaylist = useCallback((
+    tracksToAdd: Track[] = [],
+    onCreated?: (name: string, path?: string) => void,
+    onAlreadyExists?: (name: string) => void,
+  ) => {
     if (!bridge || !available) return;
     // Tauri's webview has no native window.prompt; collect the name in-app.
     setPlaylistCreateError(null);
-    setPlaylistCreateRequest({ tracks: tracksToAdd, onCreated });
+    setPlaylistCreateRequest({ tracks: tracksToAdd, onCreated, onAlreadyExists });
   }, [bridge, available]);
   const submitCreatePlaylist = (rawName: string) => {
     if (!bridge) return;
@@ -456,7 +464,22 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         else if (!request?.onCreated) setCommandNotice(`Created playlist “${name}”.`);
         request?.onCreated?.(name, createdPath);
       })
-      .catch((error: unknown) => { setPlaylistCreateBusy(false); setPlaylistCreateError(normalizeRuntimeCommandError(error)); });
+      .catch((error: unknown) => {
+        const message = normalizeRuntimeCommandError(error);
+        if (request?.onAlreadyExists && /already exists/i.test(message)) {
+          setPlaylistCreateBusy(false);
+          setPlaylistCreateRequest(null);
+          setPlaylistCreateError(null);
+          setCommandError(null);
+          request.onAlreadyExists(name);
+          void bridge.scanLibrary().catch((refreshError: unknown) => {
+            setCommandError(`The existing playlist was selected, but the library refresh failed: ${normalizeRuntimeCommandError(refreshError)}`);
+          });
+          return;
+        }
+        setPlaylistCreateBusy(false);
+        setPlaylistCreateError(message);
+      });
   };
   const openPlaylistUrlEditor = (playlist: Playlist) => {
     setContextMenu(null);
@@ -1458,18 +1481,27 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const homeViewEl = <HomeView allTracksCount={tracks.length} madeForYou={madeForYouTracks} favorites={tracks.filter((track) => track.favorite)} recentTracks={recentTracks} popularTracks={popularTracks} playCounts={playCounts} popularPlaylists={popularPlaylists} recentlyDownloaded={downloadedTracks} tracksById={tracksByIdForQueue} onPlayTrack={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onTrackContextMenu={openTrackMenu} onOpenLibrary={() => setLibraryHome(false)} onOpenRecent={() => navigate("recent")} onOpenRecentlyDownloaded={openRecentlyDownloaded} onOpenPlaylist={(playlistId) => { setLibraryScope(playlistId); setLibraryHome(false); navigate("library"); }} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} backendAvailable={available} />;
   const recentViewEl = <RecentView tracks={recentTracks} playback={projection.playback} backendAvailable={available} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onContextMenu={openTrackMenu} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />;
   const discoverViewEl = <DiscoverView seed={discoverSeed} artistMissingTitle={track && !track.artist ? track.title : null} recommendations={discover.items} session={recommendationPreview} saved={projection.saved} playlists={projection.library?.playlists ?? []} loading={discover.loading} error={discover.error} onRefresh={() => setDiscoverRefresh((value) => value + 1)} onTap={(key) => runCommand(projection.discover?.enabled ? bridge?.discoverSelect(key) : bridge?.previewTap(discover.items.slice(0, 50).map((item) => ({ artist: item.artist, title: item.title })), key))} onNext={() => runCommand(projection.discover?.enabled ? bridge?.next() : bridge?.previewNext())} onPrevious={() => runCommand(projection.discover?.enabled ? bridge?.previous() : bridge?.previewPrevious())} onCancel={stopDiscoverMode} onSave={(key, playlistId) => runCommand(bridge?.saveRecommendation(key, playlistId))} />;
+  const selectDownloadDestination = (name: string, path?: string) => {
+    if (!libraryRootPath || fixtureDestination) return;
+    const destination = path ?? `${libraryRootPath}/${name}`;
+    const rootPrefix = `${libraryRootPath}/`;
+    if (!destination.startsWith(rootPrefix)) return;
+    const alreadyIndexed = projectionRef.current.library?.playlists.some((playlist) => playlist.path === destination) ?? false;
+    if (!alreadyIndexed) {
+      setPendingDownloadDestinations((current) => current.includes(destination) ? current : [...current, destination]);
+    }
+    setDownloadDestination(destination);
+  };
   const createDownloadDestination = () => {
     if (!libraryRootPath) { setCommandError("Create a library folder in Settings first."); return; }
-    createPlaylist([], (_name, path) => {
-      if (!path || !libraryRootPath || fixtureDestination) return;
-      const rootPrefix = `${libraryRootPath}/`;
-      if (!path.startsWith(rootPrefix)) return;
-      const alreadyIndexed = projectionRef.current.library?.playlists.some((playlist) => playlist.path === path) ?? false;
-      if (!alreadyIndexed) {
-        setPendingDownloadDestinations((current) => current.includes(path) ? current : [...current, path]);
-      }
-      setDownloadDestination(path);
+    createPlaylist([], (name, path) => {
+      if (!path) return;
+      selectDownloadDestination(name, path);
       setCommandNotice(null);
+    }, (name) => {
+      const indexedPath = projectionRef.current.library?.playlists.find((playlist) => playlist.name.toLowerCase() === name.toLowerCase())?.path ?? undefined;
+      selectDownloadDestination(name, indexedPath);
+      setCommandNotice(`Selected the existing “${name}” playlist for downloads.`);
     });
   };
   const downloaderViewEl = <DownloaderView
