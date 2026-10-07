@@ -1344,13 +1344,19 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     .sort((a, b) => b.plays - a.plays || a.playlist.name.localeCompare(b.playlist.name))
     .slice(0, 10), [projection.library, playlistPlayCounts]);
   const downloadedTracks = useMemo(() => {
-    const seen = new Set<string>();
-    const resolved: Track[] = [];
+    const addedAtByTrack = new Map<string, number>();
     for (const entry of downloadJournal) {
-      const item = tracksById[entry.trackId];
-      if (item && !seen.has(item.id)) { seen.add(item.id); resolved.push(item); }
+      if (tracksById[entry.trackId]) addedAtByTrack.set(entry.trackId, entry.at);
     }
-    return resolved.slice(0, 50);
+    for (const item of Object.values(tracksById)) {
+      if (typeof item.added_ms !== "number" || !Number.isFinite(item.added_ms)) continue;
+      addedAtByTrack.set(item.id, Math.max(addedAtByTrack.get(item.id) ?? Number.NEGATIVE_INFINITY, item.added_ms));
+    }
+    return [...addedAtByTrack.entries()]
+      .sort(([leftId, leftAt], [rightId, rightAt]) => rightAt - leftAt || leftId.localeCompare(rightId))
+      .slice(0, 50)
+      .map(([id]) => tracksById[id])
+      .filter((item): item is Track => !!item);
   }, [downloadJournal, tracksById]);
 
   const nextFromLabel = useMemo(() => {

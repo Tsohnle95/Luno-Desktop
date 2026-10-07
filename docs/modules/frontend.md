@@ -59,7 +59,9 @@ envelope shapes (`docs/modules/contracts.md`).
   outside both the filter and its trigger.
 - The home dashboard orders its sections as Made for you, Recently played,
   Most popular songs, Favorite songs, Most popular playlists, and Recently
-  downloaded. Popular song cards show backend successful-start counts.
+  downloaded. The download section ranks library tracks by their first-added
+  timestamp and overlays local successful-download timestamps when available.
+  Popular song cards show backend successful-start counts.
   Playlist counts include only starts attributed to that playlist; track
   counts are never summed into every playlist containing a song. The old
   localStorage counts are imported once and removed after the backend save.
