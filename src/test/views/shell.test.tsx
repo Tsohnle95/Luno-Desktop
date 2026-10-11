@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PlayerBar } from "../../components/PlayerBar";
 import { Queue, queueVirtualWindow } from "../../components/Queue";
-import { isBusyDownloadError, isMissingConfigurationError, isRetryableRuntimeCommandError, Shell, videoFullscreenClass } from "../../app/Shell";
+import { discoverSessionAttempt, isBusyDownloadError, isMissingConfigurationError, isRetryableRuntimeCommandError, Shell, videoFullscreenClass } from "../../app/Shell";
 import type { BackendProjection } from "../../state/backend_projection";
 
 const projectionTrack = { id: "t1", path: null, title: "Aurora", artist: "Gate Six", album: "Chaos 93", duration_ms: 3000, artwork_url: null, favorite: false, provider: null };
@@ -19,6 +19,15 @@ const favoritesProjection = {
 };
 
 describe("Gate 6 player bar", () => {
+  it("restarts a requested Discover session after shuffle ends the backend session", () => {
+    const occurrence = "dubstep-track\u00003";
+    const first = discoverSessionAttempt(null, false, occurrence);
+    expect(first).toEqual({ key: occurrence, start: true });
+    expect(discoverSessionAttempt(first.key, false, occurrence).start).toBe(false);
+    const active = discoverSessionAttempt(first.key, true, occurrence);
+    expect(active).toEqual({ key: null, start: false });
+    expect(discoverSessionAttempt(active.key, false, occurrence)).toEqual({ key: occurrence, start: true });
+  });
   it("uses the current library favorite and disables the action for unsaved previews", () => {
     const local = { ...projectionTrack, path: "/music/Aurora.mp3", favorite: true };
     const preview = { ...projectionTrack, id: "Artist-Preview", path: null, title: "Preview", favorite: false };

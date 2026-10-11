@@ -109,6 +109,12 @@ export function isBusyDownloadError(error: unknown): boolean {
   }
 }
 
+export function discoverSessionAttempt(previous: string | null, enabled: boolean, occurrence: string | null): { key: string | null; start: boolean } {
+  if (enabled) return { key: null, start: false };
+  if (!occurrence || previous === occurrence) return { key: previous, start: false };
+  return { key: occurrence, start: true };
+}
+
 export function runBridgeCommand(command: Promise<unknown> | null | undefined, onError: (message: string) => void): void {
   if (command) void command.catch((error: unknown) => onError(normalizeRuntimeCommandError(error)));
 }
@@ -973,12 +979,17 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     return () => { active = false; };
   }, [route, discoverSeed?.artist, discoverSeed?.title, songRecRefresh, bridge, discoverSeedKey]);
   useEffect(() => {
-    if (!discoverRequested || !bridge || !available || projection.discover?.enabled) return;
+    if (projection.discover?.enabled) {
+      discoverSessionSeedKey.current = discoverSessionAttempt(discoverSessionSeedKey.current, true, discoverOccurrenceKey).key;
+      return;
+    }
+    if (!discoverRequested || !bridge || !available) return;
     if (!discoverSeedKey || !discoverOccurrenceKey || songRecs.seedKey !== discoverSeedKey || songRecs.state !== "ready" || songRecs.items.length === 0) return;
-    if (discoverSessionSeedKey.current === discoverOccurrenceKey) return;
+    const admission = discoverSessionAttempt(discoverSessionSeedKey.current, false, discoverOccurrenceKey);
+    discoverSessionSeedKey.current = admission.key;
+    if (!admission.start) return;
     const occurrenceKey = discoverOccurrenceKey;
     const seeds = songRecs.items.slice(0, 10).map((item) => ({ artist: item.artist, title: item.title }));
-    discoverSessionSeedKey.current = occurrenceKey;
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
     let attempts = 0;

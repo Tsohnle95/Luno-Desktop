@@ -117,7 +117,9 @@ What it does not own: library snapshots and promotion targets
   the backend ends that session and restores the physical queue at the row that
   just started. If the user left Discover enabled, the frontend fetches
   recommendations for that physical track and starts a fresh session for it;
-  turning Discover off cancels this continuation.
+  turning Discover off cancels this continuation. A shuffle change that ends
+  the backend session also starts a fresh session when Discover remains
+  requested, including when the audible seed is still the same song.
 - Each presentation mode has one serialized completion driver. The active
   PreviewSession owns preparation for its window while Discover is enabled;
   Discover adopts those completions and waits before launching work outside
