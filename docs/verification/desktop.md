@@ -38,6 +38,19 @@ npx tauri build
   "src-tauri/target/release/bundle/macos/Luno Desktop.app"
 ```
 
+Live YouTube checks are opt-in and are reported as ignored by the default Rust
+gate. The real download journey requires the reviewed media binaries from the
+[release guide](../release/desktop.md) to be provisioned first, plus network
+access. Run it explicitly with:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml \
+  gate4_real_dl_test::real_helper_download_lands_in_unsorted_and_publishes_job_events \
+  -- --ignored --exact
+```
+
+An ignored test is not evidence that the live download journey passed.
+
 The DMG bundler deletes the intermediate `.app` after packaging, so to install
 the release app into `/Applications` use `npx tauri build --bundles app` (or
 `scripts/install-release-app.sh`). The installer resolves Node from

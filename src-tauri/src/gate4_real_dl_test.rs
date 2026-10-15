@@ -15,11 +15,9 @@ fn helper_path() -> Option<PathBuf> {
 }
 
 #[test]
+#[ignore = "requires reviewed bundled media binaries and live YouTube access"]
 fn real_helper_download_lands_in_unsorted_and_publishes_job_events() {
-    let Some(helper) = helper_path() else {
-        eprintln!("SKIP: luno-download-helper not found (resources/bin missing)");
-        return;
-    };
+    let helper = helper_path().expect("provision the reviewed media toolchain before running this live test");
     let root = std::env::temp_dir().join(format!("luno-gate4-real-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
