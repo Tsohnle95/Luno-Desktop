@@ -8,6 +8,9 @@ import { Gate3Smoke } from "./app/gate3Smoke";
 import { Gate4Smoke } from "./app/gate4Smoke";
 import { Gate5Smoke } from "./app/gate5Smoke";
 import { VideoProbe } from "./app/videoProbe";
+import { initializeAppearance } from "./state/appearance";
+
+initializeAppearance();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Luno root element is missing");

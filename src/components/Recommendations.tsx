@@ -240,7 +240,7 @@ export function Recommendations({
 
                 {/* Center status icon: preview spinner / ready check */}
                 <span className="luno-rec-center" style={{ width: 32, height: 32, display: "inline-flex", alignItems: "center", justifyContent: "center", flex: "0 0 32px" }}>
-                  {showPreviewSpinner ? <DownloadRing progress={previewProgress} size={22} /> : showReadyCheck ? <span style={{ color: "var(--luno-green)", fontSize: 18, lineHeight: 1 }}>✓</span> : null}
+                  {showPreviewSpinner ? <DownloadRing progress={previewProgress} size={22} /> : showReadyCheck ? <span style={{ color: "var(--luno-accent)", fontSize: 18, lineHeight: 1 }}>✓</span> : null}
                 </span>
 
                 <div className="luno-recommendation-actions">

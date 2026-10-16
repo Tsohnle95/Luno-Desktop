@@ -53,7 +53,7 @@ const clamp = (value: number, min: number, max: number) => Math.min(Math.max(min
  * the committed position until the backend catches up (no snap-back). The
  * volume slider mirrors the persisted volume value when idle.
  */
-export function PlayerBar({ track = null, favoriteTrack: favoriteTrackProp, playback = null, artwork = null, artworkLoading = false, volume = 1, accent = "var(--luno-green)", onPlayPause, onNext, onPrevious, onSeek, onVolume, onVolumeCommit, onFavoriteToggle, onOpenTrack, onTrackContextMenu, backendAvailable = true, shuffle = false, repeat = "off", onToggleShuffle, onCycleRepeat, queueOpen = true, onToggleQueue }: PlayerBarProps) {
+export function PlayerBar({ track = null, favoriteTrack: favoriteTrackProp, playback = null, artwork = null, artworkLoading = false, volume = 1, accent = "var(--luno-accent)", onPlayPause, onNext, onPrevious, onSeek, onVolume, onVolumeCommit, onFavoriteToggle, onOpenTrack, onTrackContextMenu, backendAvailable = true, shuffle = false, repeat = "off", onToggleShuffle, onCycleRepeat, queueOpen = true, onToggleQueue }: PlayerBarProps) {
   const favoriteTrack = favoriteTrackProp === undefined ? (track?.path ? track : null) : favoriteTrackProp;
   const position = playback?.position_ms ?? 0;
   const duration = playback?.duration_ms ?? 0;

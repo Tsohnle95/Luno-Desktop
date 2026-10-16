@@ -127,7 +127,7 @@ export function PlaylistPicker({ title = "Add to playlist", playlists, selectedT
               borderRadius: 8,
               border: 0,
               background: "transparent",
-              color: "var(--luno-green)",
+              color: "var(--luno-accent)",
               cursor: "pointer",
               textAlign: "left",
             }}
@@ -168,14 +168,14 @@ export function PlaylistPicker({ title = "Add to playlist", playlists, selectedT
                   gap: 12,
                   padding: "10px 8px",
                   borderRadius: 8,
-                  border: highlighted ? "1px solid rgba(29,185,84,0.45)" : "1px solid transparent",
-                  background: highlighted ? "rgba(29,185,84,0.12)" : "transparent",
+                  border: highlighted ? "1px solid rgba(var(--luno-accent-rgb),0.45)" : "1px solid transparent",
+                  background: highlighted ? "rgba(var(--luno-accent-rgb),0.12)" : "transparent",
                   color: "var(--luno-text)",
                   cursor: "pointer",
                   textAlign: "left",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = highlighted ? "rgba(29,185,84,0.2)" : "#1a1a1a")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = highlighted ? "rgba(29,185,84,0.12)" : "transparent")}
+                onMouseEnter={(e) => (e.currentTarget.style.background = highlighted ? "rgba(var(--luno-accent-rgb),0.2)" : "#1a1a1a")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = highlighted ? "rgba(var(--luno-accent-rgb),0.12)" : "transparent")}
               >
                 <PlaylistArtwork
                   tracks={playlistCovers}
@@ -186,7 +186,7 @@ export function PlaylistPicker({ title = "Add to playlist", playlists, selectedT
                 />
                 <span style={{ display: "grid", gap: 2, minWidth: 0 }}>
                   <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14 }}>{pl.name}</strong>
-                  <small style={{ color: highlighted ? "var(--luno-green)" : "var(--luno-text-2)", fontSize: 12 }}>
+                  <small style={{ color: highlighted ? "var(--luno-accent)" : "var(--luno-text-2)", fontSize: 12 }}>
                     {highlighted ? `${alreadyText} · ` : ""}{pl.ordered_track_ids.length} {pl.ordered_track_ids.length === 1 ? "song" : "songs"}
                   </small>
                 </span>

@@ -7,8 +7,10 @@
   --luno-sidebar: #000000;
   --luno-player: #181818;
   --luno-border: #282828;
-  --luno-green: #1db954;
-  --luno-green-hover: #1ed760;
+  --luno-accent: #1db954;
+  --luno-accent-hover: #1ed760;
+  --luno-accent-rgb: 29, 185, 84;
+  --luno-accent-dark: #12813c;
   --luno-text: #ffffff;
   --luno-text-2: #b3b3b3;
   --luno-text-3: #535353;
@@ -24,9 +26,16 @@
   --luno-panel-radius: 8px;
   --luno-row-height: 56px;
   --luno-radius: 8px;
-  --luno-focus: 0 0 0 2px var(--luno-bg), 0 0 0 4px var(--luno-green);
+  --luno-focus: 0 0 0 2px var(--luno-bg), 0 0 0 4px var(--luno-accent);
   --luno-font-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
   --luno-font-mono: Menlo, Monaco, Consolas, monospace;
+}
+
+:root[data-accent="orange"] {
+  --luno-accent: rgb(250, 141, 118);
+  --luno-accent-hover: #ffa58f;
+  --luno-accent-rgb: 250, 141, 118;
+  --luno-accent-dark: #bd6452;
 }
 
 /* The order is part of the Python playlist_gradient contract. */

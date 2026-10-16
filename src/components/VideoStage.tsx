@@ -131,7 +131,7 @@ export function planVideoSync(input: {
   return { action: "none" };
 }
 
-/** The green download ring, reusable outside the media stage (player bar). */
+/** The accent-coloured download ring, reusable outside the media stage (player bar). */
 export function DownloadRing({ progress, size = 64 }: { progress: number | null; size?: number }) {
   const determinate = typeof progress === "number";
   return (
@@ -152,7 +152,7 @@ const stageChromeStyles = `
 .luno-video-progress svg { width:100%; height:100%; overflow:visible; }
 .luno-video-progress circle { fill:none; stroke-width:3.5; }
 .luno-video-progress-track { stroke:rgba(255,255,255,.16); }
-.luno-video-progress-fill { stroke:var(--luno-green,#1db954); stroke-linecap:round; transition:stroke-dashoffset .45s linear; }
+.luno-video-progress-fill { stroke:var(--luno-accent,#1db954); stroke-linecap:round; transition:stroke-dashoffset .45s linear; }
 .luno-video-progress.is-determinate svg { transform:rotate(-90deg); }
 .luno-video-progress.is-starting svg { animation:luno-video-spin 1.1s linear infinite; }
 .luno-video-progress:not(.is-determinate) svg { animation:luno-video-spin 1.1s linear infinite; }

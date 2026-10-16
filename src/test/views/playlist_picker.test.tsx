@@ -17,7 +17,7 @@ describe("PlaylistPicker", () => {
       onDismiss={() => undefined}
     />);
     expect(html).toContain("Already contains this song");
-    expect(html).toContain("rgba(29,185,84,0.12)");
+    expect(html).toContain("rgba(var(--luno-accent-rgb),0.12)");
     expect(html).toContain('aria-label="Road trip, 1 song, Already contains this song"');
   });
 

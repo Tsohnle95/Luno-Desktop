@@ -129,10 +129,10 @@ const songPageStyles = `
 .luno-video-mode-pill { display:flex; align-items:center; gap:8px; width:100%; border:0; border-radius:999px; padding:4px 4px 4px 4px; background:rgba(255,255,255,.09); cursor:pointer; }
 .luno-video-mode-pill .luno-video-mode-knob { position:relative; left:auto; display:inline-block; width:30px; height:16px; border-radius:999px; background:rgba(255,255,255,.25); transition:background .15s ease; }
 .luno-video-mode-pill .luno-video-mode-knob::after { content:""; position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:999px; background:#fff; transition:left .15s ease; }
-.luno-video-mode-pill.is-on .luno-video-mode-knob { background:var(--luno-green,#1db954); }
+.luno-video-mode-pill.is-on .luno-video-mode-knob { background:var(--luno-accent,#1db954); }
 .luno-video-mode-pill.is-on .luno-video-mode-knob::after { left:16px; }
 .luno-video-mode-label { font-size:12px; font-weight:700; color:var(--luno-text-2); }
-.luno-video-mode-pill.is-on .luno-video-mode-label { color:var(--luno-green,#1db954); }
+.luno-video-mode-pill.is-on .luno-video-mode-label { color:var(--luno-accent,#1db954); }
 .luno-song-page-backdrop { position:absolute; inset:-8%; background-position:center; background-size:cover; filter:blur(42px); opacity:.22; transform:scale(1.08); }
 .luno-song-page-scroll { position:relative; height:100%; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
 .luno-song-page-content { width:100%; margin:0 auto; padding:0 0 64px; }
@@ -150,9 +150,9 @@ const songPageStyles = `
 .luno-video-hover-retry { border:0; border-radius:6px; padding:6px 9px; color:var(--luno-text); background:rgba(0,0,0,.75); font-size:12px; cursor:pointer; }
 .luno-video-hover-retry:hover { background:var(--luno-bg-4); }
 .luno-video-volume { display:flex; align-items:center; gap:7px; min-height:30px; padding:0 9px; border-radius:6px; color:#fff; background:rgba(0,0,0,.7); }
-.luno-video-volume input { width:min(22vw,150px); accent-color:var(--luno-green,#1db954); }
+.luno-video-volume input { width:min(22vw,150px); accent-color:var(--luno-accent,#1db954); }
 .luno-video-mode-mini { position:relative; width:38px; height:22px; border:0; border-radius:999px; background:rgba(255,255,255,.28); cursor:pointer; transition:background .15s ease; }
-.luno-video-mode-mini.is-on { background:var(--luno-green,#1db954); }
+.luno-video-mode-mini.is-on { background:var(--luno-accent,#1db954); }
 .luno-video-mode-mini .luno-video-mode-mini-knob { position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:999px; background:#fff; transition:left .15s ease; }
 .luno-video-mode-mini.is-on .luno-video-mode-mini-knob { left:19px; }
 .luno-video-fullscreen:disabled { opacity:.45; cursor:default; }
@@ -164,11 +164,11 @@ const songPageStyles = `
 .luno-recommendations { padding:22px 0; border-top:1px solid rgba(255,255,255,.1); }
 .luno-discover-toggle { display:flex; justify-content:center; margin:0 0 16px; }
 .luno-discovery-switch { display:inline-flex; align-items:center; gap:9px; padding:6px 10px !important; border-radius:999px !important; background:var(--luno-bg-3) !important; color:var(--luno-text-2) !important; font-size:12px; font-weight:650; }
-.luno-discovery-switch.is-on { color:var(--luno-green,#1db954) !important; }
+.luno-discovery-switch.is-on { color:var(--luno-accent,#1db954) !important; }
 .luno-discovery-switch:disabled { opacity:.55; cursor:default; }
 .luno-discovery-switch-track { position:relative; width:30px; height:17px; border-radius:999px; background:rgba(255,255,255,.22); transition:background .15s ease; }
 .luno-discovery-switch-track span { position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%; background:white; transition:transform .15s ease; }
-.luno-discovery-switch.is-on .luno-discovery-switch-track { background:var(--luno-green,#1db954); }
+.luno-discovery-switch.is-on .luno-discovery-switch-track { background:var(--luno-accent,#1db954); }
 .luno-discovery-switch.is-on .luno-discovery-switch-track span { transform:translateX(13px); }
 .luno-recommendations-header { display:flex; align-items:center; gap:8px; }
 .luno-recommendations-title { display:flex; align-items:center; gap:7px; }

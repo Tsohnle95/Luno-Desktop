@@ -40,10 +40,18 @@ envelope shapes (`docs/modules/contracts.md`).
 - `src/state/` — `backend_projection.ts` (snapshot store + subscriptions),
   `ui_state.ts`, `play_stats.ts`, `track_artwork.ts` (bounded LRU by count
   and bytes; evicted entries retry lazily, never eagerly).
+- `src/state/appearance.ts` — renderer appearance preference, persisted in
+  localStorage and applied to the document before the first React render.
 - `src/styles/` — `tokens.css`, `layout.css`.
 
 ## Invariants
 
+- Settings → Appearance offers Green (the default, `#1db954`) and Orange
+  (`rgb(250, 141, 118)`). Selection immediately updates shared accent tokens
+  across controls, focus rings, and selection highlights, and survives relaunch.
+  This visual preference is renderer-owned and does not alter backend settings
+  or library transfer data. The orange application icon is independent of the
+  selected accent; playlist artwork retains its own colour palette.
 - Views render backend snapshots; they must not reimplement queue order,
   scan results, or job state. All mutations go through bridge commands.
 - The shell topbar has no Back/Forward chevrons. Playlist creation is

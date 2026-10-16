@@ -13,7 +13,7 @@ export interface DownloaderViewProps {
   onSearch?: (query: string, limit: number) => void; onDestinationChange?: (destination: string) => void; onLoadMore?: () => void; onPreview?: (query: string, kind: "youtube" | "csv") => void; onDownload?: (ids: string[], destination: string) => void; onDirectUrl?: (url: string, destination: string) => void; onQueueUrl?: (url: string) => void; onDownloadQueue?: (destination: string) => void; onSync?: (playlist: Playlist) => void; onCancel?: (jobId: string) => void; onRetry?: (jobId: string) => void; onAllowDuplicates?: (keys: string[]) => void; onExportAllowed?: () => void; onImportAllowed?: (file: File) => void; onCreateDestination?: () => void; children?: ReactNode;
 }
 const inputStyle = { width: "100%", padding: "10px 12px", color: "var(--luno-text)", background: "var(--luno-bg-3)", border: "1px solid var(--luno-border)", borderRadius: "var(--luno-radius)" };
-const buttonStyle = { border: 0, borderRadius: "var(--luno-radius)", padding: "10px 14px", color: "var(--luno-bg)", background: "var(--luno-green)", fontWeight: 700, cursor: "pointer" };
+const buttonStyle = { border: 0, borderRadius: "var(--luno-radius)", padding: "10px 14px", color: "var(--luno-bg)", background: "var(--luno-accent)", fontWeight: 700, cursor: "pointer" };
 export const destinationName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 export function linkedPlaylistForDestination(playlists: Playlist[], destination: string): Playlist | undefined {
   return playlists.find((playlist) => playlist.path === destination && !!playlist.url);
@@ -67,7 +67,7 @@ function Destination({ items, value, onChange, onCreate }: { items: string[]; va
             // closing this list before the button's click handler can run.
             event.preventDefault();
             choose(item);
-          }} onClick={() => choose(item)} style={{ width: "100%", border: 0, borderRadius: 6, background: item === selected ? "rgba(29,185,84,0.12)" : "transparent", color: "var(--luno-text)", padding: "9px 10px", textAlign: "left", cursor: "pointer" }} onMouseEnter={(event) => { event.currentTarget.style.background = "var(--luno-bg-3)"; }} onMouseLeave={(event) => { event.currentTarget.style.background = item === selected ? "rgba(29,185,84,0.12)" : "transparent"; }}>{destinationName(item)}</button>)}
+          }} onClick={() => choose(item)} style={{ width: "100%", border: 0, borderRadius: 6, background: item === selected ? "rgba(var(--luno-accent-rgb),0.12)" : "transparent", color: "var(--luno-text)", padding: "9px 10px", textAlign: "left", cursor: "pointer" }} onMouseEnter={(event) => { event.currentTarget.style.background = "var(--luno-bg-3)"; }} onMouseLeave={(event) => { event.currentTarget.style.background = item === selected ? "rgba(var(--luno-accent-rgb),0.12)" : "transparent"; }}>{destinationName(item)}</button>)}
       </div>}
     </div>
     <button type="button" onClick={onCreate} style={{ ...buttonStyle, whiteSpace: "nowrap" }}>+ New</button>
@@ -91,7 +91,7 @@ function Status({ jobs, onCancel, activeLabel, activeLabels }: Pick<DownloaderVi
       </div>;
     })}
   </div>;
-  return latest?.state === "succeeded" ? <p role="status" aria-live="polite" style={{ padding: 12, background: "var(--luno-bg-3)", color: "var(--luno-green)" }}>✓ Download complete — added to your library.</p> : null;
+  return latest?.state === "succeeded" ? <p role="status" aria-live="polite" style={{ padding: 12, background: "var(--luno-bg-3)", color: "var(--luno-accent)" }}>✓ Download complete — added to your library.</p> : null;
 }
 
 export function DownloaderView({ jobs = {}, searchResults = [], previewTracks = [], duplicateGroups = [], allowedDuplicates = [], destinations = ["Unsorted"], defaultDestination, destination: controlledDestination, queue = [], queuedDownloads = 0, syncPlaylists = [], loading = false, searching = false, error = null, partialSuccess = null, activeLabel = null, activeLabels, onSearch, onDestinationChange, onLoadMore, onPreview, onDownload, onDirectUrl, onQueueUrl, onDownloadQueue, onSync, onCancel, onRetry, onAllowDuplicates, onExportAllowed, onImportAllowed, onCreateDestination, children }: DownloaderViewProps) {

@@ -12,7 +12,7 @@ export interface ArtworkManagerProps {
   onArtworkApplied?: (trackId: string, artworkDataUrl: string) => void;
 }
 
-const buttonStyle = { border: 0, borderRadius: 8, padding: "10px 14px", color: "var(--luno-bg)", background: "var(--luno-green)", fontWeight: 700, cursor: "pointer" } as const;
+const buttonStyle = { border: 0, borderRadius: 8, padding: "10px 14px", color: "var(--luno-bg)", background: "var(--luno-accent)", fontWeight: 700, cursor: "pointer" } as const;
 const secondaryButton = { ...buttonStyle, color: "var(--luno-text)", background: "var(--luno-bg-3)" } as const;
 const inputStyle = { width: "100%", padding: "11px 12px", color: "var(--luno-text)", background: "var(--luno-bg-3)", border: "1px solid var(--luno-border)", borderRadius: "var(--luno-radius)" } as const;
 

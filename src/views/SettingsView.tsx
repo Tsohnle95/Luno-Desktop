@@ -1,4 +1,5 @@
 import { useState, type ChangeEvent, type ReactNode } from "react";
+import { ACCENT_COLORS, setAccentColor, useAccentColor } from "../state/appearance";
 
 /** Destinations reachable from the settings rail. */
 export type SettingsNavLink = "home" | "downloader" | "artwork" | "sync_review";
@@ -34,11 +35,11 @@ export interface SettingsViewProps {
   onScreenClosed?: () => void;
 }
 
-const CATEGORIES = ["Library", "Discovery", "Transfer"] as const;
+const CATEGORIES = ["Library", "Appearance", "Discovery", "Transfer"] as const;
 type Category = (typeof CATEGORIES)[number];
 
 const inputStyle = { width: "100%", padding: "11px 12px", color: "var(--luno-text)", background: "var(--luno-bg-3)", border: "1px solid var(--luno-border)", borderRadius: "var(--luno-radius)" };
-const buttonStyle = { border: 0, borderRadius: "var(--luno-radius)", padding: "10px 14px", color: "var(--luno-bg)", background: "var(--luno-green)", fontWeight: 700, cursor: "pointer" };
+const buttonStyle = { border: 0, borderRadius: "var(--luno-radius)", padding: "10px 14px", color: "var(--luno-bg)", background: "var(--luno-accent)", fontWeight: 700, cursor: "pointer" };
 const buttonsDisabledStyle = (disabled: boolean) => ({ ...buttonStyle, opacity: disabled ? 0.5 : 1, cursor: disabled ? "not-allowed" : "pointer" });
 
 /**
@@ -54,6 +55,7 @@ export function SettingsView({
   onNavigate, screen = null, activeScreen = null, onScreenClosed,
 }: SettingsViewProps) {
   const [category, setCategory] = useState<Category>("Library");
+  const accent = useAccentColor();
   const [key, setKey] = useState(lastfmKey);
   const [keyError, setKeyError] = useState<string | null>(null);
   const [keySaved, setKeySaved] = useState(false);
@@ -79,12 +81,25 @@ export function SettingsView({
     <h2 id={`settings-${title}`} style={{ fontSize: 16, margin: "0 0 14px", borderBottom: "1px solid var(--luno-border)", paddingBottom: 10 }}>{title}</h2>{children}
   </section>;
   const panels: Record<Category, ReactNode> = {
+    Appearance: section("Appearance", <>
+      <fieldset className="luno-accent-options">
+        <legend>Accent colour</legend>
+        <p>Choose the colour for buttons, highlights, and playback controls.</p>
+        <div className="luno-accent-choices">
+          {ACCENT_COLORS.map((option) => <label key={option.value} className="luno-accent-choice">
+            <input type="radio" name="accent-colour" value={option.value} checked={accent === option.value} onChange={() => setAccentColor(option.value)} />
+            <span className="luno-accent-swatch" style={{ background: option.color }} aria-hidden="true" />
+            <span>{option.label}</span>
+          </label>)}
+        </div>
+      </fieldset>
+    </>),
     Library: section("Storage & Library", onLibraryRootSubmit ? <div><label htmlFor="music-root">Music folder</label><div style={{ display: "flex", gap: 10, marginTop: 8 }}><input id="music-root" autoCorrect="off" spellCheck={false} value={rootInput} onChange={(e) => updateRoot(e.target.value)} placeholder="/Users/you/Music" aria-describedby="music-root-error" style={{ ...inputStyle, flex: 1 }} /><button type="button" disabled={rootInput.trim().length === 0 || rootError !== null} onClick={() => onLibraryRootSubmit(rootInput)} style={buttonsDisabledStyle(rootInput.trim().length === 0 || rootError !== null)}>Set folder</button></div>{rootError && <p id="music-root-error" role="alert" style={{ color: "var(--luno-red)", margin: "6px 0" }}>{rootError}</p>}<p style={{ color: "var(--luno-text-2)" }}>Enter an absolute folder path; Luno scans it as your music library and downloads land inside it.</p></div> : <div><label htmlFor="music-root">Music folder</label><div style={{ display: "flex", gap: 10, marginTop: 8 }}><input id="music-root" autoCorrect="off" spellCheck={false} readOnly value={musicRoot} style={{ ...inputStyle, flex: 1 }} /><button type="button" onClick={onChooseMusicRoot} style={buttonStyle}>Change</button></div><p style={{ color: "var(--luno-text-2)" }}>Library scanning and downloads use this folder.</p></div>),
     Discovery: section("Discovery & Personalization", <>
       <div style={{ background: "var(--luno-bg)", padding: 18, borderRadius: 8, marginBottom: 18 }}><strong>Connect to Last.fm</strong><p style={{ color: "var(--luno-text-2)", lineHeight: 1.5, marginBottom: 0 }}>Create an API key at Last.fm, then enter it below. The key is stored privately in Luno's app data.</p></div>
       <label htmlFor="lastfm-key">Last.fm API key</label><div style={{ display: "flex", gap: 10, marginTop: 8 }}><input id="lastfm-key" type="password" autoComplete="off" autoCorrect="off" spellCheck={false} value={key} onChange={updateKey} aria-describedby="lastfm-status lastfm-error" style={{ ...inputStyle, flex: 1 }} /><button type="button" disabled={!onSaveLastfmKey || !key.trim() || keyError !== null} onClick={submitKey} style={buttonsDisabledStyle(!key.trim() || keyError !== null)}>Save key</button></div>
       {keyError && <p id="lastfm-error" role="alert" style={{ color: "var(--luno-red)", margin: "6px 0" }}>{keyError}</p>}
-      {keySaved && keychainStatus === "available" && <p role="status" style={{ color: "var(--luno-green)", margin: "6px 0 0" }}>API key saved — discovery is live.</p>}
+      {keySaved && keychainStatus === "available" && <p role="status" style={{ color: "var(--luno-accent)", margin: "6px 0 0" }}>API key saved — discovery is live.</p>}
       <p id="lastfm-status" role="status" style={{ color: keychainStatus === "error" ? "var(--luno-red)" : "var(--luno-text-2)", marginTop: 8 }}>{keychainStatus === "loading" ? "Checking Keychain..." : keychainStatus === "available" ? "An API key is configured; recommendations and Discover mode are enabled." : keychainStatus === "missing" ? "No API key configured yet — paste your Last.fm key above." : "Keychain unavailable. Your key was not saved."}</p>
       <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 20 }}><input type="checkbox" checked={autoDiscovery} onChange={(e) => onAutoDiscoveryChange?.(e.target.checked)} /> Automatic recommendations</label>
     </>),

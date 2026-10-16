@@ -125,7 +125,7 @@ export const LibrarySidebar = memo(function LibrarySidebar({ snapshot, tracksByI
             : entry.kind === "favorites"
               ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #4c8bf5, #b3b3b3)" }}><IconHeart size={18} /></span>
               : entry.kind === "all"
-                ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #1db954, #158a3e)" }}><IconMusicNote size={18} /></span>
+                ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, var(--luno-accent), var(--luno-accent-dark))" }}><IconMusicNote size={18} /></span>
                 : entry.kind === "unsorted" || entry.kind === "recent-downloads"
                   ? <span className="luno-playlist-pin" style={{ background: "linear-gradient(135deg, #3e3e3e, #181818)" }}><IconDownload size={16} /></span>
                   : entry.kind === "album" && entry.artId && artTrack
