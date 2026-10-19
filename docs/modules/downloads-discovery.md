@@ -80,6 +80,15 @@ What it does not own: library snapshots and promotion targets
   rendition, which avoids the selectively enforced GVS proof-of-origin token.
   Other failures remain terminal, and the normal provider-neutral quality
   selector remains the first attempt.
+- A structurally valid download can still be content-broken: some source
+  uploads serve an audio rendition that is mostly digital silence with only a
+  few seconds of music per interval. The helper output is decoded (bundled
+  ffmpeg; low-rate mono peak energy per 0.5 s window) and rejected when at
+  least half of a file long enough to judge is digital silence. A corrupt
+  rendition therefore fails the job with an explicit reason instead of being
+  promoted as near-silent, glitching playback. The check fails open when the
+  bundled ffmpeg is unavailable, so an otherwise successful transfer is never
+  blocked by a missing tool.
 - Discovery metadata is validated before preview/download work; preview
   assets stay temporary and hidden from the library until an explicit
   save promotes them.
@@ -248,7 +257,7 @@ What it does not own: library snapshots and promotion targets
 
 ```text
 search_downloader → results → start_download → helper spawn → staged output
-→ signature validation → atomic promote → coalesced rescan → job succeeded
+→ signature + content validation → atomic promote → coalesced rescan → job succeeded
 playlist sync → supervised flat enumeration → library/marker dedupe
 → sequential helper downloads → per-item success marker → coalesced rescan
 discover → validated recommendations → shared temporary assets → focused tap

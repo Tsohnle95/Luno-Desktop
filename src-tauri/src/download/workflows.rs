@@ -3,7 +3,7 @@
 use crate::download::csv::CsvTrack;
 use crate::process::child::{isolate_process_group, terminate_process_tree, DEFAULT_KILL_GRACE};
 use crate::runtime::task_registry::CancellationToken;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -113,20 +113,99 @@ pub fn parse_download_progress(line: &str) -> Option<f32> {
 /// publishes 100% only after the final audio file is safely in place.
 pub fn run_download_helper(helper: &Path, temporary: &Path, source: &str, worker_home: &Path, token: &CancellationToken, progress: &dyn Fn(f32)) -> Result<(), String> {
     let first = run_download_helper_attempt(helper, temporary, source, worker_home, token, progress, None);
-    if let Err(error) = &first {
-        if !token.is_cancelled() && error.to_ascii_lowercase().contains("http error 403") {
-            return run_download_helper_attempt(
-                helper,
-                temporary,
-                source,
-                worker_home,
-                token,
-                progress,
-                Some("bestaudio[protocol^=m3u8]/bestaudio/best"),
-            ).map_err(|fallback| format!("direct audio was forbidden; HLS fallback failed: {fallback}"));
+    let outcome = match first {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if !token.is_cancelled() && error.to_ascii_lowercase().contains("http error 403") {
+                run_download_helper_attempt(
+                    helper,
+                    temporary,
+                    source,
+                    worker_home,
+                    token,
+                    progress,
+                    Some("bestaudio[protocol^=m3u8]/bestaudio/best"),
+                ).map_err(|fallback| format!("direct audio was forbidden; HLS fallback failed: {fallback}"))
+            } else {
+                Err(error)
+            }
+        }
+    };
+    // A structurally valid file can still be content-corrupt: some source
+    // uploads serve an audio rendition that is mostly digital silence with a
+    // few seconds of music per interval (a "3 s on / 12 s off" mix). Such a
+    // file decodes cleanly and passes the container signature check, then
+    // plays as near-silent glitching. Reject it here, before promotion, so the
+    // job fails honestly instead of publishing broken audio.
+    outcome.and_then(|()| reject_corrupt_download(helper, temporary))
+}
+
+/// Approximate fraction of a file that is digital silence, used to detect a
+/// source rendition that is structurally valid but content-broken. `None`
+/// means the check could not run (no bundled ffmpeg, unreadable output); the
+/// caller then keeps the download rather than blocking a successful transfer.
+fn silent_fraction(ffmpeg: &Path, output: &Path) -> Option<f64> {
+    // Decode to low-rate mono PCM and measure peak energy per 0.5 s window.
+    // A window at or below `SILENCE_PEAK` (~-60 dBFS) counts as silent; real
+    // audio (even quiet passages) is far above that floor.
+    const ANALYSIS_RATE: u32 = 8_000;
+    const WINDOW_SAMPLES: usize = ANALYSIS_RATE as usize / 2;
+    const SILENCE_PEAK: u16 = 32;
+    let mut child = Command::new(ffmpeg)
+        .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-i"])
+        .arg(output)
+        .args(["-map", "0:a:0", "-ac", "1", "-ar"])
+        .arg(ANALYSIS_RATE.to_string())
+        .args(["-f", "s16le", "-"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let mut chunk = vec![0u8; 64 * 1024];
+    let mut pending: Vec<u8> = Vec::new();
+    let mut windows = 0u64;
+    let mut silent = 0u64;
+    loop {
+        match stdout.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => pending.extend_from_slice(&chunk[..read]),
+            Err(_) => { let _ = child.wait(); return None; }
+        }
+        while pending.len() >= WINDOW_SAMPLES * 2 {
+            let bytes = WINDOW_SAMPLES * 2;
+            let peak = pending[..bytes]
+                .chunks_exact(2)
+                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]).unsigned_abs())
+                .max()
+                .unwrap_or(0);
+            windows += 1;
+            if peak <= SILENCE_PEAK {
+                silent += 1;
+            }
+            pending.drain(..bytes);
         }
     }
-    first
+    let _ = child.wait();
+    // Too short to judge (or nothing decoded): do not block the download.
+    if windows < 120 {
+        return None;
+    }
+    Some(silent as f64 / windows as f64)
+}
+
+fn reject_corrupt_download(helper: &Path, temporary: &Path) -> Result<(), String> {
+    const CORRUPT_SILENCE_FRACTION: f64 = 0.5;
+    let Some(ffmpeg) = helper.parent().map(|dir| dir.join("ffmpeg")).filter(|path| path.is_file()) else {
+        return Ok(());
+    };
+    match silent_fraction(&ffmpeg, temporary) {
+        Some(fraction) if fraction >= CORRUPT_SILENCE_FRACTION => Err(format!(
+            "the downloaded audio is {:.0}% silent, so the source track is incomplete or corrupt and was not saved; try a different result",
+            fraction * 100.0
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn run_download_helper_attempt(helper: &Path, temporary: &Path, source: &str, worker_home: &Path, token: &CancellationToken, progress: &dyn Fn(f32), format: Option<&str>) -> Result<(), String> {
@@ -338,5 +417,92 @@ mod helper_quoting_tests {
         assert!(template.contains("LUNO_STATUS=%(progress.status)s"), "status missing: {template}");
         assert!(!template.contains("LUNO_PROGRESS="), "preview must not use formatted percentage output: {template}");
         let _ = std::fs::remove_dir_all(&sandbox);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod corrupt_download_tests {
+    use super::reject_corrupt_download;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    const RATE: usize = 8_000;
+
+    fn sandbox(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("luno-corrupt-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// A stand-in for the bundled ffmpeg that ignores its argv and streams a
+    /// fixed raw PCM file, so the silence analysis is exercised without a real
+    /// encoder.
+    fn ffmpeg_stub(root: &Path, pcm: &Path) {
+        let path = root.join("ffmpeg");
+        std::fs::write(&path, format!("#!/bin/sh\ncat \"{}\"\n", pcm.display())).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+    }
+
+    /// `(silent_seconds, loud_seconds)` of 8 kHz mono s16 PCM.
+    fn pcm_file(label: &str, silent_seconds: usize, loud_seconds: usize) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("luno-pcm-{label}-{}.raw", std::process::id()));
+        let mut bytes = Vec::with_capacity((silent_seconds + loud_seconds) * RATE * 2);
+        for _ in 0..silent_seconds * RATE {
+            bytes.extend_from_slice(&0i16.to_le_bytes());
+        }
+        for _ in 0..loud_seconds * RATE {
+            bytes.extend_from_slice(&10_000i16.to_le_bytes());
+        }
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn guard(label: &str, silent_seconds: usize, loud_seconds: usize) -> Result<(), String> {
+        let root = sandbox(label);
+        let pcm = pcm_file(label, silent_seconds, loud_seconds);
+        ffmpeg_stub(&root, &pcm);
+        let helper = root.join("luno-download-helper");
+        let result = reject_corrupt_download(&helper, &root.join("out.m4a"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&pcm);
+        result
+    }
+
+    /// Regression: a source rendition that is mostly digital silence (the
+    /// "3 s music / 12 s silence" corruption) decodes cleanly and passes the
+    /// container signature check, but the user hears near-silent glitching.
+    /// The download must fail instead of being promoted.
+    #[test]
+    fn rejects_a_predominantly_silent_rendition() {
+        let error = guard("silent", 61, 0).expect_err("mostly-silent audio must be rejected");
+        assert!(error.contains("silent"), "error should explain the cause: {error}");
+    }
+
+    /// The real corruption is ~80 % silence; the threshold must catch it while
+    /// leaving normal audio (with quiet passages) untouched.
+    #[test]
+    fn accepts_healthy_audio_and_normal_quiet_passages() {
+        assert!(guard("loud", 0, 61).is_ok(), "continuous audio must be accepted");
+        assert!(guard("mostly-loud", 10, 51).is_ok(), "a normal quiet passage must be accepted");
+    }
+
+    /// Short clips (previews, stingers) are not judged: a few silent seconds
+    /// are not evidence of corruption.
+    #[test]
+    fn skips_files_too_short_to_judge() {
+        assert!(guard("short", 30, 0).is_ok(), "a short silent clip must not be rejected");
+    }
+
+    /// Without a bundled ffmpeg the check fails open so an otherwise
+    /// successful transfer is never blocked by a missing tool.
+    #[test]
+    fn fails_open_without_a_bundled_ffmpeg() {
+        let root = sandbox("no-ffmpeg");
+        let result = reject_corrupt_download(&root.join("luno-download-helper"), &root.join("out.m4a"));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(result.is_ok(), "a missing tool must not block the download");
     }
 }
