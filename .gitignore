@@ -32,3 +32,5 @@ local.properties
 !/src-tauri/resources/bin/.gitkeep
 !/src-tauri/resources/bin/luno-download-helper
 .empryo
+
+designs
