@@ -1,8 +1,9 @@
+import { previewKey, type Track } from "../../shared/contracts";
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PlayerBar } from "../../components/PlayerBar";
 import { Queue, queueVirtualWindow } from "../../components/Queue";
-import { discoverSessionAttempt, isBusyDownloadError, isMissingConfigurationError, isRetryableRuntimeCommandError, Shell, videoFullscreenClass } from "../../app/Shell";
+import { retainRecommendationTracks, recommendationTrackMap, discoverSessionAttempt, isBusyDownloadError, isMissingConfigurationError, isRetryableRuntimeCommandError, Shell, videoFullscreenClass } from "../../app/Shell";
 import type { BackendProjection } from "../../state/backend_projection";
 
 const projectionTrack = { id: "t1", path: null, title: "Aurora", artist: "Gate Six", album: "Chaos 93", duration_ms: 3000, artwork_url: null, favorite: false, provider: null };
@@ -170,5 +171,54 @@ describe("Gate 6 player bar", () => {
     const html = renderToStaticMarkup(<Shell backendProjection={failingProjection} backendAvailable={false} />);
     expect(html).toContain('data-state="backend-error"');
     expect(html).toContain("boom");
+  });
+});
+
+const seed: Track = { id: "seed", path: null, title: "Fortitude", artist: null, album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null };
+const recommendations = Array.from({ length: 10 }, (_, index) => ({
+  artist: `Artist ${index}`, title: `Recommended ${index}`, match_score: 1, artwork_url: `https://example.com/art-${index}.jpg`,
+}));
+const keys = recommendations.map(({ artist, title }) => previewKey(artist, title));
+
+function panel(metadata: Map<string, Track>, index = 0) {
+  const tracks = [seed, ...keys.map((id) => metadata.get(id) ?? { ...seed, id, title: "Unavailable track" })];
+  return renderToStaticMarkup(<Queue tracks={tracks} currentIndex={index} />);
+}
+
+describe("Discovery queue metadata lifetime", () => {
+  it.each([{ results: [] }, { results: [{ artist: "New seed", title: "New result", match_score: 1, artwork_url: null }] }])(
+    "keeps all queued recommendation names, artists and artwork when lookup results change (%j)", ({ results }) => {
+      const admitted = recommendationTrackMap(recommendations);
+      // A refresh failure, missing artist, or new seed can clear/replace lookup
+      // results while the backend still projects these pending recommendations.
+      const retained = retainRecommendationTracks(recommendationTrackMap(results), admitted, [seed.id, ...keys]);
+      const html = panel(retained);
+      for (const item of recommendations) {
+        expect(html).toContain(item.title);
+        expect(html).toContain(item.artist);
+        expect(html).toContain(item.artwork_url);
+      }
+      expect(html).not.toContain("Unavailable track");
+      // The seed itself has no artist; only the ten successors must resolve.
+      expect((html.match(/Unknown artist/g) ?? []).length).toBe(1);
+      const advanced = panel(retained, 2);
+      expect(advanced).toContain("Recommended 1");
+      expect(advanced).not.toContain("Recommended 0");
+      expect(advanced).toContain("8 songs");
+    },
+  );
+
+  it("retains an audible recommendation after physical queue restoration and releases departed metadata", () => {
+    const admitted = recommendationTrackMap(recommendations);
+    const restored = retainRecommendationTracks(new Map(), admitted, [seed.id, keys[3]]);
+    expect([...restored.keys()]).toEqual([keys[3]]);
+    expect(retainRecommendationTracks(new Map(), restored, [seed.id]).size).toBe(0);
+  });
+
+  it("uses fresh artwork when the retained recommendation returns in new results", () => {
+    const admitted = recommendationTrackMap(recommendations);
+    const refreshed = retainRecommendationTracks(recommendationTrackMap([{ ...recommendations[0], artwork_url: "updated.jpg" }]), admitted, keys);
+    expect(refreshed.get(keys[0])?.artwork_url).toBe("updated.jpg");
+    expect(refreshed.get(keys[9])?.title).toBe("Recommended 9");
   });
 });

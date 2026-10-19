@@ -118,7 +118,10 @@ envelope shapes (`docs/modules/contracts.md`).
   completion driver.
 - Temporary recommendation IDs mirror Rust's `safe_key` over Unicode code
   points. The shell resolves queue and audible IDs back to current
-  recommendation metadata before rendering the footer or song page, and only
+  recommendation metadata before rendering the footer or song page. Metadata
+  for queued, audible, and active preview/Discover window IDs survives lookup
+  refreshes, failures, and seed changes until those IDs leave playback; fresh
+  lookup results replace retained metadata. Only
   a matching local library track can be favorited; preview-only tracks become
   eligible after they are saved into the library.
 - The song page, player bar, queue, and video correlation follow Discover's

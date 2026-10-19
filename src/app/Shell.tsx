@@ -163,6 +163,17 @@ export function recommendationTrackMap(items: Recommendation[]): Map<string, Tra
   return tracks;
 }
 
+/** Lookup results can change before the backend retires their queue or audible IDs. */
+export function retainRecommendationTracks(current: Map<string, Track>, previous: Map<string, Track> | null, retainedIds: readonly string[]): Map<string, Track> {
+  const tracks = new Map(current);
+  for (const id of retainedIds) {
+    const retained = previous?.get(id);
+    if (!tracks.has(id) && retained) tracks.set(id, retained);
+  }
+  if (previous && tracks.size === previous.size && [...tracks].every(([id, track]) => previous.get(id) === track)) return previous;
+  return tracks;
+}
+
 export function stoppedPlaybackCommand(bridge: Pick<Bridge, "discoverSelect" | "previewTap" | "playWithContext"> | undefined, selected: Track | null, libraryCurrent: Track | null, discoverEnabled: boolean, recommendations: Recommendation[], queue: Track[]): Promise<unknown> | undefined {
   if (!bridge || !selected) return;
   const index = recommendations.findIndex((item) => previewKey(item.artist, item.title) === selected.id);
@@ -1094,10 +1105,17 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // their keys after the current track). Without resolving them here, they were
   // silently dropped from the queue array while the raw backend index was still
   // applied — shifting Now playing / Next up onto the wrong rows.
-  const recommendationTracks = useMemo(
+  const currentRecommendationTracks = useMemo(
     () => recommendationTrackMap([...songRecs.items, ...discover.items]),
     [songRecs.items, discover.items],
   );
+  const recommendationTracks = retainRecommendationTracks(currentRecommendationTracks, queueVersion.current.recs, [
+    ...playbackQueue,
+    ...(projection.playback?.audible_track_id ? [projection.playback.audible_track_id] : []),
+    ...(projection.preview?.current ? [projection.preview.current] : []),
+    ...(projection.preview?.window ?? []),
+    ...(projection.discover?.window ?? []),
+  ]);
   // Discover mode's current queue entry may be a recommendation key; resolve it
   // to its metadata so the song page, player bar, and video slot show the
   // recommendation instead of the library track behind it (or "Nothing playing").
