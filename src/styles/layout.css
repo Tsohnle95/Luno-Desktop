@@ -165,9 +165,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-playlist-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 14px; color: var(--luno-text); }
 .luno-playlist-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--luno-text-2); }
 .luno-playlist-pin { display: grid; place-items: center; flex: 0 0 48px; width: 48px; height: 48px; border-radius: 5px; background: linear-gradient(135deg, #4c8bf5, #b3b3b3); color: #fff; }
-.luno-playlist-mosaic { display: grid; overflow: hidden; background: var(--luno-bg-3); }
+.luno-playlist-mosaic { display: grid; place-items: stretch; overflow: hidden; background: var(--luno-bg-3); }
 .luno-playlist-mosaic > span { min-width: 0; min-height: 0; overflow: hidden; }
 .luno-playlist-mosaic .luno-rec-art, .luno-playlist-mosaic .luno-artwork { width: 100% !important; height: 100% !important; }
+.luno-playlist-mosaic-cell { position: relative; }
+.luno-playlist-mosaic-cell > .luno-artwork, .luno-playlist-mosaic-cell > .luno-rec-art { position: absolute; inset: 0; border-radius: 0 !important; }
 .luno-playlist-mosaic-empty { display: grid; grid-column: 1 / -1; grid-row: 1 / -1; place-items: center; }
 .luno-card .luno-playlist-mosaic { width: 100% !important; height: auto !important; flex: none !important; aspect-ratio: 1 / 1; border-radius: 7px; }
 

@@ -14,7 +14,8 @@ export interface PlaylistArtworkProps {
 
 /** Shared four-cover playlist tile used by the sidebar, picker, and home. */
 export function PlaylistArtwork({ tracks, artwork, loadingIds, eager = false, className, style, emptyFallback = "♫" }: PlaylistArtworkProps) {
-  const covers = tracks.slice(0, 4);
+  const available = tracks.slice(0, 4);
+  const covers = available.length ? Array.from({ length: 4 }, (_, index) => available[index % available.length]) : [];
   return <span
     className={`luno-playlist-mosaic${className ? ` ${className}` : ""}`}
     style={{ gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gridTemplateRows: "minmax(0, 1fr) minmax(0, 1fr)", ...style }}
@@ -23,14 +24,7 @@ export function PlaylistArtwork({ tracks, artwork, loadingIds, eager = false, cl
     {covers.length === 0
       ? <span className="luno-playlist-mosaic-empty">{emptyFallback}</span>
       : covers.map((track, index) => {
-          const span = covers.length === 1
-            ? { gridColumn: "1 / -1", gridRow: "1 / -1" }
-            : covers.length === 2
-              ? { gridRow: "1 / -1" }
-              : covers.length === 3 && index === 0
-                ? { gridRow: "1 / -1" }
-                : {};
-          return <span key={track.id} style={span}>
+          return <span className="luno-playlist-mosaic-cell" key={`${track.id}-${index}`}>
             <RecommendationArtworkImage
               artworkUrl={artwork[track.id] ?? track.artwork_url}
               loading={loadingIds?.has(track.id)}
