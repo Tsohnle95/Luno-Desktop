@@ -120,7 +120,13 @@ fn image_url(image: &serde_json::Value) -> Option<String> {
     let raw = image.get("#text").or_else(|| image.get("url"))?.as_str()?.trim();
     let url = if let Some(rest) = raw.strip_prefix("http://") { format!("https://{rest}") } else if raw.starts_with("https://") { raw.to_owned() } else { return None };
     let lower = url.to_lowercase();
-    if (lower.contains("last.fm") || lower.contains("lastfm.freetls.fastly.net")) && ["/default", "noimage", "no_image", "2a96cbd8b46e442fc41c2b86b821562f"].iter().any(|m| lower.contains(m)) { None } else { Some(url) }
+    let host = reqwest::Url::parse(&url).ok().and_then(|url| url.host_str().map(str::to_owned)).unwrap_or_default();
+    let lastfm_host = host == "last.fm" || host.ends_with(".last.fm")
+        || host == "lastfm.freetls.fastly.net" || host == "lastfm-img.freetls.fastly.net";
+    if lower.contains("2a96cbd8b46e442fc41c2b86b821562f")
+        || (lastfm_host && ["/default", "noimage", "no_image", "/placeholder"].iter().any(|m| lower.contains(m))) {
+        None
+    } else { Some(url) }
 }
 pub fn normalized_key(artist: &str, title: &str) -> String {
     let normalize = |value: &str| value.nfkd().filter(|c| !unicode_normalization::char::is_combining_mark(*c)).filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
@@ -177,7 +183,7 @@ mod discovery_tests {
             "similartracks": { "track": [
                 {"name":"Missing", "artist":{"name":"Artist"}, "image":[]},
                 {"name":"Existing", "artist":{"name":"Artist"}, "image":[{"size":"large", "#text":"https://img.test/existing.jpg"}]},
-                {"name":"Placeholder", "artist":{"name":"Artist"}, "image":[{"size":"large", "#text":"https://lastfm.freetls.fastly.net/i/u/2a96cbd8b46e442fc41c2b86b821562f.png"}]}
+                {"name":"Placeholder", "artist":{"name":"Artist"}, "image":[{"size":"large", "#text":"https://lastfm-img.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png"}]}
             ]}
         }).to_string())]);
         let artwork = start_mock_server(vec![("q=".into(), serde_json::json!({"data":[{"album":{"cover_xl":"https://img.test/resolved.jpg"}}]}).to_string()); 2]);

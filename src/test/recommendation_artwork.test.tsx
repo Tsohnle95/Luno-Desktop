@@ -29,6 +29,8 @@ const recommendationTrack: Track = {
 
 describe("recommendation artwork policy", () => {
   it.each([
+    ["https://lastfm-img.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png", "current Last.fm sentinel host"],
+    ["https://lastfm-img.freetls.fastly.net/i/u/300x300/default.png", "current Last.fm default host"],
     [undefined, "missing"],
     [null, "null"],
     ["", "empty"],

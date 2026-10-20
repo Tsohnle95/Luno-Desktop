@@ -125,7 +125,7 @@ export function isPlaceholderArtwork(url: string | null | undefined): boolean {
   const lower = url.trim().toLowerCase();
   if (lower.includes(LASTFM_PLACEHOLDER)) return true;
   const host = artworkHost(lower);
-  const isLastFmHost = host === "last.fm" || host.endsWith(".last.fm") || host === "lastfm.freetls.fastly.net";
+  const isLastFmHost = host === "last.fm" || host.endsWith(".last.fm") || host === "lastfm.freetls.fastly.net" || host === "lastfm-img.freetls.fastly.net";
   if (isLastFmHost && /(?:^|[\/_-])(default|noimage|no_image|placeholder)(?:[\/_\.-]|$)/.test(lower)) return true;
   return false;
 }
