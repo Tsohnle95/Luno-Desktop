@@ -146,9 +146,13 @@ What it does not own: library snapshots and promotion targets
   samples, and unknown totals remain indeterminate; transfer values stay
   monotonic and below 100. Only atomic publication reports 100 and makes an
   item playable.
-- Last.fm placeholder URLs are treated as missing artwork. Recommendation
-  rows and every playback projection use the same deterministic generated
-  Luno artwork; the generated palette set excludes the retired neutral gray
+- Last.fm placeholder URLs are treated as missing artwork. After filtering
+  library entries, discovery resolves missing covers through the bounded Deezer
+  artwork cache while preserving usable Last.fm covers. Up to four scoped
+  workers share a six-second lookup budget with two-second HTTP timeouts;
+  successful covers and definitive misses are cached, while transient provider
+  failures remain retryable. Rows and every playback projection use the same
+  deterministic generated Luno artwork when no usable cover is resolved; the generated palette set excludes the retired neutral gray
   and white cross/star treatment.
 - Serialized preview audio and bounded quick-video preparation start together
   for the same five recommendation items. They publish independently, while

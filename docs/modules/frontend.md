@@ -62,7 +62,10 @@ envelope shapes (`docs/modules/contracts.md`).
   The filter stays mounted for a short opacity/height transition, and its
   pointer-outside dismissal clears the query.
 - All Music, Favorites, Unsorted, and physical playlist entries use the same
-  four-track split-artwork tile, with their normal icon when no artwork tracks
+  four-cell split-artwork tile; one to three tracks repeat to fill equal quadrants,
+  independently of source image dimensions or loading/fallback state. Recently
+  downloaded uses this same tile in its sidebar and collection hero,
+  with the normal icon when no artwork tracks
   are available. The sidebar filter closes and clears when a pointer lands
   outside both the filter and its trigger.
 - The home dashboard orders its sections as Made for you, Recently played,

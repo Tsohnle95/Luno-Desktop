@@ -1,12 +1,15 @@
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+use super::service::Recommendation;
 
 pub const DESIGN_COUNT: u32 = 75;
 pub const MAX_CACHE: usize = 128;
 
-/// Artwork lookup used when Last.fm has no usable image. `None` is cached so
-/// repeated missing-art rows do not repeatedly hit Deezer.
+/// Bounded cover lookup used when Last.fm has no usable image.
+/// Definitive misses are cached; transport/provider failures remain retryable.
 pub struct ArtworkService {
     base_url: String,
     client: Client,
@@ -37,7 +40,11 @@ impl ArtworkService {
             self.order.push_back(key);
             return value;
         }
-        let result = self.lookup(artist, title);
+        let result = self.lookup(artist, title, Instant::now() + Duration::from_secs(4)).ok()?;
+        self.store(key, result.clone());
+        result
+    }
+    fn store(&mut self, key: String, result: Option<String>) {
         if self.cache.len() >= MAX_CACHE {
             if let Some(oldest) = self.order.pop_front() {
                 self.cache.remove(&oldest);
@@ -45,24 +52,67 @@ impl ArtworkService {
         }
         self.order.push_back(key.clone());
         self.cache.insert(key, result.clone());
-        result
     }
-    fn lookup(&self, artist: &str, title: &str) -> Option<String> {
+
+    pub fn resolve_missing(&mut self, items: &mut [Recommendation]) {
+        let mut pending = Vec::new();
+        for (index, item) in items.iter_mut().enumerate() {
+            if item.artwork_url.is_some() { continue; }
+            let key = format!("{}|{}", item.artist.trim().to_lowercase(), item.title.trim().to_lowercase());
+            if let Some(cached) = self.cache.get(&key) {
+                item.artwork_url = cached.clone();
+                self.order.retain(|entry| entry != &key);
+                self.order.push_back(key);
+            } else {
+                pending.push((index, key, item.artist.clone(), item.title.clone()));
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(6);
+        let next = AtomicUsize::new(0);
+        let service = &*self;
+        let results = std::thread::scope(|scope| {
+            let mut workers = Vec::new();
+            for _ in 0..pending.len().min(4) {
+                let pending = &pending;
+                let next = &next;
+                if let Ok(worker) = std::thread::Builder::new().name("recommendation-art".into()).spawn_scoped(scope, move || {
+                    let mut results = Vec::new();
+                    while Instant::now() < deadline {
+                        let Some((index, key, artist, title)) = pending.get(next.fetch_add(1, Ordering::Relaxed)) else { break; };
+                        if let Ok(cover) = service.lookup(artist, title, deadline) {
+                            results.push((*index, key.clone(), cover));
+                        }
+                    }
+                    results
+                }) { workers.push(worker); }
+            }
+            workers.into_iter().flat_map(|worker| worker.join().unwrap_or_default()).collect::<Vec<_>>()
+        });
+        for (index, key, cover) in results {
+            items[index].artwork_url = cover.clone();
+            self.store(key, cover);
+        }
+    }
+
+    fn lookup(&self, artist: &str, title: &str, deadline: Instant) -> Result<Option<String>, ()> {
         for query in [
             format!("\"{artist}\" \"{title}\""),
             format!("{artist} {title}"),
         ] {
+            let remaining = deadline.checked_duration_since(Instant::now()).ok_or(())?;
             let response = match self
                 .client
                 .get(&self.base_url)
+                .timeout(remaining.min(Duration::from_secs(2)))
                 .query(&[("q", query), ("limit", "1".into())])
                 .send()
                 .and_then(|r| r.error_for_status())
                 .and_then(|r| r.json::<Value>())
             {
                 Ok(value) => value,
-                Err(_) => continue,
+                Err(_) => return Err(()),
             };
+            if response.get("error").is_some() || !response.get("data").is_some_and(Value::is_array) { return Err(()); }
             let Some(album) = response
                 .get("data")
                 .and_then(Value::as_array)
@@ -77,10 +127,10 @@ impl ArtworkService {
                 .unwrap_or("")
                 .trim();
             if !raw.is_empty() {
-                return Some(normalize_url(raw));
+                return Ok(Some(normalize_url(raw)));
             }
         }
-        None
+        Ok(None)
     }
     pub fn clear_cache(&mut self) {
         self.cache.clear();
@@ -131,5 +181,103 @@ pub fn render_design(index: u32, size: u32) -> Design {
         size,
         start: (p.0, p.1, p.2),
         end: (p.3, p.4, p.5),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn provider_failure_is_retryable_and_success_is_cached() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for (status, body) in [
+                (500, r#"{"error":"temporary"}"#),
+                (200, r#"{"data":[{"album":{"cover_big":"https://img.test/real.jpg"}}]}"#),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                stream.read(&mut request).unwrap();
+                write!(stream, "HTTP/1.1 {status} Status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let mut service = ArtworkService::with_base_url(format!("http://{address}"));
+        let mut items = vec![Recommendation { artist: "Artist".into(), title: "Song".into(), match_score: 1.0, artwork_url: None }];
+        service.resolve_missing(&mut items);
+        assert!(items[0].artwork_url.is_none());
+        assert!(service.cache.is_empty());
+        service.resolve_missing(&mut items);
+        assert_eq!(items[0].artwork_url.as_deref(), Some("https://img.test/real.jpg"));
+        server.join().unwrap();
+        items[0].artwork_url = None;
+        service.resolve_missing(&mut items);
+        assert_eq!(items[0].artwork_url.as_deref(), Some("https://img.test/real.jpg"));
+    }
+
+    #[test]
+    fn expired_budget_does_not_start_a_request() {
+        let service = ArtworkService::with_base_url("http://127.0.0.1:1");
+        assert!(service.lookup("Artist", "Song", Instant::now() - Duration::from_secs(1)).is_err());
+    }
+
+    #[test]
+    fn batch_resolves_all_covers_with_at_most_four_concurrent_requests() {
+        use std::sync::Arc;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let current = active.clone();
+        let peak = maximum.clone();
+        let server = std::thread::spawn(move || {
+            let mut handlers = Vec::new();
+            for _ in 0..9 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let current = current.clone();
+                let peak = peak.clone();
+                handlers.push(std::thread::spawn(move || {
+                    let mut request = [0; 4096];
+                    stream.read(&mut request).unwrap();
+                    let count = current.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(count, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(30));
+                    let body = r#"{"data":[{"album":{"cover_medium":"https://img.test/cover.jpg"}}]}"#;
+                    current.fetch_sub(1, Ordering::SeqCst);
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                }));
+            }
+            for handler in handlers { handler.join().unwrap(); }
+        });
+        let mut service = ArtworkService::with_base_url(format!("http://{address}"));
+        let mut items: Vec<_> = (0..9).map(|i| Recommendation { artist: "Artist".into(), title: format!("Song {i}"), match_score: 1.0, artwork_url: None }).collect();
+        service.resolve_missing(&mut items);
+        assert!(items.iter().all(|item| item.artwork_url.as_deref() == Some("https://img.test/cover.jpg")));
+        server.join().unwrap();
+        assert!(maximum.load(Ordering::SeqCst) <= 4);
+        assert!(maximum.load(Ordering::SeqCst) > 1);
+    }
+
+    #[test]
+    fn definitive_miss_is_cached() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                stream.read(&mut request).unwrap();
+                let body = r#"{"data":[]}"#;
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let mut service = ArtworkService::with_base_url(format!("http://{address}"));
+        assert!(service.find_artwork("Artist", "Missing").is_none());
+        server.join().unwrap();
+        assert_eq!(service.cache.get("artist|missing"), Some(&None));
+        assert!(service.find_artwork("Artist", "Missing").is_none());
     }
 }

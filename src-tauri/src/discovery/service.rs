@@ -25,6 +25,7 @@ struct CacheKey { artist: String, title: String, limit: usize }
 
 /// Last.fm client. The cache deliberately stores only successful non-empty results.
 pub struct DiscoveryService {
+    artwork: Option<crate::discovery::artwork::ArtworkService>,
     api_key: Option<String>,
     base_url: String,
     client: Client,
@@ -35,10 +36,12 @@ pub struct DiscoveryService {
 
 impl DiscoveryService {
     pub fn new(api_key: Option<String>) -> Self {
-        Self::with_base_url(api_key, "https://ws.audioscrobbler.com/2.0/")
+        let mut service = Self::with_base_url(api_key, "https://ws.audioscrobbler.com/2.0/");
+        service.artwork = Some(crate::discovery::artwork::ArtworkService::new());
+        service
     }
     pub fn with_base_url(api_key: Option<String>, base_url: impl Into<String>) -> Self {
-        Self { api_key, base_url: base_url.into(), client: Self::client(), cache: HashMap::new(), order: VecDeque::new(), generation: AtomicU64::new(0) }
+        Self { artwork: None, api_key, base_url: base_url.into(), client: Self::client(), cache: HashMap::new(), order: VecDeque::new(), generation: AtomicU64::new(0) }
     }
     fn client() -> Client {
         Client::builder()
@@ -55,7 +58,7 @@ impl DiscoveryService {
         let key = CacheKey { artist: artist.trim().to_lowercase(), title: title.trim().to_lowercase(), limit };
         if self.api_key.as_deref().map(str::trim).unwrap_or("").is_empty() { return DiscoveryResult::Error(DiscoveryError::MissingApiKey); }
         if key.artist.is_empty() || key.title.is_empty() { return DiscoveryResult::Success(Vec::new()); }
-        if let Some(items) = self.cache.get(&key).cloned() { return DiscoveryResult::Success(filter_recommendations(items, library)); }
+        if let Some(items) = self.cache.get(&key).cloned() { return DiscoveryResult::Success(self.resolve_artwork(items, library)); }
         let mut items = match self.call("track.getsimilar", artist, Some(title), limit) {
             Ok(v) => v,
             Err(e) if Self::is_not_found(&e) => Vec::new(),
@@ -70,7 +73,13 @@ impl DiscoveryService {
         }
         items = deduplicate(items);
         if !items.is_empty() { self.store(key, items.clone()); }
-        DiscoveryResult::Success(filter_recommendations(items, library))
+        DiscoveryResult::Success(self.resolve_artwork(items, library))
+    }
+
+    fn resolve_artwork(&mut self, items: Vec<Recommendation>, library: &[Recommendation]) -> Vec<Recommendation> {
+        let mut items = filter_recommendations(items, library);
+        if let Some(artwork) = self.artwork.as_mut() { artwork.resolve_missing(&mut items); }
+        items
     }
 
     fn is_not_found(error: &DiscoveryError) -> bool {
@@ -160,6 +169,26 @@ mod discovery_tests {
             }
         });
         format!("http://{addr}/")
+    }
+
+    #[test]
+    fn missing_recommendation_art_is_resolved_and_cached_without_replacing_provider_art() {
+        let lastfm = start_mock_server(vec![("track.getsimilar".into(), serde_json::json!({
+            "similartracks": { "track": [
+                {"name":"Missing", "artist":{"name":"Artist"}, "image":[]},
+                {"name":"Existing", "artist":{"name":"Artist"}, "image":[{"size":"large", "#text":"https://img.test/existing.jpg"}]},
+                {"name":"Placeholder", "artist":{"name":"Artist"}, "image":[{"size":"large", "#text":"https://lastfm.freetls.fastly.net/i/u/2a96cbd8b46e442fc41c2b86b821562f.png"}]}
+            ]}
+        }).to_string())]);
+        let artwork = start_mock_server(vec![("q=".into(), serde_json::json!({"data":[{"album":{"cover_xl":"https://img.test/resolved.jpg"}}]}).to_string()); 2]);
+        let mut service = DiscoveryService::with_base_url(Some("key".into()), lastfm);
+        service.artwork = Some(crate::discovery::artwork::ArtworkService::with_base_url(artwork));
+        for _ in 0..2 {
+            let DiscoveryResult::Success(items) = service.get_similar("Seed", "Song", 3, &[]) else { panic!("discovery failed") };
+            assert_eq!(items[0].artwork_url.as_deref(), Some("https://img.test/resolved.jpg"));
+            assert_eq!(items[1].artwork_url.as_deref(), Some("https://img.test/existing.jpg"));
+            assert_eq!(items[2].artwork_url.as_deref(), Some("https://img.test/resolved.jpg"));
+        }
     }
 
     #[test]

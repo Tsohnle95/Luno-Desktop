@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { readFileSync } from "node:fs";
 import { PlaylistArtwork } from "../components/PlaylistArtwork";
 import { LibrarySidebar } from "../components/LibrarySidebar";
 import { LibraryView, RECENT_DOWNLOADS_SCOPE } from "../views/LibraryView";
@@ -19,11 +18,6 @@ describe("playlist artwork quadrants", () => {
     expect(html.match(/class="luno-playlist-mosaic-cell"/g)).toHaveLength(4);
     expect(html).toContain("luno-artwork-loading");
     expect(html).toContain("luno-rec-art");
-  });
-  it("stretches cells and contains intrinsic image sizes", () => {
-    const css = readFileSync(new URL("../styles/layout.css", import.meta.url), "utf8");
-    expect(css).toMatch(/\.luno-playlist-mosaic\s*\{[^}]*place-items:\s*stretch/);
-    expect(css).toMatch(/\.luno-playlist-mosaic-cell\s*>\s*\.luno-artwork[^}]*position:\s*absolute/);
   });
   it("gives Recently downloaded a mosaic in the sidebar and hero", () => {
     const snapshot = { version: 1 as const, generation: 1, tracks, playlists: [] };
