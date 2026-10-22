@@ -1150,6 +1150,39 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn playlist_preview_returns_complete_missing_destination_items_and_metadata() {
+        let root = unique_home("playlist-preview-complete");
+        let target = root.join("Target");
+        let elsewhere = root.join("Other");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(target.join("Artist - Song 0.m4a"), b"ID3present").unwrap();
+        std::fs::write(elsewhere.join("Artist - Song 1.m4a"), b"ID3other").unwrap();
+        std::fs::write(target.join(".downloaded_vids"), "video-2\n").unwrap();
+        let mut review = crate::download::sync::PlaylistSyncReviewState::default();
+        review.dismiss("video-3").unwrap(); review.save(&target).unwrap();
+        let mut entries: Vec<_> = (0..61).map(|index| serde_json::json!({"id":format!("video-{index}"), "title":format!("Artist - Song {index}"), "playlist_title":"My complete list"})).collect();
+        entries.push(serde_json::json!({"id":"private-video", "title":"[Private video]"}));
+        let data = root.join("listing.json");
+        std::fs::write(&data, serde_json::json!({"title":"My complete list", "entries":entries}).to_string()).unwrap();
+        let helper = fixture_helper(&root, "helper", "#!/bin/sh\nexit 0\n");
+        fixture_helper(&root, "yt-dlp", &format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\ncat '{}'\n", root.join("args").display(), data.display()));
+        let state = AppState::with_preview_store(PreviewAssetStore::at(root.join("previews")).unwrap(), 4);
+        state.set_scan_roots(vec![root.clone()]); state.set_bundle_helper(Some(helper));
+        let result = state.dispatch(CommandEnvelope { version:1, request_id:"playlist-preview".into(), command:Command::PreviewDownloadPlaylist { url:"https://www.youtube.com/watch?v=video-0&list=PLfixture".into(), destination:target.to_string_lossy().into_owned() } }).unwrap();
+        let preview: crate::contracts::types::PlaylistDownloadPreview = serde_json::from_value(result).unwrap();
+        assert_eq!(preview.url, "https://www.youtube.com/playlist?list=PLfixture");
+        assert_eq!(preview.title, "My complete list");
+        assert_eq!((preview.total, preview.downloaded, preview.unavailable, preview.skipped, preview.items.len()), (62, 1, 1, 1, 59));
+        assert!(preview.items.iter().any(|item| item.title == "Song 1"), "audio elsewhere is still missing from the selected playlist");
+        assert!(preview.items.iter().any(|item| item.title == "Song 2"), "stale success markers cannot hide deleted physical files");
+        let args = std::fs::read_to_string(root.join("args")).unwrap();
+        assert!(args.contains("--yes-playlist")); assert!(!args.contains("--playlist-items"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn download_error_messages_classify_causes_without_echoing_diagnostics() {
         for (diagnostic, expected) in [
@@ -6915,6 +6948,7 @@ impl AppState {
                     "permanent_failures": markers.failed.len()
                 }))
             }
+            Command::PreviewDownloadPlaylist { url, destination } => self.preview_download_playlist(&url, PathBuf::from(destination)),
             Command::SearchDownloader { query, try_soundcloud, limit } => {
                 let query = query.trim().to_owned();
                 let sources = crate::download::workflows::search_sources(&query, try_soundcloud)
@@ -6958,7 +6992,7 @@ impl AppState {
                 // can spend most of the old 30-second window merely starting.
                 // YouTube's public results page gives us the same metadata in
                 // one request; retain yt-dlp below as a compatibility fallback.
-                if helper.file_name().and_then(|name| name.to_str()) == Some("luno-download-helper") {
+                if limit <= 25 && helper.file_name().and_then(|name| name.to_str()) == Some("luno-download-helper") {
                     match crate::download::search::search_youtube_web(&query, limit) {
                         Ok(found) if !found.is_empty() => return Ok(serde_json::to_value(found).unwrap_or(Value::Null)),
                         Ok(_) => eprintln!("[luno-downloader] fast YouTube search returned no parsable results; trying yt-dlp"),
@@ -7438,6 +7472,31 @@ impl AppState {
             }
         }
         Ok(serde_json::json!({ "saved": true }))
+    }
+
+    fn preview_download_playlist(&self, url: &str, destination: PathBuf) -> Result<Value, ContractError> {
+        let url = crate::download::sync::playlist_url(url).ok_or_else(|| ContractError::invalid("enter a valid YouTube playlist URL"))?;
+        let root = self.playlist_mutation_root()?;
+        let destination = std::fs::canonicalize(destination).map_err(|_| ContractError::invalid("playlist destination is unavailable"))?;
+        if !destination.is_dir() || !destination.starts_with(&root) || destination == root {
+            return Err(ContractError::invalid("choose a physical playlist folder inside the music library"));
+        }
+        let ytdlp = self.discover_ytdlp().map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: false })?;
+        let browser = self.youtube_cookies_browser.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let listing = crate::download::search::playlist_listing_with_browser_fallback(&self.supervisor, &ytdlp, &url, browser.as_deref(), &CancellationToken::new())
+            .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+        let sync_state = crate::download::sync::PlaylistSyncState::load(&destination).map_err(ContractError::invalid)?;
+        let review = crate::download::sync::PlaylistSyncReviewState::load(&destination).map_err(ContractError::invalid)?;
+        let plan = crate::download::sync::preview_plan(&root, &destination, &listing.entries, &sync_state, &review);
+        let items = plan.items.into_iter().map(|item| {
+            let (artist, title) = crate::download::sync::parse_title(&item.entry.title);
+            let source = item.source_override.map(|source| source.url).or(item.entry.url).unwrap_or_default();
+            crate::contracts::types::SearchResult { provider: "youtube".into(), query: source.clone(), title,
+                artist: (!artist.is_empty()).then_some(artist), duration: item.entry.duration_secs.map(|seconds| format!("{}:{:02}", seconds / 60, seconds % 60)), thumbnail_url: None, url: Some(source) }
+        }).collect();
+        serde_json::to_value(crate::contracts::types::PlaylistDownloadPreview { url, title: listing.title, total: listing.total,
+            downloaded: plan.downloaded, unavailable: listing.unavailable + plan.unavailable, skipped: plan.skipped, items })
+            .map_err(|_| ContractError::invalid("playlist preview could not be encoded"))
     }
 
     fn start_download(&self, job_id: JobId, destination: PathBuf, helper: PathBuf, source: String) -> Result<Value, ContractError> {

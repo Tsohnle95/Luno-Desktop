@@ -77,6 +77,19 @@ groups are a persistent review list, with JSON import/export and a Review again
 action. Keeping a group hides that review item; it does not authorize replacing
 files or weaken the runtime's collision protection.
 
+Playlist URL preview uses `preview_download_playlist` with the selected physical
+destination. It returns canonical URL, provider playlist title, complete unique
+entry count, present/unavailable/skipped counts, and only missing download items.
+The preview shares Sync's destination-scoped filename, review, and unresolved-source
+policy without modifying sidecars. Playlist enumeration has no search result cap;
+malformed or truncated provider output fails explicitly instead of showing a
+partial playlist as complete. A watch URL with a `list` parameter enumerates that
+playlist through its canonical playlist URL.
+
+Name searches accept a cumulative limit up to 250. The first request can use the
+fast public results page; requests above 25 use yt-dlp search with the requested
+count and a 60-second lookup budget so initial-page results cannot cap pagination.
+
 ## State ownership
 
 - `AppState` owns download jobs, the process registry, the task registry,
@@ -213,8 +226,9 @@ files or weaken the runtime's collision protection.
   fails. The source list lives in the versioned
   `.luno_playlist_sync_sources.json` sidecar; the legacy
   `.luno_playlist_urls.json` map mirrors the first URL for older builds. Sync
-  skips tracks already found anywhere under the library root and IDs in that
-  playlist's append-only `.downloaded_vids` success markers. Old
+  skips audio already present in the selected physical playlist. Files elsewhere
+  in the library do not satisfy that destination. Append-only `.downloaded_vids`
+  markers record history; a marker cannot hide deleted physical audio. Old
   `.sync_failed_vids` markers do not block an explicit retry. Each new item
   downloads sequentially as M4A into the selected playlist folder; its success
   marker is persisted before the sync advances. Each item may take as long as

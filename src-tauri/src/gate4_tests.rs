@@ -434,7 +434,7 @@ fn downloader_markers_support_corruption_legacy_retry_and_sync_dedupe() {
             },
         ],
     );
-    assert_eq!(items.len(), 1);
+    assert_eq!(items.len(), 2, "audio elsewhere does not satisfy the selected physical playlist");
     assert_eq!(items[0].destination.extension().and_then(|value| value.to_str()), Some("m4a"));
     let token = CancellationToken::new();
     let result = sync_sequential(&destination, &items, &token, |item, _| {
@@ -787,8 +787,8 @@ fn playlist_sync_downloads_new_ids_once_and_persists_success_markers() {
         if state.events().iter().any(|event| matches!(&event.event, Event::JobUpdated { job } if job.id.0 == second_job && job.state == crate::contracts::types::JobState::Succeeded)) { break; }
         thread::sleep(Duration::from_millis(10));
     }
-    assert!(!downloaded.exists(), "a marker-recorded ID must not be redownloaded even if its local file was removed");
-    assert_eq!(crate::download::sync::read_log(&playlist).unwrap().len(), 1, "skipped IDs must not create false download history");
+    assert!(downloaded.exists(), "a stale success marker must not hide a deleted physical file");
+    assert_eq!(crate::download::sync::read_log(&playlist).unwrap().len(), 2, "restoring deleted audio records a new download");
 }
 
 #[test]

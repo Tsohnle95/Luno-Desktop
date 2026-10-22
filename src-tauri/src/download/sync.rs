@@ -362,7 +362,7 @@ pub fn local_replacement_matches(
 /// appeared in the library through another download path. Keep this aligned
 /// with the filename matching policy used by playlist planning.
 pub fn reconcile_unresolved_local_matches(
-    root: &Path,
+    _root: &Path,
     folder: &Path,
     entries: &[PlaylistEntry],
     state: &mut PlaylistSyncState,
@@ -370,7 +370,7 @@ pub fn reconcile_unresolved_local_matches(
 ) -> Result<usize, String> {
     let mut keys = HashSet::new();
     let mut titles = HashSet::new();
-    collect_audio(root, &mut keys, &mut titles);
+    collect_audio(folder, &mut keys, &mut titles);
     let matched: Vec<String> = entries.iter().filter_map(|entry| {
         let id = entry.id.as_deref()?;
         if !state.unresolved.contains_key(id) || !existing_audio_matches(entry, &keys, &titles) {
@@ -490,11 +490,13 @@ pub fn plan_with_review_state(
     state: &PlaylistSyncState,
     review: &PlaylistSyncReviewState,
 ) -> Vec<SyncItem> {
-    let root = root.as_ref();
-    let destination = destination.as_ref();
+    plan_with_inventory(root.as_ref(), destination.as_ref(), destination.as_ref(), entries, state, review)
+}
+
+fn plan_with_inventory(root: &Path, destination: &Path, inventory: &Path, entries: &[PlaylistEntry], state: &PlaylistSyncState, review: &PlaylistSyncReviewState) -> Vec<SyncItem> {
     let mut keys = HashSet::new();
     let mut titles = HashSet::new();
-    collect_audio(root, &mut keys, &mut titles);
+    collect_audio(inventory, &mut keys, &mut titles);
     let existing_keys = keys.clone();
     let existing_titles = titles.clone();
     entries
@@ -536,6 +538,31 @@ pub fn plan_with_review_state(
             })
         })
         .collect()
+}
+
+pub struct PlaylistPreviewPlan {
+    pub items: Vec<SyncItem>,
+    pub downloaded: usize,
+    pub unavailable: usize,
+    pub skipped: usize,
+}
+
+pub fn preview_plan(root: &Path, destination: &Path, entries: &[PlaylistEntry], state: &PlaylistSyncState, review: &PlaylistSyncReviewState) -> PlaylistPreviewPlan {
+    // Preview applies the same legacy/reconciliation rules without changing
+    // durable sidecars merely because the user inspected a playlist.
+    let mut state = state.clone();
+    let markers = Markers::load(destination);
+    state.migrate_legacy_unavailable(destination, entries, &markers);
+    state.prune_unresolved(entries, &markers);
+    let mut keys = HashSet::new();
+    let mut titles = HashSet::new();
+    collect_audio(destination, &mut keys, &mut titles);
+    let downloaded = entries.iter().filter(|entry| existing_audio_matches(entry, &keys, &titles)).count();
+    let items = plan_with_inventory(root, destination, destination, entries, &state, review);
+    let unavailable = entries.iter().filter(|entry| !existing_audio_matches(entry, &keys, &titles)
+        && entry.id.as_ref().is_some_and(|id| state.unresolved.contains_key(id) && !state.sources.get(id).is_some_and(|source| source.retry_pending))).count();
+    let skipped = entries.len().saturating_sub(downloaded + unavailable + items.len());
+    PlaylistPreviewPlan { items, downloaded, unavailable, skipped }
 }
 
 fn existing_audio_matches(entry: &PlaylistEntry, keys: &HashSet<String>, titles: &HashSet<String>) -> bool {
@@ -595,7 +622,7 @@ where
         }
         let label = item.entry.id.clone().unwrap_or_else(|| item.entry.title.clone());
         if let Some(id) = item.entry.id.as_deref() {
-            if markers.successful.contains(id) {
+            if markers.successful.contains(id) && validate_output(&item.destination, Validation::audio()).is_ok() {
                 result.outcomes.push((label, ItemOutcome::Matched));
                 continue;
             }
@@ -725,4 +752,22 @@ pub fn youtube_watch_url(id: &str) -> Option<String> {
 
 fn valid_marker_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+#[cfg(test)]
+mod playlist_preview_tests {
+    use super::*;
+    #[test]
+    fn stale_success_marker_does_not_skip_a_deleted_download() {
+        let folder = std::env::temp_dir().join(format!("luno-stale-marker-{}-{}", std::process::id(), TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir_all(&folder).unwrap();
+        let entry = PlaylistEntry { id: Some("video-deleted".into()), title: "Artist - Song".into(), channel: None, duration_secs: None, url: Some("https://www.youtube.com/watch?v=video-deleted".into()) };
+        fs::write(folder.join(".downloaded_vids"), "video-deleted\n").unwrap();
+        let items = plan(&folder, &folder, &[entry]);
+        let mut calls = 0;
+        let result = sync_sequential(&folder, &items, &CancellationToken::new(), |item, _| { calls += 1; fs::write(&item.destination, b"ID3audio").unwrap(); Ok(()) });
+        fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(calls, 1, "a historical video marker cannot stand in for missing physical audio");
+        assert!(matches!(result.outcomes[0].1, ItemOutcome::Downloaded));
+    }
 }

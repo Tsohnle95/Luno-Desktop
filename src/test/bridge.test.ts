@@ -5,7 +5,7 @@ import { currentVideoForTrack, focusedQueueProjection, libraryFavoriteTarget, pl
 import type { Bridge, BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope, PlaybackSnapshot } from "../shared/contracts";
 import type { SaveState } from "../shared/contracts";
-import { isCommandEnvelope, isEventEnvelope, isPreviewSnapshot, isDiscoverSnapshot, isSearchResults, isPlaylistSyncIssues, isPlaylistSyncCandidates, isPlaylistSyncSelection, previewKey } from "../shared/contracts";
+import { isPlaylistDownloadPreview, isCommandEnvelope, isEventEnvelope, isPreviewSnapshot, isDiscoverSnapshot, isSearchResults, isPlaylistSyncIssues, isPlaylistSyncCandidates, isPlaylistSyncSelection, previewKey } from "../shared/contracts";
 import type { Track } from "../shared/contracts";
 
 const nativeInvoke = vi.hoisted(() => vi.fn());
@@ -132,7 +132,7 @@ describe("typed IPC bridge and projection", () => {
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "search_downloader", payload: { query: "artist track", try_soundcloud: true, limit: 25 } } })).toBe(true);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "search_downloader", payload: { query: "artist track", try_soundcloud: true } } })).toBe(false);
     expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "search_downloader", payload: { query: "artist track", try_soundcloud: true, limit: 0 } } })).toBe(false);
-    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "search_downloader", payload: { query: "artist track", try_soundcloud: true, limit: 51 } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "r", command: { type: "search_downloader", payload: { query: "artist track", try_soundcloud: true, limit: 251 } } })).toBe(false);
   });
 
   it("accepts rich downloader search results and rejects the legacy provider-query shape", () => {
@@ -612,4 +612,24 @@ it("preserves playlist Sync error prompts while also projecting their inline rea
   store.apply({ ...event({ type: "error", payload: { error } }), event_id: "event-2", job_id: "sync" });
   expect(store.getSnapshot().errors).toEqual([error]);
   expect(store.getSnapshot().jobErrors?.sync).toBe(error.message);
+});
+
+
+const valid = { url: "https://www.youtube.com/playlist?list=PLfixture", title: "Full playlist", total: 3, downloaded: 1, unavailable: 1, skipped: 0, items: [{ provider: "youtube", query: "https://www.youtube.com/watch?v=missing", title: "Missing", artist: null, duration: null, thumbnail_url: null, url: "https://www.youtube.com/watch?v=missing" }] };
+describe("playlist download preview contract", () => {
+  it("validates complete count accounting and rejects partial or malformed responses", () => {
+    expect(isPlaylistDownloadPreview(valid)).toBe(true);
+    for (const response of [{ ...valid, total: 30 }, { ...valid, title: "" }, { ...valid, downloaded: -1 }, { ...valid, unexpected: true }, { ...valid, items: [{}] }]) expect(isPlaylistDownloadPreview(response)).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "preview", command: { type: "preview_download_playlist", payload: { url: valid.url, destination: "/library/Target" } } })).toBe(true);
+    expect(isCommandEnvelope({ version: 1, request_id: "preview", command: { type: "preview_download_playlist", payload: { url: valid.url, destination: "" } } })).toBe(false);
+    expect(isCommandEnvelope({ version: 1, request_id: "search-more", command: { type: "search_downloader", payload: { query: "artist", try_soundcloud: false, limit: 250 } } })).toBe(true);
+  });
+  it("sends selected destination and rejects an invalid response before returning it", async () => {
+    let payload: unknown;
+    const bridge = createBridge({ invoke: async <T>(_name: string, value: unknown) => { payload = value; return valid as T; }, listen: async () => () => {} });
+    expect(await bridge.previewDownloadPlaylist(valid.url, "/library/Target")).toEqual(valid);
+    expect(payload).toMatchObject({ command: { type: "preview_download_playlist", payload: { url: valid.url, destination: "/library/Target" } } });
+    const invalid = createBridge({ invoke: async <T>() => ({ ...valid, total: 100 } as T), listen: async () => () => {} });
+    await expect(invalid.previewDownloadPlaylist(valid.url, "/library/Target")).rejects.toThrow("invalid playlist download preview response");
+  });
 });

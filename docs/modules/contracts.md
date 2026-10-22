@@ -68,6 +68,13 @@ docs), release packaging (`docs/release/desktop.md`).
 - The optional `SettingsInput.youtube_cookies_browser` field is allowlisted
   on both sides. `"none"` explicitly clears the preference; omitted or null
   values preserve existing config under settings merge semantics.
+- `preview_download_playlist` takes `{url,destination}` and returns a validated
+  `PlaylistDownloadPreview` with `{url,title,total,downloaded,unavailable,skipped,items}`.
+  Counts are nonnegative integers and must account for all unique entries exactly:
+  `total = downloaded + unavailable + skipped + items.length`. `items` use the
+  existing SearchResult shape; only Rust's shared sync policy decides missingness.
+  Downloader name-search limits range from 1 through 250; playlist enumeration
+  remains complete and independent of that cap.
 - Download failure Error envelopes use their existing optional `job_id` to
   associate safe diagnostics with a song. The frontend projects those messages
   per job and clears an older failure on a newer retry generation; unrelated

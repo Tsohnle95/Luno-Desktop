@@ -25,6 +25,7 @@ export const YTDLP_COOKIE_BROWSERS = ["brave", "chrome", "chromium", "edge", "fi
 export type YtDlpCookieBrowser = (typeof YTDLP_COOKIE_BROWSERS)[number] | "none";
 export interface SettingsInput { music_root: string | null; auto_discovery: boolean | null; volume: number | null; sleep_timer: unknown | null; global_keys: boolean | null; favorite_songs: string[]; video_mode?: boolean | null; youtube_cookies_browser?: YtDlpCookieBrowser | null }
 export interface SearchResult { provider: string; query: string; title: string; artist: string | null; duration: string | null; thumbnail_url: string | null; url: string | null }
+export interface PlaylistDownloadPreview { url: string; title: string; total: number; downloaded: number; unavailable: number; skipped: number; items: SearchResult[] }
 export interface PlaylistSyncLocalMatch { track_id: TrackId; title: string; artist: string | null; duration_ms: number | null; playlists: string[] }
 export interface PlaylistSyncIssue { video_id: string; title: string; channel: string | null; duration_secs: number | null; reason: string; attempted_source_id: string | null; selected_source_id: string | null; retry_pending: boolean; updated_at_ms: number; local_matches: PlaylistSyncLocalMatch[] }
 export interface PlaylistSyncCandidate { video_id: string; title: string; channel: string | null; duration: string | null; thumbnail_url: string | null; url: string }
@@ -49,6 +50,7 @@ export type Command =
   | { type: "load_config"; payload: { home: string } } | { type: "register_root"; payload: { root: string } }
   | { type: "promote_audio_output"; payload: { temporary: string; destination: string } }
   | { type: "sync_markers"; payload: { folder: string } } | { type: "toggle_favorite"; payload: { track_id: TrackId } }
+  | { type: "preview_download_playlist"; payload: { url: string; destination: string } }
   | { type: "search_downloader"; payload: { query: string; try_soundcloud: boolean; limit: number } }
   | { type: "discover"; payload: { artist: string; title: string; limit: number } }
   | { type: "preview_tap"; payload: { seeds: PreviewSeed[]; key: string } }
@@ -182,7 +184,8 @@ function isCommand(v: unknown): v is Command {
     if (v.type === "register_root") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.root === "string" && v.payload.root.trim().length > 0 && Object.keys(v.payload).length === 1;
     if (v.type === "promote_audio_output") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.temporary === "string" && v.payload.temporary.trim().length > 0 && typeof v.payload.destination === "string" && v.payload.destination.trim().length > 0 && Object.keys(v.payload).length === 2;
     if (v.type === "sync_markers") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.folder === "string" && v.payload.folder.trim().length > 0 && Object.keys(v.payload).length === 1;
-    if (v.type === "search_downloader") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.query === "string" && v.payload.query.trim().length > 0 && typeof v.payload.try_soundcloud === "boolean" && typeof v.payload.limit === "number" && Number.isInteger(v.payload.limit) && v.payload.limit >= 1 && v.payload.limit <= 50 && Object.keys(v.payload).length === 3;
+    if (v.type === "preview_download_playlist") return exact(v, ["type", "payload"]) && object(v.payload) && exact(v.payload, ["url", "destination"]) && nonEmptyId(v.payload.url) && nonEmptyId(v.payload.destination);
+    if (v.type === "search_downloader") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.query === "string" && v.payload.query.trim().length > 0 && typeof v.payload.try_soundcloud === "boolean" && typeof v.payload.limit === "number" && Number.isInteger(v.payload.limit) && v.payload.limit >= 1 && v.payload.limit <= 250 && Object.keys(v.payload).length === 3;
     if (v.type === "discover") return exact(v, ["type", "payload"]) && object(v.payload) && typeof v.payload.artist === "string" && v.payload.artist.trim().length > 0 && typeof v.payload.title === "string" && v.payload.title.trim().length > 0 && typeof v.payload.limit === "number" && Number.isInteger(v.payload.limit) && v.payload.limit >= 1 && v.payload.limit <= 20 && Object.keys(v.payload).length === 3;
     if (v.type === "preview_tap") return exact(v, ["type", "payload"]) && object(v.payload) && nonEmptyId(v.payload.key) && Array.isArray(v.payload.seeds) && v.payload.seeds.length >= 1 && v.payload.seeds.length <= 50 && v.payload.seeds.every((seed) => object(seed) && exact(seed, ["artist", "title"]) && nonEmptyId(seed.artist) && nonEmptyId(seed.title)) && Object.keys(v.payload).length === 2;
     if (v.type === "preview_prefetch") return exact(v, ["type", "payload"]) && object(v.payload) && Array.isArray(v.payload.seeds) && v.payload.seeds.length >= 1 && v.payload.seeds.length <= 50 && v.payload.seeds.every((seed) => object(seed) && exact(seed, ["artist", "title"]) && nonEmptyId(seed.artist) && nonEmptyId(seed.title)) && Object.keys(v.payload).length === 1;
@@ -309,6 +312,11 @@ export function isDomainEventId(value: unknown): value is string { return typeof
 export function isEventEnvelope(v: unknown): v is EventEnvelope { return exact(v, ["version", "event_id", "generation", "job_id", "session_id", "event"]) && isContractVersion(v.version) && (isDomainEventId(v.event_id) || isDeliveryErrorEventId(v.event_id)) && safeInteger(v.generation) && v.generation >= 0 && (v.job_id === null || nonEmptyId(v.job_id)) && (v.session_id === null || nonEmptyId(v.session_id)) && isEvent(v.event); }
 export function parseCommandEnvelope(json: string): CommandEnvelope { const value: unknown = JSON.parse(json); if (!isCommandEnvelope(value)) throw new Error("invalid or unsupported command envelope"); return value; }
 export function parseEventEnvelope(json: string): EventEnvelope { const value: unknown = JSON.parse(json); if (!isEventEnvelope(value)) throw new Error("invalid or unsupported event envelope"); return value; }
+export function isPlaylistDownloadPreview(value: unknown): value is PlaylistDownloadPreview {
+  if (!object(value) || !exact(value, ["url", "title", "total", "downloaded", "unavailable", "skipped", "items"]) || !nonEmptyId(value.url) || !nonEmptyId(value.title) || !isSearchResults(value.items)) return false;
+  if (![value.total, value.downloaded, value.unavailable, value.skipped].every((count) => typeof count === "number" && Number.isSafeInteger(count) && count >= 0)) return false;
+  return value.total === (value.downloaded as number) + (value.unavailable as number) + (value.skipped as number) + value.items.length;
+}
 export function isSearchResults(value: unknown): value is SearchResult[] { return Array.isArray(value) && value.every((item) => object(item) && exact(item, ["provider", "query", "title", "artist", "duration", "thumbnail_url", "url"]) && nonEmptyId(item.provider) && nonEmptyId(item.query) && nonEmptyId(item.title) && (item.artist === null || nonEmptyId(item.artist)) && (item.duration === null || typeof item.duration === "string") && (item.thumbnail_url === null || nonEmptyId(item.thumbnail_url)) && (item.url === null || nonEmptyId(item.url))); }
 export function isArtworkCandidates(value: unknown): value is ArtworkCandidate[] {
   return Array.isArray(value) && value.length <= 12 && value.every((candidate) => object(candidate)

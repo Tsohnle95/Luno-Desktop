@@ -7,7 +7,7 @@ pub const MAX_PREVIEW_SEEDS: usize = 50;
 pub const MAX_PLAY_COUNT_ENTRIES: usize = 100_000;
 /// Downloader search result cap per provider (YouTube). The frontend "Load
 /// More" grows the cap; legacy parity capped at 10.
-pub const MAX_DOWNLOADER_SEARCH_LIMIT: usize = 50;
+pub const MAX_DOWNLOADER_SEARCH_LIMIT: usize = 250;
 
 pub fn default_discover_limit() -> usize {
     5
@@ -472,6 +472,18 @@ pub struct SearchResult {
     pub duration: Option<String>,
     pub thumbnail_url: Option<String>,
     pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaylistDownloadPreview {
+    pub url: String,
+    pub title: String,
+    pub total: usize,
+    pub downloaded: usize,
+    pub unavailable: usize,
+    pub skipped: usize,
+    pub items: Vec<SearchResult>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

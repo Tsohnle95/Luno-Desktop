@@ -34,6 +34,12 @@ pub enum Command {
         #[serde(deserialize_with = "super::types::non_empty_string")]
         folder: String,
     },
+    PreviewDownloadPlaylist {
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        url: String,
+        #[serde(deserialize_with = "super::types::non_empty_string")]
+        destination: String,
+    },
     SearchDownloader {
         #[serde(deserialize_with = "super::types::non_empty_string")]
         query: String,

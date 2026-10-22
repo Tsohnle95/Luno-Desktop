@@ -238,7 +238,24 @@ pub fn probe_media(ytdlp: &Path, url: &str) -> Result<MediaProbe, String> {
 /// Resolve the stable IDs, titles and watch URLs for an entire YouTube
 /// playlist without downloading media. The child is polled so cancelling the
 /// owning sync task also kills enumeration instead of leaving yt-dlp detached.
+#[derive(Debug)]
+pub struct PlaylistListing {
+    pub title: String,
+    pub total: usize,
+    pub unavailable: usize,
+    pub entries: Vec<PlaylistEntry>,
+}
+
 pub fn playlist_entries(supervisor: &Supervisor, ytdlp: &Path, url: &str, cookies_browser: Option<&str>, token: &CancellationToken) -> Result<Vec<PlaylistEntry>, String> {
+    let listing = playlist_listing(supervisor, ytdlp, url, cookies_browser, token)?;
+    if listing.entries.is_empty() { Err("playlist contains no downloadable videos".into()) } else { Ok(listing.entries) }
+}
+
+pub fn playlist_listing_with_browser_fallback(supervisor: &Supervisor, ytdlp: &Path, url: &str, cookies_browser: Option<&str>, token: &CancellationToken) -> Result<PlaylistListing, String> {
+    with_playlist_cookie_fallback(cookies_browser, |browser| playlist_listing(supervisor, ytdlp, url, browser, token))
+}
+
+pub fn playlist_listing(supervisor: &Supervisor, ytdlp: &Path, url: &str, cookies_browser: Option<&str>, token: &CancellationToken) -> Result<PlaylistListing, String> {
     let mut args = vec!["--ignore-config".to_owned()];
     if let Some(browser) = cookies_browser {
         if !is_supported_ytdlp_cookie_browser(browser) {
@@ -247,7 +264,7 @@ pub fn playlist_entries(supervisor: &Supervisor, ytdlp: &Path, url: &str, cookie
         args.extend(["--cookies-from-browser".to_owned(), browser.to_owned()]);
     }
     args.extend([
-        "--dump-json".into(), "--flat-playlist".into(), "--no-warnings".into(),
+        "--dump-single-json".into(), "--flat-playlist".into(), "--yes-playlist".into(), "--no-warnings".into(),
         "--socket-timeout".into(), "15".into(), "--".into(), url.into(),
     ]);
     let mut spec = ProcessSpec::new(ytdlp, args, PLAYLIST_TIMEOUT);
@@ -265,8 +282,8 @@ pub fn playlist_entries(supervisor: &Supervisor, ytdlp: &Path, url: &str, cookie
         }
         return Err(format!("playlist lookup exited {}: {}", output.status, detail.trim().chars().take(800).collect::<String>()));
     }
-    let entries = parse_playlist_entries(&String::from_utf8_lossy(&output.stdout));
-    if entries.is_empty() { Err("playlist contains no downloadable videos".into()) } else { Ok(entries) }
+    if output.truncated_stdout { return Err("Playlist lookup exceeded the safe response size. No partial playlist was returned.".into()); }
+    parse_playlist_listing(&String::from_utf8_lossy(&output.stdout))
 }
 
 pub fn playlist_entries_with_browser_fallback(supervisor: &Supervisor, ytdlp: &Path, url: &str, cookies_browser: Option<&str>, token: &CancellationToken) -> Result<Vec<PlaylistEntry>, String> {
@@ -281,6 +298,36 @@ fn with_playlist_cookie_fallback<T>(cookies_browser: Option<&str>, mut lookup: i
         },
         result => result,
     }
+}
+
+fn parse_playlist_listing(output: &str) -> Result<PlaylistListing, String> {
+    if output.trim().is_empty() { return Err("Playlist lookup returned no complete response. Retry the lookup.".into()); }
+    let values = if let Ok(value) = serde_json::from_str::<serde_json::Value>(output.trim()) {
+        vec![value]
+    } else {
+        output.lines().filter(|line| !line.trim().is_empty()).map(|line| serde_json::from_str(line)
+            .map_err(|_| "Playlist lookup returned incomplete or invalid data. Retry the lookup.".to_owned())).collect::<Result<Vec<serde_json::Value>, String>>()?
+    };
+    let mut listing = PlaylistListing { title: "YouTube playlist".into(), total: 0, unavailable: 0, entries: Vec::new() };
+    let mut seen = std::collections::HashSet::new();
+    for value in values {
+        let rows = if let Some(entries) = value.get("entries") {
+            if let Some(title) = value.get("title").and_then(|v| v.as_str()).filter(|v| !v.trim().is_empty()) { listing.title = title.trim().to_owned(); }
+            entries.as_array().ok_or_else(|| "Playlist lookup returned invalid entries.".to_owned())?.clone()
+        } else { vec![value] };
+        for row in rows {
+            if let Some(title) = row.get("playlist_title").and_then(|v| v.as_str()).filter(|v| !v.trim().is_empty()) { listing.title = title.trim().to_owned(); }
+            if let Some(id) = row.get("id").and_then(|v| v.as_str()).filter(|v| !v.trim().is_empty()) {
+                if !seen.insert(id.trim().to_owned()) { continue; }
+            }
+            listing.total += 1;
+            let unavailable = matches!(row.get("availability").and_then(|v| v.as_str()), Some("private" | "premium_only" | "subscriber_only" | "needs_auth"))
+                || matches!(row.get("title").and_then(|v| v.as_str()), Some("[Private video]" | "[Deleted video]"));
+            let entry = parse_playlist_entries(&row.to_string()).into_iter().next();
+            if unavailable || entry.is_none() { listing.unavailable += 1; } else { listing.entries.push(entry.unwrap()); }
+        }
+    }
+    Ok(listing)
 }
 
 fn parse_playlist_entries(output: &str) -> Vec<PlaylistEntry> {
@@ -338,6 +385,7 @@ fn media_probe_from_json(value: &serde_json::Value) -> MediaProbe {
 fn run_ytdlp(helper: &Path, prefix: &str, query: &str, limit: usize) -> Result<Vec<serde_json::Value>, String> {
     let mut command = Command::new(helper);
     command.args([
+        "--ignore-config",
         "--dump-json",
         "--no-warnings",
         "--socket-timeout",
@@ -347,7 +395,7 @@ fn run_ytdlp(helper: &Path, prefix: &str, query: &str, limit: usize) -> Result<V
         &format!("1:{limit}"),
         &format!("{prefix}{limit}:{query}"),
     ]);
-    let output = match run_with_timeout(command, SEARCH_TIMEOUT) {
+    let output = match run_with_timeout(command, if limit > 25 { Duration::from_secs(60) } else { SEARCH_TIMEOUT }) {
         Ok(output) => output,
         Err(error) => return Err(format!("{prefix} search failed: {error}")),
     };
@@ -538,6 +586,52 @@ printf '%s\n' '{"id":"first","title":"First song","channel":"Artist"}' '{"id":"s
         assert_eq!(youtube_video_id("https://youtu.be/6U7_Qy5c_uc"), None);
         assert_eq!(youtube_video_id("https://www.youtube.com/shorts/6U7_Qy5c_uc"), None);
         assert_eq!(youtube_video_id("https://www.youtube.com/watch?v=short"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn playlist_lookup_rejects_output_limit_instead_of_returning_a_partial_list() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = std::env::temp_dir().join(format!("luno-playlist-bounded-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let data = folder.join("listing");
+        std::fs::write(&data, format!("{{\"title\":\"Full list\",\"entries\":[],\"description\":\"{}\"}}", "x".repeat(8 * 1024 * 1024))).unwrap();
+        let helper = folder.join("yt-dlp");
+        std::fs::write(&helper, format!("#!/bin/sh\ncat '{}'\n", data.display())).unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let supervisor = Supervisor::new(crate::process::supervisor::ProcessRegistry::new());
+        let error = playlist_listing(&supervisor, &helper, "https://www.youtube.com/playlist?list=PLfixture", None, &CancellationToken::new()).unwrap_err();
+        std::fs::remove_dir_all(folder).unwrap();
+        assert!(error.contains("No partial playlist"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn paginated_name_search_requests_more_than_fifty_results() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = std::env::temp_dir().join(format!("luno-search75-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let helper = folder.join("yt-dlp");
+        std::fs::write(&helper, "#!/bin/sh\nn=0\nfor arg in \"$@\"; do case \"$arg\" in ytsearch*) n=${arg#ytsearch}; n=${n%%:*};; esac; done\ni=0\nwhile [ \"$i\" -lt \"$n\" ]; do printf '{\"id\":\"id-%s\",\"title\":\"Song %s\"}\\n' \"$i\" \"$i\"; i=$((i + 1)); done\n").unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let results = search_provider(&helper, "youtube", "Artist", 75).unwrap();
+        std::fs::remove_dir_all(folder).unwrap();
+        assert_eq!(results.len(), 75, "cumulative pagination must not silently clamp at fifty");
+    }
+
+    #[test]
+    fn complete_playlist_listing_keeps_metadata_more_than_25_and_rejects_partial_json() {
+        let mut entries: Vec<_> = (0..61).map(|index| serde_json::json!({"id": format!("video-{index}"), "title": format!("Artist - Song {index}"), "playlist_title": "Complete playlist"})).collect();
+        entries.push(entries[0].clone());
+        entries.push(serde_json::json!({"id":"private-video", "title":"[Private video]", "availability":"private"}));
+        let json = serde_json::json!({"title":"Complete playlist", "entries":entries}).to_string();
+        let listing = parse_playlist_listing(&json).unwrap();
+        assert_eq!(listing.title, "Complete playlist");
+        assert_eq!(listing.total, 62);
+        assert_eq!(listing.entries.len(), 61);
+        assert_eq!(listing.unavailable, 1);
+        assert!(parse_playlist_listing(&json[..json.len() - 10]).is_err(), "partial playlist output must not masquerade as complete");
+        assert_eq!(parse_playlist_listing("{\"id\":\"v1\",\"title\":\"Song\",\"playlist_title\":\"Line playlist\"}\n").unwrap().title, "Line playlist");
     }
 
     #[test]
