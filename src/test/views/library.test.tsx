@@ -231,3 +231,17 @@ describe("Home collection destinations", () => {
     expect(html).toContain('aria-label="Show all Most popular playlists"');
   });
 });
+
+it("bounds popular Home previews while retaining every item in Show all collections", () => {
+  const popularTracks = Array.from({ length: 25 }, (_, i) => track(`popular-${i}`, `Popular ${i}`));
+  const popularPlaylists = Array.from({ length: 25 }, (_, i) => ({ playlist: { id: `p-${i}`, name: `Playlist ${i}`, path: null, url: null, ordered_track_ids: [] }, plays: 25 - i }));
+  const props = { allTracksCount: 25, madeForYou: [], favorites: [], recentTracks: [], recentlyDownloaded: [], popularTracks, popularPlaylists };
+  const overview = renderToStaticMarkup(<HomeView {...props} />);
+  const section = (name: string) => overview.split(`aria-label="${name}"`)[1].split("</section>")[0];
+  expect((section("Most popular songs").match(/class="luno-card"/g) ?? []).length).toBe(20);
+  expect((section("Most popular playlists").match(/class="luno-card"/g) ?? []).length).toBe(10);
+  const playlists = renderToStaticMarkup(<HomeView {...props} collection="popular-playlists" />);
+  expect((playlists.match(/class="luno-card"/g) ?? []).length).toBe(25);
+  const songs = renderToStaticMarkup(<LibraryView snapshot={snapshot} selectedScope="home:popular-songs" collection={{ title: "Most popular songs", tracks: popularTracks }} />);
+  expect(songs).toContain("25 songs");
+});

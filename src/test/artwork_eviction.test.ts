@@ -147,3 +147,11 @@ describe("home artwork fair-share budget", () => {
     expect(ids).toContain("cover-9-0");
   });
 });
+
+
+it("requests artist representative art even beyond the first thirty favorite songs", () => {
+  const favorites = manyTracks("favorite", 60);
+  const ids = homeArtworkIds({ madeForYou: [], favorites, favoriteArtistTracks: [favorites[59]], recentTracks: [], popularTracks: [], popularPlaylists: [], recentlyDownloaded: [] });
+  expect(ids).toContain("favorite-59");
+  expect(ids).toHaveLength(HOME_ARTWORK_SECTION_CAP);
+});

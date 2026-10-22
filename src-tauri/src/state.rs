@@ -6795,6 +6795,11 @@ impl AppState {
                         });
                     }
                 };
+                if query.starts_with("http://") || query.starts_with("https://") {
+                    let found = crate::download::search::resolve_download_url(&self.supervisor, &ytdlp, &query)
+                        .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
+                    return Ok(serde_json::to_value(found).unwrap_or(Value::Null));
+                }
                 // The bundled yt-dlp is a large self-extracting executable and
                 // can spend most of the old 30-second window merely starting.
                 // YouTube's public results page gives us the same metadata in

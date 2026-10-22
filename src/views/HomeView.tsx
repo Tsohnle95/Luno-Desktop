@@ -26,6 +26,7 @@ export interface PopularPlaylist { playlist: Playlist; plays: number }
 
 /** Inputs for the home-page artwork budget (one list per visible section). */
 export interface HomeArtworkInput {
+  favoriteArtistTracks?: Track[];
   madeForYou: Track[];
   favorites: Track[];
   recentTracks: Track[];
@@ -49,7 +50,7 @@ export const HOME_ARTWORK_TOTAL_CAP = 180;
 export function homeArtworkIds(input: HomeArtworkInput): string[] {
   const sections: Array<{ ids: string[]; cap: number }> = [
     { ids: input.madeForYou.map((track) => track.id), cap: HOME_ARTWORK_SECTION_CAP },
-    { ids: input.favorites.map((track) => track.id), cap: HOME_ARTWORK_SECTION_CAP },
+    { ids: [...(input.favoriteArtistTracks ?? []), ...input.favorites].map((track) => track.id), cap: HOME_ARTWORK_SECTION_CAP },
     { ids: input.popularPlaylists.flatMap((entry) => entry.playlist.ordered_track_ids.slice(0, 4)), cap: HOME_ARTWORK_PLAYLIST_CAP },
     { ids: input.recentTracks.map((track) => track.id), cap: HOME_ARTWORK_SECTION_CAP },
     { ids: input.popularTracks.map((track) => track.id), cap: HOME_ARTWORK_SECTION_CAP },
@@ -116,7 +117,11 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
   // popular / Recently downloaded never requested artwork and rendered blank
   // even for files with embedded covers. The hook's concurrency limiter (6)
   // further smooths the burst.
-  const artworkIds = homeArtworkIds({ madeForYou, favorites, recentTracks, popularTracks, popularPlaylists, recentlyDownloaded });
+  const visiblePopularTracks = popularTracks.slice(0, 20);
+  const visiblePopularPlaylists = collection === "popular-playlists" ? popularPlaylists : popularPlaylists.slice(0, 10);
+  const visibleArtists = collection === "favorite-artists" ? favoriteArtists : favoriteArtists.slice(0, 20);
+  const favoriteArtistTracks = visibleArtists.map((artist) => artist.tracks.find((track) => track.favorite) ?? artist.tracks[0]).filter((track): track is Track => !!track);
+  const artworkIds = homeArtworkIds({ madeForYou, favorites, favoriteArtistTracks, recentTracks, popularTracks: visiblePopularTracks, popularPlaylists: visiblePopularPlaylists, recentlyDownloaded });
   const artworkState = useTrackArtworkState(artworkIds, onArtwork);
   const artwork = artworkState.artwork;
   const playFrom = (list: Track[]) => (track: Track) => { if (backendAvailable && onPlayTrack) onPlayTrack(track, list); };
@@ -186,7 +191,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
       {sectionHead("Most popular songs", popularTracks.length > 0 ? { label: "Show all", onAction: () => onOpenCollection?.("popular-songs") } : undefined)}
       {popularTracks.length === 0
         ? <p className="luno-empty-note">Play songs to build your local favorites.</p>
-        : <div className="luno-card-row luno-scroll">{popularTracks.map(trackCard(popularTracks, (track) => `${track.artist ?? "Unknown artist"} · ${playCounts[track.id] ?? 0} ${(playCounts[track.id] ?? 0) === 1 ? "play" : "plays"}`))}</div>}
+        : <div className="luno-card-row luno-scroll">{visiblePopularTracks.map(trackCard(popularTracks, (track) => `${track.artist ?? "Unknown artist"} · ${playCounts[track.id] ?? 0} ${(playCounts[track.id] ?? 0) === 1 ? "play" : "plays"}`))}</div>}
     </section>
 
     <section className="luno-home-section" aria-label="Favorite songs">
@@ -202,7 +207,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
       {popularPlaylists.length === 0
         ? <p className="luno-empty-note">Playlist popularity grows as their songs are played.</p>
         : <div className="luno-card-row luno-scroll">
-          {popularPlaylists.map(({ playlist, plays }) => {
+          {visiblePopularPlaylists.map(({ playlist, plays }) => {
             const playlistTracks = playlist.ordered_track_ids.slice(0, 4)
               .map((id) => tracksById?.get(id))
               .filter((track): track is Track => !!track);
@@ -215,7 +220,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
     </section>}
     {(!collection || collection === "favorite-artists") && <section className="luno-home-section" aria-label="Favorite artists">
       {!collection && sectionHead("Favorite artists", favoriteArtists.length > 0 ? { label: "Show all", onAction: () => onOpenCollection?.("favorite-artists") } : undefined)}
-      {favoriteArtists.length === 0 ? <p className="luno-empty-note">Favorite songs to keep their artists here.</p> : <div className="luno-card-row luno-scroll">{favoriteArtists.map((artist) => {
+      {favoriteArtists.length === 0 ? <p className="luno-empty-note">Favorite songs to keep their artists here.</p> : <div className="luno-card-row luno-scroll">{visibleArtists.map((artist) => {
         const track = artist.tracks.find((item) => item.favorite) ?? artist.tracks[0];
         return <button className="luno-card luno-artist-card" type="button" key={artist.name} onClick={() => onOpenArtist?.(artist.name)}>
           <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} loading={artworkState.loading.has(track.id)} artist={artist.name} title={track.title} alt="" size="100%" />
