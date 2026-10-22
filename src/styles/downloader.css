@@ -56,3 +56,26 @@
 @media(max-width:900px) { .luno-download-toolbar > span { display:none; } .luno-download-song-actions { flex-direction:column; gap:4px; align-items:end; } }
 @media(max-width:600px) { .luno-downloader-view { padding:22px 14px 36px; } .luno-download-song { gap:8px; grid-template-columns:34px minmax(0,1fr) auto; padding:10px 6px; } .luno-download-song-art { width:34px; height:34px; } .luno-download-toolbar .luno-download-destination { max-width:none; } .luno-download-song-actions { max-width:120px; } .luno-download-row-state { white-space:normal; text-align:right; } }
 @media(prefers-reduced-motion:reduce) { .luno-download-row-progress > span { animation:none !important; transition:none; } }
+.luno-download-pagination { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:22px 0 8px; color:var(--luno-text-2); font-size:12px; font-variant-numeric:tabular-nums; }
+.luno-download-pagination > div { display:flex; align-items:center; gap:15px; }
+.luno-download-pagination button { color:var(--luno-text); background:var(--luno-bg-3); border:1px solid var(--luno-border); border-radius:999px; padding:7px 13px; cursor:pointer; font-size:12px; }
+.luno-download-pagination button:disabled { opacity:.35; cursor:default; }
+.luno-download-playlist-summary { padding:3px 0 16px; }
+.luno-download-source-type { color:var(--luno-accent); font-size:10px; font-weight:750; letter-spacing:.1em; }
+.luno-download-playlist-summary p { margin:8px 0; font-size:12px; color:var(--luno-text-2); line-height:1.6; }
+.luno-download-playlist-summary strong { color:var(--luno-text); font-weight:650; }
+.luno-download-playlist-summary small { color:var(--luno-text-3,var(--luno-text-2)); font-size:11px; overflow-wrap:anywhere; }
+.luno-download-sync-heading { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:24px; }
+.luno-download-sync-heading h2 { margin:0 0 7px; }
+.luno-download-sync-heading p,.luno-download-sync-submit p { margin:0; font-size:12px; line-height:1.6; color:var(--luno-text-2); }
+.luno-download-sync-form { display:grid; gap:12px; padding-bottom:24px; border-bottom:1px solid var(--luno-border); }
+.luno-download-sync-form > label { font-size:12px; font-weight:650; }
+.luno-download-sync-form > input { border:1px solid var(--luno-border); background:var(--luno-bg-3); color:var(--luno-text); padding:11px 12px; border-radius:8px; font-size:13px; }
+.luno-download-sync-form .luno-download-destination { font-size:12px; }
+.luno-download-sync-form .luno-download-destination > button { color:var(--luno-text-2) !important; background:transparent !important; }
+.luno-download-sync-submit { display:flex; align-items:center; justify-content:space-between; gap:18px; }
+.luno-download-linked-playlist { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:13px 0; border-bottom:1px solid var(--luno-border); }
+.luno-download-linked-playlist > div { display:grid; gap:6px; min-width:0; }
+.luno-download-linked-playlist strong { font-size:13px; font-weight:650; }
+.luno-download-linked-playlist small { font-size:11px; color:var(--luno-text-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+@media(max-width:600px) { .luno-download-pagination { align-items:start; flex-direction:column; } .luno-download-sync-heading,.luno-download-sync-submit { align-items:start; flex-direction:column; } }

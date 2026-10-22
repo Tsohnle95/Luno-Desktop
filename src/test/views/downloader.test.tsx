@@ -1,12 +1,52 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DownloaderView, DownloadSongRow, destinationName, filterDownloadDestinations, linkedPlaylistForDestination } from "../../views/DownloaderView";
+import { DownloaderView, DownloadSyncPanel, DownloadSongRow, destinationName, filterDownloadDestinations, linkedPlaylistForDestination } from "../../views/DownloaderView";
 import { LibraryView } from "../../views/LibraryView";
 
 const runningJob = { id: "job-1", kind: "single" as const, state: "running" as const, track_id: null, progress: 0.5, generation: 1 };
 const libraryTrack = (id: string, title: string, album: string | null, favorite = false) => ({ id, path: null, title, artist: "Artist", album, duration_ms: 90_000, artwork_url: null, favorite, provider: null });
 const snapshot = { version: 1 as const, generation: 1, tracks: [libraryTrack("a", "Zed", "Chaos 93"), libraryTrack("b", "Alpha", null, true)], playlists: [] };
 const playback = { queue: ["a"], current_index: 0, shuffle: false, repeat: "off" as const, status: "playing" as const, position_ms: 1000, duration_ms: 90_000, generation: 1 };
+
+describe("complete download results", () => {
+  it("leaves the idle results area quiet", () => {
+    const html = renderToStaticMarkup(<DownloaderView />);
+    expect(html).not.toContain("Find your next favorite");
+    expect(html).not.toContain("Search by song or artist, paste a YouTube link");
+    expect(html).not.toContain('width="25"');
+  });
+  it("identifies a playlist and accounts for every source entry against its destination", () => {
+    const item = { provider: "youtube" as const, query: "song", title: "Missing song", artist: null, duration: null, thumbnail_url: null, url: "https://youtube.com/watch?v=missing" };
+    const html = renderToStaticMarkup(<DownloaderView destination="/music/Live Shows" searchResults={[{ id: item.url, title: item.title }]} playlistPreview={{ url: "https://www.youtube.com/playlist?list=PL1", title: "My live playlist", total: 5, downloaded: 2, unavailable: 1, skipped: 1, items: [item] }} />);
+    expect(html).toContain("My live playlist");
+    expect(html).toContain("YOUTUBE PLAYLIST");
+    expect(html).toContain("5 songs · 2 already in Live Shows");
+    expect(html).toContain("1 missing");
+    expect(html).toContain("1 unavailable");
+    expect(html).toContain("1 skipped after review");
+    expect(html).toContain('aria-label="Download Missing song"');
+  });
+  it("always exposes Sync all, a URL field, and Sync playlist even for an unlinked destination", () => {
+    const linked = { id: "p1", name: "Rap", path: "/music/Rap", url: "https://youtube.com/playlist?list=one", ordered_track_ids: [] };
+    const html = renderToStaticMarkup(<DownloadSyncPanel destinations={["/music/Unsorted", "/music/Rap"]} destination="/music/Unsorted" playlists={[linked]} onDestinationChange={() => {}} />);
+    expect(html).toContain("Sync all (1)");
+    expect(html).toContain('placeholder="Paste a YouTube playlist URL"');
+    expect(html).toContain("Sync playlist");
+    expect(html).toContain("Linked playlists");
+    expect(html).toContain('aria-label="Sync Rap"');
+    expect(html).not.toContain("Use Link playlist in Your Library");
+    expect(html).not.toMatch(/disabled=""[^>]*>Sync all/);
+  });
+  it("paginates a complete playlist without dropping later songs from Download all", () => {
+    const songs = Array.from({ length: 61 }, (_, index) => ({ id: `song-${index}`, title: `Song ${index}` }));
+    const html = renderToStaticMarkup(<DownloaderView searchResults={songs} />);
+    expect((html.match(/role="listitem"/g) ?? [])).toHaveLength(25);
+    expect(html).toContain('aria-label="Results pages"');
+    expect(html).toContain("1–25 of 61");
+    expect(html).toContain("Next");
+    expect(html).toContain("Download all (61)");
+  });
+});
 
 describe("one-click download rows", () => {
   it("downloads search and CSV songs without selecting them or staging a queue", () => {
@@ -52,7 +92,7 @@ describe("automatic download presentation", () => {
     expect(html).not.toContain("Downloaded");
   });
   it("places actionable errors and retry on the failed row", () => {
-    const html = renderToStaticMarkup(<DownloadSongRow item={{ ...item, activity: { ...item, status: "failed", error: "YouTube refused access. Try another source." } }} />);
+    const html = renderToStaticMarkup(<DownloadSongRow item={{ ...item, activity: { ...item, status: "failed", error: "YouTube refused access. Try another source." } }} onRetry={() => {}} />);
     expect(html).toContain("YouTube refused access. Try another source.");
     expect(html).toContain('aria-label="Retry First song"');
     expect(html).not.toContain('role="alert"');

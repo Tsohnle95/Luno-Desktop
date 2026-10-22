@@ -235,9 +235,16 @@ envelope shapes (`docs/modules/contracts.md`).
   `Sync playlist`, `Review unavailable songs`, and `Log` actions. Sync stays
   disabled until a link is present; React sends only the playlist ID, then
   reflects backend-owned job progress, completion, cancellation, and errors.
-  The Downloader Sync tab lists linked physical playlists; its `Save to`
-  destination selects the playlist to sync through the same command and into
-  the same folder. Both sync actions first try playlist lookup without browser
+  The Downloader Sync tab always offers Sync all linked physical playlists,
+  a YouTube playlist URL field, and a physical Save to destination. A URL sync
+  merges the new source with existing links before invoking the same sync command.
+  Explicit sync requests run sequentially behind songs queued before the sync
+  click; songs queued afterwards wait for those syncs. The queue retains its
+  admission slot through backend acknowledgement and retries Busy responses.
+  Failed sync pauses a batch so browser-auth recovery remains visible; Continue
+  sync advances to the next playlist, while retry checks the failed playlist first.
+  Cancelling the active sync also clears the rest of that batch.
+  Both sync actions first try playlist lookup without browser
   cookies. If YouTube reports an account-access error, the status strip offers
   browser selection and retry. Playlist sync jobs never use the single-download Retry
   action. Active sync status names the current song until the job ends. If unresolved
@@ -285,3 +292,12 @@ playlist context menu → set_playlist_url / sync_playlist → sync job events
 - `docs/modules/contracts.md` — envelopes and bridge validators.
 - `docs/modules/library.md` — what library snapshots guarantee.
 - `docs/modules/playback.md` — video/queue state the UI reflects.
+
+Downloader results use 25-song pages with bottom Previous/Next controls.
+Name searches can request additional cumulative results up to 250 through More
+results. Playlist lookups use the typed backend preview, showing the provider
+playlist title, full source count, selected destination, songs already present,
+missing songs, unavailable entries, and review skips. Only missing actionable
+songs enter the results list; Download missing enqueues all pages. Changing the
+Save to destination revalidates the preview through the backend. Pagination never
+changes captured source/destination pairs or the automatic download order.

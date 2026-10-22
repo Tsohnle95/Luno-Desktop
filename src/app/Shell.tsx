@@ -1,3 +1,5 @@
+import { PlaylistSyncQueue, preparePlaylistSync, type PlaylistSyncRequest } from "../state/playlist_sync_queue";
+import { youtubePlaylistUrl } from "../state/download_results";
 import { downloadDuplicateGroups, parseAllowedDownloadDuplicates } from "../state/download_duplicates";
 import { captureQueuedDownload, csvDownloadSource, DownloadLookupGate, requeueDownloadAfterBusy, takeNextDownload, downloadActivityRows, downloadItemKey, appendDownloadItems, awaitDownloadAdmission, type QueuedDownload } from "../state/download_inputs";
 import { discoveryResultsReady, requestDiscoveryIntent } from "../state/discovery_intent";
@@ -22,7 +24,7 @@ import { storeTrackArtwork, useTrackArtworkState, useTrackArtworkWarmup } from "
 import { clearPlayCounts, loadDownloadJournal, loadPlayCounts, madeForYouIds, popularTrackIds, recordDownloadCompletions, saveDownloadJournal, type DownloadEntry } from "../state/play_stats";
 import { downloadDisplayLabel, downloadFilename, type DownloadMetadata } from "../state/download_naming";
 import type { Bridge, MigrationStatus } from "./bridge";
-import { type Playlist, type PlaylistSyncCandidate, type PlaylistSyncIssue, type PlaylistSyncLocalMatch, type PlaylistSyncReviewSummary, type Recommendation, type SafeDeleteResult, type SearchResult, type SettingsInput, type Track, type YtDlpCookieBrowser } from "../shared/contracts";
+import { type PlaylistDownloadPreview, type Playlist, type PlaylistSyncCandidate, type PlaylistSyncIssue, type PlaylistSyncLocalMatch, type PlaylistSyncReviewSummary, type Recommendation, type SafeDeleteResult, type SearchResult, type SettingsInput, type Track, type YtDlpCookieBrowser } from "../shared/contracts";
 import { previewKey } from "../shared/contracts";
 import type { RecommendationState } from "../components/Recommendations";
 import { Queue } from "../components/Queue";
@@ -288,6 +290,9 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [playlistSyncAuthError, setPlaylistSyncAuthError] = useState<string | null>(null);
   const [activePlaylistSync, setActivePlaylistSync] = useState<{ jobId: string; playlist: Playlist; startedAtMs: number; sequence: number } | null>(null);
   const playlistSyncSequence = useRef(0);
+  const playlistSyncQueue = useRef(new PlaylistSyncQueue());
+  const [playlistSyncQueueVersion, setPlaylistSyncQueueVersion] = useState(0);
+  const playlistSyncPump = useRef<() => void>(() => {});
   const [lastFailedPlaylistSync, setLastFailedPlaylistSync] = useState<{ playlist: Playlist; startedAtMs: number } | null>(null);
   const [playlistSyncLog, setPlaylistSyncLog] = useState<{ name: string; entries: PlaylistSyncLogEntry[]; loading: boolean; error: string | null } | null>(null);
   const [playlistSyncErrors, setPlaylistSyncErrors] = useState<{ name: string; entries: PlaylistSyncLogEntry[]; loading: boolean; error: string | null } | null>(null);
@@ -352,7 +357,17 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     }
     setPlaylistSyncReviewSummaryRefresh((current) => current + 1);
     setActivePlaylistSync(null);
+    if (job.state === "failed") playlistSyncQueue.current.pause();
+    else if (job.state === "cancelled") playlistSyncQueue.current.clear();
+    else playlistSyncQueue.current.finish();
+    setPlaylistSyncQueueVersion((version) => version + 1);
   }, [activePlaylistSync, projection.jobs, bridge]);
+  const [downloadPlaylistPreview, setDownloadPlaylistPreview] = useState<PlaylistDownloadPreview | null>(null);
+  const downloadPlaylistQuery = useRef<string | null>(null);
+  const downloadDestinationRef = useRef<string | null>(null);
+  const downloadPreviewDestination = useRef<string | null>(null);
+  const [downloadSearchHasMore, setDownloadSearchHasMore] = useState(true);
+  const downloadSearchLast = useRef({ query: "", count: 0 });
   const [downloadSources, setDownloadSources] = useState<SearchResult[]>([]);
   const [downloadSearchLoading, setDownloadSearchLoading] = useState(false);
   const downloadLookupGate = useRef(new DownloadLookupGate());
@@ -572,8 +587,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       })
       .catch((error: unknown) => { setPlaylistUrlBusy(false); setPlaylistUrlError(normalizeRuntimeCommandError(error)); });
   };
-  const startPlaylistSync = (playlist: Playlist) => {
-    if (!bridge || !available || !playlist.url) return;
+  const startPlaylistSync = async (playlist: Playlist) => {
+    if (!bridge || !available || !playlist.url) throw new Error("Playlist sync is unavailable until a playlist is linked.");
     const sequence = ++playlistSyncSequence.current;
     setCommandError(null);
     backendProjection?.clearErrors?.();
@@ -581,18 +596,18 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     setPlaylistSyncReviewOffer(null);
     setCommandNotice(`Starting sync for “${playlist.name}”…`);
     const startedAtMs = Date.now();
-    void bridge.syncPlaylist(playlist.id)
+    return bridge.syncPlaylist(playlist.id)
       .then((value) => {
         const jobId = value && typeof value === "object" && "job_id" in value && typeof value.job_id === "string" ? value.job_id : null;
         if (!jobId) throw new Error("sync did not return a job id");
         setCommandNotice(null);
         setActivePlaylistSync({ jobId, playlist, startedAtMs, sequence });
       })
-      .catch((error: unknown) => { setCommandNotice(null); setCommandError(normalizeRuntimeCommandError(error)); });
+      .catch((error: unknown) => { setCommandNotice(null); throw error; });
   };
   const syncPlaylist = (playlist: Playlist) => {
     if (!bridge || !available || !playlist.url) return;
-    startPlaylistSync(playlist);
+    queuePlaylistSyncs([{ playlist }]);
   };
   const submitPlaylistSyncAuth = (browser: Exclude<YtDlpCookieBrowser, "none">) => {
     if (!bridge || !available || !playlistSyncAuthRequest || playlistSyncAuthBusy) return;
@@ -605,7 +620,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       setSettings(nextSettings);
       setPlaylistSyncAuthRequest(null);
       setPlaylistSyncAuthBusy(false);
-      startPlaylistSync(playlist);
+      syncPlaylist(playlist);
     }).catch((error: unknown) => {
       setPlaylistSyncAuthBusy(false);
       setPlaylistSyncAuthError(normalizeRuntimeCommandError(error));
@@ -886,6 +901,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const startNextDownload = () => {
     if (!bridge) return;
     while (downloadQueueRef.current.length > 0) {
+      if (!playlistSyncQueue.current.allowsDownload(downloadQueueRef.current[0])) { playlistSyncPump.current(); return; }
       const next = takeNextDownload(downloadQueueRef.current, activeDownloadJobsRef.current.size);
       if (!next) break;
       refreshDownloadQueue();
@@ -973,6 +989,32 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       startNextDownload();
     }
   }, [projection.jobs, activeDownloadJobs, bridge]);
+  const queuePlaylistSyncs = (requests: PlaylistSyncRequest[]) => {
+    if (!bridge || !available) return;
+    playlistSyncQueue.current.enqueue(requests, downloadQueueRef.current);
+    setPlaylistSyncQueueVersion((version) => version + 1);
+    playlistSyncPump.current();
+  };
+  playlistSyncPump.current = () => {
+    if (!bridge || !available) return;
+    const request = playlistSyncQueue.current.take(activeDownloadJobsRef.current.size, downloadQueueRef.current[0]);
+    if (!request) return;
+    setPlaylistSyncQueueVersion((version) => version + 1);
+    void preparePlaylistSync(request, bridge).then(startPlaylistSync).catch((error: unknown) => {
+      if (isBusyDownloadError(error)) {
+        playlistSyncQueue.current.retry();
+        window.setTimeout(() => { setPlaylistSyncQueueVersion((version) => version + 1); }, 1000);
+        return;
+      }
+      setCommandError(normalizeRuntimeCommandError(error));
+      playlistSyncQueue.current.pause();
+      setPlaylistSyncQueueVersion((version) => version + 1);
+    });
+  };
+  useEffect(() => {
+    playlistSyncPump.current();
+    startNextDownload();
+  }, [playlistSyncQueueVersion, projection.jobs, bridge]);
   const chooseRoot = () => {
     if (!viteEnv?.DEV) { setCommandError("Native library root picker is unavailable in this runtime."); return; }
     const root = window.prompt("Development probe: enter an existing absolute library folder", musicRoot === "Not configured" ? "" : musicRoot);
@@ -1585,7 +1627,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       const result = await bridge.previewCsv(csv);
       return (result as { rows?: Array<{ id: string; title: string; artist?: string; url?: string }> }).rows ?? [];
     }, {
-      start: () => { setDownloadSearchLoading(true); setCommandError(null); setDownloadSources([]); setCsvPreview([]); },
+      start: () => { downloadPlaylistQuery.current = null; setDownloadPlaylistPreview(null); setDownloadSearchLoading(true); setCommandError(null); setDownloadSources([]); setCsvPreview([]); },
       success: (rows) => {
         if (rows.length === 0) setCommandError("This CSV contains no songs. Choose an Exportify CSV with Track Name and Artist Name(s) columns.");
         setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: csvDownloadSource(row) })));
@@ -1594,6 +1636,41 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       finish: () => setDownloadSearchLoading(false),
     });
   };
+  const lookupDownloadSongs = (query: string, requested = 25, destination = downloadDestinationRef.current) => {
+    if (!bridge) return;
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    const playlistUrl = youtubePlaylistUrl(trimmed);
+    if (playlistUrl && !downloadDestination) {
+      const linked = projectionRef.current.library?.playlists.find((playlist) => playlist.path && playlist.url && youtubePlaylistUrl(playlist.url) === playlistUrl);
+      if (linked?.path) { destination = linked.path; setDownloadDestination(linked.path); downloadDestinationRef.current = linked.path; }
+    }
+    downloadPreviewDestination.current = destination;
+    downloadPlaylistQuery.current = playlistUrl;
+    const old = downloadSearchLast.current;
+    void downloadLookupGate.current.run(async () => {
+      if (playlistUrl) {
+        if (!destination) throw new Error("Choose a library playlist in Save to before opening a YouTube playlist.");
+        const preview = await bridge.previewDownloadPlaylist(playlistUrl, destination);
+        return { items: preview.items, preview };
+      }
+      return { items: await bridge.searchDownloader(trimmed, true, requested), preview: null };
+    }, {
+      start: () => { setDownloadSearchLoading(true); if (old.query !== trimmed || playlistUrl) setDownloadSources([]); setDownloadPlaylistPreview(null); setCsvPreview([]); setCommandError(null); },
+      success: ({ items, preview }) => {
+        setDownloadSources(items); setDownloadPlaylistPreview(preview);
+        setDownloadSearchHasMore(!preview && (requested <= 25 || old.query !== trimmed || items.length > old.count));
+        downloadSearchLast.current = { query: trimmed, count: items.length };
+      },
+      error: (error) => setCommandError(normalizeRuntimeCommandError(error)),
+      finish: () => setDownloadSearchLoading(false),
+    });
+  };
+  downloadDestinationRef.current = downloadDestination ?? downloadBase;
+  useEffect(() => {
+    const destination = downloadDestination ?? downloadBase;
+    if (downloadPlaylistQuery.current && downloadPreviewDestination.current !== destination) lookupDownloadSongs(downloadPlaylistQuery.current, 25, destination);
+  }, [downloadDestination, downloadBase]);
   const downloadRows = downloadActivityRows(downloadJobItems, pendingDownloadRows, projection.jobs, { ...projection.jobErrors, ...downloadStartErrors }).map((row) => {
     if (row.jobId && downloadStartErrors[row.jobId]) return { ...row, status: "failed" as const };
     if (row.jobId && cancelledDownloadRequests.has(row.jobId) && !["failed", "succeeded", "cancelled"].includes(row.status)) return { ...row, status: "cancelling" as const };
@@ -1627,7 +1704,21 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     destinations={downloadDestinations}
     defaultDestination={downloadBase ?? undefined}
     destination={downloadDestination ?? downloadBase}
-    onDestinationChange={setDownloadDestination}
+    onDestinationChange={(destination) => {
+      setDownloadDestination(destination); downloadDestinationRef.current = destination;
+    }}
+    playlistPreview={downloadPlaylistPreview}
+    searchHasMore={downloadSearchHasMore}
+    syncPaused={playlistSyncQueue.current.paused && playlistSyncQueue.current.count > 0}
+    onResumeSync={() => { playlistSyncQueue.current.resume(); setPlaylistSyncQueueVersion((version) => version + 1); }}
+    syncStatus={playlistSyncQueue.current.count > 0 ? playlistSyncQueue.current.paused ? "Sync paused after an error. Retry this playlist or continue with the next." : activePlaylistSync ? `Syncing ${activePlaylistSync.playlist.name}${playlistSyncQueue.current.count > 1 ? ` · ${playlistSyncQueue.current.count - 1} playlists next` : ""}` : playlistSyncQueue.current.active ? `Checking ${playlistSyncQueue.current.active.playlist.name}…` : `${playlistSyncQueue.current.count} playlists waiting for earlier downloads` : null}
+    onSyncAll={() => queuePlaylistSyncs((projectionRef.current.library?.playlists ?? []).filter((playlist) => playlist.path && playlist.url).map((playlist) => ({ playlist })))}
+    onSyncUrl={(url, destination) => {
+      const playlist = projectionRef.current.library?.playlists.find((item) => item.path === destination);
+      if (!playlist) { setCommandError("Choose a physical library playlist in Save to. Newly created playlists may still be loading."); return; }
+      if (!youtubePlaylistUrl(url)) { setCommandError("Enter a YouTube playlist URL containing a playlist ID."); return; }
+      queuePlaylistSyncs([{ playlist, url }]);
+    }}
     searching={downloadSearchLoading}
     searchResults={downloadSources.map((item) => ({ id: item.url || item.query || item.title, title: item.title, artist: item.artist ?? item.provider, duration: item.duration ?? undefined, thumbnailUrl: item.thumbnail_url ?? undefined, source: item.url || item.query }))}
     previewTracks={csvPreview}
@@ -1641,17 +1732,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     }}
     onImportAllowed={(file) => { void file.text().then((text) => saveAllowedDownloadDuplicates(parseAllowedDownloadDuplicates(text))).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }}
-    onSearch={(query, requested) => {
-      if (!bridge) return;
-      const trimmed = query.trim();
-      if (!trimmed) return;
-      void downloadLookupGate.current.run(() => bridge.searchDownloader(trimmed, true, requested ?? 10), {
-        start: () => { setDownloadSearchLoading(true); setDownloadSources([]); setCsvPreview([]); setCommandError(null); },
-        success: setDownloadSources,
-        error: (error) => setCommandError(normalizeRuntimeCommandError(error)),
-        finish: () => setDownloadSearchLoading(false),
-      });
-    }}
+    onSearch={lookupDownloadSongs}
     onImportCsv={(file) => previewDownloadCsv(() => file.text())}
     onPreview={(value) => previewDownloadCsv(() => Promise.resolve(value))}
     onDownload={(ids, destination) => {

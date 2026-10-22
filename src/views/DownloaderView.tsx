@@ -1,8 +1,9 @@
-import { useEffect, useId, useState, type FormEvent } from "react";
-import type { DownloadJob, Playlist } from "../shared/contracts";
+import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
+import type { DownloadJob, Playlist, PlaylistDownloadPreview } from "../shared/contracts";
 import { RecommendationArtworkImage } from "../components/RecommendationArtwork";
 import { IconDownload, IconUpload, IconSearch } from "../components/icons";
 import { downloadItemKey, type DownloadListItem } from "../state/download_inputs";
+import { downloadResultPage, DOWNLOAD_PAGE_SIZE, DOWNLOAD_SEARCH_LIMIT } from "../state/download_results";
 import "../styles/downloader.css";
 import { DownloadTabs, type DownloadTab } from "../components/DownloadTabs";
 
@@ -13,6 +14,8 @@ export interface DownloaderViewProps {
   destination?: string | null; jobs?: Record<string, DownloadJob>; jobErrors?: Record<string, string>; searchResults?: DownloadSearchResult[];
   previewTracks?: DownloadPreview[]; activity?: DownloadListItem[]; duplicateGroups?: DuplicateGroup[];
   allowedDuplicates?: string[]; destinations?: string[]; defaultDestination?: string; syncPlaylists?: Playlist[];
+  playlistPreview?: PlaylistDownloadPreview | null; searchHasMore?: boolean; syncStatus?: string | null;
+  syncPaused?: boolean; onResumeSync?: () => void; onSyncAll?: () => void; onSyncUrl?: (url: string, destination: string) => void;
   searching?: boolean; error?: string | null;
   onSearch?: (query: string, limit: number) => void; onDestinationChange?: (destination: string) => void;
   onImportCsv?: (file: File) => void; onPreview?: (query: string, kind: "youtube" | "csv") => void;
@@ -104,15 +107,18 @@ export function DownloadSongRow({ item, onDownload, onCancel, onRetry }: {
       {label && <span className="luno-download-row-state" role="status">{label}</span>}
       {!activity && <button className="luno-download-action" type="button" aria-label={`Download ${item.title}`} onClick={onDownload}><IconDownload size={15} /> Download</button>}
       {(busy || status === "queued") && <button className="luno-download-cancel" type="button" aria-label={`Cancel ${item.title}`} disabled={status === "cancelling"} onClick={onCancel}>Cancel</button>}
-      {(status === "failed" || status === "cancelled") && <button className="luno-download-action" type="button" aria-label={`Retry ${item.title}`} onClick={onRetry}>Retry</button>}
+      {onRetry && (status === "failed" || status === "cancelled") && <button className="luno-download-action" type="button" aria-label={`Retry ${item.title}`} onClick={onRetry}>Retry</button>}
     </div>
     {busy && <div className={`luno-download-row-progress${percent == null || activity?.finalizing ? " is-indeterminate" : ""}`} role="progressbar" aria-label={`Download progress for ${item.title}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={activity?.finalizing ? undefined : percent ?? undefined}><span style={{ width: `${activity?.finalizing ? 100 : percent ?? 30}%` }} /></div>}
   </div>;
 }
 
-export function DownloaderView({ jobs = {}, jobErrors = {}, searchResults = [], previewTracks = [], activity = [], duplicateGroups = [], allowedDuplicates = [], destinations = ["Unsorted"], defaultDestination, destination: controlledDestination, syncPlaylists = [], searching = false, error = null, onSearch, onDestinationChange, onImportCsv, onPreview, onDownload, onSync, onCancel, onCancelItem, onRetryItem, onAllowDuplicates, onRestoreDuplicate, onExportAllowed, onImportAllowed, onCreateDestination }: DownloaderViewProps) {
+export function DownloaderView({ playlistPreview, searchHasMore = true, syncPaused, onResumeSync, onSyncAll, onSyncUrl, syncStatus, jobs = {}, jobErrors = {}, searchResults = [], previewTracks = [], activity = [], duplicateGroups = [], allowedDuplicates = [], destinations = ["Unsorted"], defaultDestination, destination: controlledDestination, syncPlaylists = [], searching = false, error = null, onSearch, onDestinationChange, onImportCsv, onPreview, onDownload, onSync, onCancel, onCancelItem, onRetryItem, onAllowDuplicates, onRestoreDuplicate, onExportAllowed, onImportAllowed, onCreateDestination }: DownloaderViewProps) {
   const [tab, setTab] = useState<DownloadTab>("search");
   const [query, setQuery] = useState("");
+  const [submittedQuery, setSubmittedQuery] = useState("");
+  const [requestedLimit, setRequestedLimit] = useState(DOWNLOAD_PAGE_SIZE);
+  const [page, setPage] = useState(0);
   const [fileError, setFileError] = useState<string | null>(null);
   const [internalDestination, setInternalDestination] = useState(defaultDestination ?? destinations[0] ?? "Unsorted");
   const destination = controlledDestination ?? internalDestination;
@@ -125,29 +131,54 @@ export function DownloaderView({ jobs = {}, jobErrors = {}, searchResults = [], 
   const resultKeys = new Set(results.map((item) => downloadItemKey({ source: item.source ?? item.id, destination })));
   const earlierDownloads = activity.filter((item) => !resultKeys.has(downloadItemKey(item)));
   const untrackedResults = results.filter((item) => !activityByKey.has(downloadItemKey({ source: item.source ?? item.id, destination })));
-  const selectedSyncPlaylist = linkedPlaylistForDestination(syncPlaylists, destination);
+  const resultSet = `${submittedQuery}:${playlistPreview?.url ?? ""}:${previewTracks[0]?.id ?? ""}`;
+  useEffect(() => setPage(0), [resultSet]);
+  const visible = downloadResultPage(results, page);
+  const canLoadMore = !!submittedQuery && !/^https?:/i.test(submittedQuery) && !playlistPreview && !previewTracks.length && searchHasMore && requestedLimit < DOWNLOAD_SEARCH_LIMIT;
+  const loadMore = () => { const limit = Math.min(DOWNLOAD_SEARCH_LIMIT, requestedLimit + DOWNLOAD_PAGE_SIZE); setRequestedLimit(limit); setPage(Math.ceil(results.length / DOWNLOAD_PAGE_SIZE)); onSearch?.(submittedQuery, limit); };
   const syncJobs = Object.values(jobs).filter((job) => job.kind === "sync");
-  const syncBusy = syncJobs.some((job) => ["queued", "running", "cancelling"].includes(job.state));
-  const submit = (event: FormEvent) => { event.preventDefault(); if (query.trim() && !searching) { setFileError(null); onSearch?.(query.trim(), 25); } };
+  const syncBusy = !!syncStatus || syncJobs.some((job) => ["queued", "running", "cancelling"].includes(job.state));
+  const submit = (event: FormEvent) => { event.preventDefault(); if (query.trim() && !searching) { setFileError(null); setPage(0); setSubmittedQuery(query.trim()); setRequestedLimit(DOWNLOAD_PAGE_SIZE); onSearch?.(query.trim(), DOWNLOAD_PAGE_SIZE); } };
   return <section className="luno-downloader-view" aria-label="Downloader">
     <header className="luno-downloader-header"><div><p>DOWNLOADS</p><h1>Download music</h1><span>Songs, playlists, and CSV imports. One automatic queue.</span></div></header>
     <DownloadTabs active={tab} onChange={setTab}>
       {tab === "search" && <>
         <form className="luno-download-search" onSubmit={submit}><IconSearch size={18} /><input aria-label="Search for music" autoCorrect="off" spellCheck={false} placeholder="Search songs or paste a video or playlist link" value={query} onChange={(event) => setQuery(event.target.value)} disabled={searching} /><button className="luno-download-action" type="submit" disabled={searching} aria-busy={searching}>{searching ? "Finding songs…" : "Search"}</button></form>
-        <div className="luno-download-toolbar"><label className={`luno-csv-import${searching ? " is-disabled" : ""}`}><IconUpload size={15} /> Import CSV<input aria-label="Import CSV" type="file" accept=".csv,text/csv" disabled={searching} hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) { setQuery(""); setFileError(null); if (onImportCsv) onImportCsv(file); else void file.text().then((value) => onPreview?.(value, "csv")).catch(() => setFileError("This CSV could not be read. Choose another file.")); } event.target.value = ""; }} /></label><span>Video links, playlists & Exportify CSVs</span><Destination items={destinations} value={destination} onChange={setDestination} onCreate={onCreateDestination} /></div>
+        <div className="luno-download-toolbar"><label className={`luno-csv-import${searching ? " is-disabled" : ""}`}><IconUpload size={15} /> Import CSV<input aria-label="Import CSV" type="file" accept=".csv,text/csv" disabled={searching} hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) { setQuery(""); setSubmittedQuery(""); setPage(0); setFileError(null); if (onImportCsv) onImportCsv(file); else void file.text().then((value) => onPreview?.(value, "csv")).catch(() => setFileError("This CSV could not be read. Choose another file.")); } event.target.value = ""; }} /></label><span>Video links, playlists & Exportify CSVs</span><Destination items={destinations} value={destination} onChange={setDestination} onCreate={onCreateDestination} /></div>
         <p className="luno-download-hint">Click Download to start or join the queue. One song at a time, in the order you add them.</p>
         {(error || fileError) && <p className="luno-download-input-error" role="alert">{error || fileError}</p>}
         {earlierDownloads.length > 0 && <section className="luno-download-list-section" aria-label="Your downloads"><div className="luno-download-section-title"><h2>Your downloads</h2><span>{activity.filter((row) => ["running", "starting", "cancelling", "queued"].includes(row.status)).length} remaining</span></div><div role="list" aria-label="Download activity">{earlierDownloads.map((item) => <DownloadSongRow key={downloadItemKey(item)} item={{ ...item, title: item.title ?? item.id, artist: item.artist ?? undefined, activity: item }} onCancel={() => onCancelItem?.(item)} onRetry={() => onRetryItem?.(item)} />)}</div></section>}
-        <section className="luno-download-list-section" aria-label="Search results"><div className="luno-download-section-title"><h2>{previewTracks.length ? "Imported songs" : results.length ? "Results" : "Find your next favorite"}</h2>{results.length > 1 && <button className="luno-download-batch" type="button" onClick={() => onDownload?.(results.map((item) => item.id), destination)} disabled={searching || untrackedResults.length === 0}><IconDownload size={14} /> Download all ({results.length})</button>}</div>
-          {searching ? <div className="luno-download-empty" role="status"><span className="luno-download-spinner" /> Finding songs… You can keep managing your downloads.</div> : <div role="list" aria-label="Available songs">{results.map((item) => {
+        <section className="luno-download-list-section" aria-label="Search results"><div className="luno-download-section-title"><h2>{playlistPreview ? playlistPreview.title : previewTracks.length ? "Imported songs" : results.length ? "Results" : null}</h2>{results.length > 1 && <button className="luno-download-batch" type="button" onClick={() => onDownload?.(results.map((item) => item.id), destination)} disabled={searching || untrackedResults.length === 0}><IconDownload size={14} /> {playlistPreview ? "Download missing" : "Download all"} ({results.length})</button>}</div>
+          {playlistPreview && !searching && <div className="luno-download-playlist-summary"><span className="luno-download-source-type">YOUTUBE PLAYLIST</span><p>{playlistPreview.total} songs · {playlistPreview.downloaded} already in {destinationName(destination)} · <strong>{playlistPreview.items.length} missing</strong>{playlistPreview.unavailable > 0 ? ` · ${playlistPreview.unavailable} unavailable` : ""}{playlistPreview.skipped > 0 ? ` · ${playlistPreview.skipped} skipped after review` : ""}</p><small>{playlistPreview.url}</small>{playlistPreview.items.length === 0 && <p>{playlistPreview.downloaded === playlistPreview.total ? `This playlist is up to date in ${destinationName(destination)}.` : "No new downloadable songs. Unavailable and skipped songs are counted above."}</p>}</div>}
+          {searching ? <div className="luno-download-empty" role="status"><span className="luno-download-spinner" /> Finding songs… You can keep managing your downloads.</div> : <div role="list" aria-label="Available songs">{visible.items.map((item) => {
             const active = activityByKey.get(downloadItemKey({ source: item.source ?? item.id, destination }));
             return <DownloadSongRow key={item.id} item={{ ...item, destination, activity: active }} onDownload={() => onDownload?.([item.id], destination)} onCancel={() => active && onCancelItem?.(active)} onRetry={() => active && onRetryItem?.(active)} />;
           })}</div>}
-          {!searching && results.length === 0 && <div className="luno-download-empty"><IconSearch size={25} /><p>Search by song or artist, paste a YouTube link,<br />or import a CSV to see its songs here.</p></div>}
+          {!searching && results.length > 0 && <nav className="luno-download-pagination" aria-label="Results pages"><span>{visible.start + 1}–{visible.end} of {results.length}</span><div><button type="button" disabled={visible.page === 0} onClick={() => setPage(visible.page - 1)}>Previous</button><span>Page {visible.page + 1} of {visible.pages}</span>{visible.page + 1 < visible.pages ? <button type="button" onClick={() => setPage(visible.page + 1)}>Next</button> : canLoadMore ? <button type="button" onClick={loadMore}>More results</button> : <button type="button" disabled>Next</button>}</div></nav>}
         </section>
       </>}
-      {tab === "sync" && <div className="luno-download-sync"><h2>Keep your playlists up to date</h2><p>Choose a linked library playlist to check for new songs.</p><Destination items={destinations} value={destination} onChange={setDestination} onCreate={onCreateDestination} />{selectedSyncPlaylist ? <button className="luno-download-action" type="button" disabled={syncBusy} onClick={() => onSync?.(selectedSyncPlaylist)}>{syncBusy ? "Sync in progress…" : `Sync ${selectedSyncPlaylist.name}`}</button> : <p>This folder has no linked YouTube playlist. Use Link playlist in Your Library to add one.</p>}{syncJobs.map((job) => <DownloadSongRow key={job.id} item={{ id: job.id, title: job.current_item ?? "Playlist sync", activity: { id: job.id, source: job.id, destination, jobId: job.id, status: job.state, progress: job.progress, error: jobErrors[job.id] } }} onCancel={() => onCancel?.(job.id)} />)}</div>}
+      {tab === "sync" && <DownloadSyncPanel destinations={destinations} destination={destination} playlists={syncPlaylists} busy={syncBusy} paused={syncPaused} onResume={onResumeSync} status={syncStatus} error={error} onDestinationChange={setDestination} onCreateDestination={onCreateDestination} onSync={onSync} onSyncAll={onSyncAll} onSyncUrl={onSyncUrl}>{syncJobs.map((job) => <DownloadSongRow key={job.id} item={{ id: job.id, title: job.current_item ?? "Playlist sync", activity: { id: job.id, source: job.id, destination, jobId: job.id, status: job.state, progress: job.progress, error: jobErrors[job.id] } }} onCancel={() => onCancel?.(job.id)} />)}</DownloadSyncPanel>}
       {tab === "duplicates" && <div className="luno-download-duplicates"><h2>Duplicate review</h2><p>Keep the copies you want. Your files stay protected.</p>{duplicateGroups.length === 0 && <p>No duplicate groups to review.</p>}{duplicateGroups.map((group) => <fieldset key={group.key}><legend>{group.key}</legend>{group.tracks.map((track) => <div key={track}>{track}</div>)}<button className="luno-download-batch" type="button" onClick={() => onAllowDuplicates?.([group.key])}>Keep this group</button></fieldset>)}<div className="luno-download-section-title"><h2>Kept duplicate groups</h2><div><button type="button" onClick={onExportAllowed}>Export</button><label>Import<input type="file" accept="application/json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportAllowed?.(file); }} /></label></div></div><p>Keeping a group hides it from review and never overwrites a file.</p>{allowedDuplicates.map((key) => <div className="luno-kept-duplicate" key={key}><span>{key}</span><button type="button" onClick={() => onRestoreDuplicate?.(key)}>Review again</button></div>)}</div>}
     </DownloadTabs>
   </section>;
+}
+
+
+export function DownloadSyncPanel({ destinations, destination, playlists, busy, paused, onResume, status, error, onDestinationChange, onCreateDestination, onSync, onSyncAll, onSyncUrl, children }: {
+  destinations: string[]; destination: string; playlists: Playlist[]; busy?: boolean; paused?: boolean; onResume?: () => void; status?: string | null; error?: string | null;
+  onDestinationChange: (value: string) => void; onCreateDestination?: () => void; onSync?: (playlist: Playlist) => void; onSyncAll?: () => void; onSyncUrl?: (url: string, destination: string) => void; children?: ReactNode;
+}) {
+  const [url, setUrl] = useState("");
+  const selected = linkedPlaylistForDestination(playlists, destination);
+  const linked = playlists.filter((playlist) => playlist.path && playlist.url);
+  return <div className="luno-download-sync"><div className="luno-download-sync-heading"><div><h2>Playlist sync</h2><p>Add songs missing from your library playlists.</p></div><button className="luno-download-action" type="button" disabled={busy || linked.length === 0} onClick={onSyncAll}>Sync all ({linked.length})</button></div>
+    <form className="luno-download-sync-form" onSubmit={(event) => { event.preventDefault(); if (busy || !destination) return; if (url.trim()) onSyncUrl?.(url.trim(), destination); else if (selected) onSync?.(selected); }}>
+      <label htmlFor="luno-sync-url">YouTube playlist link</label><input id="luno-sync-url" type="url" placeholder="Paste a YouTube playlist URL" value={url} onChange={(event) => setUrl(event.target.value)} autoCorrect="off" spellCheck={false} />
+      <Destination items={destinations} value={destination} onChange={onDestinationChange} onCreate={onCreateDestination} />
+      <div className="luno-download-sync-submit"><p>{url.trim() ? `Link and sync into ${destinationName(destination)}. Existing links are kept.` : selected ? `Check the YouTube playlists linked to ${selected.name}.` : "Paste a playlist link and choose where to save its songs."}</p><button className="luno-download-action" type="submit" disabled={busy || !destination || (!url.trim() && !selected)}>Sync playlist</button></div>
+    </form>
+    {status && <p role="status">{status}</p>}{paused && <button type="button" className="luno-download-action" onClick={onResume}>Continue sync</button>}{error && <p className="luno-download-input-error" role="alert">{error}</p>}
+    {linked.length > 0 && <section aria-label="Linked playlists"><div className="luno-download-section-title"><h2>Linked playlists</h2><span>{linked.length} playlists</span></div>{linked.map((playlist) => <div className="luno-download-linked-playlist" key={playlist.id}><div><strong>{playlist.name}</strong><small>{playlist.url}</small></div><button type="button" className="luno-download-batch" disabled={busy} aria-label={`Sync ${playlist.name}`} onClick={() => onSync?.(playlist)}>Sync</button></div>)}</section>}
+    {children}
+  </div>;
 }
