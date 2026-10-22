@@ -223,7 +223,7 @@ describe("Discovery queue metadata lifetime", () => {
   });
 });
 
-import { createPageHistory, recordPage, stepPage } from "../../state/page_history";
+import { createPageHistory, recordPage, stepPage, librarySearchScope } from "../../state/page_history";
 
 describe("page navigation history", () => {
   const home = { route: "library", scope: "all", home: true };
@@ -254,4 +254,14 @@ it("offers disabled back/forward at launch and a Favorite artists Home row", () 
   expect(html).toMatch(/aria-label="Go forward"[^>]*disabled=""/);
   expect(html).toContain('aria-label="Favorite artists"');
   expect(html).toContain('aria-label="Show all Favorite songs"');
+});
+
+
+it("searches songs from Home grids while preserving song collection filtering", () => {
+  expect(librarySearchScope("home:favorite-artists", "a song")).toBe("all");
+  expect(librarySearchScope("home:popular-playlists", "a song")).toBe("all");
+  expect(librarySearchScope("home:artist:An Artist", "a song")).toBe("home:artist:An Artist");
+  expect(librarySearchScope("home:popular-songs", "a song")).toBe("home:popular-songs");
+  expect(librarySearchScope("playlist-id", "a song")).toBe("playlist-id");
+  expect(librarySearchScope("home:favorite-artists", "")).toBe("home:favorite-artists");
 });

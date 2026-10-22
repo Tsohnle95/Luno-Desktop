@@ -9,3 +9,7 @@ export function stepPage<T>(history: PageHistory<T>, delta: -1 | 1): PageHistory
   const index = Math.max(0, Math.min(history.entries.length - 1, history.index + delta));
   return index === history.index ? history : { ...history, index };
 }
+
+export function librarySearchScope(scope: string, query: string): string {
+  return query && (scope === "home:favorite-artists" || scope === "home:popular-playlists") ? "all" : scope;
+}

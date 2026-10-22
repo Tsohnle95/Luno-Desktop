@@ -1,5 +1,5 @@
 import { downloadDuplicateGroups, parseAllowedDownloadDuplicates } from "../state/download_duplicates";
-import { captureQueuedDownload, csvDownloadSource, type QueuedDownload } from "../state/download_inputs";
+import { captureQueuedDownload, csvDownloadSource, DownloadLookupGate, requeueDownloadAfterBusy, type QueuedDownload } from "../state/download_inputs";
 import { discoveryResultsReady, requestDiscoveryIntent } from "../state/discovery_intent";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -34,7 +34,7 @@ import { ConfirmDialog, FinalCopyDeleteDialog } from "../components/ConfirmDialo
 import { PlaylistDialog, PlaylistUrlDialog, PlaylistUrlLoadingDialog, PlaylistSyncAuthDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog, type PlaylistSyncCandidateLookup, type PlaylistSyncLogEntry } from "../components/PlaylistDialogs";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
-import { createPageHistory, recordPage, stepPage } from "../state/page_history";
+import { createPageHistory, recordPage, stepPage, librarySearchScope } from "../state/page_history";
 import { IconChevronLeft, IconChevronRight, IconClose, IconHome, IconSearch, IconUser } from "../components/icons";
 
 export const ROUTES = ["library", "recent", "discover", "downloader", "settings", "song_page", "error_log"] as const;
@@ -356,6 +356,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   }, [activePlaylistSync, projection.jobs, bridge]);
   const [downloadSources, setDownloadSources] = useState<SearchResult[]>([]);
   const [downloadSearchLoading, setDownloadSearchLoading] = useState(false);
+  const downloadLookupGate = useRef(new DownloadLookupGate());
+  const downloadQueueCancellationEpoch = useRef(0);
   const [downloadDestination, setDownloadDestination] = useState<string | null>(null);
   const [pendingDownloadDestinations, setPendingDownloadDestinations] = useState<string[]>([]);
   const [stagedDownloads, setStagedDownloads] = useState<QueuedDownload[]>([]);
@@ -857,6 +859,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     const timer = activeDownloadTimersRef.current.get(jobId);
     if (timer !== undefined) window.clearTimeout(timer);
     activeDownloadTimersRef.current.delete(jobId);
+    // Retain metadata for completed jobs in this session's displayed history.
+    if (projectionRef.current.jobs[jobId]) return;
     setActiveDownloadJobs((current) => {
       if (!(jobId in current)) return current;
       const next = { ...current };
@@ -893,6 +897,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       activeDownloadJobsRef.current.add(jobId);
       setActiveDownloadJobs((current) => ({ ...current, [jobId]: downloadDisplayLabel(metadata) ?? next.id }));
       if (reviewTarget) reviewDownloadTargetsRef.current.set(jobId, reviewTarget);
+      const startedEpoch = downloadQueueCancellationEpoch.current;
       const start = bridge.startDownload(jobId, `${next.destination}/${filename}`, downloadHelperPath, next.source.replace(/\r|\n/g, " ").trim());
       const deadline = window.setTimeout(() => {
         activeDownloadTimersRef.current.delete(jobId);
@@ -917,9 +922,10 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         reviewDownloadTargetsRef.current.delete(jobId);
         removeActiveDownload(jobId);
         if (busy) {
-          downloadQueueRef.current.unshift(next);
-          setQueuedDownloadCount(downloadQueueRef.current.length);
-          scheduleDownloadStartRetry();
+          if (requeueDownloadAfterBusy(downloadQueueRef.current, next, startedEpoch, downloadQueueCancellationEpoch.current)) {
+            setQueuedDownloadCount(downloadQueueRef.current.length);
+            scheduleDownloadStartRetry();
+          } else startNextDownload();
           return;
         }
         if (reviewTarget) {
@@ -1577,13 +1583,29 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       setCommandNotice(`Selected the existing “${name}” playlist for downloads.`);
     });
   };
+  const previewDownloadCsv = (read: () => Promise<string>) => {
+    if (!bridge) return;
+    void downloadLookupGate.current.run(async () => {
+      const csv = await read();
+      const result = await bridge.previewCsv(csv);
+      return (result as { rows?: Array<{ id: string; title: string; artist?: string; url?: string }> }).rows ?? [];
+    }, {
+      start: () => { setDownloadSearchLoading(true); setCommandError(null); setDownloadSources([]); setCsvPreview([]); },
+      success: (rows) => {
+        if (rows.length === 0) setCommandError("This CSV contains no songs. Choose an Exportify CSV with Track Name and Artist Name(s) columns.");
+        setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: csvDownloadSource(row) })));
+      },
+      error: (error) => setCommandError(normalizeRuntimeCommandError(error)),
+      finish: () => setDownloadSearchLoading(false),
+    });
+  };
   const downloaderViewEl = <DownloaderView
     error={commandError}
     jobs={projection.jobs}
     syncPlaylists={(projection.library?.playlists ?? []).filter((playlist) => !!playlist.path && !!playlist.url)}
     activeLabels={activeDownloadJobs}
     queuedDownloads={queuedDownloadCount}
-    onCancelWaiting={() => { downloadQueueRef.current = []; setQueuedDownloadCount(0); }}
+    onCancelWaiting={() => { downloadQueueCancellationEpoch.current += 1; downloadQueueRef.current = []; setQueuedDownloadCount(0); }}
     destinations={downloadDestinations}
     defaultDestination={downloadBase ?? undefined}
     destination={downloadDestination ?? downloadBase}
@@ -1611,27 +1633,15 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       if (!bridge) return;
       const trimmed = query.trim();
       if (!trimmed) return;
-      setDownloadSearchLoading(true);
-      setDownloadSources([]);
-      setCsvPreview([]);
-      setCommandError(null);
-      bridge.searchDownloader(trimmed, true, requested ?? 10)
-        .then((value) => setDownloadSources(value))
-        .catch((error) => setCommandError(normalizeRuntimeCommandError(error)))
-        .finally(() => setDownloadSearchLoading(false));
+      void downloadLookupGate.current.run(() => bridge.searchDownloader(trimmed, true, requested ?? 10), {
+        start: () => { setDownloadSearchLoading(true); setDownloadSources([]); setCsvPreview([]); setCommandError(null); },
+        success: setDownloadSources,
+        error: (error) => setCommandError(normalizeRuntimeCommandError(error)),
+        finish: () => setDownloadSearchLoading(false),
+      });
     }}
-    onPreview={(value) => {
-      if (!bridge) return;
-      setDownloadSearchLoading(true);
-      setCommandError(null);
-      setDownloadSources([]);
-      bridge.previewCsv(value).then((result) => {
-        const rows = (result as { rows?: Array<{ id: string; title: string; artist?: string; url?: string }> }).rows ?? [];
-        if (rows.length === 0) setCommandError("This CSV contains no songs. Choose an Exportify CSV with Track Name and Artist Name(s) columns.");
-        setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: csvDownloadSource(row) })));
-      }).catch((error) => setCommandError(normalizeRuntimeCommandError(error)))
-        .finally(() => setDownloadSearchLoading(false));
-    }}
+    onImportCsv={(file) => previewDownloadCsv(() => file.text())}
+    onPreview={(value) => previewDownloadCsv(() => Promise.resolve(value))}
     onDownload={(ids, destination) => {
       if (!destination || !downloadHelperPath) {
         setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured.");
@@ -1724,7 +1734,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
           <button className="luno-home-button" type="button" aria-label="Home" aria-current={route === "library" ? "page" : undefined} title="Home" onClick={() => { navigate("library"); setLibraryHome(true); }}><IconHome size={16} /></button>
           <form className="luno-search" role="search" onSubmit={(event) => event.preventDefault()}>
             <IconSearch size={15} />
-            <input aria-label="Search a song" placeholder="Search a song" autoCorrect="off" spellCheck={false} value={libraryQuery} onFocus={(event) => event.currentTarget.select()} onMouseUp={(event) => { if (libraryQuery) event.currentTarget.select(); }} onChange={(event) => { navigate("library"); setLibraryQuery(event.target.value); if (event.target.value) setLibraryHome(false); }} onKeyDown={(event) => { if (event.key === "Escape") setLibraryQuery(""); }} />
+            <input aria-label="Search a song" placeholder="Search a song" autoCorrect="off" spellCheck={false} value={libraryQuery} onFocus={(event) => event.currentTarget.select()} onMouseUp={(event) => { if (libraryQuery) event.currentTarget.select(); }} onChange={(event) => { const query = event.target.value; navigate("library"); setLibraryScope((scope) => librarySearchScope(scope, query)); setLibraryQuery(query); if (query) setLibraryHome(false); }} onKeyDown={(event) => { if (event.key === "Escape") setLibraryQuery(""); }} />
             {libraryQuery && <button className="luno-icon-button" type="button" aria-label="Clear search" onClick={() => setLibraryQuery("")}><IconClose size={11} /></button>}
           </form>
         </div>

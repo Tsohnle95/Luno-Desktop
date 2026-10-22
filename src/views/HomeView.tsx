@@ -1,4 +1,4 @@
-import { useEffect, useRef, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { Playlist, Track } from "../shared/contracts";
 import { RecommendationArtworkImage } from "../components/RecommendationArtwork";
 import { PlaylistArtwork } from "../components/PlaylistArtwork";
@@ -27,6 +27,7 @@ export interface PopularPlaylist { playlist: Playlist; plays: number }
 /** Inputs for the home-page artwork budget (one list per visible section). */
 export interface HomeArtworkInput {
   favoriteArtistTracks?: Track[];
+  visibleCollectionTrackIds?: string[];
   madeForYou: Track[];
   favorites: Track[];
   recentTracks: Track[];
@@ -48,6 +49,7 @@ export const HOME_ARTWORK_SECTION_CAP = 30;
 export const HOME_ARTWORK_PLAYLIST_CAP = 40;
 export const HOME_ARTWORK_TOTAL_CAP = 180;
 export function homeArtworkIds(input: HomeArtworkInput): string[] {
+  if (input.visibleCollectionTrackIds) return [...new Set(input.visibleCollectionTrackIds.filter(Boolean))];
   const sections: Array<{ ids: string[]; cap: number }> = [
     { ids: input.madeForYou.map((track) => track.id), cap: HOME_ARTWORK_SECTION_CAP },
     { ids: [...(input.favoriteArtistTracks ?? []), ...input.favorites].map((track) => track.id), cap: HOME_ARTWORK_SECTION_CAP },
@@ -121,7 +123,36 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
   const visiblePopularPlaylists = collection === "popular-playlists" ? popularPlaylists : popularPlaylists.slice(0, 10);
   const visibleArtists = collection === "favorite-artists" ? favoriteArtists : favoriteArtists.slice(0, 20);
   const favoriteArtistTracks = visibleArtists.map((artist) => artist.tracks.find((track) => track.favorite) ?? artist.tracks[0]).filter((track): track is Track => !!track);
-  const artworkIds = homeArtworkIds({ madeForYou, favorites, favoriteArtistTracks, recentTracks, popularTracks: visiblePopularTracks, popularPlaylists: visiblePopularPlaylists, recentlyDownloaded });
+  const homeRef = useRef<HTMLDivElement | null>(null);
+  const [visibleCollectionTrackIds, setVisibleCollectionTrackIds] = useState<string[]>([]);
+  const collectionArtworkKey = collection ? JSON.stringify(collection === "favorite-artists"
+    ? favoriteArtistTracks.map((track) => track.id)
+    : visiblePopularPlaylists.map(({ playlist }) => playlist.ordered_track_ids.slice(0, 4))) : "";
+  useEffect(() => {
+    setVisibleCollectionTrackIds([]);
+    const root = homeRef.current;
+    if (!collection || !root) return;
+    const cards = [...root.querySelectorAll<HTMLElement>("[data-artwork-ids]")];
+    const idsFor = (card: HTMLElement): string[] => JSON.parse(card.dataset.artworkIds ?? "[]");
+    if (typeof IntersectionObserver === "undefined") {
+      setVisibleCollectionTrackIds(cards.flatMap(idsFor));
+      return;
+    }
+    // Only mounted cards near the collection viewport hold artwork demand leases.
+    const visible = new Map<Element, string[]>();
+    let cancelled = false;
+    const observer = new IntersectionObserver((entries) => {
+      if (cancelled) return;
+      for (const entry of entries) {
+        if (entry.isIntersecting) visible.set(entry.target, idsFor(entry.target as HTMLElement));
+        else visible.delete(entry.target);
+      }
+      setVisibleCollectionTrackIds([...new Set([...visible.values()].flat())]);
+    }, { root: root.closest(".luno-main-content"), rootMargin: "200px 0px" });
+    cards.forEach((card) => observer.observe(card));
+    return () => { cancelled = true; observer.disconnect(); };
+  }, [collection, collectionArtworkKey]);
+  const artworkIds = homeArtworkIds({ madeForYou, favorites, favoriteArtistTracks, recentTracks, popularTracks: visiblePopularTracks, popularPlaylists: visiblePopularPlaylists, recentlyDownloaded, visibleCollectionTrackIds: collection ? visibleCollectionTrackIds : undefined });
   const artworkState = useTrackArtworkState(artworkIds, onArtwork);
   const artwork = artworkState.artwork;
   const playFrom = (list: Track[]) => (track: Track) => { if (backendAvailable && onPlayTrack) onPlayTrack(track, list); };
@@ -132,7 +163,6 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
   // chaining to the page. Result: scrolling only "worked" over empty gaps.
   // Redirect vertical wheels from inside any strip onto the page scroller;
   // horizontal/shift wheels still scroll the strip natively.
-  const homeRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const root = homeRef.current;
     if (!root) return;
@@ -211,7 +241,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
             const playlistTracks = playlist.ordered_track_ids.slice(0, 4)
               .map((id) => tracksById?.get(id))
               .filter((track): track is Track => !!track);
-            return <button className="luno-card" type="button" key={playlist.id} onClick={() => onOpenPlaylist?.(playlist.id)}>
+            return <button className="luno-card" type="button" key={playlist.id} data-artwork-ids={JSON.stringify(playlistTracks.map((track) => track.id))} onClick={() => onOpenPlaylist?.(playlist.id)}>
               <PlaylistArtwork className="luno-card-artwork" tracks={playlistTracks} artwork={artwork} loadingIds={artworkState.loading} emptyFallback={<RecommendationArtworkImage artworkUrl={null} artist="" title={playlist.name} alt="" size="100%" />} />
               <span className="luno-card-copy"><strong title={playlist.name}>{playlist.name}</strong><small>{plays} {plays === 1 ? "play" : "plays"}</small></span>
             </button>;
@@ -222,7 +252,7 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
       {!collection && sectionHead("Favorite artists", favoriteArtists.length > 0 ? { label: "Show all", onAction: () => onOpenCollection?.("favorite-artists") } : undefined)}
       {favoriteArtists.length === 0 ? <p className="luno-empty-note">Favorite songs to keep their artists here.</p> : <div className="luno-card-row luno-scroll">{visibleArtists.map((artist) => {
         const track = artist.tracks.find((item) => item.favorite) ?? artist.tracks[0];
-        return <button className="luno-card luno-artist-card" type="button" key={artist.name} onClick={() => onOpenArtist?.(artist.name)}>
+        return <button className="luno-card luno-artist-card" type="button" key={artist.name} data-artwork-ids={JSON.stringify([track.id])} onClick={() => onOpenArtist?.(artist.name)}>
           <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} loading={artworkState.loading.has(track.id)} artist={artist.name} title={track.title} alt="" size="100%" />
           <span className="luno-card-copy"><strong>{artist.name}</strong><small>Artist · {artist.tracks.length} {artist.tracks.length === 1 ? "song" : "songs"}</small></span>
         </button>;

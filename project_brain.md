@@ -59,7 +59,10 @@ Python/Android brain is preserved at
 the session state, configured library roots, event publication, playback queue,
 task registry, settings, migration status, download jobs, discovery, preview,
 artwork, and video state. Synchronous work is dispatched through the existing
-blocking-worker boundary so the Tauri/UI thread remains responsive.
+blocking-worker boundary so the Tauri/UI thread remains responsive. Ordinary
+commands retain serial admission; Pause, Resume, volume, and job cancellation
+use an independent shared lifecycle barrier so slow provider lookups cannot
+block those controls. Shutdown takes the exclusive barrier before teardown.
 
 Library scans validate and canonicalize configured roots, scan audio files off
 the UI thread, derive stable media keys from filename metadata, and publish a

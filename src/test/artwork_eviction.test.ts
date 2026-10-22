@@ -155,3 +155,10 @@ it("requests artist representative art even beyond the first thirty favorite son
   expect(ids).toContain("favorite-59");
   expect(ids).toHaveLength(HOME_ARTWORK_SECTION_CAP);
 });
+
+
+it("requests every visible collection cover beyond overview artwork shares", () => {
+  const visibleCollectionTrackIds = Array.from({ length: 64 }, (_, i) => `visible-cover-${i}`);
+  const ids = homeArtworkIds({ madeForYou: manyTracks("unrelated", 50), favorites: [], recentTracks: [], popularTracks: [], popularPlaylists: [], recentlyDownloaded: [], visibleCollectionTrackIds });
+  expect(ids).toEqual(visibleCollectionTrackIds);
+});

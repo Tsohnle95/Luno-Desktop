@@ -108,6 +108,7 @@ describe("Gate 6 downloader view", () => {
     const html = renderToStaticMarkup(<DownloaderView searching={true} />);
     expect(html).toContain("luno-download-spinner");
     expect(html).toContain("Searching YouTube…");
+    expect(html).toMatch(/aria-label="Import CSV" disabled=""/);
     expect(html).not.toContain("30 seconds");
   });
 

@@ -83,7 +83,11 @@ envelope shapes (`docs/modules/contracts.md`).
   each artist opens all their library songs. Show all opens the matching
   collection for Made for you, Favorite songs, Most popular songs, and the
   full popular-playlist/artist grids. Song collections reuse the library
-  table and preserve their ranking until a sort header is selected.
+  table and preserve their ranking until a sort header is selected. Full
+  playlist/artist grids request artwork for cards near the viewport, releasing
+  demand as cards leave it; overview artwork shares do not truncate these
+  collections. The song search leaves card grids for All Music and continues
+  filtering within song-list collections.
   Popular song cards show backend successful-start counts.
   Playlist counts include only starts attributed to that playlist; track
   counts are never summed into every playlist containing a song. The old
