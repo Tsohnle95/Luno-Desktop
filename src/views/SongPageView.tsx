@@ -156,14 +156,14 @@ const songPageStyles = `
 .luno-video-mode-mini .luno-video-mode-mini-knob { position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:999px; background:#fff; transition:left .15s ease; }
 .luno-video-mode-mini.is-on .luno-video-mode-mini-knob { left:19px; }
 .luno-video-fullscreen:disabled { opacity:.45; cursor:default; }
-.luno-song-meta { text-align:center; margin-bottom:40px; }
-.luno-song-meta h1 { margin:0; font-size:clamp(28px,5vw,48px); line-height:1.1; }
-.luno-song-meta p { margin:10px 0 20px; color:var(--luno-text-2); font-size:18px; }
+.luno-song-meta { text-align:center; margin-bottom:24px; }
+.luno-song-meta h1 { margin:0; font-size:clamp(22px,2.6vw,30px); line-height:1.2; overflow-wrap:anywhere; }
+.luno-song-meta p { margin:8px 0 16px; color:var(--luno-text-2); font-size:15px; }
 .luno-song-meta button, .luno-recommendations button { border:0; border-radius:999px; padding:8px 12px; color:var(--luno-text-2); background:var(--luno-bg-3); cursor:pointer; }
 .luno-song-meta button:hover, .luno-recommendations button:hover:not(:disabled) { color:var(--luno-text); background:var(--luno-bg-4); }
 .luno-recommendations { padding:22px 0; border-top:1px solid rgba(255,255,255,.1); }
 .luno-discover-toggle { display:flex; justify-content:center; margin:0 0 16px; }
-.luno-discovery-switch { display:inline-flex; align-items:center; gap:9px; padding:6px 10px !important; border-radius:999px !important; background:var(--luno-bg-3) !important; color:var(--luno-text-2) !important; font-size:12px; font-weight:650; }
+.luno-discovery-switch { display:inline-flex; align-items:center; gap:9px; padding:6px 0 !important; border:0 !important; border-radius:0 !important; background:transparent !important; color:var(--luno-text-2) !important; font-size:12px; font-weight:650; }
 .luno-discovery-switch.is-on { color:var(--luno-accent,#1db954) !important; }
 .luno-discovery-switch:disabled { opacity:.55; cursor:default; }
 .luno-discovery-switch-track { position:relative; width:30px; height:17px; border-radius:999px; background:rgba(255,255,255,.22); transition:background .15s ease; }
