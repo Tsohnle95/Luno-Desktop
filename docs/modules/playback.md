@@ -141,6 +141,11 @@ What it does not own: library snapshots and track identity
   downloaded bytes over the selected video-plus-audio format plan; it stays
   monotonic, remains below 100 while the child/merge is active, and reaches
   100 only after the quick playable artifact is adopted.
+- Pause and Resume are explicit idempotent commands. Transport commits share
+  the playback-owner boundary with heartbeat recovery and audio starts, so a
+  stale watchdog cannot restart output after Pause. Audio-device locking ends
+  before video and OS snapshot publication; repeated pending Pause clicks cannot
+  turn playback back on.
 - Pause never gates staging: videos stage and publish `Ready` while
   paused; resume runs a catch-up pipeline pass when current video is
   unresolved. Dead `Loading` slots (no live worker) restage.

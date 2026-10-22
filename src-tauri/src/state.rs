@@ -905,6 +905,40 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn repeated_pause_requests_never_resume_or_hold_audio_during_publication() {
+        let state = AppState::with_preview_store(
+            PreviewAssetStore::at(unique_home("pause-publication")).unwrap(), 4,
+        );
+        let probe = PlaybackProbe::default();
+        let mut backend = probe.clone();
+        backend.load(Path::new("fixture.wav")).unwrap();
+        backend.play().unwrap();
+        *state.audio.lock().unwrap() = Box::new(backend);
+        *state.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Playing;
+
+        // A slow consumer/publication must not occupy the audio device mutex.
+        let video = state.video_current.lock().unwrap();
+        let worker_state = state.clone();
+        let worker = std::thread::spawn(move || worker_state.pause_track());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while probe.snapshot().4 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!probe.snapshot().4, "pause must reach output before video publication");
+        let audio_available = state.audio.try_lock().is_ok();
+        drop(video);
+        worker.join().unwrap().unwrap();
+        assert!(audio_available, "pause must release audio before waiting for video/OS publication");
+
+        for _ in 0..5 { state.pause_track().unwrap(); }
+        assert!(!probe.snapshot().4, "queued pause clicks must never toggle output back on");
+        assert_eq!(*state.playback_status.lock().unwrap(), crate::contracts::types::PlaybackStatus::Paused);
+        state.resume_track().unwrap();
+        assert!(probe.snapshot().4, "explicit resume still starts output");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn mute_does_not_wait_for_a_busy_audio_backend() {
         let state = AppState::with_preview_store(
             PreviewAssetStore::at(std::env::temp_dir().join(format!("luno-volume-lock-{}", std::process::id()))).unwrap(),
@@ -8942,28 +8976,33 @@ fn promotion_error(error: PromotionError) -> ContractError {
 
     #[cfg(target_os = "macos")]
     fn pause_track(&self) -> Result<Value, ContractError> {
+        // Share the heartbeat/start commit boundary: a watchdog sampled before
+        // this pause must finish first, never restart output after we pause it.
+        let _owner = self.playback_owner_lock();
+        if *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) != crate::contracts::types::PlaybackStatus::Playing {
+            return Ok(Value::Null);
+        }
         let mut backend = self.audio.lock().map_err(|_| ContractError {
             code: ErrorCode::Internal,
             message: "audio backend lock failed".into(),
             retryable: false,
         })?;
-        let was_paused = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) == crate::contracts::types::PlaybackStatus::Paused;
-        if was_paused { backend.play().map_err(Self::playback_error)?; }
-        else { backend.pause().map_err(Self::playback_error)?; }
+        backend.pause().map_err(Self::playback_error)?;
         // Publish the new status IMMEDIATELY: the heartbeat thread samples
         // playback_status + video_current independently, and if it ran between
         // "audio paused" and "status written" it saw (Playing, Paused) — which
         // its resume arm interprets as "audio restarted" — and flipped the
         // freshly-paused video back to Playing (2026-08-24).
-        *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = if was_paused { crate::contracts::types::PlaybackStatus::Playing } else { crate::contracts::types::PlaybackStatus::Paused };
+        *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) = crate::contracts::types::PlaybackStatus::Paused;
         let position = match backend.position() {
             Ok(position) => position,
-            Err(error) => { drop(backend); self.recover_from_backend_error(error); return Ok(Value::Null); }
+            Err(error) => { drop(backend); drop(_owner); self.recover_from_backend_error(error); return Ok(Value::Null); }
         };
         let duration = match backend.duration() {
             Ok(duration) => duration,
-            Err(error) => { drop(backend); self.recover_from_backend_error(error); return Ok(Value::Null); }
+            Err(error) => { drop(backend); drop(_owner); self.recover_from_backend_error(error); return Ok(Value::Null); }
         };
+        drop(backend);
         // Freeze/unfreeze the video in the SAME breath as the audio so the
         // user never sees a lag between pressing pause and the video stopping
         // (waiting for the 400ms heartbeat made the video feel detached).
@@ -8975,13 +9014,8 @@ fn promotion_error(error: PromotionError) -> ContractError {
         {
             let mut video_guard = self.video_current.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(video) = video_guard.as_mut() {
-                if matches!(video.status, crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Ready) && !was_paused {
+                if matches!(video.status, crate::contracts::events::VideoStatus::Playing | crate::contracts::events::VideoStatus::Ready) {
                     video.status = crate::contracts::events::VideoStatus::Paused;
-                    video.position_ms = position.as_millis() as u64;
-                    video_followed = true;
-                } else if matches!(video.status, crate::contracts::events::VideoStatus::Paused) && was_paused {
-                    // This click is a RESUME (the button toggles).
-                    video.status = crate::contracts::events::VideoStatus::Playing;
                     video.position_ms = position.as_millis() as u64;
                     video_followed = true;
                 }
@@ -8990,9 +9024,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         if video_followed {
             self.publish_video_state();
         }
-        if was_paused {
-            if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { clock.resume(0.0); }
-        } else if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             clock.pause(0.0, Some(position));
         }
         let snapshot = self.playback_snapshot(
@@ -9012,6 +9044,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
     /// which restarts from zero. A no-op when nothing is paused.
     #[cfg(target_os = "macos")]
     fn resume_track(&self) -> Result<Value, ContractError> {
+        let _owner = self.playback_owner_lock();
         if *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) != crate::contracts::types::PlaybackStatus::Paused {
             return Ok(Value::Null);
         }
