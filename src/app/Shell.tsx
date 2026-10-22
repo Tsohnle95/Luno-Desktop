@@ -817,6 +817,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [pendingDownloadRows, setPendingDownloadRows] = useState<QueuedDownload[]>([]);
   const [downloadJobItems, setDownloadJobItems] = useState<Record<string, QueuedDownload>>({});
   const [downloadStartErrors, setDownloadStartErrors] = useState<Record<string, string>>({});
+  const [downloadCancelErrors, setDownloadCancelErrors] = useState<Record<string, string>>({});
   const activeDownloadJobsRef = useRef(new Set<string>());
   const cancelledDownloadRequestsRef = useRef(new Set<string>());
   const [cancelledDownloadRequests, setCancelledDownloadRequests] = useState<Set<string>>(new Set());
@@ -857,6 +858,13 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   }, [projection.library]);
   const downloadBase = downloadDestinations[0] ?? null;
 
+  const downloadCancellationError = (jobId: string, error: unknown) => {
+    const status = projectionRef.current.jobs[jobId]?.state;
+    if (["succeeded", "failed", "cancelled"].includes(status ?? "") || /job not found|not_found/i.test(normalizeRuntimeCommandError(error))) return;
+    cancelledDownloadRequestsRef.current.delete(jobId);
+    setCancelledDownloadRequests(new Set(cancelledDownloadRequestsRef.current));
+    setDownloadCancelErrors((errors) => ({ ...errors, [jobId]: "Cancellation could not be confirmed. Try Cancel again." }));
+  };
   const removeActiveDownload = (jobId: string) => {
     activeDownloadJobsRef.current.delete(jobId);
     // Retain metadata for completed jobs in this session's displayed history.
@@ -904,7 +912,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       const start = bridge.startDownload(jobId, `${next.destination}/${filename}`, downloadHelperPath, next.source.replace(/\r|\n/g, " ").trim());
       // A lookup can delay admission. Keep its slot until the command settles;
       // an elapsed timer cannot prove that the backend did not start the job.
-      void awaitDownloadAdmission(start, () => cancelledDownloadRequestsRef.current.has(jobId), () => bridge.cancelJob(jobId)).then(() => setCommandError(null)).catch((error: unknown) => {
+      void awaitDownloadAdmission(start, () => cancelledDownloadRequestsRef.current.has(jobId), () => bridge.cancelJob(jobId), (error) => downloadCancellationError(jobId, error)).then(() => setCommandError(null)).catch((error: unknown) => {
         const message = normalizeRuntimeCommandError(error);
         const busy = isBusyDownloadError(error);
         reviewDownloadTargetsRef.current.delete(jobId);
@@ -1589,7 +1597,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const downloadRows = downloadActivityRows(downloadJobItems, pendingDownloadRows, projection.jobs, { ...projection.jobErrors, ...downloadStartErrors }).map((row) => {
     if (row.jobId && downloadStartErrors[row.jobId]) return { ...row, status: "failed" as const };
     if (row.jobId && cancelledDownloadRequests.has(row.jobId) && !["failed", "succeeded", "cancelled"].includes(row.status)) return { ...row, status: "cancelling" as const };
-    return row;
+    return row.jobId && downloadCancelErrors[row.jobId] && !["succeeded", "failed", "cancelled"].includes(row.status) ? { ...row, error: downloadCancelErrors[row.jobId] } : row;
   });
   const enqueueDownloadItems = (items: QueuedDownload[]) => {
     if (!downloadHelperPath) { setCommandError("Downloads are unavailable until the bundled download helper is configured."); return; }
@@ -1601,6 +1609,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const downloaderViewEl = <DownloaderView
     error={commandError}
     jobs={projection.jobs}
+    jobErrors={projection.jobErrors}
     syncPlaylists={(projection.library?.playlists ?? []).filter((playlist) => !!playlist.path && !!playlist.url)}
     activity={downloadRows}
     onCancelItem={(item) => {
@@ -1610,7 +1619,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       } else if (item.jobId) {
         cancelledDownloadRequestsRef.current.add(item.jobId);
         setCancelledDownloadRequests(new Set(cancelledDownloadRequestsRef.current));
-        runCommand(bridge?.cancelJob(item.jobId));
+        const id = item.jobId;
+        if (projectionRef.current.jobs[id]) void bridge?.cancelJob(id).catch((error) => downloadCancellationError(id, error));
       }
     }}
     onRetryItem={(item) => enqueueDownloadItems([item])}

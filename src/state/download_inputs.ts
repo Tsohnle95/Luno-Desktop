@@ -67,7 +67,9 @@ export function appendDownloadItems<T extends QueuedDownload>(queue: T[], items:
   }
 }
 
-export async function awaitDownloadAdmission(start: Promise<unknown>, cancelled: () => boolean, cancel: () => Promise<unknown>): Promise<void> {
+export async function awaitDownloadAdmission(start: Promise<unknown>, cancelled: () => boolean, cancel: () => Promise<unknown>, onCancellationError: (error: unknown) => void = () => {}): Promise<void> {
   await start;
-  if (cancelled()) await cancel();
+  if (cancelled()) {
+    try { await cancel(); } catch (error) { onCancellationError(error); }
+  }
 }

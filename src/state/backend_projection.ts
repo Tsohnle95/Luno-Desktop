@@ -52,7 +52,8 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
     const previous = state.jobErrorEvents?.[id];
     if (envelope.generation < (state.jobs[id]?.generation ?? -1)
       || (previous && (envelope.generation < previous.generation || compareEventIds(envelope.event_id, previous.eventId) <= 0))) return state;
-    return { ...state, jobErrors: { ...state.jobErrors, [id]: envelope.event.payload.error.message },
+    return { ...state, errors: state.jobs[id]?.kind === "sync" ? [...state.errors, envelope.event.payload.error].slice(-MAX_PROJECTED_ERRORS) : state.errors,
+      jobErrors: { ...state.jobErrors, [id]: envelope.event.payload.error.message },
       jobErrorEvents: { ...state.jobErrorEvents, [id]: { generation: envelope.generation, eventId: envelope.event_id } } };
   }
   const domain = domainOf(envelope.event.type);

@@ -133,3 +133,10 @@ it("shows retried songs at the end of the waiting rows, matching their actual FI
   const rows = downloadActivityRows({ oldFailure: retry }, [next, retry], { oldFailure: { id: "oldFailure", kind: "single", state: "failed", track_id: null, progress: null, generation: 1 } });
   expect(rows.map((row) => [row.id, row.position])).toEqual([["next", 1], ["retry", 2]]);
 });
+
+it("does not mistake a cancellation failure after admission for a failed start", async () => {
+  const cancellationError = new Error("job not found");
+  const errors: unknown[] = [];
+  await expect(awaitDownloadAdmission(Promise.resolve(), () => true, async () => { throw cancellationError; }, (error) => errors.push(error))).resolves.toBeUndefined();
+  expect(errors).toEqual([cancellationError]);
+});

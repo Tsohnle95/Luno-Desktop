@@ -54,8 +54,9 @@ envelope shapes (`docs/modules/contracts.md`).
   selected accent; playlist artwork retains its own colour palette.
 - Downloader rows retain captured requests across searches. Download immediately
   starts or appends to one sequential request FIFO; row status reflects the
-  matching backend job, and pending row positions reflect that FIFO. Job-scoped
-  errors render on their song rather than in the global runtime banner. The
+  matching backend job, and pending row positions reflect that FIFO. Normal
+  download errors render on their song; playlist Sync errors also retain the
+  existing global authentication/review prompts. The
   page has no selection prerequisite, Queue action, or separate progress/log
   disclosure panels.
 - Views render backend snapshots; they must not reimplement queue order,

@@ -604,3 +604,12 @@ it("keeps a download failure on its own song row and clears it on retry", () => 
   store.apply({ ...event({ type: "error", payload: { error: { code: "unavailable", message: "Old failure", retryable: false } } }, 1), event_id: "event-3", job_id: "download-one" });
   expect(store.getSnapshot().jobErrors?.["download-one"]).toBeUndefined();
 });
+
+it("preserves playlist Sync error prompts while also projecting their inline reason", () => {
+  const store = createBackendProjection();
+  store.apply(event({ type: "job_updated", payload: { job: { id: "sync", kind: "sync", state: "failed", track_id: null, progress: null, generation: 1 } } }));
+  const error = { code: "unavailable" as const, message: "YouTube could not access this playlist. Choose a browser.", retryable: true };
+  store.apply({ ...event({ type: "error", payload: { error } }), event_id: "event-2", job_id: "sync" });
+  expect(store.getSnapshot().errors).toEqual([error]);
+  expect(store.getSnapshot().jobErrors?.sync).toBe(error.message);
+});
