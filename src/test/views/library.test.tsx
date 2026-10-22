@@ -18,7 +18,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LibraryView, normalizeFilterText, shuffledFirstTrack, virtualWindow } from "../../views/LibraryView";
 import { LibrarySidebar } from "../../components/LibrarySidebar";
-import { HomeView } from "../../views/HomeView";
+import { HomeView, favoriteArtists } from "../../views/HomeView";
 import { formatAddedDate } from "../../components/TrackRow";
 
 describe("normalizeFilterText", () => {
@@ -201,5 +201,33 @@ describe("LibraryView search integration", () => {
     // filter input under the album art.
     const html = renderToStaticMarkup(<LibraryView snapshot={apostropheSnapshot} query="l'in" />);
     expect(html).not.toContain("<input");
+  });
+});
+
+
+describe("Home collection destinations", () => {
+  it("groups favorite artists case insensitively and includes their nonfavorite songs", () => {
+    const tracks = [
+      { ...track("a", "Favorite", true), artist: " First Artist " },
+      { ...track("b", "Other song"), artist: "first artist" },
+      { ...track("c", "Other artist"), artist: "Another" },
+      { ...track("d", "No artist", true), artist: null },
+    ];
+    const artists = favoriteArtists(tracks);
+    expect(artists.map((item) => item.name)).toEqual(["First Artist"]);
+    expect(artists[0].tracks.map((item) => item.id)).toEqual(["a", "b"]);
+  });
+  it("opens a named collection containing its exact ranked tracks and keeps title sorting available", () => {
+    const ranked = [track("rank1", "Zed"), track("rank2", "Alpha")];
+    const html = renderToStaticMarkup(<LibraryView snapshot={snapshot} selectedScope="home:popular-songs" collection={{ title: "Most popular songs", tracks: ranked }} />);
+    expect(html).toContain('aria-label="Most popular songs tracks"');
+    expect(html.indexOf('<strong title="Zed"')).toBeLessThan(html.indexOf('<strong title="Alpha"'));
+    expect(defaultLibrarySort("home:popular-songs")).toBe("Collection order");
+    expect(sortLibraryTracks(ranked, "A-Z").map((item) => item.id)).toEqual(["rank2", "rank1"]);
+  });
+  it("gives popular tracks and playlists their own Show all actions", () => {
+    const html = renderToStaticMarkup(<HomeView allTracksCount={2} madeForYou={[]} favorites={[]} recentTracks={[]} popularTracks={snapshot.tracks} popularPlaylists={[{ playlist: snapshot.playlists[0], plays: 2 }]} recentlyDownloaded={[]} />);
+    expect(html).toContain('aria-label="Show all Most popular songs"');
+    expect(html).toContain('aria-label="Show all Most popular playlists"');
   });
 });

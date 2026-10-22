@@ -8,10 +8,11 @@ import { PlaylistArtwork } from "../components/PlaylistArtwork";
 
 export const RECENT_DOWNLOADS_SCOPE = "recent-downloads" as const;
 export type LibraryScope = "all" | "unsorted" | "favorites" | typeof RECENT_DOWNLOADS_SCOPE | string;
-export type LibrarySort = "A-Z" | "Z-A" | "Recently added" | "Oldest added" | "Duration" | "Longest duration";
+export type LibrarySort = "Collection order" | "A-Z" | "Z-A" | "Recently added" | "Oldest added" | "Duration" | "Longest duration";
 const EMPTY_DURATION_MAP: Readonly<Record<string, number | null | undefined>> = {};
 
 export function defaultLibrarySort(scope: LibraryScope): LibrarySort {
+  if (scope.startsWith("home:")) return "Collection order";
   return scope === "unsorted" || scope === RECENT_DOWNLOADS_SCOPE ? "Recently added" : "A-Z";
 }
 
@@ -86,6 +87,7 @@ export interface LibraryViewProps {
   error?: string | null;
   selectedScope?: LibraryScope;
   recentlyDownloadedTracks?: Track[];
+  collection?: { title: string; tracks: Track[] };
   onScopeChange?: (scope: LibraryScope) => void;
   /** Search text from the context-aware app search in the top bar. */
   query?: string | null;
@@ -120,6 +122,7 @@ function scopeTracks(snapshot: LibrarySnapshot | null | undefined, scope: Librar
 }
 
 export function sortLibraryTracks(tracks: Track[], sort: LibrarySort, probedDurations: Readonly<Record<string, number | null | undefined>> = {}): Track[] {
+  if (sort === "Collection order") return tracks;
   const durationFor = (track: Track) => Object.prototype.hasOwnProperty.call(probedDurations, track.id)
     ? probedDurations[track.id]
     : track.duration_ms;
@@ -181,7 +184,7 @@ function formatTotal(ms: number) {
  * song rows slide beneath it. The virtualization window therefore subtracts
  * the measured anchor height from the live scroll position.
  */
-export function LibraryView({ snapshot, playback, loading = false, error = null, selectedScope = "all", recentlyDownloadedTracks = [], onScopeChange, query: externalQuery, sort: controlledSort, onSortChange, onPlay, onShuffle, onFavoriteToggle, onScan, onProbeDuration, onContextMenu, onArtwork, onOpenArtwork, backendAvailable = true }: LibraryViewProps) {
+export function LibraryView({ snapshot, playback, loading = false, error = null, selectedScope = "all", recentlyDownloadedTracks = [], collection, onScopeChange, query: externalQuery, sort: controlledSort, onSortChange, onPlay, onShuffle, onFavoriteToggle, onScan, onProbeDuration, onContextMenu, onArtwork, onOpenArtwork, backendAvailable = true }: LibraryViewProps) {
   const query = externalQuery ?? "";
   const [internalSort, setInternalSort] = useState<LibrarySort>(() => defaultLibrarySort(selectedScope));
   const sort = controlledSort ?? internalSort;
@@ -203,8 +206,8 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
   const artworkMenuRef = useRef<HTMLDivElement | null>(null);
   const needle = useMemo(() => normalizeFilterText(query), [query]);
   const filteredTracks = useMemo(() => {
-    return scopeTracks(snapshot, selectedScope, recentlyDownloadedTracks).filter((track) => normalizeFilterText(`${track.title} ${track.artist ?? ""} ${track.album ?? ""}`).includes(needle));
-  }, [snapshot, selectedScope, recentlyDownloadedTracks, needle]);
+    return (collection?.tracks ?? scopeTracks(snapshot, selectedScope, recentlyDownloadedTracks)).filter((track) => normalizeFilterText(`${track.title} ${track.artist ?? ""} ${track.album ?? ""}`).includes(needle));
+  }, [snapshot, selectedScope, recentlyDownloadedTracks, collection, needle]);
   const durationSort = sort === "Duration" || sort === "Longest duration";
   // Apply each known result immediately. Holding an old title sort until every
   // unknown track is probed made the duration header look broken on large lists.
@@ -237,11 +240,11 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
   // active query matches nothing — a zero-match filter previously made the hero
   // read "0 songs" and the empty state claim "No songs in All Music", which
   // looked exactly like the library had been wiped.
-  const scopeSize = useMemo(() => scopeTracks(snapshot, selectedScope, recentlyDownloadedTracks).length, [snapshot, selectedScope, recentlyDownloadedTracks]);
+  const scopeSize = useMemo(() => (collection?.tracks ?? scopeTracks(snapshot, selectedScope, recentlyDownloadedTracks)).length, [snapshot, selectedScope, recentlyDownloadedTracks, collection]);
   const playlists = libraryPlaylists(snapshot);
   const playing = playback?.current_index == null ? null : playback.queue[playback.current_index];
   const isAlbumScope = selectedScope.startsWith(ALBUM_SCOPE_PREFIX);
-  const scopeName = selectedScope === RECENT_DOWNLOADS_SCOPE
+  const scopeName = collection?.title ?? (selectedScope === RECENT_DOWNLOADS_SCOPE
     ? "Recently downloaded"
     : selectedScope === "all"
       ? "All Music"
@@ -251,8 +254,8 @@ export function LibraryView({ snapshot, playback, loading = false, error = null,
           ? "Unsorted"
           : isAlbumScope
             ? selectedScope.slice(ALBUM_SCOPE_PREFIX.length)
-            : playlists.find((item) => item.id === selectedScope || item.name === selectedScope)?.name ?? String(selectedScope);
-  const eyebrow = isAlbumScope ? "Album" : selectedScope === RECENT_DOWNLOADS_SCOPE ? "Collection" : selectedScope === "all" || selectedScope === "unsorted" ? "Library" : "Playlist";
+            : playlists.find((item) => item.id === selectedScope || item.name === selectedScope)?.name ?? String(selectedScope));
+  const eyebrow = collection ? "Collection" : isAlbumScope ? "Album" : selectedScope === RECENT_DOWNLOADS_SCOPE ? "Collection" : selectedScope === "all" || selectedScope === "unsorted" ? "Library" : "Playlist";
   const gradient = scopeGradient(scopeName);
   const canOpenArtworkManager = !!onOpenArtwork && !isAlbumScope && selectedScope !== RECENT_DOWNLOADS_SCOPE && (selectedScope === "all" || selectedScope === "favorites" || selectedScope === "unsorted" || !!snapshot?.playlists.some((playlist) => playlist.id === selectedScope));
 

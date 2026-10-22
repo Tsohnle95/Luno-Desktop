@@ -222,3 +222,36 @@ describe("Discovery queue metadata lifetime", () => {
     expect(refreshed.get(keys[9])?.title).toBe("Recommended 9");
   });
 });
+
+import { createPageHistory, recordPage, stepPage } from "../../state/page_history";
+
+describe("page navigation history", () => {
+  const home = { route: "library", scope: "all", home: true };
+  const playlist = { route: "library", scope: "playlist-1", home: false };
+  const song = { ...playlist, route: "song_page" };
+  it("returns from a song to the exact playlist, then Home, and forwards again", () => {
+    let history = recordPage(recordPage(createPageHistory(home), playlist), song);
+    history = stepPage(history, -1);
+    expect(history.entries[history.index]).toEqual(playlist);
+    history = stepPage(history, -1);
+    expect(history.entries[history.index]).toEqual(home);
+    expect(stepPage(history, -1)).toBe(history);
+    expect(stepPage(history, 1).entries[1]).toEqual(playlist);
+  });
+  it("does not add duplicate pages and drops forward pages on a new destination", () => {
+    const history = recordPage(recordPage(createPageHistory(home), playlist), song);
+    const back = stepPage(history, -1);
+    expect(recordPage(back, { ...playlist })).toBe(back);
+    const branched = recordPage(back, { ...playlist, scope: "favorites" });
+    expect(branched.entries).toEqual([home, playlist, { ...playlist, scope: "favorites" }]);
+    expect(stepPage(branched, 1)).toBe(branched);
+  });
+});
+
+it("offers disabled back/forward at launch and a Favorite artists Home row", () => {
+  const html = renderToStaticMarkup(<Shell backendProjection={favoritesProjection} backendAvailable={false} />);
+  expect(html).toMatch(/aria-label="Go back"[^>]*disabled=""/);
+  expect(html).toMatch(/aria-label="Go forward"[^>]*disabled=""/);
+  expect(html).toContain('aria-label="Favorite artists"');
+  expect(html).toContain('aria-label="Show all Favorite songs"');
+});

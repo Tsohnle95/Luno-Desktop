@@ -54,9 +54,12 @@ envelope shapes (`docs/modules/contracts.md`).
   selected accent; playlist artwork retains its own colour palette.
 - Views render backend snapshots; they must not reimplement queue order,
   scan results, or job state. All mutations go through bridge commands.
-- The shell topbar has no Back/Forward chevrons. Playlist creation is
-  available directly from the Your Library heading; the Playlists/Albums,
-  filter, and list areas keep clear vertical spacing.
+- The shell topbar places Back/Forward chevrons beside the native macOS
+  traffic lights. History restores the route, library scope, Home/collection
+  selection, search text, and Settings section; a new destination discards
+  forward history. Search keystrokes do not create navigation entries.
+  Playlist creation is available directly from the Your Library heading;
+  the Playlists/Albums, filter, and list areas keep clear vertical spacing.
 - The memoized Your Library sidebar owns its filter and category state, so
   opening, closing, or typing in its filter does not rerender route content.
   The filter stays mounted for a short opacity/height transition, and its
@@ -69,11 +72,18 @@ envelope shapes (`docs/modules/contracts.md`).
   are available. The sidebar filter closes and clears when a pointer lands
   outside both the filter and its trigger.
 - The home dashboard orders its sections as Made for you, Recently played,
-  Most popular songs, Favorite songs, Most popular playlists, and Recently
+  Most popular songs, Favorite songs, Most popular playlists, Favorite artists,
+  and Recently
   downloaded. The download section ranks library tracks by their first-added
   timestamp and overlays local successful-download timestamps when available.
   Its Show all action opens the derived Recently downloaded collection in
   Library, also pinned in the sidebar; it does not create a physical playlist.
+  Favorite artists are derived from artists with favorited songs, grouped
+  case-insensitively and ranked by favorite-song count then successful starts;
+  each artist opens all their library songs. Show all opens the matching
+  collection for Made for you, Favorite songs, Most popular songs, and the
+  full popular-playlist/artist grids. Song collections reuse the library
+  table and preserve their ranking until a sort header is selected.
   Popular song cards show backend successful-start counts.
   Playlist counts include only starts attributed to that playlist; track
   counts are never summed into every playlist containing a song. The old
@@ -186,6 +196,9 @@ envelope shapes (`docs/modules/contracts.md`).
 - Video element behavior is CSS-driven; fullscreen toggles must not call
   `window.setFullscreen()` (blacks out WKWebView over the hide
   transition).
+- Discovery intent can stay on while recommendations are empty or loading.
+  Playback retains its physical queue until matching recommendations arrive;
+  toggling intent does not insert a status banner or change transport.
 - The single-song route owns one vertical scroller inside its page host. The
   host clips overflow; only wheel input over a native video uses a
   frame-batched fallback to the page scroller.

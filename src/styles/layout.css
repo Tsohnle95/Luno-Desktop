@@ -682,3 +682,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .luno-hero { padding: 20px 16px 14px; }
   .luno-player { flex: 0 0 var(--luno-player-height); }
 }
+
+/* Leave the macOS traffic lights their native 76 px titlebar region. */
+.luno-page-history { position: absolute; left: 80px; top: 12px; display: flex; gap: 2px; z-index: 21; }
+.luno-page-history .luno-icon-button { background: transparent; width: 26px; height: 26px; }
+.luno-home-collection .luno-card-row { display: grid; grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); overflow: visible; }
+.luno-home-collection .luno-card { width: 100%; min-width: 0; }
+.luno-artist-card .luno-card-artwork { border-radius: 50%; }
