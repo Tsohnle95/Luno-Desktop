@@ -49,7 +49,7 @@ use std::sync::Arc;
 use std::sync::Arc as StdArc;
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
-    Mutex,
+    Mutex, RwLock,
 };
 use std::time::Duration;
 
@@ -901,6 +901,66 @@ mod tests {
             "persisted volume must seed the engine so the first track plays at the saved level, got {stored}"
         );
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn slow_search_does_not_delay_pause_or_job_cancellation() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = unique_home("responsive-search-controls");
+        std::fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        let ytdlp = root.join("yt-dlp");
+        let started = root.join("started");
+        let release = root.join("release");
+        std::fs::write(&helper, "fixture").unwrap();
+        std::fs::write(&ytdlp, format!("#!/bin/sh\ntouch \"{}\"\nwhile [ ! -f \"{}\" ]; do /bin/sleep 0.01; done\nprintf '%s\\n' '{{\"entries\":[]}}'\n", started.display(), release.display())).unwrap();
+        std::fs::set_permissions(&ytdlp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let state = AppState::with_preview_store(PreviewAssetStore::at(root.join("previews")).unwrap(), 4);
+        state.set_bundle_helper(Some(helper));
+        let probe = PlaybackProbe::default();
+        let mut backend = probe.clone();
+        backend.load(Path::new("fixture.wav")).unwrap();
+        backend.play().unwrap();
+        *state.audio.lock().unwrap() = Box::new(backend);
+        *state.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Playing;
+        let (token_tx, token_rx) = std::sync::mpsc::channel();
+        state.submit(state.generation("cancellable-fixture", Generation(1)), move |token| {
+            token_tx.send(token.clone()).unwrap();
+            while !token.is_cancelled() { std::thread::sleep(Duration::from_millis(1)); }
+        }).unwrap();
+        let token = token_rx.recv().unwrap();
+        let search_state = state.clone();
+        let search = std::thread::spawn(move || search_state.dispatch(CommandEnvelope {
+            version: 1, request_id: "slow-search".into(),
+            command: Command::SearchDownloader { query: "https://www.youtube.com/playlist?list=fixture".into(), try_soundcloud: false, limit: 10 },
+        }));
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !started.exists() && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(1)); }
+        let helper_started = started.exists();
+        let control_state = state.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let controls = std::thread::spawn(move || {
+            let pause = control_state.dispatch(CommandEnvelope { version: 1, request_id: "responsive-pause".into(), command: Command::Pause });
+            let cancel = control_state.dispatch(CommandEnvelope { version: 1, request_id: "responsive-cancel".into(), command: Command::CancelJob { job_id: JobId("cancellable-fixture".into()) } });
+            done_tx.send((pause, cancel)).unwrap();
+        });
+        let result = done_rx.recv_timeout(Duration::from_millis(250));
+        // Always release the fixture before assertions, including the failing baseline.
+        std::fs::write(release, "release").unwrap();
+        let _lookup = search.join().unwrap();
+        controls.join().unwrap();
+        assert!(helper_started, "the slow lookup must be in flight before exercising controls");
+        let (pause, cancel) = result.expect("provider lookup must not delay Pause or CancelJob");
+        pause.unwrap(); cancel.unwrap();
+        assert!(!probe.snapshot().4);
+        assert!(token.is_cancelled());
+        state.shutdown_events(crate::contracts::events::ShutdownReason::System, Duration::from_secs(1));
+        for command in [Command::Pause, Command::Resume, Command::CancelJob { job_id: JobId("cancellable-fixture".into()) }] {
+            let error = state.dispatch(CommandEnvelope { version: 1, request_id: "late-control".into(), command }).unwrap_err();
+            assert_eq!(error.code, ErrorCode::ShuttingDown);
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(target_os = "macos")]
@@ -2414,6 +2474,41 @@ esac
             if failed == "recommendation" && error.contains("panicked")));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shutdown_waits_for_an_accepted_responsive_control() {
+        let state = AppState::with_preview_store(PreviewAssetStore::at(unique_home("shutdown-control")).unwrap(), 4);
+        let probe = PlaybackProbe::default();
+        let mut backend = probe.clone();
+        backend.load(Path::new("fixture.wav")).unwrap();
+        backend.play().unwrap();
+        *state.audio.lock().unwrap() = Box::new(backend);
+        *state.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Playing;
+        let owner = state.playback_owner_lock();
+        let pause_state = state.clone();
+        let pause = std::thread::spawn(move || pause_state.dispatch(CommandEnvelope { version: 1, request_id: "accepted-pause".into(), command: Command::Pause }));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let accepted = loop {
+            if state.responsive_admission.try_write().is_err() { break true; }
+            if std::time::Instant::now() >= deadline { break false; }
+            std::thread::yield_now();
+        };
+        let shutdown_state = state.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let shutdown = std::thread::spawn(move || {
+            let report = shutdown_state.shutdown_events(crate::contracts::events::ShutdownReason::System, Duration::from_secs(1));
+            done_tx.send(report).unwrap();
+        });
+        let prematurely_closed = done_rx.recv_timeout(Duration::from_millis(50)).is_ok() || state.is_closing();
+        drop(owner);
+        pause.join().unwrap().unwrap();
+        shutdown.join().unwrap();
+        assert!(accepted, "Pause must have entered its lifetime boundary");
+        assert!(!prematurely_closed, "shutdown must wait for admitted transport before audio teardown");
+        assert!(state.is_closing());
+        assert!(!probe.snapshot().4);
+    }
+
     #[test]
     fn shutdown_admission_barrier_is_active_before_requested_event() {
         let state = AppState::new(1);
@@ -2906,6 +3001,7 @@ pub struct AppState {
     unpublished: Arc<Mutex<BTreeMap<u64, EventEnvelope>>>,
     skipped_publications: Arc<Mutex<BTreeSet<u64>>>,
     admission: Arc<Mutex<()>>,
+    responsive_admission: Arc<RwLock<()>>,
     latest_snapshot: Arc<Mutex<Option<EventEnvelope>>>,
     latest_control: Arc<Mutex<Option<EventEnvelope>>>,
     replayed_events: Arc<Mutex<BTreeSet<String>>>,
@@ -3250,6 +3346,7 @@ impl AppState {
             unpublished: Arc::new(Mutex::new(BTreeMap::new())),
             skipped_publications: Arc::new(Mutex::new(BTreeSet::new())),
             admission: Arc::new(Mutex::new(())),
+            responsive_admission: Arc::new(RwLock::new(())),
             latest_snapshot: Arc::new(Mutex::new(None)),
             latest_control: Arc::new(Mutex::new(None)),
             replayed_events: Arc::new(Mutex::new(BTreeSet::new())),
@@ -6687,7 +6784,13 @@ impl AppState {
         if envelope.request_id.trim().is_empty() {
             return Err(ContractError::invalid("request_id must not be empty"));
         }
-        let admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+        // Provider lookup and serial library mutations may take seconds. These
+        // independent controls use a lifecycle read guard instead of queuing
+        // behind that work; shutdown takes its writer before closing output.
+        let responsive = matches!(&envelope.command,
+            Command::Pause | Command::Resume | Command::SetVolume { .. } | Command::CancelJob { .. });
+        let _responsive_admission = responsive.then(|| self.responsive_admission.read().unwrap_or_else(|e| e.into_inner()));
+        let admission = (!responsive).then(|| self.admission.lock().unwrap_or_else(|e| e.into_inner()));
         if !matches!(&envelope.command, Command::Shutdown { .. }) && self.is_closing() {
             return Err(ContractError {
                 code: ErrorCode::ShuttingDown,
@@ -7100,7 +7203,7 @@ impl AppState {
             Command::VideoFullscreen { fullscreen } => self.video_mutate(|video| video.fullscreen = fullscreen),
             Command::Shutdown { reason } => {
                 let report =
-                    self.shutdown_events_locked(reason, Duration::from_millis(500), &admission);
+                    self.shutdown_events_locked(reason, Duration::from_millis(500), admission.as_ref().expect("shutdown owns serial admission"));
                 if report.failed {
                     Err(ContractError {
                         code: ErrorCode::Internal,
@@ -8984,7 +9087,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         // Share the heartbeat/start commit boundary: a watchdog sampled before
         // this pause must finish first, never restart output after we pause it.
         let _owner = self.playback_owner_lock();
-        if *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) != crate::contracts::types::PlaybackStatus::Playing {
+        if *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) == crate::contracts::types::PlaybackStatus::Paused {
             return Ok(Value::Null);
         }
         let mut backend = self.audio.lock().map_err(|_| ContractError {
@@ -9373,6 +9476,7 @@ fn promotion_error(error: PromotionError) -> ContractError {
         deadline: Duration,
         _admission: &std::sync::MutexGuard<'_, ()>,
     ) -> ShutdownReport {
+        let _responsive_admission = self.responsive_admission.write().unwrap_or_else(|e| e.into_inner());
         let mut stored_result = self.shutdown_result.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(report) = *stored_result {
             return report;

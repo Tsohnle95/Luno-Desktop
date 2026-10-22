@@ -77,6 +77,11 @@ docs), release packaging (`docs/release/desktop.md`).
 - `dispatch` must leave the UI thread: `main.rs` runs it under
   `spawn_blocking`, and panics are caught and sanitized (never leak
   `PoisonError` internals to the UI).
+- Ordinary command dispatch remains serialized for library mutation ordering.
+  Pause, Resume, SetVolume, and CancelJob use a separate shared lifecycle guard
+  so provider lookups cannot delay transport or cancellation. Shutdown takes
+  that guard exclusively before closing task admission and tearing down audio;
+  accepted controls finish first and later controls return `shutting_down`.
 - Events publish over `backend-event`; a 25 ms delivery thread drains
   pending events. Shutdown publishes a terminal shutdown envelope and
   stops delivery.
