@@ -76,6 +76,19 @@ pub fn search_provider(helper: &Path, provider: &str, query: &str, requested_lim
         .collect())
 }
 
+/// URL lookup must enumerate the source itself, never search for its text.
+/// Flat enumeration expands playlists into independent, cancellable download jobs.
+pub fn resolve_download_url(supervisor: &Supervisor, ytdlp: &Path, url: &str) -> Result<Vec<SearchResult>, String> {
+    crate::download::workflows::validate_http_url(url).map_err(|_| "invalid download URL".to_owned())?;
+    let entries = playlist_entries(supervisor, ytdlp, url, None, &CancellationToken::new())?;
+    Ok(entries.into_iter().map(|entry| {
+        let source = entry.url.unwrap_or_default();
+        SearchResult { provider: "youtube".into(), query: source.clone(), title: entry.title,
+            artist: entry.channel, duration: entry.duration_secs.map(format_duration),
+            thumbnail_url: None, url: Some(source) }
+    }).collect())
+}
+
 /// Search YouTube's public results page without launching the large bundled
 /// PyInstaller yt-dlp executable. Starting that binary can take 10–20 seconds
 /// on macOS before it performs any network work; this path normally returns in
@@ -199,6 +212,7 @@ pub struct MediaProbe {
 pub fn probe_media(ytdlp: &Path, url: &str) -> Result<MediaProbe, String> {
     let mut command = Command::new(ytdlp);
     command.args([
+        "--ignore-config",
         "--dump-single-json",
         "--no-warnings",
         "--no-playlist",
@@ -405,6 +419,28 @@ fn format_duration(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn url_lookup_enumerates_entire_playlist_without_turning_url_into_search_text() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = std::env::temp_dir().join(format!("luno-source-resolution-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let executable = folder.join("yt-dlp");
+        std::fs::write(&executable, r#"#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in ytsearch*|scsearch*) exit 9;; esac
+done
+printf '%s\n' '{"id":"first","title":"First song","channel":"Artist"}' '{"id":"second","title":"Second song","channel":"Artist"}'
+"#).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let supervisor = Supervisor::new(crate::process::supervisor::ProcessRegistry::new());
+        let rows = resolve_download_url(&supervisor, &executable, "https://www.youtube.com/playlist?list=PL123").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].url.as_deref(), Some("https://www.youtube.com/watch?v=first"));
+        assert_eq!(rows[1].title, "Second song");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 
     #[test]
     fn playlist_access_errors_direct_users_to_in_place_browser_selection() {

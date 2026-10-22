@@ -10,6 +10,7 @@ export interface BackendProjection {
   playStatistics?: PlayStatisticsSnapshot | null;
   video: VideoState | null;
   jobs: Record<string, DownloadJob>;
+  jobEventIds?: Record<string, string>;
   saved: Record<string, SaveState>;
   errors: ContractError[];
   recentHistory: TrackId[];
@@ -54,6 +55,18 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
     : domain === "jobs" && envelope.event.type === "job_updated" ? envelope.event.payload.job.generation
     : null;
   if (payloadGeneration !== null && payloadGeneration !== envelope.generation) return state;
+  if (envelope.event.type === "job_updated") {
+    const job = envelope.event.payload.job;
+    const previous = state.jobs[job.id];
+    const previousEventId = state.jobEventIds?.[job.id];
+    // A newer concurrent job cannot supersede another job's progress or
+    // cancellation. Retry generations and event ordering belong to each ID.
+    if (previous && job.generation < previous.generation) return state;
+    if (previousEventId !== undefined && compareEventIds(envelope.event_id, previousEventId) <= 0) return state;
+    return { ...state, jobs: { ...state.jobs, [job.id]: job },
+      jobEventIds: { ...state.jobEventIds, [job.id]: envelope.event_id },
+      generations: { ...state.generations, jobs: Math.max(state.generations.jobs, envelope.generation) } };
+  }
   const lastEventId = state.lastEventIds[domain];
   if (lastEventId !== undefined && compareEventIds(envelope.event_id, lastEventId) <= 0) return state;
   // Generation 0 is reserved for shutdown control events. They are lifecycle
@@ -93,7 +106,6 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
       return { ...next, recentHistory };
     }
     case "queue_changed": return next.playback ? { ...next, playback: { ...next.playback, queue: event.payload.queue } } : next;
-    case "job_updated": return { ...next, jobs: { ...next.jobs, [event.payload.job.id]: event.payload.job } };
     case "error": return { ...next, errors: [...next.errors, event.payload.error].slice(-MAX_PROJECTED_ERRORS) };
     case "shutdown": return { ...next, shutdown: event.payload.envelope };
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { backendCommandArgs, createBridge, isValidLibraryResponse, parseMigrationStatus, tauriTransport } from "../app/bridge";
-import { createBackendProjection, mergeVideoSnapshot } from "../state/backend_projection";
+import { createBackendProjection, initialBackendProjection, reduceBackendProjection, mergeVideoSnapshot } from "../state/backend_projection";
 import { currentVideoForTrack, focusedQueueProjection, libraryFavoriteTarget, playbackDisplayTrack, playRecentTrack, recommendationTrackMap, runBridgeCommand, safeVideoSource, stoppedPlaybackCommand, videoCommandsEnabled, videoSurfaceActive } from "../app/Shell";
 import type { Bridge, BridgeTransport } from "../app/bridge";
 import type { Event, EventEnvelope, PlaybackSnapshot } from "../shared/contracts";
@@ -20,6 +20,26 @@ vi.mock("@tauri-apps/api/core", () => ({
 const event = (event: Event, generation = 1): EventEnvelope => ({ version: 1, event_id: `event-${generation}`, generation, job_id: null, session_id: null, event });
 
 describe("typed IPC bridge and projection", () => {
+  it("keeps progress, cancellation and completion independent across simultaneous jobs", () => {
+    const update = (id: string, generation: number, sequence: number, state: "running" | "cancelling" | "cancelled" | "succeeded", progress: number | null) => ({
+      ...event({ type: "job_updated", payload: { job: { id, kind: "single", state, track_id: null, generation, progress } } }, generation), event_id: `event-${sequence}`,
+    });
+    let projection = reduceBackendProjection(initialBackendProjection(), update("first", 1, 1, "running", 0));
+    projection = reduceBackendProjection(projection, update("second", 2, 2, "running", 0));
+    projection = reduceBackendProjection(projection, update("first", 1, 3, "running", 0.5));
+    expect(projection.jobs.first.progress).toBe(0.5);
+    projection = reduceBackendProjection(projection, update("first", 1, 4, "cancelling", null));
+    expect(projection.jobs.first.state).toBe("cancelling");
+    projection = reduceBackendProjection(projection, update("first", 1, 5, "cancelled", null));
+    expect(projection.jobs.first.state).toBe("cancelled");
+    // Interleaved deliveries may arrive out of order across different jobs.
+    projection = reduceBackendProjection(projection, update("second", 2, 4, "succeeded", 1));
+    expect(projection.jobs.second.state).toBe("succeeded");
+    const retried = reduceBackendProjection(projection, update("first", 3, 6, "running", 0));
+    expect(reduceBackendProjection(retried, update("first", 1, 7, "cancelled", null))).toBe(retried);
+    expect(reduceBackendProjection(retried, update("first", 3, 5, "running", 0.8))).toBe(retried);
+  });
+
   it("keeps physical successors visible during a focused recommendation", () => {
     const physical = ["a", "b", "c"].map((id): Track => ({ id, path: null, title: id, artist: "Artist", album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null }));
     const preview: Track = { ...physical[1], id: "rec", title: "Recommendation" };

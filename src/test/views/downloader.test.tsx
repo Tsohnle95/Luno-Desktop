@@ -9,6 +9,22 @@ const snapshot = { version: 1 as const, generation: 1, tracks: [libraryTrack("a"
 const playback = { queue: ["a"], current_index: 0, shuffle: false, repeat: "off" as const, status: "playing" as const, position_ms: 1000, duration_ms: 90_000, generation: 1 };
 
 describe("Gate 6 downloader view", () => {
+  it("places CSV, playlist batches and a removable mixed queue together in Search", () => {
+    const html = renderToStaticMarkup(<DownloaderView
+      queue={["Artist — Song → Favorites", "Other — Song → Unsorted"]}
+      searchResults={[{ id: "one", title: "First song" }, { id: "two", title: "Second song" }]}
+      previewTracks={[{ id: "csv:1", title: "Imported song" }]}
+      queuedDownloads={3}
+    />);
+    expect(html).toContain('aria-label="Import CSV"');
+    expect(html).toContain("Imported songs (1)");
+    expect(html).toContain("Download all results (2)");
+    expect(html).toContain("Add all results to queue");
+    expect(html).toContain("Download queue (2)");
+    expect(html).toContain('aria-label="Remove queued item 1"');
+    expect(html).toContain("Cancel waiting downloads");
+  });
+
   it("renders disclosure buttons with aria-expanded instead of native details", () => {
     const html = renderToStaticMarkup(<DownloaderView />);
     expect(html).not.toContain("<details");
@@ -20,19 +36,22 @@ describe("Gate 6 downloader view", () => {
     expect(html).toContain("Downloaded songs");
   });
 
-  it("renders tablist with seven wired tabs and an explicit panel", () => {
+  it("renders tablist with three consolidated tabs and an explicit panel", () => {
     const html = renderToStaticMarkup(<DownloaderView />);
     expect(html).toContain('role="tablist"');
     expect(html).toContain('role="tabpanel"');
-    expect((html.match(/role="tab"/g) ?? []).length).toBe(7);
+    expect((html.match(/role="tab"/g) ?? []).length).toBe(3);
     expect(html).toContain('aria-controls="download-panel-search"');
+    expect(html).toContain("Import CSV");
+    expect(html).toContain("Download queue");
+    expect(html).not.toContain("URL Queue");
     expect(html).toContain('aria-labelledby="download-tab-search"');
   });
 
   it("keeps only the active tab in the tab order (roving tabindex)", () => {
     const html = renderToStaticMarkup(<DownloaderView />);
     expect((html.match(/id="download-tab-[a-z-]+" tabindex="0"/g) ?? [])).toHaveLength(1);
-    expect((html.match(/id="download-tab-[a-z-]+" tabindex="-1"/g) ?? [])).toHaveLength(6);
+    expect((html.match(/id="download-tab-[a-z-]+" tabindex="-1"/g) ?? [])).toHaveLength(2);
     expect(html).toContain('id="download-tab-search" tabindex="0"');
   });
 

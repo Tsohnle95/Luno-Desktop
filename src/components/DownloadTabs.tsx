@@ -1,8 +1,8 @@
 import type { KeyboardEvent, ReactNode } from "react";
 
-export const DOWNLOAD_TABS = ["search", "yt-csv", "direct-url", "sync", "url-queue", "duplicates", "allowed-dups"] as const;
+export const DOWNLOAD_TABS = ["search", "sync", "duplicates"] as const;
 export type DownloadTab = (typeof DOWNLOAD_TABS)[number];
-const labels: Record<DownloadTab, string> = { search: "Search", "yt-csv": "YT / CSV", "direct-url": "Direct URL", sync: "Sync", "url-queue": "URL Queue", duplicates: "Duplicates", "allowed-dups": "Allowed Dups" };
+const labels: Record<DownloadTab, string> = { search: "Search", sync: "Sync", duplicates: "Duplicates" };
 export interface DownloadTabsProps { active: DownloadTab; onChange: (tab: DownloadTab) => void; children?: ReactNode }
 
 export function DownloadTabs({ active, onChange, children }: DownloadTabsProps) {

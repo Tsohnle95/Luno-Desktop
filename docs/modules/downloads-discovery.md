@@ -41,6 +41,26 @@ What it does not own: library snapshots and promotion targets
 - `src/views/DownloaderView.tsx`, `src/views/DiscoverView.tsx`,
   `src/components/DownloadTabs.tsx`, `src/components/Recommendations.tsx`.
 
+## Downloader presentation
+
+The downloader has Search, Sync, and Duplicates tabs. Search accepts YouTube
+names, video URLs, playlist URLs, and uploaded Exportify CSV files. URL lookup
+enumerates the actual source; playlist results become independent normal jobs.
+CSV rows without downloadable URLs become YouTube metadata queries. Search,
+playlist, and CSV results can be downloaded immediately or captured in one
+mixed queue with their metadata and destination; replacing results does not
+change queued items. Waiting items can be removed before starting, and waiting
+admitted work can be cancelled separately from active jobs.
+
+Download event generations and delivery order are tracked per job ID. A newer
+concurrent job must not suppress another job's progress, cancellation, completion,
+or retry generation.
+
+Duplicates lists repeated artist/title groups in the library. Kept duplicate
+groups are a persistent review list, with JSON import/export and a Review again
+action. Keeping a group hides that review item; it does not authorize replacing
+files or weaken the runtime's collision protection.
+
 ## State ownership
 
 - `AppState` owns download jobs, the process registry, the task registry,
