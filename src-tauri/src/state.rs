@@ -1150,6 +1150,57 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    #[test]
+    fn download_error_messages_classify_causes_without_echoing_diagnostics() {
+        for (diagnostic, expected) in [
+            ("ERROR: Private video: sign in https://video.test/watch?token=secret", "account access"),
+            ("WARNING /Users/person/token | ERROR: Requested format is not available", "audio format"),
+            ("ERROR: HTTP Error 429: Too Many Requests https://secret.test", "HTTP 429"),
+            ("ERROR: /Users/person/file: No space left on device", "disk is full"),
+            ("ERROR: token=super-secret unknown error C:\\Users\\person", "download failed"),
+        ] {
+            let message = sanitize_download_error(diagnostic);
+            assert!(message.contains(expected), "{message}");
+            for private in ["secret", "person", "https://", "C:"] { assert!(!message.contains(private), "{message}"); }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_downloads_publish_actionable_job_scoped_errors_without_private_details() {
+        let root = unique_home("download-failure-reasons");
+        std::fs::create_dir_all(&root).unwrap();
+        for (job_name, body, existing, expected) in [
+            ("helper-denied", "#!/bin/sh\nprintf '%s\\n' 'WARNING: config /Users/private-person/.config/secret' 'ERROR: unable to download video data: HTTP Error 403: Forbidden https://provider.test/media?token=private-secret' >&2\nexit 1\n", false, "HTTP 403"),
+            ("duplicate", "#!/bin/sh\nprintf 'ID3\\003\\000\\000\\000' > \"$1\"\n", true, "already exists"),
+        ] {
+            let state = AppState::with_preview_store(PreviewAssetStore::at(root.join(format!("previews-{job_name}"))).unwrap(), 4);
+            state.set_scan_roots(vec![root.clone()]);
+            let helper = fixture_helper(&root, &format!("{job_name}.sh"), body);
+            let destination = root.join(format!("{job_name}.m4a"));
+            if existing { std::fs::write(&destination, b"ID3original audio").unwrap(); }
+            state.start_download(JobId(job_name.into()), destination.clone(), helper, "https://example.test/video".into()).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            let error = loop {
+                let found = state.events().iter().find_map(|envelope| match &envelope.event {
+                    Event::Error { error } => Some((envelope.job_id.clone(), error.message.clone())),
+                    _ => None,
+                });
+                if let Some(error) = found { break error; }
+                assert!(std::time::Instant::now() < deadline, "download should reach a terminal error");
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert!(error.1.contains(expected), "actionable failure missing: {}", error.1);
+            assert_eq!(error.0, Some(JobId(job_name.into())), "normal download errors must identify their job");
+            for private in ["private-person", "private-secret", "provider.test", root.to_str().unwrap()] {
+                assert!(!error.1.contains(private), "published errors must not expose local paths or signed URLs");
+            }
+            if existing { assert_eq!(std::fs::read(destination).unwrap(), b"ID3original audio"); }
+            state.shutdown(Duration::from_secs(1));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn default_envelope_retry(job_id: &str) -> CommandEnvelope {
         CommandEnvelope { version: 1, request_id: "dl-retry".into(), command: Command::RetryDownload { job_id: JobId(job_id.into()) } }
     }
@@ -7441,7 +7492,12 @@ impl AppState {
         if let Err(error) = start_result {
             coordinator.remove_events_for(&job.0);
             let _ = std::fs::remove_dir_all(&worker_home_cleanup);
-            return Err(ContractError { code: match error { crate::download::coordinator::StartError::Busy => ErrorCode::Busy, crate::download::coordinator::StartError::ShuttingDown => ErrorCode::ShuttingDown, crate::download::coordinator::StartError::InvalidRequest => ErrorCode::InvalidRequest }, message: "download could not start".into(), retryable: matches!(error, crate::download::coordinator::StartError::Busy) });
+            let (code, message, retryable) = match error {
+                crate::download::coordinator::StartError::Busy => (ErrorCode::Busy, "The download queue is busy or this job is already running. Wait for an active download to finish.", true),
+                crate::download::coordinator::StartError::ShuttingDown => (ErrorCode::ShuttingDown, "Luno is shutting down. Reopen the app before downloading.", false),
+                crate::download::coordinator::StartError::InvalidRequest => (ErrorCode::InvalidRequest, "Could not prepare the download. Check that the destination is available and writable.", false),
+            };
+            return Err(ContractError { code, message: message.into(), retryable });
         }
         self.download_requests.lock().unwrap_or_else(|e| e.into_inner()).insert(job.0.clone(), (request_destination, helper.clone(), source.clone()));
         let spec = self.generation(format!("download-{}", job.0), generation);
@@ -7467,7 +7523,11 @@ impl AppState {
                 let mut envelope = state.event(generation, Event::JobUpdated { job: crate::contracts::types::DownloadJob { id: worker_job.clone(), kind: crate::contracts::types::DownloadKind::Single, state: state_value, track_id: None, progress, phase, current_item: None, generation } });
                 envelope.job_id = Some(worker_job.clone());
                 state.publish(envelope);
-                if let Some(error) = error { state.publish(state.event(generation, Event::Error { error })); }
+                if let Some(error) = error {
+                    let mut envelope = state.event(generation, Event::Error { error });
+                    envelope.job_id = Some(worker_job.clone());
+                    state.publish(envelope);
+                }
                 if matches!(event, DownloadEvent::Succeeded { .. } | DownloadEvent::Failed { .. } | DownloadEvent::Cancelled { .. }) {
                     if let Some((key, playlist_id, path)) = state.pending_download_saves.lock().unwrap_or_else(|e| e.into_inner()).remove(&worker_job.0) {
                         state.save_in_flight.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
@@ -9659,6 +9719,42 @@ fn sanitize_track_stem(value: &str) -> String {
 }
 
 fn sanitize_download_error(error: &str) -> String {
-    let first = error.lines().next().unwrap_or("download failed");
-    if first.contains('/') || first.contains('\\') { "download worker failed".into() } else { first.chars().take(160).collect() }
+    // Never echo arbitrary helper stderr: it may contain paths, signed media
+    // URLs, browser diagnostics, or credentials. Classify the complete message
+    // so an earlier warning cannot hide the actual provider failure.
+    let reason = error.to_ascii_lowercase();
+    let message = if reason.contains("already exists") || reason.starts_with("collision(") {
+        "A file already exists at this destination. Choose a different name or destination."
+    } else if reason.contains("http error 403") || reason.contains("http 403") {
+        "YouTube refused the audio download (HTTP 403). Retry later or choose another source video."
+    } else if reason.contains("sign in") || reason.contains("sign-in") || reason.contains("login required") || reason.contains("private video") || reason.contains("age-restricted") || reason.contains("members-only") {
+        "This video requires account access or is restricted. Choose a publicly playable source video."
+    } else if reason.contains("video unavailable") || reason.contains("video is unavailable") || reason.contains("removed") || reason.contains("copyright") || reason.contains("not available in your country") || reason.contains("http error 404") {
+        "This source video is unavailable. Choose another source video."
+    } else if reason.contains("no video results") || reason.contains("no results") || reason.contains("no matching") {
+        "No matching video was found. Try a different artist/title search or a direct video URL."
+    } else if reason.contains("requested format") || reason.contains("no video formats") || reason.contains("only images") {
+        "No downloadable audio format is available for this video. Choose another source video."
+    } else if reason.contains("http error 429") || reason.contains("too many requests") {
+        "The provider is limiting download requests (HTTP 429). Wait a few minutes before retrying."
+    } else if reason.contains("timed out") || reason.contains("timeout") || reason.contains("unable to resolve") || reason.contains("name resolution") || reason.contains("network is unreachable") || reason.contains("connection refused") || reason.contains("connection reset") {
+        "The download could not reach the provider. Check your connection and retry."
+    } else if reason.contains("permission denied") || reason.contains("writable") {
+        "Cannot save downloaded audio: permission denied. Choose a writable destination."
+    } else if reason.contains("no space left") || reason.contains("disk is full") {
+        "Cannot save downloaded audio: disk is full. Free some disk space and retry."
+    } else if reason.contains("ffmpeg") || reason.contains("ffprobe") || reason.contains("postprocess") || reason.contains("conversion failed") {
+        "Audio conversion failed. Retry the download or choose another source video."
+    } else if reason.contains("validated") || reason.contains("invalidoutput") || reason.contains("output is empty") || reason.contains("recognized media") {
+        "Downloaded audio could not be validated. Retry the download or choose another source video."
+    } else if reason.contains("cannot save downloaded audio") || reason.contains("could not record success marker") || reason.contains("unresolved state could not be saved") || reason.contains("retry could not be recorded") {
+        "Cannot save download data. Check that the library is available and writable, then retry."
+    } else if reason.contains("cancelled") {
+        "Download cancelled."
+    } else if reason.contains("helper could not start") || reason.contains("helper exited") || reason.contains("helper wait failed") {
+        "The download helper failed to run. Restart Luno and retry the download."
+    } else {
+        "The download failed. Retry or choose another source video."
+    };
+    message.into()
 }

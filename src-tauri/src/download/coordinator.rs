@@ -197,7 +197,18 @@ fn reap(inner: &mut Inner) {
     }
 }
 
-fn promotion_error(error: PromotionError) -> String { format!("{error:?}") }
+fn promotion_error(error: PromotionError) -> String {
+    match error {
+        PromotionError::Collision(_) => "A file already exists at this destination. Choose a different name or destination.".into(),
+        PromotionError::InvalidOutput(reason) => format!("Downloaded audio could not be validated: {reason}. Retry the download."),
+        PromotionError::Cancelled => "Download cancelled.".into(),
+        PromotionError::Io(error) => match error.kind() {
+            std::io::ErrorKind::PermissionDenied => "Cannot save downloaded audio: permission denied. Choose a writable destination.".into(),
+            std::io::ErrorKind::StorageFull => "Cannot save downloaded audio: disk is full. Free some disk space and retry.".into(),
+            _ => "Cannot save downloaded audio. Check that the destination is available and writable, then retry.".into(),
+        },
+    }
+}
 
 impl DownloadEvent {
     fn job_id(&self) -> &str {

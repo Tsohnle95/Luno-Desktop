@@ -56,6 +56,12 @@ Download event generations and delivery order are tracked per job ID. A newer
 concurrent job must not suppress another job's progress, cancellation, completion,
 or retry generation.
 
+Normal download failures publish an Error envelope carrying the same job ID as
+its terminal JobUpdated event. Typed promotion failures explain destination
+collisions and output validation; provider diagnostics are classified into safe,
+actionable messages using the complete stderr context. Raw helper diagnostics,
+local paths, and signed URLs are never displayed as error text.
+
 Duplicates lists repeated artist/title groups in the library. Kept duplicate
 groups are a persistent review list, with JSON import/export and a Review again
 action. Keeping a group hides that review item; it does not authorize replacing
