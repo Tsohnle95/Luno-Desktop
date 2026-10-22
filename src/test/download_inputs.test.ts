@@ -126,3 +126,10 @@ it("retains an outstanding start and delivers cancellation after a delayed ackno
   expect(calls).toEqual(["cancel"]);
   expect(takeNextDownload(pending, 0)).toBe("next song");
 });
+
+it("shows retried songs at the end of the waiting rows, matching their actual FIFO position", () => {
+  const retry = { id: "retry", source: "retry", destination: "/music", title: "Retry song" };
+  const next = { id: "next", source: "next", destination: "/music", title: "Next song" };
+  const rows = downloadActivityRows({ oldFailure: retry }, [next, retry], { oldFailure: { id: "oldFailure", kind: "single", state: "failed", track_id: null, progress: null, generation: 1 } });
+  expect(rows.map((row) => [row.id, row.position])).toEqual([["next", 1], ["retry", 2]]);
+});

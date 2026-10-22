@@ -856,7 +856,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     });
   }, [projection.library]);
   const downloadBase = downloadDestinations[0] ?? null;
-  const sourceForDownload = (id: string) => csvPreview.find((item) => item.id === id)?.source ?? downloadSources.find((item) => item.query === id || item.url === id)?.url ?? downloadSources.find((item) => item.query === id || item.url === id)?.query ?? id;
+
   const removeActiveDownload = (jobId: string) => {
     activeDownloadJobsRef.current.delete(jobId);
     // Retain metadata for completed jobs in this session's displayed history.

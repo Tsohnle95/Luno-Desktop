@@ -55,7 +55,7 @@ export function downloadActivityRows(requests: Record<string, QueuedDownload>, p
   }
   pending.forEach((item, index) => rows.set(downloadItemKey(item), { ...item, status: "queued", position: index + 1 }));
   const order = (row: DownloadListItem) => ["starting", "running", "cancelling"].includes(row.status) ? 0 : row.status === "queued" ? 1 : 2;
-  return [...rows.values()].sort((a, b) => order(a) - order(b));
+  return [...rows.values()].sort((a, b) => order(a) - order(b) || (a.status === "queued" && b.status === "queued" ? (a.position ?? 0) - (b.position ?? 0) : 0));
 }
 export function appendDownloadItems<T extends QueuedDownload>(queue: T[], items: T[], active: DownloadListItem[]): void {
   const existing = new Set([...queue, ...active.filter((row) => !["failed", "cancelled"].includes(row.status))].map(downloadItemKey));
