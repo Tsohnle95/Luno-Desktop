@@ -1,3 +1,6 @@
+import { downloadDuplicateGroups, parseAllowedDownloadDuplicates } from "../state/download_duplicates";
+import { captureQueuedDownload, csvDownloadSource, type QueuedDownload } from "../state/download_inputs";
+import { discoveryResultsReady, requestDiscoveryIntent } from "../state/discovery_intent";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -5,7 +8,7 @@ import "../styles/tokens.css";
 import "../styles/layout.css";
 import { SettingsView } from "../views/SettingsView";
 import { ErrorLogView } from "../views/ErrorLogView";
-import { HomeView } from "../views/HomeView";
+import { HomeView, favoriteArtists } from "../views/HomeView";
 import { defaultLibrarySort, LibraryView, playlistTracks, RECENT_DOWNLOADS_SCOPE, shuffledFirstTrack, type LibraryScope, type LibrarySort } from "../views/LibraryView";
 import { RecentView } from "../views/RecentView";
 import { SongPageView } from "../views/SongPageView";
@@ -31,7 +34,8 @@ import { ConfirmDialog, FinalCopyDeleteDialog } from "../components/ConfirmDialo
 import { PlaylistDialog, PlaylistUrlDialog, PlaylistUrlLoadingDialog, PlaylistSyncAuthDialog, PlaylistSyncLogDialog, PlaylistSyncErrorsDialog, PlaylistSyncReviewDialog, type PlaylistSyncCandidateLookup, type PlaylistSyncLogEntry } from "../components/PlaylistDialogs";
 import type { VideoStageStatus } from "../components/VideoStage";
 import type { SettingsNavLink } from "../views/SettingsView";
-import { IconClose, IconHome, IconSearch, IconUser } from "../components/icons";
+import { createPageHistory, recordPage, stepPage } from "../state/page_history";
+import { IconChevronLeft, IconChevronRight, IconClose, IconHome, IconSearch, IconUser } from "../components/icons";
 
 export const ROUTES = ["library", "recent", "discover", "downloader", "settings", "song_page", "error_log"] as const;
 export type Route = (typeof ROUTES)[number];
@@ -221,6 +225,35 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   // of the SAME settings surface instead of leaving it — except Home, which
   // always exits back to the home dashboard.
   const [settingsScreen, setSettingsScreen] = useState<SettingsNavLink | null>(null);
+  const page = { route, libraryScope, libraryHome, settingsScreen, libraryQuery };
+  const [pageHistory, setPageHistory] = useState(() => createPageHistory(page));
+  const restoringPage = useRef(false);
+  useEffect(() => {
+    if (restoringPage.current) { restoringPage.current = false; return; }
+    setPageHistory((history) => recordPage(history, page));
+    // Search keystrokes refine the current page rather than adding history entries.
+  }, [route, libraryScope, libraryHome, settingsScreen]);
+  useEffect(() => {
+    setPageHistory((history) => {
+      const current = history.entries[history.index];
+      if (current.libraryQuery === libraryQuery) return history;
+      const entries = [...history.entries];
+      entries[history.index] = { ...current, libraryQuery };
+      return { ...history, entries };
+    });
+  }, [libraryQuery]);
+  const travelPage = (delta: -1 | 1) => {
+    const next = stepPage(pageHistory, delta);
+    if (next === pageHistory) return;
+    restoringPage.current = true;
+    setPageHistory(next);
+    const target = next.entries[next.index];
+    setRoute(target.route);
+    setLibraryScope(target.libraryScope);
+    setLibraryHome(target.libraryHome);
+    setSettingsScreen(target.settingsScreen);
+    setLibraryQuery(target.libraryQuery);
+  };
   const projection = useSyncExternalStore(backendProjection?.subscribe ?? (() => () => {}), backendProjection?.getSnapshot ?? (() => ({ library: null, playback: null } as BackendProjection)), backendProjection?.getSnapshot ?? (() => ({ library: null, playback: null } as BackendProjection)));
   const projectionRef = useRef(projection);
   projectionRef.current = projection;
@@ -325,7 +358,17 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [downloadSearchLoading, setDownloadSearchLoading] = useState(false);
   const [downloadDestination, setDownloadDestination] = useState<string | null>(null);
   const [pendingDownloadDestinations, setPendingDownloadDestinations] = useState<string[]>([]);
-  const [queuedDownloadUrls, setQueuedDownloadUrls] = useState<string[]>([]);
+  const [stagedDownloads, setStagedDownloads] = useState<QueuedDownload[]>([]);
+  const [allowedDownloadDuplicates, setAllowedDownloadDuplicates] = useState<string[]>(() => {
+    try { return parseAllowedDownloadDuplicates(localStorage.getItem("luno.allowed-download-duplicates") ?? "[]"); } catch { return []; }
+  });
+  const saveAllowedDownloadDuplicates = (values: string[]) => {
+    try {
+      localStorage.setItem("luno.allowed-download-duplicates", JSON.stringify(values));
+      setAllowedDownloadDuplicates(values);
+    } catch { setCommandError("Allowed duplicates could not be saved. Try again."); }
+  };
+
   const [discover, setDiscover] = useState<{ items: Recommendation[]; loading: boolean; error: string | null }>({ items: [], loading: false, error: null });
   const [discoverRefresh, setDiscoverRefresh] = useState(0);
   const [csvPreview, setCsvPreview] = useState<Array<{ id: string; title: string; artist?: string; source?: string }>>([]);
@@ -995,7 +1038,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       return;
     }
     if (!discoverRequested || !bridge || !available) return;
-    if (!discoverSeedKey || !discoverOccurrenceKey || songRecs.seedKey !== discoverSeedKey || songRecs.state !== "ready" || songRecs.items.length === 0) return;
+    if (!discoverOccurrenceKey || !discoveryResultsReady(discoverRequested, discoverSeedKey, songRecs)) return;
     const admission = discoverSessionAttempt(discoverSessionSeedKey.current, false, discoverOccurrenceKey);
     discoverSessionSeedKey.current = admission.key;
     if (!admission.start) return;
@@ -1068,24 +1111,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       if (projection.discover?.enabled) runCommand(bridge.discoverDisable());
       return;
     }
-    if (discoveryKeyConfigured === false) {
-      setCommandError("Add a Last.fm API key in Settings to enable discovery mode.");
-      return;
-    }
-    if (track && !track.artist) {
-      setCommandError(`“${track.title}” has no artist info, so there are no recommendations to play yet.`);
-      return;
-    }
-    if (songRecs.state !== "ready" || songRecs.seedKey !== discoverSeedKey) {
-      setCommandNotice("Still finding recommendations for this song…");
-      return;
-    }
-    if (songRecs.items.length === 0) {
-      setCommandError("No recommendations to play yet.");
-      return;
-    }
     discoverSessionSeedKey.current = null;
-    setDiscoverRequested(true);
+    requestDiscoveryIntent(discoveryKeyConfigured === false, { setRequested: setDiscoverRequested, reportError: setCommandError });
   };
   const stopDiscoverMode = () => {
     setDiscoverRequested(false);
@@ -1406,14 +1433,13 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const madeForYouTracks = useMemo(() => madeForYouIds(Object.keys(tracksById), 50).map((id) => tracksById[id]).filter((item): item is Track => !!item), [tracksById]);
   const playCounts = useMemo(() => Object.fromEntries((projection.playStatistics?.tracks ?? []).map(({ track_id, plays }) => [track_id, plays])), [projection.playStatistics]);
   const currentTrackPlayCounts = useMemo(() => Object.fromEntries(Object.keys(tracksById).flatMap((id) => playCounts[id] ? [[id, playCounts[id]] as const] : [])), [playCounts, tracksById]);
-  const popularTracks = useMemo(() => popularTrackIds(currentTrackPlayCounts, 20).map((id) => tracksById[id]).filter((item): item is Track => !!item), [currentTrackPlayCounts, tracksById]);
+  const popularTracks = useMemo(() => popularTrackIds(currentTrackPlayCounts, tracks.length).map((id) => tracksById[id]).filter((item): item is Track => !!item), [currentTrackPlayCounts, tracksById]);
   const playlistPlayCounts = useMemo(() => Object.fromEntries((projection.playStatistics?.playlists ?? []).map(({ playlist_id, plays }) => [playlist_id, plays])), [projection.playStatistics]);
   const popularPlaylists = useMemo(() => (projection.library?.playlists ?? [])
     .filter((playlist) => playlist.name.toLowerCase() !== "unsorted")
     .map((playlist) => ({ playlist, plays: playlistPlayCounts[playlist.id] ?? 0 }))
     .filter((entry) => entry.plays > 0)
-    .sort((a, b) => b.plays - a.plays || a.playlist.name.localeCompare(b.playlist.name))
-    .slice(0, 10), [projection.library, playlistPlayCounts]);
+    .sort((a, b) => b.plays - a.plays || a.playlist.name.localeCompare(b.playlist.name)), [projection.library, playlistPlayCounts]);
   const downloadedTracks = useMemo(() => {
     const addedAtByTrack = new Map<string, number>();
     for (const entry of downloadJournal) {
@@ -1510,12 +1536,24 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     handle.addEventListener("pointercancel", up);
   };
 
+  const artists = useMemo(() => favoriteArtists(tracks, playCounts), [tracks, playCounts]);
+  const openHomeCollection = (collection: string) => {
+    setLibraryScope(collection === "favorites" ? "favorites" : `home:${collection}`);
+    setLibraryHome(false);
+    setLibraryQuery("");
+    navigate("library");
+  };
+  const homeCollection = libraryScope === "home:made-for-you" ? { title: "Made for you", tracks: madeForYouTracks }
+    : libraryScope === "home:popular-songs" ? { title: "Most popular songs", tracks: popularTracks }
+    : libraryScope.startsWith("home:artist:") ? { title: libraryScope.slice("home:artist:".length), tracks: tracks.filter((item) => item.artist?.trim().toLocaleLowerCase() === libraryScope.slice("home:artist:".length).toLocaleLowerCase()) }
+    : undefined;
+  const homeBrowseCollection = libraryScope === "home:popular-playlists" ? "popular-playlists" : libraryScope === "home:favorite-artists" ? "favorite-artists" : undefined;
   const openRecentlyDownloaded = () => {
     setLibraryScope(RECENT_DOWNLOADS_SCOPE);
     setLibraryHome(false);
     navigate("library");
   };
-  const homeViewEl = <HomeView allTracksCount={tracks.length} madeForYou={madeForYouTracks} favorites={tracks.filter((track) => track.favorite)} recentTracks={recentTracks} popularTracks={popularTracks} playCounts={playCounts} popularPlaylists={popularPlaylists} recentlyDownloaded={downloadedTracks} tracksById={tracksByIdForQueue} onPlayTrack={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onTrackContextMenu={openTrackMenu} onOpenLibrary={() => setLibraryHome(false)} onOpenRecent={() => navigate("recent")} onOpenRecentlyDownloaded={openRecentlyDownloaded} onOpenPlaylist={(playlistId) => { setLibraryScope(playlistId); setLibraryHome(false); navigate("library"); }} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} backendAvailable={available} />;
+  const homeViewEl = <HomeView collection={!libraryHome ? homeBrowseCollection : undefined} favoriteArtists={artists} onOpenCollection={openHomeCollection} onOpenArtist={(name) => openHomeCollection(`artist:${name}`)} allTracksCount={tracks.length} madeForYou={madeForYouTracks} favorites={tracks.filter((track) => track.favorite)} recentTracks={recentTracks} popularTracks={popularTracks} playCounts={playCounts} popularPlaylists={popularPlaylists} recentlyDownloaded={downloadedTracks} tracksById={tracksByIdForQueue} onPlayTrack={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onTrackContextMenu={openTrackMenu} onOpenLibrary={() => setLibraryHome(false)} onOpenRecent={() => navigate("recent")} onOpenRecentlyDownloaded={openRecentlyDownloaded} onOpenPlaylist={(playlistId) => { setLibraryScope(playlistId); setLibraryHome(false); navigate("library"); }} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} backendAvailable={available} />;
   const recentViewEl = <RecentView tracks={recentTracks} playback={projection.playback} backendAvailable={available} onPlay={(item, context) => runCommand(bridge?.playWithContext(item.id, context.map((track) => track.id)))} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onContextMenu={openTrackMenu} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} />;
   const discoverViewEl = <DiscoverView seed={discoverSeed} artistMissingTitle={track && !track.artist ? track.title : null} recommendations={discover.items} session={recommendationPreview} saved={projection.saved} playlists={projection.library?.playlists ?? []} loading={discover.loading} error={discover.error} onRefresh={() => setDiscoverRefresh((value) => value + 1)} onTap={(key) => runCommand(projection.discover?.enabled ? bridge?.discoverSelect(key) : bridge?.previewTap(discover.items.slice(0, 50).map((item) => ({ artist: item.artist, title: item.title })), key))} onNext={() => runCommand(projection.discover?.enabled ? bridge?.next() : bridge?.previewNext())} onPrevious={() => runCommand(projection.discover?.enabled ? bridge?.previous() : bridge?.previewPrevious())} onCancel={stopDiscoverMode} onSave={(key, playlistId) => runCommand(bridge?.saveRecommendation(key, playlistId))} />;
   const selectDownloadDestination = (name: string, path?: string) => {
@@ -1545,38 +1583,54 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     syncPlaylists={(projection.library?.playlists ?? []).filter((playlist) => !!playlist.path && !!playlist.url)}
     activeLabels={activeDownloadJobs}
     queuedDownloads={queuedDownloadCount}
+    onCancelWaiting={() => { downloadQueueRef.current = []; setQueuedDownloadCount(0); }}
     destinations={downloadDestinations}
     defaultDestination={downloadBase ?? undefined}
     destination={downloadDestination ?? downloadBase}
     onDestinationChange={setDownloadDestination}
-    queue={queuedDownloadUrls}
+    queue={stagedDownloads.map((item) => `${downloadDisplayLabel(item) ?? item.id} → ${destinationName(item.destination)}`)}
+    onQueueTracks={(ids, destination) => {
+      setStagedDownloads((current) => [...current, ...ids.map((id) => captureQueuedDownload(id, destination, csvPreview.find((row) => row.id === id) ?? downloadSources.find((row) => row.url === id || row.query === id)))]);
+    }}
+    onRemoveQueued={(index) => setStagedDownloads((current) => current.filter((_, at) => at !== index))}
+    onClearQueue={() => setStagedDownloads([])}
     searching={downloadSearchLoading}
     searchResults={downloadSources.map((item) => ({ id: item.url || item.query || item.title, title: item.title, artist: item.artist ?? item.provider, duration: item.duration ?? undefined, thumbnailUrl: item.thumbnail_url ?? undefined, source: item.url || item.query }))}
     previewTracks={csvPreview}
+    duplicateGroups={downloadDuplicateGroups(projection.library?.tracks ?? [], allowedDownloadDuplicates)}
+    allowedDuplicates={allowedDownloadDuplicates}
+    onRestoreDuplicate={(key) => saveAllowedDownloadDuplicates(allowedDownloadDuplicates.filter((item) => item !== key))}
+    onAllowDuplicates={(keys) => saveAllowedDownloadDuplicates([...new Set([...allowedDownloadDuplicates, ...keys])])}
+    onExportAllowed={() => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(allowedDownloadDuplicates, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a"); link.href = url; link.download = "luno-allowed-duplicates.json"; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }}
+    onImportAllowed={(file) => { void file.text().then((text) => saveAllowedDownloadDuplicates(parseAllowedDownloadDuplicates(text))).catch((error) => setCommandError(normalizeRuntimeCommandError(error))); }}
     onSearch={(query, requested) => {
       if (!bridge) return;
       const trimmed = query.trim();
       if (!trimmed) return;
       setDownloadSearchLoading(true);
       setDownloadSources([]);
+      setCsvPreview([]);
       setCommandError(null);
       bridge.searchDownloader(trimmed, true, requested ?? 10)
         .then((value) => setDownloadSources(value))
         .catch((error) => setCommandError(normalizeRuntimeCommandError(error)))
         .finally(() => setDownloadSearchLoading(false));
     }}
-    onPreview={(value, kind) => {
+    onPreview={(value) => {
       if (!bridge) return;
-      if (kind === "csv") bridge.previewCsv(value).then((result) => {
+      setDownloadSearchLoading(true);
+      setCommandError(null);
+      setDownloadSources([]);
+      bridge.previewCsv(value).then((result) => {
         const rows = (result as { rows?: Array<{ id: string; title: string; artist?: string; url?: string }> }).rows ?? [];
-        setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: row.url })));
-      }).catch((error) => setCommandError(normalizeRuntimeCommandError(error)));
-      else if (/^https?:\/\//i.test(value.trim())) bridge.searchDownloader(value.trim(), false, 3)
-        .then((results) => setCsvPreview(results.map((item) => ({ id: item.url ?? item.query, title: item.title, artist: item.artist ?? undefined, source: item.url ?? item.query }))))
-        .catch((error) => setCommandError(normalizeRuntimeCommandError(error)));
-      else bridge.searchDownloader(value, false, 10)
-        .then((results) => setCsvPreview(results.map((item) => ({ id: item.url ?? item.query, title: item.title, artist: item.artist ?? undefined, source: item.url ?? item.query }))))
-        .catch((error) => setCommandError(normalizeRuntimeCommandError(error)));
+        if (rows.length === 0) setCommandError("This CSV contains no songs. Choose an Exportify CSV with Track Name and Artist Name(s) columns.");
+        setCsvPreview(rows.map((row) => ({ id: row.id, title: row.title, artist: row.artist, source: csvDownloadSource(row) })));
+      }).catch((error) => setCommandError(normalizeRuntimeCommandError(error)))
+        .finally(() => setDownloadSearchLoading(false));
     }}
     onDownload={(ids, destination) => {
       if (!destination || !downloadHelperPath) {
@@ -1597,44 +1651,12 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       setQueuedDownloadCount(downloadQueueRef.current.length);
       startNextDownload();
     }}
-    onDirectUrl={(url, destination) => {
-      if (!bridge || !downloadHelperPath) {
-        setCommandError("Downloads are unavailable until the bundled download helper is configured.");
-        return;
-      }
-      bridge.validateDirectUrl(url, destination).then((result) => {
-        const meta = (result ?? {}) as DownloadMetadata;
-        downloadQueueRef.current.push({ id: url, source: url, destination, title: meta.title ?? null, artist: meta.artist ?? null });
-        setQueuedDownloadCount(downloadQueueRef.current.length);
-        startNextDownload();
-      }).catch((error) => setCommandError(normalizeRuntimeCommandError(error)));
-    }}
-    onQueueUrl={(url) => {
-      if (!bridge) return;
-      bridge.queueUrls([url]).then((result) => {
-        const accepted = (result as { accepted?: string[] }).accepted ?? [];
-        if (accepted.length) setQueuedDownloadUrls((current) => [...current, ...accepted]);
-      }).catch((error) => setCommandError(normalizeRuntimeCommandError(error)));
-    }}
-    onDownloadQueue={(destination) => {
-      if (!destination || !downloadHelperPath) {
-        setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured.");
-        return;
-      }
-      const urls = queuedDownloadUrls;
-      setQueuedDownloadUrls([]);
-      if (!bridge) return;
-      if (urls.length) setCommandNotice(`Resolving ${urls.length} URL${urls.length === 1 ? "" : "s"}…`);
-      const resolved = urls.reduce<Promise<void>>((chain, url) => chain.then(() => bridge.validateDirectUrl(url, destination)
-        .then((result) => {
-          const meta = (result ?? {}) as DownloadMetadata;
-          downloadQueueRef.current.push({ id: url, source: url, destination, title: meta.title ?? null, artist: meta.artist ?? null });
-        })
-        .catch(() => { downloadQueueRef.current.push({ id: url, source: url, destination }); })), Promise.resolve());
-      void resolved.then(() => {
-        setQueuedDownloadCount(downloadQueueRef.current.length);
-        startNextDownload();
-      });
+    onDownloadQueue={() => {
+      if (!downloadHelperPath) { setCommandError("Downloads are unavailable until the bundled download helper is configured."); return; }
+      downloadQueueRef.current.push(...stagedDownloads);
+      setStagedDownloads([]);
+      setQueuedDownloadCount(downloadQueueRef.current.length);
+      startNextDownload();
     }}
     onSync={syncPlaylist}
     onCancel={(jobId) => runCommand(bridge?.cancelJob(jobId))}
@@ -1652,7 +1674,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   }} onRefresh={() => setPlaylistSyncReviewSummaryRefresh((current) => current + 1)} />;
  const settingsScreens: Record<SettingsNavLink, ReactNode> = { home: homeViewEl, downloader: downloaderViewEl, sync_review: playlistSyncReviewViewEl, artwork: <ArtworkManager key={`artwork-${artworkScope}`} snapshot={projection.library} initialScope={artworkScope} bridge={available ? bridge : undefined} onArtworkApplied={storeTrackArtwork} /> };
 
-  const content = views[route] ?? (route === "library" ? (libraryHome ? homeViewEl : <LibraryView snapshot={projection.library} loading={!projection.library || projection.library.generation <= 0} playback={projection.playback} backendAvailable={available} selectedScope={libraryScope} recentlyDownloadedTracks={downloadedTracks} query={libraryQuery} sort={librarySorts[libraryScope] ?? defaultLibrarySort(libraryScope)} onSortChange={(next) => setLibrarySorts((current) => ({ ...current, [libraryScope]: next }))} onPlay={(item, context, sourcePlaylistId) => runCommand(sourcePlaylistId ? bridge?.playFromPlaylist(item.id, context.map((track) => track.id), sourcePlaylistId) : bridge?.playWithContext(item.id, context.map((track) => track.id)))} onShuffle={() => runCommand(bridge?.toggleShuffle())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onContextMenu={openTrackMenu} onScan={() => runCommand(bridge?.scanLibrary())} onProbeDuration={(id) => bridge ? bridge.trackDuration(id) : Promise.resolve(null)} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onOpenArtwork={(scope) => { setArtworkScope(scope); setSettingsScreen("artwork"); navigate("settings"); }} />) : route === "recent" ? recentViewEl : route === "discover" ? discoverViewEl : route === "downloader" ? downloaderViewEl : route === "settings" ? <SettingsView lastfmKey="" keychainStatus={discoveryKeyConfigured === null ? "loading" : discoveryKeyConfigured ? "available" : "missing"} onSaveLastfmKey={available ? saveLastfmKey : undefined} musicRoot={musicRoot} autoDiscovery={settings.auto_discovery ?? false} transferManifest={transferManifest} transferDestination={transferDestination} transferResult={transferResult} error={commandError} libraryRootPath={viteEnv?.DEV ? undefined : libraryRootPath ?? undefined} onLibraryRootSubmit={viteEnv?.DEV ? undefined : submitLibraryRoot} onChooseMusicRoot={viteEnv?.DEV ? chooseRoot : undefined} onAutoDiscoveryChange={(value) => saveSettings({ ...settings, auto_discovery: value })} onTransferManifestChange={setTransferManifest} onTransferDestinationChange={setTransferDestination} onTransferPreview={() => runCommand(bridge?.transferPreview(transferManifest, transferDestination).then((result) => setTransferResult(JSON.stringify(result))))} onTransferApply={() => runCommand(bridge?.transferApply(transferManifest, transferDestination, {}).then((result) => setTransferResult(JSON.stringify(result))))} onTransferExport={() => { if (!available) { setCommandError("Transfer export is unavailable until the backend is connected."); return; } runCommand(bridge?.transferExport().then((result) => { const manifest = (result as { manifest?: string }).manifest ?? ""; setTransferManifest(manifest); setTransferResult(manifest ? "Exported manifest is ready for review." : "Export returned no manifest."); })); }} activeScreen={settingsScreen} screen={settingsScreen ? settingsScreens[settingsScreen] : null} onNavigate={(target) => { if (target === "home") { setSettingsScreen(null); navigate("library"); setLibraryHome(true); } else setSettingsScreen(target); }} onScreenClosed={() => setSettingsScreen(null)} /> : route === "error_log" ? errorLogViewEl : route === "song_page" ? <SongPageView track={seedTrack} nowPlaying={displayTrack} backendAvailable={available} recommendations={songRecs.items} recommendationState={songRecs.state} recommendationError={songRecs.error} discoverMode={discoverRequested || !!projection.discover?.enabled} onToggleDiscoverMode={toggleDiscoverMode} onRetryRecommendations={() => setSongRecRefresh((value) => value + 1)} onPreviewRecommendation={(item) => { const key = previewKey(item.artist, item.title); runCommand(projection.discover?.enabled ? bridge?.discoverSelect(key) : bridge?.previewTap(songRecs.items.slice(0, 50).map((entry) => ({ artist: entry.artist, title: entry.title })), key)); }} onSaveRecommendation={(item, playlistId) => {
+  const content = views[route] ?? (route === "library" ? (libraryHome || homeBrowseCollection ? homeViewEl : <LibraryView collection={homeCollection} snapshot={projection.library} loading={!projection.library || projection.library.generation <= 0} playback={projection.playback} backendAvailable={available} selectedScope={libraryScope} recentlyDownloadedTracks={downloadedTracks} query={libraryQuery} sort={librarySorts[libraryScope] ?? defaultLibrarySort(libraryScope)} onSortChange={(next) => setLibrarySorts((current) => ({ ...current, [libraryScope]: next }))} onPlay={(item, context, sourcePlaylistId) => runCommand(sourcePlaylistId ? bridge?.playFromPlaylist(item.id, context.map((track) => track.id), sourcePlaylistId) : bridge?.playWithContext(item.id, context.map((track) => track.id)))} onShuffle={() => runCommand(bridge?.toggleShuffle())} onFavoriteToggle={(item) => runCommand(bridge?.toggleFavorite(item.id))} onContextMenu={openTrackMenu} onScan={() => runCommand(bridge?.scanLibrary())} onProbeDuration={(id) => bridge ? bridge.trackDuration(id) : Promise.resolve(null)} onArtwork={(id) => (bridge ? bridge.trackArtwork(id) : Promise.resolve(null))} onOpenArtwork={(scope) => { setArtworkScope(scope); setSettingsScreen("artwork"); navigate("settings"); }} />) : route === "recent" ? recentViewEl : route === "discover" ? discoverViewEl : route === "downloader" ? downloaderViewEl : route === "settings" ? <SettingsView lastfmKey="" keychainStatus={discoveryKeyConfigured === null ? "loading" : discoveryKeyConfigured ? "available" : "missing"} onSaveLastfmKey={available ? saveLastfmKey : undefined} musicRoot={musicRoot} autoDiscovery={settings.auto_discovery ?? false} transferManifest={transferManifest} transferDestination={transferDestination} transferResult={transferResult} error={commandError} libraryRootPath={viteEnv?.DEV ? undefined : libraryRootPath ?? undefined} onLibraryRootSubmit={viteEnv?.DEV ? undefined : submitLibraryRoot} onChooseMusicRoot={viteEnv?.DEV ? chooseRoot : undefined} onAutoDiscoveryChange={(value) => saveSettings({ ...settings, auto_discovery: value })} onTransferManifestChange={setTransferManifest} onTransferDestinationChange={setTransferDestination} onTransferPreview={() => runCommand(bridge?.transferPreview(transferManifest, transferDestination).then((result) => setTransferResult(JSON.stringify(result))))} onTransferApply={() => runCommand(bridge?.transferApply(transferManifest, transferDestination, {}).then((result) => setTransferResult(JSON.stringify(result))))} onTransferExport={() => { if (!available) { setCommandError("Transfer export is unavailable until the backend is connected."); return; } runCommand(bridge?.transferExport().then((result) => { const manifest = (result as { manifest?: string }).manifest ?? ""; setTransferManifest(manifest); setTransferResult(manifest ? "Exported manifest is ready for review." : "Export returned no manifest."); })); }} activeScreen={settingsScreen} screen={settingsScreen ? settingsScreens[settingsScreen] : null} onNavigate={(target) => { if (target === "home") { setSettingsScreen(null); navigate("library"); setLibraryHome(true); } else setSettingsScreen(target); }} onScreenClosed={() => setSettingsScreen(null)} /> : route === "error_log" ? errorLogViewEl : route === "song_page" ? <SongPageView track={seedTrack} nowPlaying={displayTrack} backendAvailable={available} recommendations={songRecs.items} recommendationState={songRecs.state} recommendationError={songRecs.error} discoverMode={discoverRequested || !!projection.discover?.enabled} onToggleDiscoverMode={toggleDiscoverMode} onRetryRecommendations={() => setSongRecRefresh((value) => value + 1)} onPreviewRecommendation={(item) => { const key = previewKey(item.artist, item.title); runCommand(projection.discover?.enabled ? bridge?.discoverSelect(key) : bridge?.previewTap(songRecs.items.slice(0, 50).map((entry) => ({ artist: entry.artist, title: entry.title })), key)); }} onSaveRecommendation={(item, playlistId) => {
                       if (playlistId) {
                         runCommand(bridge?.saveRecommendation(previewKey(item.artist, item.title), playlistId));
                         return;
@@ -1692,6 +1714,10 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
 
   return <div ref={shellRef} className={`luno-shell${queueOpen ? "" : " no-queue"}${sidebarCollapsed ? " no-sidebar" : ""}${focusMode ? " focus-mode" : ""}${videoFullscreenClass(videoFullscreen)}`} style={{ gridTemplateColumns: `${showSidebar ? sidebarWidth : 0}px minmax(0, 1fr) ${showQueue ? queueWidth : 0}px` }} data-route={route} data-backend-state={available ? "available" : "unavailable"} data-video-state={connectedVideo ? "connected" : "unconnected"} data-video-fullscreen={videoFullscreen ? "true" : "false"} data-migration-state={migrationStatus?.status ?? "unknown"}>
     <header className="luno-topbar" data-tauri-drag-region onPointerDown={startWindowDrag}>
+      <nav className="luno-page-history" aria-label="Page history">
+        <button className="luno-icon-button" type="button" aria-label="Go back" title="Go back" disabled={pageHistory.index === 0} onClick={() => travelPage(-1)}><IconChevronLeft size={18} /></button>
+        <button className="luno-icon-button" type="button" aria-label="Go forward" title="Go forward" disabled={pageHistory.index === pageHistory.entries.length - 1} onClick={() => travelPage(1)}><IconChevronRight size={18} /></button>
+      </nav>
 
       {route !== "settings" && <nav className="luno-top-nav" aria-label="Primary navigation">
         <div className="luno-top-center">
