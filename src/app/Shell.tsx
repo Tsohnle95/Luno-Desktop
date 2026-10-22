@@ -1,5 +1,5 @@
 import { downloadDuplicateGroups, parseAllowedDownloadDuplicates } from "../state/download_duplicates";
-import { captureQueuedDownload, csvDownloadSource, DownloadLookupGate, requeueDownloadAfterBusy, type QueuedDownload } from "../state/download_inputs";
+import { captureQueuedDownload, csvDownloadSource, DownloadLookupGate, requeueDownloadAfterBusy, takeNextDownload, downloadActivityRows, downloadItemKey, appendDownloadItems, awaitDownloadAdmission, type QueuedDownload } from "../state/download_inputs";
 import { discoveryResultsReady, requestDiscoveryIntent } from "../state/discovery_intent";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -42,7 +42,6 @@ export type Route = (typeof ROUTES)[number];
 export const routeLabels: Record<Route, string> = {
   library: "Home", recent: "Recent", discover: "Discover", downloader: "Downloader", settings: "Settings", song_page: "Song", error_log: "Error Log",
 };
-const MAX_PARALLEL_DOWNLOADS = 3;
 
 export interface ShellProps { views?: Partial<Record<Route, ReactNode>>; queue?: ReactNode; player?: ReactNode; bridge?: Bridge; backendProjection?: { getSnapshot: () => BackendProjection; subscribe: (listener: () => void) => () => void; applyVideoSnapshot?: (video: import("../shared/contracts").VideoState) => void; clearErrors?: () => void }; backendAvailable?: boolean; videoConnected?: boolean; }
 
@@ -360,7 +359,6 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const downloadQueueCancellationEpoch = useRef(0);
   const [downloadDestination, setDownloadDestination] = useState<string | null>(null);
   const [pendingDownloadDestinations, setPendingDownloadDestinations] = useState<string[]>([]);
-  const [stagedDownloads, setStagedDownloads] = useState<QueuedDownload[]>([]);
   const [allowedDownloadDuplicates, setAllowedDownloadDuplicates] = useState<string[]>(() => {
     try { return parseAllowedDownloadDuplicates(localStorage.getItem("luno.allowed-download-duplicates") ?? "[]"); } catch { return []; }
   });
@@ -733,7 +731,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         artist: candidate.channel ?? issue.channel,
         playlistReviewTarget: { playlist, videoId, title: issue.title },
       });
-      setQueuedDownloadCount(downloadQueueRef.current.length);
+      refreshDownloadQueue();
       startNextDownload();
     }).catch((error: unknown) => {
       setPlaylistSyncReview((current) => current?.playlist.id === playlist.id ? { ...current, selectingVideoId: null, error: normalizeRuntimeCommandError(error) } : current);
@@ -816,13 +814,18 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     }));
   };
   const [activeDownloadJobs, setActiveDownloadJobs] = useState<Record<string, string>>({});
-  const [queuedDownloadCount, setQueuedDownloadCount] = useState(0);
+  const [pendingDownloadRows, setPendingDownloadRows] = useState<QueuedDownload[]>([]);
+  const [downloadJobItems, setDownloadJobItems] = useState<Record<string, QueuedDownload>>({});
+  const [downloadStartErrors, setDownloadStartErrors] = useState<Record<string, string>>({});
   const activeDownloadJobsRef = useRef(new Set<string>());
-  const activeDownloadTimersRef = useRef(new Map<string, number>());
+  const cancelledDownloadRequestsRef = useRef(new Set<string>());
+  const [cancelledDownloadRequests, setCancelledDownloadRequests] = useState<Set<string>>(new Set());
+  const downloadJobItemsRef = useRef<Record<string, QueuedDownload>>({});
   const downloadStartRetryTimerRef = useRef<number | null>(null);
   const downloadSequenceRef = useRef(0);
   const reviewDownloadTargetsRef = useRef(new Map<string, { playlist: Playlist; videoId: string; title: string }>());
   const downloadQueueRef = useRef<Array<{ id: string; source: string; destination: string; playlistReviewTarget?: { playlist: Playlist; videoId: string; title: string } } & DownloadMetadata>>([]);
+  const refreshDownloadQueue = () => setPendingDownloadRows([...downloadQueueRef.current]);
   const downloadHelperPath = fixtureHelper ?? bundleHelperPath;
   // Snapshot paths come from the backend's library scan. Keep those paths as
   // authoritative: the frontend root can retain a symlink spelling while the
@@ -856,9 +859,6 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const sourceForDownload = (id: string) => csvPreview.find((item) => item.id === id)?.source ?? downloadSources.find((item) => item.query === id || item.url === id)?.url ?? downloadSources.find((item) => item.query === id || item.url === id)?.query ?? id;
   const removeActiveDownload = (jobId: string) => {
     activeDownloadJobsRef.current.delete(jobId);
-    const timer = activeDownloadTimersRef.current.get(jobId);
-    if (timer !== undefined) window.clearTimeout(timer);
-    activeDownloadTimersRef.current.delete(jobId);
     // Retain metadata for completed jobs in this session's displayed history.
     if (projectionRef.current.jobs[jobId]) return;
     setActiveDownloadJobs((current) => {
@@ -877,9 +877,10 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   };
   const startNextDownload = () => {
     if (!bridge) return;
-    while (activeDownloadJobsRef.current.size < MAX_PARALLEL_DOWNLOADS && downloadQueueRef.current.length > 0) {
-      const next = downloadQueueRef.current.shift()!;
-      setQueuedDownloadCount(downloadQueueRef.current.length);
+    while (downloadQueueRef.current.length > 0) {
+      const next = takeNextDownload(downloadQueueRef.current, activeDownloadJobsRef.current.size);
+      if (!next) break;
+      refreshDownloadQueue();
       const reviewTarget = next.playlistReviewTarget;
       if (!next.destination || !downloadHelperPath) {
         setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured.");
@@ -895,35 +896,24 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       // replace the visible result list while this item waits for a slot.
       const filename = downloadFilename(metadata, extension, jobId);
       activeDownloadJobsRef.current.add(jobId);
+      downloadJobItemsRef.current[jobId] = next;
+      setDownloadJobItems({ ...downloadJobItemsRef.current });
       setActiveDownloadJobs((current) => ({ ...current, [jobId]: downloadDisplayLabel(metadata) ?? next.id }));
       if (reviewTarget) reviewDownloadTargetsRef.current.set(jobId, reviewTarget);
       const startedEpoch = downloadQueueCancellationEpoch.current;
       const start = bridge.startDownload(jobId, `${next.destination}/${filename}`, downloadHelperPath, next.source.replace(/\r|\n/g, " ").trim());
-      const deadline = window.setTimeout(() => {
-        activeDownloadTimersRef.current.delete(jobId);
-        if (!activeDownloadJobsRef.current.has(jobId) || projectionRef.current.jobs[jobId]) return;
-        const target = reviewDownloadTargetsRef.current.get(jobId);
-        if (target) {
-          reviewDownloadTargetsRef.current.delete(jobId);
-          setPlaylistSyncReviewDownloadingVideoId(null);
-          setPlaylistSyncReview((current) => current?.playlist.id === target.playlist.id
-            ? { ...current, error: "The candidate download did not start. Check the app status message and try again." }
-            : current);
-          setCommandNotice(null);
-        }
-        removeActiveDownload(jobId);
-        setCommandError("The download did not start. Check the download helper and try again.");
-        startNextDownload();
-      }, 15000);
-      activeDownloadTimersRef.current.set(jobId, deadline);
-      void start.then(() => setCommandError(null)).catch((error: unknown) => {
+      // A lookup can delay admission. Keep its slot until the command settles;
+      // an elapsed timer cannot prove that the backend did not start the job.
+      void awaitDownloadAdmission(start, () => cancelledDownloadRequestsRef.current.has(jobId), () => bridge.cancelJob(jobId)).then(() => setCommandError(null)).catch((error: unknown) => {
         const message = normalizeRuntimeCommandError(error);
         const busy = isBusyDownloadError(error);
         reviewDownloadTargetsRef.current.delete(jobId);
         removeActiveDownload(jobId);
         if (busy) {
-          if (requeueDownloadAfterBusy(downloadQueueRef.current, next, startedEpoch, downloadQueueCancellationEpoch.current)) {
-            setQueuedDownloadCount(downloadQueueRef.current.length);
+          delete downloadJobItemsRef.current[jobId];
+          setDownloadJobItems({ ...downloadJobItemsRef.current });
+          if (!cancelledDownloadRequestsRef.current.has(jobId) && requeueDownloadAfterBusy(downloadQueueRef.current, next, startedEpoch, downloadQueueCancellationEpoch.current)) {
+            refreshDownloadQueue();
             scheduleDownloadStartRetry();
           } else startNextDownload();
           return;
@@ -934,7 +924,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
             ? { ...current, error: message }
             : current);
         }
-        setCommandError(message);
+        setDownloadStartErrors((errors) => ({ ...errors, [jobId]: message }));
         startNextDownload();
       });
     }
@@ -943,9 +933,6 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     for (const jobId of activeDownloadJobsRef.current) {
       const job = projection.jobs[jobId];
       if (!job) continue;
-      const timer = activeDownloadTimersRef.current.get(jobId);
-      if (timer !== undefined) window.clearTimeout(timer);
-      activeDownloadTimersRef.current.delete(jobId);
       if (!["succeeded", "failed", "cancelled"].includes(job.state)) continue;
 
       const reviewTarget = reviewDownloadTargetsRef.current.get(jobId);
@@ -1599,23 +1586,38 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
       finish: () => setDownloadSearchLoading(false),
     });
   };
+  const downloadRows = downloadActivityRows(downloadJobItems, pendingDownloadRows, projection.jobs, { ...projection.jobErrors, ...downloadStartErrors }).map((row) => {
+    if (row.jobId && downloadStartErrors[row.jobId]) return { ...row, status: "failed" as const };
+    if (row.jobId && cancelledDownloadRequests.has(row.jobId) && !["failed", "succeeded", "cancelled"].includes(row.status)) return { ...row, status: "cancelling" as const };
+    return row;
+  });
+  const enqueueDownloadItems = (items: QueuedDownload[]) => {
+    if (!downloadHelperPath) { setCommandError("Downloads are unavailable until the bundled download helper is configured."); return; }
+    const currentRows = downloadActivityRows(downloadJobItemsRef.current, downloadQueueRef.current, projectionRef.current.jobs).filter((row) => !row.jobId || !downloadStartErrors[row.jobId]);
+    appendDownloadItems(downloadQueueRef.current, items, currentRows);
+    refreshDownloadQueue();
+    startNextDownload();
+  };
   const downloaderViewEl = <DownloaderView
     error={commandError}
     jobs={projection.jobs}
     syncPlaylists={(projection.library?.playlists ?? []).filter((playlist) => !!playlist.path && !!playlist.url)}
-    activeLabels={activeDownloadJobs}
-    queuedDownloads={queuedDownloadCount}
-    onCancelWaiting={() => { downloadQueueCancellationEpoch.current += 1; downloadQueueRef.current = []; setQueuedDownloadCount(0); }}
+    activity={downloadRows}
+    onCancelItem={(item) => {
+      if (item.status === "queued") {
+        downloadQueueRef.current = downloadQueueRef.current.filter((entry) => downloadItemKey(entry) !== downloadItemKey(item));
+        refreshDownloadQueue();
+      } else if (item.jobId) {
+        cancelledDownloadRequestsRef.current.add(item.jobId);
+        setCancelledDownloadRequests(new Set(cancelledDownloadRequestsRef.current));
+        runCommand(bridge?.cancelJob(item.jobId));
+      }
+    }}
+    onRetryItem={(item) => enqueueDownloadItems([item])}
     destinations={downloadDestinations}
     defaultDestination={downloadBase ?? undefined}
     destination={downloadDestination ?? downloadBase}
     onDestinationChange={setDownloadDestination}
-    queue={stagedDownloads.map((item) => `${downloadDisplayLabel(item) ?? item.id} → ${destinationName(item.destination)}`)}
-    onQueueTracks={(ids, destination) => {
-      setStagedDownloads((current) => [...current, ...ids.map((id) => captureQueuedDownload(id, destination, csvPreview.find((row) => row.id === id) ?? downloadSources.find((row) => row.url === id || row.query === id)))]);
-    }}
-    onRemoveQueued={(index) => setStagedDownloads((current) => current.filter((_, at) => at !== index))}
-    onClearQueue={() => setStagedDownloads([])}
     searching={downloadSearchLoading}
     searchResults={downloadSources.map((item) => ({ id: item.url || item.query || item.title, title: item.title, artist: item.artist ?? item.provider, duration: item.duration ?? undefined, thumbnailUrl: item.thumbnail_url ?? undefined, source: item.url || item.query }))}
     previewTracks={csvPreview}
@@ -1643,37 +1645,12 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     onImportCsv={(file) => previewDownloadCsv(() => file.text())}
     onPreview={(value) => previewDownloadCsv(() => Promise.resolve(value))}
     onDownload={(ids, destination) => {
-      if (!destination || !downloadHelperPath) {
-        setCommandError("Downloads are unavailable until a library folder and the bundled download helper are configured.");
-        return;
-      }
-      for (const id of ids) {
-        const row = csvPreview.find((item) => item.id === id || item.source === id)
-          ?? downloadSources.find((item) => item.query === id || item.url === id);
-        downloadQueueRef.current.push({
-          id,
-          source: sourceForDownload(id).replace(/\r|\n/g, " ").trim(),
-          destination,
-          title: row?.title ?? null,
-          artist: row?.artist ?? null,
-        });
-      }
-      setQueuedDownloadCount(downloadQueueRef.current.length);
-      startNextDownload();
-    }}
-    onDownloadQueue={() => {
-      if (!downloadHelperPath) { setCommandError("Downloads are unavailable until the bundled download helper is configured."); return; }
-      downloadQueueRef.current.push(...stagedDownloads);
-      setStagedDownloads([]);
-      setQueuedDownloadCount(downloadQueueRef.current.length);
-      startNextDownload();
+      if (!destination) { setCommandError("Choose a destination playlist first."); return; }
+      enqueueDownloadItems(ids.map((id) => captureQueuedDownload(id, destination,
+        csvPreview.find((row) => row.id === id) ?? downloadSources.find((row) => row.url === id || row.query === id))));
     }}
     onSync={syncPlaylist}
     onCancel={(jobId) => runCommand(bridge?.cancelJob(jobId))}
-    onRetry={(jobId) => {
-      if (!downloadHelperPath) { setCommandError("Download retry is unavailable until the download helper is configured."); return; }
-      runCommand(bridge?.retryDownload(jobId));
-    }}
     onCreateDestination={createDownloadDestination}
   />;
   const errorLogViewEl = <ErrorLogView />;

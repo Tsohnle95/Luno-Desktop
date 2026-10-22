@@ -68,6 +68,10 @@ docs), release packaging (`docs/release/desktop.md`).
 - The optional `SettingsInput.youtube_cookies_browser` field is allowlisted
   on both sides. `"none"` explicitly clears the preference; omitted or null
   values preserve existing config under settings merge semantics.
+- Download failure Error envelopes use their existing optional `job_id` to
+  associate safe diagnostics with a song. The frontend projects those messages
+  per job and clears an older failure on a newer retry generation; unrelated
+  global errors retain their existing bounded log behavior.
 - Frontend never recreates backend policy: it renders snapshots and sends
   commands. Queue order, scan results, job state, and playback position
   are backend-owned; frontend projections (`src/state/`) are read models.

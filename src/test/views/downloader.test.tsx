@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DownloaderView, destinationName, filterDownloadDestinations, linkedPlaylistForDestination } from "../../views/DownloaderView";
+import { DownloaderView, DownloadSongRow, destinationName, filterDownloadDestinations, linkedPlaylistForDestination } from "../../views/DownloaderView";
 import { LibraryView } from "../../views/LibraryView";
 
 const runningJob = { id: "job-1", kind: "single" as const, state: "running" as const, track_id: null, progress: 0.5, generation: 1 };
@@ -8,156 +8,91 @@ const libraryTrack = (id: string, title: string, album: string | null, favorite 
 const snapshot = { version: 1 as const, generation: 1, tracks: [libraryTrack("a", "Zed", "Chaos 93"), libraryTrack("b", "Alpha", null, true)], playlists: [] };
 const playback = { queue: ["a"], current_index: 0, shuffle: false, repeat: "off" as const, status: "playing" as const, position_ms: 1000, duration_ms: 90_000, generation: 1 };
 
-describe("Gate 6 downloader view", () => {
-  it("places CSV, playlist batches and a removable mixed queue together in Search", () => {
-    const html = renderToStaticMarkup(<DownloaderView
-      queue={["Artist — Song → Favorites", "Other — Song → Unsorted"]}
-      searchResults={[{ id: "one", title: "First song" }, { id: "two", title: "Second song" }]}
-      previewTracks={[{ id: "csv:1", title: "Imported song" }]}
-      queuedDownloads={3}
-    />);
-    expect(html).toContain('aria-label="Import CSV"');
-    expect(html).toContain("Imported songs (1)");
-    expect(html).toContain("Download all results (2)");
-    expect(html).toContain("Add all results to queue");
-    expect(html).toContain("Download queue (2)");
-    expect(html).toContain('aria-label="Remove queued item 1"');
-    expect(html).toContain("Cancel waiting downloads");
+describe("one-click download rows", () => {
+  it("downloads search and CSV songs without selecting them or staging a queue", () => {
+    const html = renderToStaticMarkup(<DownloaderView searchResults={[{ id: "video1", title: "First song" }]} previewTracks={[{ id: "csv:1", title: "Imported song" }]} />);
+    expect(html).not.toContain('type="checkbox"');
+    expect(html).not.toContain("+ Queue");
+    expect(html).not.toContain("Download queue (");
+    expect(html).toContain('aria-label="Download First song"');
+    expect(html).toContain('aria-label="Download Imported song"');
+    expect(html).not.toContain("Download log");
+    expect(html).not.toContain("Downloaded songs");
   });
+});
 
-  it("renders disclosure buttons with aria-expanded instead of native details", () => {
+describe("automatic download presentation", () => {
+  const item = { id: "one", title: "First song", artist: "Artist", source: "https://youtube.com/watch?v=one", destination: "/music/Rap" };
+  it("keeps exactly Search, Sync and Duplicates with one selected tab", () => {
     const html = renderToStaticMarkup(<DownloaderView />);
-    expect(html).not.toContain("<details");
-    expect(html).not.toContain("<summary");
-    expect(html).toContain('aria-expanded="true"');
-    expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain("Progress");
-    expect(html).toContain("Download log");
-    expect(html).toContain("Downloaded songs");
-  });
-
-  it("renders tablist with three consolidated tabs and an explicit panel", () => {
-    const html = renderToStaticMarkup(<DownloaderView />);
-    expect(html).toContain('role="tablist"');
+    expect((html.match(/role="tab"/g) ?? [])).toHaveLength(3);
+    expect((html.match(/aria-selected="true"/g) ?? [])).toHaveLength(1);
     expect(html).toContain('role="tabpanel"');
-    expect((html.match(/role="tab"/g) ?? []).length).toBe(3);
-    expect(html).toContain('aria-controls="download-panel-search"');
     expect(html).toContain("Import CSV");
-    expect(html).toContain("Download queue");
-    expect(html).not.toContain("URL Queue");
-    expect(html).toContain('aria-labelledby="download-tab-search"');
+    expect(html).not.toContain("Direct URL");
   });
-
-  it("keeps only the active tab in the tab order (roving tabindex)", () => {
-    const html = renderToStaticMarkup(<DownloaderView />);
-    expect((html.match(/id="download-tab-[a-z-]+" tabindex="0"/g) ?? [])).toHaveLength(1);
-    expect((html.match(/id="download-tab-[a-z-]+" tabindex="-1"/g) ?? [])).toHaveLength(2);
-    expect(html).toContain('id="download-tab-search" tabindex="0"');
+  it("shows progress and cancellation on the downloading song row", () => {
+    const html = renderToStaticMarkup(<DownloadSongRow item={{ ...item, activity: { ...item, status: "running", jobId: "job1", progress: 0.42 } }} />);
+    expect(html).toContain("Downloading 42%");
+    expect(html).toContain('aria-label="Cancel First song"');
+    expect(html).toContain('aria-valuenow="42"');
+    expect(html).not.toContain('aria-label="Download First song"');
   });
-
-  it("exposes progress, cancel, and live-region affordances for active jobs", () => {
-    const html = renderToStaticMarkup(<DownloaderView jobs={{ "job-1": runningJob }} />);
-    expect(html).toContain("Downloading — 50%");
-    expect(html).toContain("luno-video-progress");
-    expect(html).toContain("Cancel");
-    expect(html).toContain('aria-live="polite"');
-    expect(html).toContain('aria-label="Download progress"');
+  it("shows next and numbered waiting positions directly beside each song", () => {
+    const html = renderToStaticMarkup(<DownloaderView activity={[{ ...item, status: "queued", position: 1 }, { ...item, id: "two", source: "second", title: "Second song", status: "queued", position: 2 }]} />);
+    expect(html).toContain("Next in queue");
+    expect(html).toContain("#2 in queue");
+    expect(html).toContain('aria-label="Cancel Second song"');
+    expect(html).not.toContain("Download queue (");
   });
-
-  it("retains an explicit completion status after the active job finishes", () => {
-    const completed = { ...runningJob, state: "succeeded" as const, progress: 1 };
-    const html = renderToStaticMarkup(<DownloaderView jobs={{ "job-1": completed }} />);
-    expect(html).toContain("Download complete — added to your library.");
-    expect(html).toContain('role="status"');
+  it("keeps finalization indeterminate until actual completion", () => {
+    const html = renderToStaticMarkup(<DownloadSongRow item={{ ...item, activity: { ...item, status: "running", finalizing: true, progress: 0.97 } }} />);
+    expect(html).toContain("Adding to library…");
+    expect(html).not.toContain('aria-valuenow=');
+    expect(html).not.toContain("Downloaded");
   });
-
-  it("shows the resolved song name beside active progress", () => {
-    const html = renderToStaticMarkup(<DownloaderView jobs={{ "job-1": runningJob }} activeLabel="Rick Astley — Never Gonna Give You Up" />);
-    expect(html).toContain("Downloading — Rick Astley — Never Gonna Give You Up — 50%");
+  it("places actionable errors and retry on the failed row", () => {
+    const html = renderToStaticMarkup(<DownloadSongRow item={{ ...item, activity: { ...item, status: "failed", error: "YouTube refused access. Try another source." } }} />);
+    expect(html).toContain("YouTube refused access. Try another source.");
+    expect(html).toContain('aria-label="Retry First song"');
+    expect(html).not.toContain('role="alert"');
   });
-
-  it("keeps search and result actions available while multiple transfers run", () => {
-    const html = renderToStaticMarkup(<DownloaderView
-      jobs={{
-        "job-1": runningJob,
-        "job-2": { ...runningJob, id: "job-2", progress: 0.25 },
-      }}
-      activeLabels={{ "job-1": "First song", "job-2": "Second song" }}
-      searchResults={[{ id: "next-song", title: "Next song", artist: "Artist" }]}
-    />);
-    expect(html).toContain("2 downloads active");
+  it("keeps downloads visible and new song actions enabled across searches", () => {
+    const html = renderToStaticMarkup(<DownloaderView activity={[{ ...item, status: "running", progress: .5 }]} searchResults={[{ id: "new", title: "New result" }]} />);
     expect(html).toContain("First song");
-    expect(html).toContain("Second song");
-    expect(html).toMatch(/<input[^>]*aria-label="Search for music"(?![^>]*disabled)/);
-    expect(html).toContain('aria-label="Download Next song"');
+    expect(html).toContain('aria-label="Download New result"');
+    expect(html).not.toMatch(/aria-label="Download New result"[^>]*disabled/);
   });
-
-  it("shows an indeterminate finalization phase after transfer reaches the handoff", () => {
-    const finalizing = { ...runningJob, progress: 0.97, phase: "finalizing" as const };
-    const html = renderToStaticMarkup(<DownloaderView jobs={{ "job-1": finalizing }} />);
-    expect(html).toContain("Finalizing download — checking and adding the file");
-    expect(html).not.toContain(">97%</b>");
+  it("updates a result in place rather than moving it into a new progress section", () => {
+    const html = renderToStaticMarkup(<DownloaderView destination="/music/Rap" searchResults={[{ ...item, id: item.source }]} activity={[{ ...item, status: "running", progress: .42 }]} />);
+    expect((html.match(/role="listitem"/g) ?? [])).toHaveLength(1);
+    expect(html).toContain("Downloading 42%");
+    expect(html).not.toContain('aria-label="Your downloads"');
   });
-
-  it("keeps the transfer boundary truthful until the backend announces finalization", () => {
-    const html = renderToStaticMarkup(<DownloaderView jobs={{ "job-1": { ...runningJob, progress: 0.95 } }} />);
-    expect(html).toContain("Downloading — 95%");
+  it("shows completion and cancellation on their songs", () => {
+    const html = renderToStaticMarkup(<DownloaderView activity={[{ ...item, status: "succeeded" }, { ...item, id: "cancelled", source: "other", title: "Other song", status: "cancelled" }]} />);
+    expect(html).toContain("Downloaded");
+    expect(html).toContain("Cancelled");
+    expect(html).toContain('aria-label="Retry Other song"');
   });
-
-  it("renders an animated search indicator without the obsolete 30-second warning", () => {
-    const html = renderToStaticMarkup(<DownloaderView searching={true} />);
-    expect(html).toContain("luno-download-spinner");
-    expect(html).toContain("Searching YouTube…");
-    expect(html).toMatch(/aria-label="Import CSV" disabled=""/);
-    expect(html).not.toContain("30 seconds");
+  it("disables lookup inputs during search but leaves active Cancel available", () => {
+    const html = renderToStaticMarkup(<DownloaderView searching activity={[{ ...item, status: "running" }]} />);
+    expect(html).toContain('aria-label="Import CSV"');
+    expect(html).toMatch(/aria-label="Search for music"[^>]*disabled=""/);
+    expect(html).toContain('aria-label="Cancel First song"');
+    expect(html).toContain('autoCorrect="off"');
+    expect(html).toContain('spellCheck="false"');
   });
-
-  it("disables OS autocorrect and spellcheck on the downloader search field", () => {
-    // Autocorrect silently rewrote pasted queries/URLs; every text entry point
-    // opts out. Only the active tab's fields are server-rendered here.
-    const html = renderToStaticMarkup(<DownloaderView />);
-    expect(html).toMatch(/<input[^>]*aria-label="Search for music"[^>]*autocorrect="off"[^>]*spellcheck="false"/i);
-  });
-
-  it("offers a searchable destination field and filters playlist names", () => {
-    const html = renderToStaticMarkup(<DownloaderView
-      destinations={["/music/Unsorted", "/music/Live Shows", "/music/Favorites"]}
-      defaultDestination="/music/Unsorted"
-    />);
-    expect(html).toContain('role="combobox"');
-    expect(html).toContain('aria-label="Save to"');
-    expect(html).toContain('placeholder="Search playlists"');
+  it("preserves destination selection and typed filtering", () => {
     expect(destinationName("/music/Live Shows")).toBe("Live Shows");
-    expect(filterDownloadDestinations(["/music/Unsorted", "/music/Live Shows", "/music/Favorites"], "live")).toEqual(["/music/Live Shows"]);
-  });
-
-  it("renders the Shell-owned destination after the Downloader view remounts", () => {
-    const html = renderToStaticMarkup(<DownloaderView
-      destinations={["/music/Unsorted", "/music/Live Shows"]}
-      defaultDestination="/music/Unsorted"
-      destination="/music/Live Shows"
-    />);
-    expect(html).toContain('aria-label="Save to"');
+    expect(filterDownloadDestinations(["/music/Unsorted", "/music/Live Shows"], "live")).toEqual(["/music/Live Shows"]);
+    const html = renderToStaticMarkup(<DownloaderView destinations={["/music/Unsorted", "/music/Live Shows"]} destination="/music/Live Shows" />);
     expect(html).toContain('value="Live Shows"');
   });
-
-  it("resolves Save to to the linked physical playlist used by sync", () => {
-    const roadTrip = { id: "p1", name: "Road trip", path: "/music/Road trip", url: "https://www.youtube.com/playlist?list=PL123", ordered_track_ids: [] };
-    const unlinked = { id: "p2", name: "Unlinked", path: "/music/Unlinked", url: null, ordered_track_ids: [] };
-    expect(linkedPlaylistForDestination([roadTrip, unlinked], "/music/Road trip")).toBe(roadTrip);
-    expect(linkedPlaylistForDestination([roadTrip, unlinked], "/music/Unlinked")).toBeUndefined();
-  });
-
-  it("does not offer the single-download retry action for failed playlist sync jobs", () => {
-    const failedSync = { ...runningJob, id: "sync-1", kind: "sync" as const, state: "failed" as const };
-    const html = renderToStaticMarkup(<DownloaderView jobs={{ "sync-1": failedSync }} />);
-    expect(html).toContain("playlist sync: failed");
-    expect(html).not.toContain(">Retry</button>");
-  });
-
-  it("labels active playlist work as a sync", () => {
-    const html = renderToStaticMarkup(<DownloaderView jobs={{ sync: { ...runningJob, kind: "sync" } }} />);
-    expect(html).toContain("Syncing playlist — 50%");
+  it("resolves the linked physical destination for Sync", () => {
+    const playlist = { id: "p1", name: "Rap", path: "/music/Rap", url: "https://youtube.com/playlist?list=one", ordered_track_ids: [] };
+    expect(linkedPlaylistForDestination([playlist], "/music/Rap")).toBe(playlist);
+    expect(linkedPlaylistForDestination([playlist], "/music/Other")).toBeUndefined();
   });
 });
 describe("Gate 6 library view", () => {

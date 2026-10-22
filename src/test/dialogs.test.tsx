@@ -9,7 +9,10 @@ import { PlaylistUrlDialog, PlaylistSyncAuthDialog, PlaylistSyncLogDialog, Playl
 
 describe("Gate 4 views", () => {
   it("renders downloader error, cancel, and retry controls", () => {
-    const html = renderToStaticMarkup(<DownloaderView error="helper failed" jobs={{ one: { id: "one", kind: "single", state: "failed", track_id: null, progress: null, generation: 1 }, two: { id: "two", kind: "single", state: "running", track_id: null, progress: 0.5, generation: 1 } }} />);
+    const html = renderToStaticMarkup(<DownloaderView activity={[
+      { id: "one", source: "one", destination: "/music", title: "Failed song", status: "failed", error: "helper failed" },
+      { id: "two", source: "two", destination: "/music", title: "Active song", status: "running", progress: 0.5 },
+    ]} />);
     expect(html).toContain("helper failed");
     expect(html).toContain("Cancel");
     expect(html).toContain("Retry");

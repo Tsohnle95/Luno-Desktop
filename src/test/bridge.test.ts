@@ -593,3 +593,14 @@ describe("typed IPC bridge and projection", () => {
     expect(next.video?.revision).toBe(2);
   });
 });
+
+it("keeps a download failure on its own song row and clears it on retry", () => {
+  const store = createBackendProjection();
+  store.apply({ ...event({ type: "error", payload: { error: { code: "unavailable", message: "This song is already in the destination playlist.", retryable: false } } }, 1), job_id: "download-one" });
+  expect(store.getSnapshot().jobErrors?.["download-one"]).toBe("This song is already in the destination playlist.");
+  expect(store.getSnapshot().errors).toEqual([]);
+  store.apply({ ...event({ type: "job_updated", payload: { job: { id: "download-one", kind: "single", state: "running", track_id: null, progress: null, generation: 2 } } }, 2), event_id: "event-2" });
+  expect(store.getSnapshot().jobErrors?.["download-one"]).toBeUndefined();
+  store.apply({ ...event({ type: "error", payload: { error: { code: "unavailable", message: "Old failure", retryable: false } } }, 1), event_id: "event-3", job_id: "download-one" });
+  expect(store.getSnapshot().jobErrors?.["download-one"]).toBeUndefined();
+});

@@ -52,6 +52,12 @@ envelope shapes (`docs/modules/contracts.md`).
   This visual preference is renderer-owned and does not alter backend settings
   or library transfer data. The orange application icon is independent of the
   selected accent; playlist artwork retains its own colour palette.
+- Downloader rows retain captured requests across searches. Download immediately
+  starts or appends to one sequential request FIFO; row status reflects the
+  matching backend job, and pending row positions reflect that FIFO. Job-scoped
+  errors render on their song rather than in the global runtime banner. The
+  page has no selection prerequisite, Queue action, or separate progress/log
+  disclosure panels.
 - Views render backend snapshots; they must not reimplement queue order,
   scan results, or job state. All mutations go through bridge commands.
 - The shell topbar places Back/Forward chevrons beside the native macOS

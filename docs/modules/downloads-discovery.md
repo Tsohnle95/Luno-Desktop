@@ -46,11 +46,21 @@ What it does not own: library snapshots and promotion targets
 The downloader has Search, Sync, and Duplicates tabs. Search accepts YouTube
 names, video URLs, playlist URLs, and uploaded Exportify CSV files. URL lookup
 enumerates the actual source; playlist results become independent normal jobs.
-CSV rows without downloadable URLs become YouTube metadata queries. Search,
-playlist, and CSV results can be downloaded immediately or captured in one
-mixed queue with their metadata and destination; replacing results does not
-change queued items. Waiting items can be removed before starting, and waiting
-admitted work can be cancelled separately from active jobs.
+CSV rows without downloadable URLs become YouTube metadata queries. Each
+Download click appends captured metadata, source, and destination to the same
+FIFO request queue and starts it automatically. The Downloader admits one normal
+job at a time; later searches, playlist batches, and CSV imports append after
+existing requests. A pending admission retains its slot until the backend
+responds, and cancellation requested before acknowledgement is delivered once
+the job is admitted. Elapsed time alone never marks a pending command failed.
+
+The page renders song rows with inline progress, finalization, waiting position,
+completion, cancellation, and actionable failure/retry states. Requested rows
+remain visible across search/input changes; there is no selection prerequisite,
+separate staging queue, or standalone progress/log panel. Cancel removes a waiting
+request or cancels its active backend job. Retrying appends the captured request
+through the same sequential queue. Repeated Download actions do not duplicate
+active, waiting, or completed source/destination pairs.
 
 Download event generations and delivery order are tracked per job ID. A newer
 concurrent job must not suppress another job's progress, cancellation, completion,

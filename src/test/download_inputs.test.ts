@@ -81,3 +81,48 @@ describe("download request ownership", () => {
     expect(queue).toEqual(["current admission", "newly requested song"]);
   });
 });
+
+import { takeNextDownload } from "../state/download_inputs";
+describe("automatic sequential downloads", () => {
+  it("finishes one request before taking the next, including later playlist and CSV batches", () => {
+    const pending = ["song1", "song2", "song3", "song4"];
+    expect(takeNextDownload(pending, 0)).toBe("song1");
+    pending.push("playlist1-a", "playlist1-b", "playlist2-a", "csv1-a", "csv2-a");
+    expect(takeNextDownload(pending, 1)).toBeUndefined();
+    const remaining: string[] = [];
+    while (pending.length) remaining.push(takeNextDownload(pending, 0)!);
+    expect(remaining).toEqual(["song2", "song3", "song4", "playlist1-a", "playlist1-b", "playlist2-a", "csv1-a", "csv2-a"]);
+  });
+});
+
+import { downloadActivityRows, appendDownloadItems } from "../state/download_inputs";
+it("preserves captured song, playlist and CSV rows after searches are replaced, with positions and errors", () => {
+  const song = { id: "song", source: "https://youtube.com/watch?v=one", destination: "/music/A", title: "Song", artist: "Artist" };
+  const playlist = { id: "playlist-one", source: "https://youtube.com/watch?v=two", destination: "/music/B", title: "Playlist song" };
+  const csv = captureQueuedDownload("csv:1", "/music/C", { source: "ytsearch1:CSV song", title: "CSV song" });
+  const rows = downloadActivityRows({ active: song }, [playlist, csv], { active: { id: "active", kind: "single", state: "running", track_id: null, progress: .4, generation: 1 } });
+  expect(rows.map((r) => [r.title, r.status, r.position, r.destination])).toEqual([["Song", "running", undefined, "/music/A"], ["Playlist song", "queued", 1, "/music/B"], ["CSV song", "queued", 2, "/music/C"]]);
+  const pending = [playlist, csv];
+  appendDownloadItems(pending, [song, playlist, csv], rows);
+  expect(pending).toEqual([playlist, csv]);
+  const failed = downloadActivityRows({ active: song }, [], { active: { id: "active", kind: "single", state: "failed", track_id: null, progress: null, generation: 1 } }, { active: "YouTube refused access." });
+  expect(failed[0].error).toBe("YouTube refused access.");
+  appendDownloadItems(pending, [song], failed);
+  expect(pending.at(-1)).toEqual(song);
+});
+
+import { awaitDownloadAdmission } from "../state/download_inputs";
+it("retains an outstanding start and delivers cancellation after a delayed acknowledgement", async () => {
+  let acknowledge!: () => void;
+  let cancelled = false;
+  const calls: string[] = [];
+  const pending = ["next song"];
+  const admission = awaitDownloadAdmission(new Promise<void>((resolve) => { acknowledge = resolve; }), () => cancelled, async () => { calls.push("cancel"); });
+  expect(takeNextDownload(pending, 1)).toBeUndefined();
+  cancelled = true;
+  expect(calls).toEqual([]);
+  acknowledge();
+  await admission;
+  expect(calls).toEqual(["cancel"]);
+  expect(takeNextDownload(pending, 0)).toBe("next song");
+});

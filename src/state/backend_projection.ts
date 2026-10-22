@@ -11,6 +11,8 @@ export interface BackendProjection {
   video: VideoState | null;
   jobs: Record<string, DownloadJob>;
   jobEventIds?: Record<string, string>;
+  jobErrors?: Record<string, string>;
+  jobErrorEvents?: Record<string, { generation: number; eventId: string }>;
   saved: Record<string, SaveState>;
   errors: ContractError[];
   recentHistory: TrackId[];
@@ -45,6 +47,14 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
     if (envelope.event.type !== "error") return state;
     return { ...state, errors: [...state.errors, envelope.event.payload.error].slice(-MAX_PROJECTED_ERRORS) };
   }
+  if (envelope.event.type === "error" && envelope.job_id) {
+    const id = envelope.job_id;
+    const previous = state.jobErrorEvents?.[id];
+    if (envelope.generation < (state.jobs[id]?.generation ?? -1)
+      || (previous && (envelope.generation < previous.generation || compareEventIds(envelope.event_id, previous.eventId) <= 0))) return state;
+    return { ...state, jobErrors: { ...state.jobErrors, [id]: envelope.event.payload.error.message },
+      jobErrorEvents: { ...state.jobErrorEvents, [id]: { generation: envelope.generation, eventId: envelope.event_id } } };
+  }
   const domain = domainOf(envelope.event.type);
   const payloadGeneration = domain === "library" && envelope.event.type === "library_snapshot" ? envelope.event.payload.snapshot.generation
     : domain === "playback" && envelope.event.type === "playback_snapshot" ? envelope.event.payload.snapshot.generation
@@ -63,7 +73,9 @@ export function reduceBackendProjection(state: BackendProjection, envelope: Even
     // cancellation. Retry generations and event ordering belong to each ID.
     if (previous && job.generation < previous.generation) return state;
     if (previousEventId !== undefined && compareEventIds(envelope.event_id, previousEventId) <= 0) return state;
-    return { ...state, jobs: { ...state.jobs, [job.id]: job },
+    const jobErrors = { ...state.jobErrors };
+    if (["running", "queued"].includes(job.state) && job.generation > (state.jobErrorEvents?.[job.id]?.generation ?? -1)) delete jobErrors[job.id];
+    return { ...state, jobErrors, jobs: { ...state.jobs, [job.id]: job },
       jobEventIds: { ...state.jobEventIds, [job.id]: envelope.event_id },
       generations: { ...state.generations, jobs: Math.max(state.generations.jobs, envelope.generation) } };
   }
