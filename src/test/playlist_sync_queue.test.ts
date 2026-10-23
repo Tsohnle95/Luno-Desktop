@@ -70,6 +70,10 @@ describe('download results pages', () => {
     expect(downloadResultPage(items, 2).items).toHaveLength(11);
     expect(downloadResultPage([1, 2], 2).page).toBe(0);
   });
+  it('treats a YouTube radio watch link as one video, not an enumerable playlist', () => {
+    expect(youtubePlaylistUrl('https://www.youtube.com/watch?v=DBeXDGM0P5k&list=RDDBeXDGM0P5k&start_radio=1')).toBeNull();
+    expect(youtubePlaylistUrl('https://www.youtube.com/watch?v=DBeXDGM0P5k&list=RDDBeXDGM0P5k')).toBeNull();
+  });
   it('recognizes playlist links without interpreting ordinary song queries as URLs', () => {
     expect(youtubePlaylistUrl('hello artist')).toBeNull();
     expect(youtubePlaylistUrl('https://youtu.be/id?list=PL1')).toBe('https://www.youtube.com/playlist?list=PL1');

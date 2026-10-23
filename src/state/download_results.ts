@@ -11,6 +11,8 @@ export function youtubePlaylistUrl(value: string): string | null {
     const url = new URL(value.trim());
     if (!['https:', 'http:'].includes(url.protocol) || !['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be', 'www.youtu.be'].includes(url.hostname.toLowerCase())) return null;
     const list = url.searchParams.get('list');
+    const video = url.searchParams.get('v') || (url.hostname.endsWith('youtu.be') ? url.pathname.slice(1) : '');
+    if (video && (list?.startsWith('RD') || url.searchParams.get('start_radio') === '1')) return null;
     return list ? `https://www.youtube.com/playlist?list=${encodeURIComponent(list)}` : null;
   } catch { return null; }
 }

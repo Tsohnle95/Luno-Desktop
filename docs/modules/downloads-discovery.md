@@ -46,6 +46,10 @@ What it does not own: library snapshots and promotion targets
 The downloader has Search, Sync, and Duplicates tabs. Search accepts YouTube
 names, video URLs, playlist URLs, and uploaded Exportify CSV files. URL lookup
 enumerates the actual source; playlist results become independent normal jobs.
+Watch links carrying generated radio/mix IDs (`RD…`) or `start_radio=1` resolve
+their explicit video, stripping radio parameters before yt-dlp. These playback
+mixes are not treated as saved playlists. Explicit saved playlist links still
+enumerate the full source.
 CSV rows without downloadable URLs become YouTube metadata queries. Each
 Download click appends captured metadata, source, and destination to the same
 FIFO request queue and starts it automatically. The Downloader admits one normal
