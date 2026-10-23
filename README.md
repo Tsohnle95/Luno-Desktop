@@ -23,10 +23,13 @@ Built with React, TypeScript, Tauri 2, and Rust.
 
 ## Availability
 
-Luno Desktop is under active development for **macOS 13 and newer**.
-The current Tauri desktop app does not yet have a published installer in this
-repository. The existing `v1.0.0` release is a historical Android build;
-it is not a macOS download.
+[![Download Luno Desktop for macOS](docs/assets/releases/download-macos.svg)](https://github.com/Tsohnle95/Luno-Desktop/releases/tag/v0.1.0)
+
+The **v0.1.0 macOS Preview** is available for **Apple Silicon Macs running
+macOS 13 or newer**. [Download and installation instructions](https://github.com/Tsohnle95/Luno-Desktop/releases/tag/v0.1.0).
+
+This preview is not Developer ID signed or notarized. macOS may block its first
+launch; review the release page before installing. Intel builds are not included.
 
 For Android, see [Luno Mobile](https://github.com/Tsohnle95/Luno-Mobile).
 

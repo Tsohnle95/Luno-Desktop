@@ -68,6 +68,27 @@ non-macOS machines and is an inconclusive receipt until macOS CI completes.
 The workflow also requires `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`;
 none of these credentials are stored in the repository.
 
+## Unsigned preview releases
+
+The `v0.1.0` macOS Preview is an explicitly approved unsigned prerelease for
+Apple Silicon (arm64), requiring macOS 13 or newer. It is not Developer ID signed
+or notarized; an ad-hoc linker signature is not a trusted developer signature.
+The signed CI workflow and stable-release requirements above remain in force.
+Do not present this preview as a signed stable release or an Intel/universal app.
+
+Build with Node 22 and Rust stable using
+`npm run tauri -- build --bundles app,dmg`. Verify the application inside the
+mounted DMG with `scripts/verify-desktop-bundle.sh`, check its application
+identifier and version, and compare its executable with the verified build.
+Publish the DMG as `Luno-Desktop-v0.1.0-macOS-arm64.dmg` with a `SHA256SUMS.txt`
+asset on a GitHub prerelease whose tag points to the reviewed source commit.
+
+The release page uses `docs/assets/releases/luno-desktop-banner.svg` and
+`download-macos.svg`, with its durable body in `release/notes/v0.1.0.md`.
+It must disclose architecture, minimum macOS, signature/notarization status,
+installation steps, and the DMG checksum. Updates replace the application bundle;
+they must never instruct users to delete their music or application data.
+
 ## Rollback
 
 Keep the last signed DMG and the known-good Python/PyInstaller release. If a
