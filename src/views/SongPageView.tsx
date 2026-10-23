@@ -134,7 +134,7 @@ const songPageStyles = `
 .luno-video-mode-label { font-size:12px; font-weight:700; color:var(--luno-text-2); }
 .luno-video-mode-pill.is-on .luno-video-mode-label { color:var(--luno-accent,#1db954); }
 .luno-song-page-backdrop { position:absolute; inset:-8%; background-position:center; background-size:cover; filter:blur(42px); opacity:.22; transform:scale(1.08); }
-.luno-song-page-scroll { position:relative; height:100%; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
+.luno-song-page-scroll { position:relative; height:100%; overflow:auto; overscroll-behavior:contain; }
 .luno-song-page-content { width:100%; margin:0 auto; padding:0 0 64px; }
 .luno-song-media-slot { position:relative; width:100%; aspect-ratio:16 / 9; margin:0 0 24px; overflow:hidden; border:0; border-radius:0; background:var(--luno-bg-3); box-shadow:none; }
 .luno-song-media-slot .luno-artwork { width:100% !important; height:100% !important; }

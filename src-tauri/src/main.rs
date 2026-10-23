@@ -441,7 +441,29 @@ fn load_discovery_key(app: &tauri::AppHandle) -> Option<String> {
     Some(key)
 }
 
+#[cfg(target_os = "macos")]
+fn configure_overlay_scrollbars() {
+    use objc2::{class, msg_send, msg_send_id, rc::Retained, runtime::AnyObject};
+    use objc2_foundation::NSString;
+
+    // Override only this process, before WebKit creates its scroll views. The
+    // argument domain takes precedence over the system's persistent-scrollbar
+    // preference without changing the user's defaults on disk.
+    unsafe {
+        let defaults: *mut AnyObject = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        let domain_name = NSString::from_str("NSArgumentDomain");
+        let domain: *mut AnyObject = msg_send![defaults, volatileDomainForName: &*domain_name];
+        let overrides: Retained<AnyObject> = msg_send_id![domain, mutableCopy];
+        let key = NSString::from_str("AppleShowScrollBars");
+        let value = NSString::from_str("WhenScrolling");
+        let _: () = msg_send![&*overrides, setObject: &*value, forKey: &*key];
+        let _: () = msg_send![defaults, setVolatileDomain: &*overrides, forName: &*domain_name];
+    }
+}
+
 fn main() {
+    #[cfg(target_os = "macos")]
+    configure_overlay_scrollbars();
     // Single-instance guard: all installs share ~/.luno_config.json and the
     // app-data store, so a second concurrent instance last-writer-wins the
     // config (this once flipped video_mode back off mid-download). Claim a

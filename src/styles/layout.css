@@ -153,7 +153,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (prefers-reduced-motion: reduce) { .luno-sidebar-filter { transition: none; } }
 .luno-lib-filter { flex: 1; min-width: 0; height: 34px; padding: 0 12px; border: 0; border-radius: 17px; background: var(--luno-bg-3); color: var(--luno-text); }
 .luno-lib-filter::placeholder { color: var(--luno-text-2); }
-.luno-playlist-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: none; scrollbar-gutter: stable; padding: 12px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+.luno-playlist-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: none; padding: 12px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
 .luno-playlist-card {
   width: 100%; display: flex; align-items: center; gap: 12px;
   border: 0; border-radius: 6px; padding: 7px 10px;
@@ -178,7 +178,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-runtime-status { display: flex; gap: 12px; flex-wrap: wrap; padding: 6px 16px; color: var(--luno-warning); background: var(--luno-bg); border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 12px; }
 .luno-runtime-status [data-state="video-unconnected"], .luno-runtime-status [data-state="migration-completed"] { color: var(--luno-text-2); }
 .luno-runtime-status button { margin-left: 8px; padding: 2px 6px; border: 1px solid currentColor; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
-.luno-main-content { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: none; scrollbar-gutter: stable; }
+.luno-main-content { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: none; }
 .luno-main-content.luno-song-page-host { overflow: hidden; }
 .luno-main-content > * { min-height: 100%; }
 .luno-route-empty { display: grid; place-items: center; min-height: 100%; color: var(--luno-text-2); }
@@ -189,7 +189,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
  * content and only the column head stays pinned (sticky, direct scroller
  * child). Rubber-band overscroll is disabled so the list can never show
  * blank negative space. */
-.luno-track-scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: none; scrollbar-gutter: stable; position: relative; }
+.luno-track-scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: none; position: relative; }
 .luno-hero { position: relative; padding: 24px 28px 14px; background: linear-gradient(rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.42) 100%), var(--luno-scope-gradient); }
 .luno-hero-row { display: flex; align-items: flex-end; gap: 20px; min-width: 0; }
 .luno-hero-cover {
@@ -281,7 +281,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-track-artwork-slot { width: 40px; height: 40px; }
 .luno-track-empty { padding: 28px 16px; color: var(--luno-text-2); }
 
-.luno-scroll { overflow: auto; overscroll-behavior: none; scrollbar-width: thin; scrollbar-color: var(--luno-bg-4) transparent; }
+.luno-scroll { overflow: auto; overscroll-behavior: none; }
 .luno-artwork { flex: 0 0 auto; display: grid; place-items: center; overflow: hidden; border-radius: 4px; background: var(--luno-bg-3); }
 .luno-artwork img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .luno-artwork-loading { display: block; width: 100%; height: 100%; background: var(--luno-bg-3); }
@@ -319,7 +319,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .luno-queue-tools .luno-pill:hover:not(:disabled) { color: var(--luno-text); border-color: var(--luno-text-2); }
 .luno-queue-tools .luno-pill[aria-pressed="true"] { color: var(--luno-accent); border-color: var(--luno-accent); }
 .luno-queue-tools .luno-pill:disabled { opacity: 0.4; cursor: default; }
-.luno-queue-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: none; scrollbar-gutter: stable; padding-bottom: 12px; }
+.luno-queue-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: none; padding-bottom: 12px; }
 .luno-queue-section { margin: 0; padding: 12px 16px 6px; color: var(--luno-text); font-size: 14px; }
 .luno-queue-section small { display: block; margin-top: 2px; color: var(--luno-text-2); font-size: 12px; font-weight: 400; }
 .luno-queue-now-card { display: flex; align-items: center; gap: 14px; padding: 8px 16px 14px; }
@@ -471,7 +471,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   background: transparent; color: var(--luno-text-2); font-size: 12px; cursor: pointer;
 }
 .luno-pill-link:hover { color: var(--luno-text); border-color: var(--luno-text-2); }
-.luno-card-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(160px, 184px); gap: 18px; overflow-x: auto; overscroll-behavior-x: none; padding-bottom: 8px; scrollbar-width: thin; }
+.luno-card-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(160px, 184px); gap: 18px; overflow-x: auto; overscroll-behavior-x: none; padding-bottom: 8px; }
 .luno-card {
   position: relative; display: grid; gap: 10px; align-content: start;
   border: 0; border-radius: 10px; padding: 12px;

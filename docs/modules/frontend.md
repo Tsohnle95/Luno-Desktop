@@ -210,6 +210,10 @@ envelope shapes (`docs/modules/contracts.md`).
 - Discovery intent can stay on while recommendations are empty or loading.
   Playback retains its physical queue until matching recommendations arrive;
   toggling intent does not insert a status banner or change transport.
+- Scroll containers use native macOS overlay scrollbars without reserved gutters
+  or custom scrollbar styling, including the clipped single-song page host.
+  Startup sets a process-only macOS `AppleShowScrollBars=WhenScrolling`
+  override before creating WebKit views; system preferences remain unchanged.
 - The single-song route owns one vertical scroller inside its page host. The
   host clips overflow; only wheel input over a native video uses a
   frame-batched fallback to the page scroller.
