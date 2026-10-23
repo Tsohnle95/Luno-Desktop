@@ -7483,10 +7483,16 @@ impl AppState {
         }
         let ytdlp = self.discover_ytdlp().map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: false })?;
         let browser = self.youtube_cookies_browser.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let listing = crate::download::search::playlist_listing_with_browser_fallback(&self.supervisor, &ytdlp, &url, browser.as_deref(), &CancellationToken::new())
+        let mut listing = crate::download::search::playlist_listing_with_browser_fallback(&self.supervisor, &ytdlp, &url, browser.as_deref(), &CancellationToken::new())
             .map_err(|message| ContractError { code: ErrorCode::Unavailable, message, retryable: true })?;
         let sync_state = crate::download::sync::PlaylistSyncState::load(&destination).map_err(ContractError::invalid)?;
         let review = crate::download::sync::PlaylistSyncReviewState::load(&destination).map_err(ContractError::invalid)?;
+        for entry in &listing.unavailable_entries {
+            if entry.id.as_ref().is_some_and(|id| sync_state.sources.get(id).is_some_and(|source| source.retry_pending)) {
+                listing.entries.push(crate::download::sync::restore_entry_metadata(entry, &sync_state));
+                listing.unavailable -= 1;
+            }
+        }
         let plan = crate::download::sync::preview_plan(&root, &destination, &listing.entries, &sync_state, &review);
         let items = plan.items.into_iter().map(|item| {
             let (artist, title) = crate::download::sync::parse_title(&item.entry.title);

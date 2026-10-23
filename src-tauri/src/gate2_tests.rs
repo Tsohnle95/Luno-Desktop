@@ -326,7 +326,7 @@ fn markers_accept_all_legacy_forms_but_not_corrupt_ids_and_retry_failures() {
 }
 
 #[test]
-fn local_sync_journey_covers_whole_root_dedupe_markers_validation_retry_and_cancel() {
+fn local_sync_journey_covers_destination_dedupe_markers_validation_retry_and_cancel() {
     let dir = fixture_dir("sync-journey");
     let root = dir.join("library");
     let destination = root.join("playlist-a");
@@ -377,8 +377,16 @@ fn local_sync_journey_covers_whole_root_dedupe_markers_validation_retry_and_canc
         },
     ];
     let planned = plan(&root, &destination, &entries);
-    assert_eq!(planned.len(), 1, "REF-URL-MARKERS whole-root dedupe");
+    assert_eq!(planned.len(), 2, "audio elsewhere must not satisfy the selected destination; repeated titles still coalesce");
+    assert_eq!(planned[0].entry.id.as_deref(), Some("existing-id"));
+    assert_eq!(planned[1].entry.id.as_deref(), Some("new-id"));
+    fs::write(destination.join("Artist - Existing.mp3"), b"ID3present-in-target").unwrap();
+    let planned = plan(&root, &destination, &entries);
+    assert_eq!(planned.len(), 1, "matching audio in the selected playlist is skipped");
     assert_eq!(planned[0].entry.id.as_deref(), Some("new-id"));
+    // Success history only skips an executor item while validated audio remains.
+    fs::write(destination.join("current-id.mp3"), b"ID3current").unwrap();
+    fs::write(destination.join("legacy-id.mp3"), b"ID3legacy").unwrap();
 
     let item = |id: &str, title: &str| SyncItem {
         entry: PlaylistEntry {

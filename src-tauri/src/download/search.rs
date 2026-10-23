@@ -244,11 +244,13 @@ pub struct PlaylistListing {
     pub total: usize,
     pub unavailable: usize,
     pub entries: Vec<PlaylistEntry>,
+    pub sync_entries: Vec<PlaylistEntry>,
+    pub unavailable_entries: Vec<PlaylistEntry>,
 }
 
 pub fn playlist_entries(supervisor: &Supervisor, ytdlp: &Path, url: &str, cookies_browser: Option<&str>, token: &CancellationToken) -> Result<Vec<PlaylistEntry>, String> {
     let listing = playlist_listing(supervisor, ytdlp, url, cookies_browser, token)?;
-    if listing.entries.is_empty() { Err("playlist contains no downloadable videos".into()) } else { Ok(listing.entries) }
+    if listing.sync_entries.is_empty() { Err("playlist contains no downloadable videos".into()) } else { Ok(listing.sync_entries) }
 }
 
 pub fn playlist_listing_with_browser_fallback(supervisor: &Supervisor, ytdlp: &Path, url: &str, cookies_browser: Option<&str>, token: &CancellationToken) -> Result<PlaylistListing, String> {
@@ -308,7 +310,7 @@ fn parse_playlist_listing(output: &str) -> Result<PlaylistListing, String> {
         output.lines().filter(|line| !line.trim().is_empty()).map(|line| serde_json::from_str(line)
             .map_err(|_| "Playlist lookup returned incomplete or invalid data. Retry the lookup.".to_owned())).collect::<Result<Vec<serde_json::Value>, String>>()?
     };
-    let mut listing = PlaylistListing { title: "YouTube playlist".into(), total: 0, unavailable: 0, entries: Vec::new() };
+    let mut listing = PlaylistListing { title: "YouTube playlist".into(), total: 0, unavailable: 0, entries: Vec::new(), sync_entries: Vec::new(), unavailable_entries: Vec::new() };
     let mut seen = std::collections::HashSet::new();
     for value in values {
         let rows = if let Some(entries) = value.get("entries") {
@@ -324,7 +326,11 @@ fn parse_playlist_listing(output: &str) -> Result<PlaylistListing, String> {
             let unavailable = matches!(row.get("availability").and_then(|v| v.as_str()), Some("private" | "premium_only" | "subscriber_only" | "needs_auth"))
                 || matches!(row.get("title").and_then(|v| v.as_str()), Some("[Private video]" | "[Deleted video]"));
             let entry = parse_playlist_entries(&row.to_string()).into_iter().next();
-            if unavailable || entry.is_none() { listing.unavailable += 1; } else { listing.entries.push(entry.unwrap()); }
+            if let Some(entry) = entry.as_ref() { listing.sync_entries.push(entry.clone()); }
+            if unavailable || entry.is_none() {
+                listing.unavailable += 1;
+                if let Some(entry) = entry { listing.unavailable_entries.push(entry); }
+            } else { listing.entries.push(entry.unwrap()); }
         }
     }
     Ok(listing)
@@ -629,6 +635,7 @@ printf '%s\n' '{"id":"first","title":"First song","channel":"Artist"}' '{"id":"s
         assert_eq!(listing.title, "Complete playlist");
         assert_eq!(listing.total, 62);
         assert_eq!(listing.entries.len(), 61);
+        assert_eq!(listing.sync_entries.len(), 62, "sync must retain unavailable original IDs for review/source reconciliation");
         assert_eq!(listing.unavailable, 1);
         assert!(parse_playlist_listing(&json[..json.len() - 10]).is_err(), "partial playlist output must not masquerade as complete");
         assert_eq!(parse_playlist_listing("{\"id\":\"v1\",\"title\":\"Song\",\"playlist_title\":\"Line playlist\"}\n").unwrap().title, "Line playlist");

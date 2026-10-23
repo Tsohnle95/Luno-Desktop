@@ -502,6 +502,8 @@ fn plan_with_inventory(root: &Path, destination: &Path, inventory: &Path, entrie
     entries
         .iter()
         .filter_map(|entry| {
+            let restored = restore_entry_metadata(entry, state);
+            let entry = &restored;
             if let Some(id) = entry.id.as_deref() {
                 if review.is_dismissed(id) || review.replacement_exists(root, id) { return None; }
             }
@@ -538,6 +540,18 @@ fn plan_with_inventory(root: &Path, destination: &Path, inventory: &Path, entrie
             })
         })
         .collect()
+}
+
+pub fn restore_entry_metadata(entry: &PlaylistEntry, state: &PlaylistSyncState) -> PlaylistEntry {
+    let mut restored = entry.clone();
+    if matches!(entry.title.as_str(), "[Private video]" | "[Deleted video]") {
+        if let Some(original) = entry.id.as_ref().and_then(|id| state.unresolved.get(id)) {
+            restored.title = original.title.clone();
+            restored.channel = original.channel.clone();
+            restored.duration_secs = original.duration_secs;
+        }
+    }
+    restored
 }
 
 pub struct PlaylistPreviewPlan {
@@ -757,6 +771,26 @@ fn valid_marker_id(id: &str) -> bool {
 #[cfg(test)]
 mod playlist_preview_tests {
     use super::*;
+    #[test]
+    fn unavailable_original_keeps_review_mapping_and_selected_replacement_metadata() {
+        let folder = std::env::temp_dir().join(format!("luno-private-selected-{}-{}", std::process::id(), TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir_all(&folder).unwrap();
+        let original = PlaylistEntry { id: Some("private-original".into()), title: "Artist - Known song".into(), channel: Some("Artist".into()), duration_secs: Some(180), url: Some("https://www.youtube.com/watch?v=private-original".into()) };
+        let mut state = PlaylistSyncState::default();
+        state.record_unavailable(&original, None, "Video unavailable");
+        state.select_source("private-original", "abcdefghijk").unwrap();
+        let hidden = PlaylistEntry { title: "[Private video]".into(), channel: None, duration_secs: None, ..original };
+        let entries = vec![hidden];
+        state.prune_unresolved(&entries, &Markers::default());
+        assert!(state.unresolved.contains_key("private-original"));
+        let items = plan_with_state(&folder, &folder, &entries, &state);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].entry.title, "Artist - Known song");
+        assert!(items[0].destination.ends_with("Artist - Known song.m4a"));
+        assert_eq!(items[0].source_override.as_ref().unwrap().video_id, "abcdefghijk");
+        fs::remove_dir_all(folder).unwrap();
+    }
+
     #[test]
     fn stale_success_marker_does_not_skip_a_deleted_download() {
         let folder = std::env::temp_dir().join(format!("luno-stale-marker-{}-{}", std::process::id(), TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)));
