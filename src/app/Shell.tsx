@@ -1,3 +1,5 @@
+import { SongSelectionSurface } from "../components/SongSelection";
+import { addSongsToFavorites, trackDeleteConfirmation } from "../state/track_actions";
 import { PlaylistSyncQueue, preparePlaylistSync, type PlaylistSyncRequest } from "../state/playlist_sync_queue";
 import { youtubePlaylistUrl } from "../state/download_results";
 import { downloadDuplicateGroups, parseAllowedDownloadDuplicates } from "../state/download_duplicates";
@@ -1683,6 +1685,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     refreshDownloadQueue();
     startNextDownload();
   };
+  const duplicateDownloadGroups = useMemo(() => downloadDuplicateGroups(projection.library?.tracks ?? [], allowedDownloadDuplicates, projection.library?.playlists ?? []), [projection.library, allowedDownloadDuplicates]);
   const downloaderViewEl = <DownloaderView
     error={commandError}
     jobs={projection.jobs}
@@ -1722,7 +1725,11 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     searching={downloadSearchLoading}
     searchResults={downloadSources.map((item) => ({ id: item.url || item.query || item.title, title: item.title, artist: item.artist ?? item.provider, duration: item.duration ?? undefined, thumbnailUrl: item.thumbnail_url ?? undefined, source: item.url || item.query }))}
     previewTracks={csvPreview}
-    duplicateGroups={downloadDuplicateGroups(projection.library?.tracks ?? [], allowedDownloadDuplicates)}
+    duplicateGroups={duplicateDownloadGroups}
+    onDeleteDuplicate={(trackId) => {
+      const track = projectionRef.current.library?.tracks.find((item) => item.id === trackId);
+      if (track) askConfirm(trackDeleteConfirmation([track], (ids) => deleteTracksWithReview(ids, () => `Deleted the file copy of “${track.title}”.`)));
+    }}
     allowedDuplicates={allowedDownloadDuplicates}
     onRestoreDuplicate={(key) => saveAllowedDownloadDuplicates(allowedDownloadDuplicates.filter((item) => item !== key))}
     onAllowDuplicates={(keys) => saveAllowedDownloadDuplicates([...new Set([...allowedDownloadDuplicates, ...keys])])}
@@ -1790,7 +1797,16 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 470)), playlist });
   }, []);
 
-  return <div ref={shellRef} className={`luno-shell${queueOpen ? "" : " no-queue"}${sidebarCollapsed ? " no-sidebar" : ""}${focusMode ? " focus-mode" : ""}${videoFullscreenClass(videoFullscreen)}`} style={{ gridTemplateColumns: `${showSidebar ? sidebarWidth : 0}px minmax(0, 1fr) ${showQueue ? queueWidth : 0}px` }} data-route={route} data-backend-state={available ? "available" : "unavailable"} data-video-state={connectedVideo ? "connected" : "unconnected"} data-video-fullscreen={videoFullscreen ? "true" : "false"} data-migration-state={migrationStatus?.status ?? "unknown"}>
+  return <SongSelectionSurface tracks={tracks} available={available} onAction={async (action, items) => {
+    if (!bridge || !available) throw new Error("The library is not connected.");
+    setContextMenu(null);
+    const ids = items.map((item) => item.id);
+    if (action === "queue") await bridge.addToQueue(ids);
+    else if (action === "playlist") setPlaylistPickerSelection({ tracks: items, title: `Add ${items.length} selected songs to playlist` });
+    else if (action === "new-playlist") createPlaylist(items);
+    else if (action === "favorites") await addSongsToFavorites(items, (id) => bridge.toggleFavorite(id));
+    else if (action === "delete") askConfirm(trackDeleteConfirmation(items, (selectedIds) => deleteTracksWithReview(selectedIds, (result) => `Deleted ${result.deleted} selected file copies.`)));
+  }}><div ref={shellRef} className={`luno-shell${queueOpen ? "" : " no-queue"}${sidebarCollapsed ? " no-sidebar" : ""}${focusMode ? " focus-mode" : ""}${videoFullscreenClass(videoFullscreen)}`} style={{ gridTemplateColumns: `${showSidebar ? sidebarWidth : 0}px minmax(0, 1fr) ${showQueue ? queueWidth : 0}px` }} data-route={route} data-backend-state={available ? "available" : "unavailable"} data-video-state={connectedVideo ? "connected" : "unconnected"} data-video-fullscreen={videoFullscreen ? "true" : "false"} data-migration-state={migrationStatus?.status ?? "unknown"}>
     <header className="luno-topbar" data-tauri-drag-region onPointerDown={startWindowDrag}>
       <nav className="luno-page-history" aria-label="Page history">
         <button className="luno-icon-button" type="button" aria-label="Go back" title="Go back" disabled={pageHistory.index === 0} onClick={() => travelPage(-1)}><IconChevronLeft size={18} /></button>
@@ -1884,7 +1900,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     {playlistSyncLog && <PlaylistSyncLogDialog playlistName={playlistSyncLog.name} entries={playlistSyncLog.entries} loading={playlistSyncLog.loading} error={playlistSyncLog.error} onClose={() => setPlaylistSyncLog(null)} />}
     {playlistSyncErrors && <PlaylistSyncErrorsDialog playlistName={playlistSyncErrors.name} entries={playlistSyncErrors.entries} loading={playlistSyncErrors.loading} error={playlistSyncErrors.error} onClose={() => setPlaylistSyncErrors(null)} />}
     {playlistSyncReview && <PlaylistSyncReviewDialog playlistName={playlistSyncReview.playlist.name} entries={playlistSyncReview.entries} loading={playlistSyncReview.loading} error={playlistSyncReview.error} candidateLookups={playlistSyncReview.candidateLookups} selectingVideoId={playlistSyncReview.selectingVideoId} downloadingVideoId={playlistSyncReviewDownloadingVideoId} syncing={!!activePlaylistSync} onFindCandidates={findPlaylistSyncCandidates} onChooseCandidate={downloadPlaylistSyncCandidate} onRetryOriginal={retryOriginalPlaylistSource} onSyncSelected={syncSelectedPlaylistSources} onResolveWithLocalMatch={(videoId, match) => persistPlaylistSyncResolution(videoId, match)} onDismissIssue={(videoId) => persistPlaylistSyncResolution(videoId, null)} onClose={() => { if (!playlistSyncReview.selectingVideoId && !playlistSyncReviewDownloadingVideoId && !activePlaylistSync) setPlaylistSyncReview(null); }} />}
-  </div>;
+  </div></SongSelectionSurface>;
 }
 
 export function safeVideoSource(sourceUrl: string | null | undefined, stagedPath: string | null | undefined): string | null {

@@ -179,7 +179,7 @@ envelope shapes (`docs/modules/contracts.md`).
   covers share a four-track artwork mosaic.
 - Downloader search remains usable during transfers. Each clicked result
   captures its source, metadata, and chosen destination before another search
-  can replace the results; up to three jobs run concurrently, each with its own
+  can replace the results; one normal job runs at a time, each with its own
   progress and cancellation control. The selected destination is owned by
   Shell, survives route changes and library snapshots, and defaults to
   Unsorted for a fresh session.
@@ -224,6 +224,17 @@ envelope shapes (`docs/modules/contracts.md`).
   lists the affected files and requires a second confirmation. Removing one
   physical copy while another identical copy remains proceeds without the
   second warning; confirmation is rechecked at deletion time.
+- Holding a library song for 500 ms enters shared selection across library,
+  recent, Home, queue, and duplicate-review rows. Movement/scrolling cancels a
+  pending hold; the held release never triggers playback. Checkboxes toggle
+  physical track IDs. The batch menu offers queue, existing/new playlist,
+  favorites (add only), and confirmed file deletion, with Deselect all,
+  Done, and Escape to exit. Snapshot refreshes prune vanished IDs. Ordinary
+  clicks and right-click menus retain their behavior outside selection.
+- Duplicate review shows each physical track ID with its playlist names and a
+  Delete copy action. It reuses the in-app delete confirmation and backend
+  final-copy review; a title/group never identifies files to remove. Kept-group
+  Import and Export controls have a separate flex gap.
 - The track context menu is available from every track surface that shows a
   real library track: library/recent rows, the queue, home cards, and the
   footer now-playing track. Edit/delete are hidden for non-library

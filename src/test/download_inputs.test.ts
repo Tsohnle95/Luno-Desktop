@@ -13,6 +13,17 @@ describe("unified download sources", () => {
     row.source = "ytsearch1:Other song"; row.title = "Other song";
     expect(queued).toEqual({ id: "csv:1", source: "ytsearch1:Artist Song", destination: "/music/Playlist", title: "Song", artist: "Artist" });
   });
+  it("retains each duplicate copy ID and its actual playlist membership", () => {
+    const track = { id: "one", title: "Song", artist: "Artist", path: "/music/A/song.m4a", album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null };
+    const groups = downloadDuplicateGroups([track, { ...track, id: "two", path: "/music/B/song.m4a" }], [], [
+      { id: "a", name: "Chill", path: "/music/A", url: null, ordered_track_ids: ["one"] },
+      { id: "b", name: "Favorites mix", path: "/music/B", url: null, ordered_track_ids: ["two"] },
+    ]);
+    expect(groups[0].tracks).toEqual([
+      { id: "one", title: "Song", artist: "Artist", path: "/music/A/song.m4a", playlists: ["Chill"] },
+      { id: "two", title: "Song", artist: "Artist", path: "/music/B/song.m4a", playlists: ["Favorites mix"] },
+    ]);
+  });
   it("keeps duplicate review preferences reversible without changing source tracks", () => {
     const track = { id: "one", title: "Song", artist: "Artist", path: "/music/a.m4a", album: null, duration_ms: null, artwork_url: null, favorite: false, provider: null };
     const tracks = [track, { ...track, id: "two", path: "/music/other/a.m4a" }];

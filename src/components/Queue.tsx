@@ -1,3 +1,4 @@
+import { SongSelectCheckbox } from "./SongSelection";
 import { useLayoutEffect, useRef, useState, type MouseEvent, type UIEvent } from "react";
 import type { Track } from "../shared/contracts";
 import { RecommendationArtworkImage } from "./RecommendationArtwork";
@@ -99,7 +100,7 @@ export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onF
     <div ref={scrollRef} className="luno-queue-body luno-scroll" onScroll={rememberScroll}>
       {current && !recent ? <>
         <h2 className="luno-queue-section">Now playing</h2>
-        <div className="luno-queue-now-card" onContextMenu={(event) => onContextMenu?.(event, current)}>
+        <div data-track-id={current.id} className="luno-queue-now-card" onContextMenu={(event) => onContextMenu?.(event, current)}><SongSelectCheckbox track={current} />
            <RecommendationArtworkImage artist={current.artist ?? ""} title={current.title} artworkUrl={artwork[current.id] ?? current.artwork_url} loading={artworkState.loading.has(current.id)} eager alt="" size={56} />
           <span className="luno-queue-copy"><strong>{current.title}</strong><small>{current.artist ?? "Unknown artist"}</small></span>
           {current.favorite && <span className="luno-queue-favorite" aria-label="Favorite">★</span>}
@@ -115,12 +116,12 @@ export function Queue({ tracks, currentIndex = null, recent = false, onPlay, onF
       {renderedRows.map((track, renderedIndex) => {
         const index = start + renderedIndex;
         const queueIndex = recent ? index : queueOffset + index;
-        return <div key={`${track.id}-${queueIndex}`} role="button" tabIndex={0}
+        return <div data-track-id={track.id} key={`${track.id}-${queueIndex}`} role="button" tabIndex={0}
           className="luno-queue-row"
           onContextMenu={(event) => onContextMenu?.(event, track)}
           onClick={() => onPlay?.(track, queueIndex)}
           onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onPlay?.(track, queueIndex); } }}>
-           <RecommendationArtworkImage artist={track.artist ?? ""} title={track.title} artworkUrl={artwork[track.id] ?? track.artwork_url} loading={artworkState.loading.has(track.id)} eager alt="" size={40} />
+           <SongSelectCheckbox track={track} /><RecommendationArtworkImage artist={track.artist ?? ""} title={track.title} artworkUrl={artwork[track.id] ?? track.artwork_url} loading={artworkState.loading.has(track.id)} eager alt="" size={40} />
           <span className="luno-queue-copy"><strong title={track.title}>{track.title}</strong><small>{track.artist ?? "Unknown artist"}</small></span>
           {track.favorite && <span className="luno-queue-favorite" aria-label="Favorite">★</span>}
           {!recent && <span className="luno-queue-actions">

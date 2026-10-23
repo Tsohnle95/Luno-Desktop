@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
+import { trackDeleteConfirmation } from "../../state/track_actions";
+import { downloadDuplicateGroups } from "../../state/download_duplicates";
+import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DownloaderView, DownloadSyncPanel, DownloadSongRow, destinationName, filterDownloadDestinations, linkedPlaylistForDestination } from "../../views/DownloaderView";
+import { DownloaderView, DuplicateReview, DownloadSyncPanel, DownloadSongRow, destinationName, filterDownloadDestinations, linkedPlaylistForDestination } from "../../views/DownloaderView";
 import { LibraryView } from "../../views/LibraryView";
 
 const runningJob = { id: "job-1", kind: "single" as const, state: "running" as const, track_id: null, progress: 0.5, generation: 1 };
@@ -174,5 +177,38 @@ describe("Gate 6 library view", () => {
     expect(html).toContain("luno-hero");
     expect(html).toContain("luno-table-head");
     expect(html).toContain("luno-track-scroller");
+  });
+});
+
+function elements(node: ReactNode): ReactElement<Record<string, unknown>>[] {
+  return Children.toArray(node).flatMap((child) => {
+    if (!isValidElement<Record<string, unknown>>(child)) return [];
+    return [child, ...elements(child.props.children as ReactNode)];
+  });
+}
+describe("duplicate copy controls", () => {
+  it("shows each copy's playlist and requests only the clicked ID, without deleting", async () => {
+    const first = { ...libraryTrack("copy-a", "Same song", null), path: "/music/Chill/song.m4a" };
+    const second = { ...first, id: "copy-b", path: "/music/Rock/song.m4a" };
+    const groups = downloadDuplicateGroups([first, second], [], [
+      { id: "p1", name: "Chill", path: "/music/Chill", url: null, ordered_track_ids: [first.id] },
+      { id: "p2", name: "Rock", path: "/music/Rock", url: null, ordered_track_ids: [second.id] },
+    ]);
+    const remove = vi.fn().mockResolvedValue(undefined);
+    let confirmation: ReturnType<typeof trackDeleteConfirmation> | undefined;
+    const onDelete = vi.fn((id: string) => { confirmation = trackDeleteConfirmation([first, second].filter((track) => track.id === id), remove); });
+    const view = DuplicateReview({ groups, allowed: [], onDelete });
+    const html = renderToStaticMarkup(view);
+    expect(html).toContain("Chill"); expect(html).toContain("Rock");
+    expect(html).toContain('aria-label="Delete Same song from Rock"');
+    expect(html).toContain('class="luno-duplicate-transfer"');
+    const button = elements(view).find((node) => node.props["aria-label"] === "Delete Same song from Rock")!;
+    (button.props.onClick as () => void)();
+    expect(onDelete).toHaveBeenCalledWith("copy-b");
+    expect(remove).not.toHaveBeenCalled();
+    expect(confirmation?.title).toBe("Delete this file copy");
+    await confirmation?.onConfirm();
+    expect(remove).toHaveBeenCalledExactlyOnceWith(["copy-b"]);
+    expect(first.path).toBe("/music/Chill/song.m4a");
   });
 });

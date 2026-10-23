@@ -1,3 +1,4 @@
+import { SongSelectCheckbox } from "./SongSelection";
 import type { MouseEvent } from "react";
 import type { Track } from "../shared/contracts";
 import { RecommendationArtworkImage } from "./RecommendationArtwork";
@@ -41,9 +42,10 @@ export function formatAddedDate(ms: number | null | undefined) {
 export function TrackRow({ track, index, playlistName, selected = false, playing = false, artwork, artworkLoading = false, durationMs, durationLoading = false, onClick, onFavoriteToggle, onContextMenu, backendAvailable = true }: TrackRowProps) {
   const addedAt = track.added_ms != null && Number.isFinite(track.added_ms) && track.added_ms >= 0 ? new Date(track.added_ms) : null;
   const hasAddedAt = addedAt != null && Number.isFinite(addedAt.getTime());
-  return <div className={`luno-track-row${selected ? " is-selected" : ""}${playing ? " is-playing" : ""}`} role="button" tabIndex={backendAvailable ? 0 : -1}
+  return <div className={`luno-track-row${selected ? " is-selected" : ""}${playing ? " is-playing" : ""}`} data-track-id={track.id} role="button" tabIndex={backendAvailable ? 0 : -1}
     aria-current={playing ? "true" : undefined} aria-disabled={!backendAvailable} onClick={() => backendAvailable && onClick?.(track)} onContextMenu={(event) => { if (backendAvailable) onContextMenu?.(event, track); }}
     onKeyDown={(event) => { if (backendAvailable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onClick?.(track); } }}>
+    <SongSelectCheckbox track={track} />
     <span className="luno-track-grid">
       <span className="luno-track-cell-index" aria-hidden="true">
         {!playing && <IconPlay size={14} className="luno-track-hover-play" />}

@@ -79,3 +79,11 @@
 .luno-download-linked-playlist strong { font-size:13px; font-weight:650; }
 .luno-download-linked-playlist small { font-size:11px; color:var(--luno-text-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 @media(max-width:600px) { .luno-download-pagination { align-items:start; flex-direction:column; } .luno-download-sync-heading,.luno-download-sync-submit { align-items:start; flex-direction:column; } }
+.luno-duplicate-transfer { display:flex; align-items:center; gap:16px; }
+.luno-duplicate-transfer button,.luno-duplicate-transfer label { border:0; background:var(--luno-bg-3); color:var(--luno-text); border-radius:6px; padding:7px 12px; cursor:pointer; font-size:12px; }
+.luno-duplicate-copy { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 0; border-bottom:1px solid var(--luno-border); }
+.luno-duplicate-copy > div { display:grid; gap:4px; min-width:0; }
+.luno-duplicate-copy strong { font-size:13px; font-weight:650; }
+.luno-duplicate-copy span { font-size:12px; color:var(--luno-text-2); }
+.luno-duplicate-copy small { color:var(--luno-text-3,var(--luno-text-2)); font-size:11px; overflow-wrap:anywhere; }
+.luno-duplicate-copy .is-danger { color:var(--luno-red); flex-shrink:0; }

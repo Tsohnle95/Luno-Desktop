@@ -1,3 +1,4 @@
+import { SongSelectCheckbox } from "../components/SongSelection";
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { Playlist, Track } from "../shared/contracts";
 import { RecommendationArtworkImage } from "../components/RecommendationArtwork";
@@ -179,10 +180,10 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
 
 
   const trackCard = (list: Track[], subtitle?: (track: Track) => string) => (track: Track) => (
-    <button className="luno-card" type="button" key={track.id} onClick={() => playFrom(list)(track)} onContextMenu={(event) => onTrackContextMenu?.(event, track)} disabled={!backendAvailable}>
-      <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} loading={artworkState.loading.has(track.id)} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
+    <div className="luno-card" data-track-id={track.id} role="button" tabIndex={backendAvailable ? 0 : -1} onKeyDown={(event) => { if (backendAvailable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); playFrom(list)(track); } }} key={track.id} onClick={() => backendAvailable && playFrom(list)(track)} onContextMenu={(event) => onTrackContextMenu?.(event, track)} aria-disabled={!backendAvailable}>
+      <SongSelectCheckbox track={track} /><RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} loading={artworkState.loading.has(track.id)} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
       <span className="luno-card-copy"><strong title={track.title}>{track.title}</strong><small>{subtitle?.(track) ?? track.artist ?? "Unknown artist"}</small></span>
-    </button>
+    </div>
   );
 
   const sectionHead = (title: string, action?: { label: string; onAction: () => void }) => (
@@ -210,10 +211,10 @@ export function HomeView({ allTracksCount, madeForYou, favorites, recentTracks, 
         ? <p className="luno-empty-note">Nothing yet — play something and it lands here.</p>
         : <div className="luno-card-row luno-scroll">{recentTracks.map((track, index) => (
           // History can legitimately contain a track twice — index keeps keys unique.
-          <button className="luno-card" type="button" key={`${track.id}-${index}`} onClick={() => playFrom(recentTracks)(track)} onContextMenu={(event) => onTrackContextMenu?.(event, track)} disabled={!backendAvailable}>
-            <RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} loading={artworkState.loading.has(track.id)} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
+          <div className="luno-card" data-track-id={track.id} role="button" tabIndex={backendAvailable ? 0 : -1} onKeyDown={(event) => { if (backendAvailable && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); playFrom(recentTracks)(track); } }} key={`${track.id}-${index}`} onClick={() => backendAvailable && playFrom(recentTracks)(track)} onContextMenu={(event) => onTrackContextMenu?.(event, track)} aria-disabled={!backendAvailable}>
+            <SongSelectCheckbox track={track} /><RecommendationArtworkImage className="luno-card-artwork" artworkUrl={artwork[track.id] ?? track.artwork_url} loading={artworkState.loading.has(track.id)} artist={track.artist ?? ""} title={track.title} alt="" size="100%" />
             <span className="luno-card-copy"><strong title={track.title}>{track.title}</strong><small>{track.artist ?? "Unknown artist"}</small></span>
-          </button>
+          </div>
         ))}</div>}
     </section>
 

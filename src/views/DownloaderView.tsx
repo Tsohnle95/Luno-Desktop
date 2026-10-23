@@ -1,3 +1,4 @@
+import { SongSelectCheckbox } from "../components/SongSelection";
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import type { DownloadJob, Playlist, PlaylistDownloadPreview } from "../shared/contracts";
 import { RecommendationArtworkImage } from "../components/RecommendationArtwork";
@@ -9,7 +10,7 @@ import { DownloadTabs, type DownloadTab } from "../components/DownloadTabs";
 
 export interface DownloadSearchResult { id: string; title: string; artist?: string; duration?: string; thumbnailUrl?: string; source?: string }
 export interface DownloadPreview { id: string; title: string; artist?: string; source?: string }
-export interface DuplicateGroup { key: string; tracks: string[] }
+import type { DuplicateGroup } from "../state/download_duplicates";
 export interface DownloaderViewProps {
   destination?: string | null; jobs?: Record<string, DownloadJob>; jobErrors?: Record<string, string>; searchResults?: DownloadSearchResult[];
   previewTracks?: DownloadPreview[]; activity?: DownloadListItem[]; duplicateGroups?: DuplicateGroup[];
@@ -21,6 +22,7 @@ export interface DownloaderViewProps {
   onImportCsv?: (file: File) => void; onPreview?: (query: string, kind: "youtube" | "csv") => void;
   onDownload?: (ids: string[], destination: string) => void; onSync?: (playlist: Playlist) => void;
   onCancel?: (jobId: string) => void; onCancelItem?: (item: DownloadListItem) => void; onRetryItem?: (item: DownloadListItem) => void;
+  onDeleteDuplicate?: (trackId: string) => void;
   onAllowDuplicates?: (keys: string[]) => void; onRestoreDuplicate?: (key: string) => void;
   onExportAllowed?: () => void; onImportAllowed?: (file: File) => void; onCreateDestination?: () => void;
 }
@@ -113,7 +115,7 @@ export function DownloadSongRow({ item, onDownload, onCancel, onRetry }: {
   </div>;
 }
 
-export function DownloaderView({ playlistPreview, searchHasMore = true, syncPaused, onResumeSync, onSyncAll, onSyncUrl, syncStatus, jobs = {}, jobErrors = {}, searchResults = [], previewTracks = [], activity = [], duplicateGroups = [], allowedDuplicates = [], destinations = ["Unsorted"], defaultDestination, destination: controlledDestination, syncPlaylists = [], searching = false, error = null, onSearch, onDestinationChange, onImportCsv, onPreview, onDownload, onSync, onCancel, onCancelItem, onRetryItem, onAllowDuplicates, onRestoreDuplicate, onExportAllowed, onImportAllowed, onCreateDestination }: DownloaderViewProps) {
+export function DownloaderView({ playlistPreview, searchHasMore = true, syncPaused, onResumeSync, onSyncAll, onSyncUrl, syncStatus, jobs = {}, jobErrors = {}, searchResults = [], previewTracks = [], activity = [], duplicateGroups = [], allowedDuplicates = [], destinations = ["Unsorted"], defaultDestination, destination: controlledDestination, syncPlaylists = [], searching = false, error = null, onSearch, onDestinationChange, onImportCsv, onPreview, onDownload, onSync, onCancel, onCancelItem, onRetryItem, onDeleteDuplicate, onAllowDuplicates, onRestoreDuplicate, onExportAllowed, onImportAllowed, onCreateDestination }: DownloaderViewProps) {
   const [tab, setTab] = useState<DownloadTab>("search");
   const [query, setQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState("");
@@ -158,7 +160,7 @@ export function DownloaderView({ playlistPreview, searchHasMore = true, syncPaus
         </section>
       </>}
       {tab === "sync" && <DownloadSyncPanel destinations={destinations} destination={destination} playlists={syncPlaylists} busy={syncBusy} paused={syncPaused} onResume={onResumeSync} status={syncStatus} error={error} onDestinationChange={setDestination} onCreateDestination={onCreateDestination} onSync={onSync} onSyncAll={onSyncAll} onSyncUrl={onSyncUrl}>{syncJobs.map((job) => <DownloadSongRow key={job.id} item={{ id: job.id, title: job.current_item ?? "Playlist sync", activity: { id: job.id, source: job.id, destination, jobId: job.id, status: job.state, progress: job.progress, error: jobErrors[job.id] } }} onCancel={() => onCancel?.(job.id)} />)}</DownloadSyncPanel>}
-      {tab === "duplicates" && <div className="luno-download-duplicates"><h2>Duplicate review</h2><p>Keep the copies you want. Your files stay protected.</p>{duplicateGroups.length === 0 && <p>No duplicate groups to review.</p>}{duplicateGroups.map((group) => <fieldset key={group.key}><legend>{group.key}</legend>{group.tracks.map((track) => <div key={track}>{track}</div>)}<button className="luno-download-batch" type="button" onClick={() => onAllowDuplicates?.([group.key])}>Keep this group</button></fieldset>)}<div className="luno-download-section-title"><h2>Kept duplicate groups</h2><div><button type="button" onClick={onExportAllowed}>Export</button><label>Import<input type="file" accept="application/json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportAllowed?.(file); }} /></label></div></div><p>Keeping a group hides it from review and never overwrites a file.</p>{allowedDuplicates.map((key) => <div className="luno-kept-duplicate" key={key}><span>{key}</span><button type="button" onClick={() => onRestoreDuplicate?.(key)}>Review again</button></div>)}</div>}
+      {tab === "duplicates" && <DuplicateReview groups={duplicateGroups} allowed={allowedDuplicates} onDelete={onDeleteDuplicate} onKeep={(key) => onAllowDuplicates?.([key])} onRestore={onRestoreDuplicate} onExport={onExportAllowed} onImport={onImportAllowed} />}
     </DownloadTabs>
   </section>;
 }
@@ -180,5 +182,18 @@ export function DownloadSyncPanel({ destinations, destination, playlists, busy, 
     {status && <p role="status">{status}</p>}{paused && <button type="button" className="luno-download-action" onClick={onResume}>Continue sync</button>}{error && <p className="luno-download-input-error" role="alert">{error}</p>}
     {linked.length > 0 && <section aria-label="Linked playlists"><div className="luno-download-section-title"><h2>Linked playlists</h2><span>{linked.length} playlists</span></div>{linked.map((playlist) => <div className="luno-download-linked-playlist" key={playlist.id}><div><strong>{playlist.name}</strong><small>{playlist.url}</small></div><button type="button" className="luno-download-batch" disabled={busy} aria-label={`Sync ${playlist.name}`} onClick={() => onSync?.(playlist)}>Sync</button></div>)}</section>}
     {children}
+  </div>;
+}
+
+
+export function DuplicateReview({ groups, allowed, onDelete, onKeep, onRestore, onExport, onImport }: {
+  groups: DuplicateGroup[]; allowed: string[]; onDelete?: (trackId: string) => void; onKeep?: (key: string) => void;
+  onRestore?: (key: string) => void; onExport?: () => void; onImport?: (file: File) => void;
+}) {
+  return <div className="luno-download-duplicates"><h2>Duplicate review</h2><p>Review each physical copy and its playlist. Deletion requires confirmation.</p>
+    {groups.length === 0 && <p>No duplicate groups to review.</p>}
+    {groups.map((group) => <fieldset key={group.key}><legend>{group.tracks[0]?.artist ?? "Unknown artist"} — {group.tracks[0]?.title}</legend>{group.tracks.map((track) => <div className="luno-duplicate-copy" key={track.id} data-track-id={track.id}><SongSelectCheckbox track={track} /><div><strong>{track.title}</strong><span>{track.playlists.join(", ") || "No playlist"}</span><small title={track.path ?? undefined}>{track.path?.split(/[\\/]/).pop()}</small></div><button className="luno-download-batch is-danger" type="button" disabled={!onDelete || !track.path} aria-label={`Delete ${track.title} from ${track.playlists.join(", ") || "library"}`} onClick={() => onDelete?.(track.id)}>Delete copy</button></div>)}<button className="luno-download-batch" type="button" onClick={() => onKeep?.(group.key)}>Keep this group</button></fieldset>)}
+    <div className="luno-download-section-title"><h2>Kept duplicate groups</h2><div className="luno-duplicate-transfer"><button type="button" onClick={onExport}>Export</button><label>Import<input aria-label="Import kept duplicate groups" type="file" accept="application/json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) onImport?.(file); event.target.value = ""; }} /></label></div></div><p>Keeping a group hides it from review and never overwrites a file.</p>
+    {allowed.map((key) => <div className="luno-kept-duplicate" key={key}><span>{key}</span><button type="button" onClick={() => onRestore?.(key)}>Review again</button></div>)}
   </div>;
 }
