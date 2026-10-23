@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SongSelectionSurface } from '../components/SongSelection';
 import { TrackRow } from '../components/TrackRow';
+import { DuplicateReview } from '../views/DownloaderView';
+import { downloadDuplicateGroups } from '../state/download_duplicates';
 import { addSongsToFavorites, trackDeleteConfirmation } from '../state/track_actions';
 import type { Track } from '../shared/contracts';
 
@@ -114,5 +117,28 @@ describe('batch mutation boundaries', () => {
     expect(remove).not.toHaveBeenCalled();
     expect(request.title).toBe('Delete 2 file copies');
     await request.onConfirm(); expect(remove).toHaveBeenCalledExactlyOnceWith(['first', 'second']);
+  });
+});
+
+describe('duplicate review DOM controls', () => {
+  it('routes the clicked copy ID and gives Import/Export actual nonzero spacing', () => {
+    const copy = { ...second, title: first.title };
+    const groups = downloadDuplicateGroups([first, copy], []);
+    const onDelete = vi.fn();
+    act(() => root.render(<DuplicateReview groups={groups} allowed={[]} onDelete={onDelete} />));
+    expect(onDelete).not.toHaveBeenCalled();
+    const deleteCopy = host.querySelector<HTMLButtonElement>('[aria-label="Delete First song from B"]')!;
+    expect(deleteCopy.disabled).toBe(false);
+    act(() => deleteCopy.click()); expect(onDelete).toHaveBeenCalledExactlyOnceWith('second');
+    const style = document.createElement('style');
+    style.textContent = readFileSync('src/styles/downloader.css', 'utf8');
+    document.head.appendChild(style);
+    try {
+      const controls = host.querySelector('.luno-duplicate-transfer')!;
+      const computed = getComputedStyle(controls);
+      expect(computed.display).toBe('flex');
+      expect(parseFloat(computed.gap)).toBeGreaterThanOrEqual(8);
+      expect(controls.textContent).toContain('Export'); expect(controls.textContent).toContain('Import');
+    } finally { style.remove(); }
   });
 });
