@@ -164,6 +164,14 @@ What it does not own: library snapshots and track identity
 - Master volume is shared atomically with the macOS output callback. Mute
   applies during a slow producer shutdown or track load, without waiting for
   the backend mutex, and survives each output-state replacement.
+- A healthy macOS output stream survives track changes, stop, and pause/resume.
+  Its callback follows a replaceable track-state slot; retired decoders retain
+  only their old buffers. Decoder cancellation never joins blocked file reads
+  on the transport path: finished workers are reaped without waiting, and
+  shutdown joins the remaining workers. At most eight retired producers may
+  remain blocked before new loads report an I/O error. Device errors flag the
+  shared output stream for rebuilding on the next play, independently of the
+  selected track.
 - The macOS decoder supports WebM audio with Vorbis or mono/stereo
   Opus alongside the existing M4A/AAC, MP3, FLAC, and WAV formats. It selects
   a registered audio codec from the container's tracks, skips video tracks,
@@ -211,6 +219,10 @@ media key → MediaKeys → handle_media_key → playback command → dispatch
 ## Tests
 
 - `src-tauri/src/gate3_tests.rs` — playback/queue semantics.
+- `playback/backend_adapter.rs` — blocked-decoder replacement/pause, stream
+  retention, isolated samples, and volume continuity. Explicit live-device
+  timing check: `cargo test --manifest-path src-tauri/Cargo.toml
+  native_output_transport_latency -- --ignored --nocapture` (muted output).
 - `state.rs` unit tests — shuffle walk-back, staging pileup/pressure,
   pause-staging, corpse restage, resume kick, prefetch plan, stale-context
   healing.
