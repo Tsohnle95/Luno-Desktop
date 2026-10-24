@@ -1451,6 +1451,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn toggling_shuffle_publishes_the_current_audio_position() {
+        let state = AppState::new(8);
+        let current = TrackId::new("shuffle-position-current").unwrap();
+        let context = vec![current.clone(), TrackId::new("shuffle-position-next").unwrap()];
+        state.playback.lock().unwrap().replace(context, 0);
+        *state.current_track.lock().unwrap() = Some(current);
+        *state.playback_status.lock().unwrap() = crate::contracts::types::PlaybackStatus::Playing;
+        let probe = PlaybackProbe::default();
+        let mut backend = probe.clone();
+        backend.load(Path::new("fixture.wav")).unwrap();
+        backend.seek(Duration::from_secs(4)).unwrap();
+        backend.play().unwrap();
+        *state.audio.lock().unwrap() = Box::new(backend);
+
+        for request_id in ["shuffle-position-on", "shuffle-position-off"] {
+            state.dispatch(CommandEnvelope {
+                version: CONTRACT_VERSION,
+                request_id: request_id.into(),
+                command: Command::ToggleShuffle,
+            }).unwrap();
+        }
+        let positions = std::cell::RefCell::new(Vec::new());
+        state.drain_events(|envelope| {
+            if let Event::PlaybackSnapshot { snapshot } = &envelope.event {
+                positions.borrow_mut().push(snapshot.position_ms);
+            }
+            Ok(())
+        }).unwrap();
+        assert_eq!(positions.borrow().as_slice(), &[4_000, 4_000], "queue-only shuffle snapshots must preserve the audio cursor in both directions");
+    }
+
     #[test]
     fn disabling_shuffle_during_discovery_updates_only_physical_order() {
         let state = AppState::new(8);
@@ -8605,13 +8638,21 @@ fn promotion_error(error: PromotionError) -> ContractError {
     }
 
     fn publish_queue_snapshot(&self) {
-        let status = {
-            #[cfg(target_os = "macos")]
-            { *self.playback_status.lock().unwrap_or_else(|e| e.into_inner()) }
-            #[cfg(not(target_os = "macos"))]
-            { crate::contracts::types::PlaybackStatus::Stopped }
+        #[cfg(target_os = "macos")]
+        let (status, position, duration) = {
+            let status = *self.playback_status.lock().unwrap_or_else(|e| e.into_inner());
+            let (position, duration) = if matches!(status, crate::contracts::types::PlaybackStatus::Playing | crate::contracts::types::PlaybackStatus::Paused) {
+                self.audio.lock().map(|backend| {
+                    (backend.position().unwrap_or_default(), backend.duration().ok().flatten())
+                }).unwrap_or_default()
+            } else {
+                (Duration::ZERO, None)
+            };
+            (status, position, duration)
         };
-        let snapshot = self.playback_snapshot(status, Duration::ZERO, None);
+        #[cfg(not(target_os = "macos"))]
+        let (status, position, duration) = (crate::contracts::types::PlaybackStatus::Stopped, Duration::ZERO, None);
+        let snapshot = self.playback_snapshot(status, position, duration);
         self.publish_playback(snapshot, None);
     }
 

@@ -84,6 +84,9 @@ What it does not own: library snapshots and track identity
   never re-derives it from `track_started` (duplicate ids made first-occurrence
   `indexOf` regress the queue panel). `audible_track_id` is separately
   authoritative for the sounding item when it is outside the physical queue.
+- Queue-only snapshot publications (shuffle, repeat, and queue edits) preserve
+  the active audio backend's position and duration; they do not restart the
+  displayed playback clock at zero.
 - Each async audio start and heartbeat carries a playback-owner generation.
   Selecting a queue item claims the new owner before replacing the queue;
   stale load failures, EOF callbacks, and stall recovery cannot advance or
@@ -219,6 +222,8 @@ media key → MediaKeys → handle_media_key → playback command → dispatch
 ## Tests
 
 - `src-tauri/src/gate3_tests.rs` — playback/queue semantics.
+- `state.rs` unit tests — toggling shuffle on and off preserves the active
+  playback position in each published snapshot.
 - `playback/backend_adapter.rs` — blocked-decoder replacement/pause, stream
   retention, isolated samples, and volume continuity. Explicit live-device
   timing check: `cargo test --manifest-path src-tauri/Cargo.toml
