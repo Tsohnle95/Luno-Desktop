@@ -158,6 +158,24 @@ export function libraryFavoriteTarget(displayed: Track | null, libraryTracks: Re
   return libraryTracks.get(displayed.id) ?? null;
 }
 
+/**
+ * Right-click target resolution. A library id unlocks file actions (edit,
+ * delete, queue); a recommendation/preview key lives outside the library but
+ * can still be saved into a physical playlist through the discovery save path.
+ */
+export function trackMenuTarget(
+  item: Track,
+  libraryTracks: readonly Track[] | null | undefined,
+  recommendations: ReadonlyMap<string, Track>,
+): { track: Track; libraryTrack: boolean; recommendationKey?: string } {
+  const libraryTrack = libraryTracks?.find((track) => track.id === item.id) ?? null;
+  return {
+    track: libraryTrack ?? item,
+    libraryTrack: !!libraryTrack,
+    recommendationKey: !libraryTrack && recommendations.has(item.id) ? item.id : undefined,
+  };
+}
+
 export function recommendationTrackMap(items: Recommendation[]): Map<string, Track> {
   const tracks = new Map<string, Track>();
   for (const item of items) {
@@ -264,8 +282,11 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
   const [commandError, setCommandError] = useState<string | null>(null);
   const [videoRequestError, setVideoRequestError] = useState<{ trackId: string; message: string } | null>(null);
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; track?: Track; playlist?: Playlist; libraryTrack?: boolean } | null>(null);
-  const [playlistPickerSelection, setPlaylistPickerSelection] = useState<{ tracks: Track[]; title: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; track?: Track; playlist?: Playlist; libraryTrack?: boolean; recommendationKey?: string } | null>(null);
+  const [playlistPickerSelection, setPlaylistPickerSelection] = useState<{ tracks: Track[]; title: string; recommendationKey?: string } | null>(null);
+  // Save-to-playlist requests started from a recommendation surface; the
+  // terminal SaveState event names the outcome the menu started.
+  const pendingRecommendationSaves = useRef(new Map<string, { title: string; playlist: string }>());
   const [editTrack, setEditTrack] = useState<Track | null>(null);
   const [editTrackBusy, setEditTrackBusy] = useState(false);
   const [editTrackError, setEditTrackError] = useState<string | null>(null);
@@ -333,6 +354,27 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     const timer = window.setTimeout(() => setCommandNotice(null), 5000);
     return () => window.clearTimeout(timer);
   }, [commandNotice]);
+  // Saving a recommendation is asynchronous (staged promotion or a durable
+  // download), so report the terminal SaveState instead of assuming success
+  // when the command resolves.
+  useEffect(() => {
+    const pending = pendingRecommendationSaves.current;
+    if (pending.size === 0) return;
+    for (const [key, request] of [...pending]) {
+      const state = projection.saved[key];
+      if (!state || state.state === "saving" || state.state === "queued") continue;
+      pending.delete(key);
+      if (state.state === "saved") {
+        setCommandError(null);
+        setCommandNotice(state.already_saved
+          ? `“${request.title}” is already in “${request.playlist}”.`
+          : `Added “${request.title}” to “${request.playlist}”.`);
+      } else {
+        setCommandNotice(null);
+        setCommandError(state.error ? `${request.title}: ${state.error}` : `Could not add “${request.title}” to “${request.playlist}”.`);
+      }
+    }
+  }, [projection.saved]);
   useEffect(() => {
     if (!activePlaylistSync) return;
     const job = projection.jobs[activePlaylistSync.jobId];
@@ -482,8 +524,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
     event.preventDefault(); event.stopPropagation();
     // Recommendation/preview rows live outside the library; edit/delete only
     // apply to real library files, so flag membership for the menu.
-    const libraryTrack = projection.library?.tracks.find((track) => track.id === item.id) ?? null;
-    setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 350)), track: libraryTrack ?? item, libraryTrack: !!libraryTrack });
+    const target = trackMenuTarget(item, projection.library?.tracks, recommendationTracks);
+    setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 350)), ...target });
   };
   const cleanPlaylistName = (value: string) => value.trim().replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").slice(0, 96);
   // Copying into a playlist folder is asynchronous (the scanner rebuilds
@@ -511,6 +553,22 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         }
       })
       .catch((error: unknown) => setCommandError(normalizeRuntimeCommandError(error)));
+  };
+  // Recommendations are not library files yet, so adding one to a playlist
+  // runs the discovery save (staged promotion or a durable download) and the
+  // terminal SaveState reports the outcome.
+  const saveRecommendationToPlaylist = (key: string, title: string, playlist: Pick<Playlist, "id" | "name">) => {
+    if (!bridge || !available) return;
+    pendingRecommendationSaves.current.set(key, { title, playlist: playlist.name });
+    setCommandError(null);
+    setCommandNotice(`Adding “${title}” to “${playlist.name}”…`);
+    void bridge.saveRecommendation(key, playlist.id)
+      .then(() => setCommandError(null))
+      .catch((error: unknown) => {
+        pendingRecommendationSaves.current.delete(key);
+        setCommandNotice(null);
+        setCommandError(normalizeRuntimeCommandError(error));
+      });
   };
   const createPlaylist = useCallback((
     tracksToAdd: Track[] = [],
@@ -1864,8 +1922,8 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <button role="menuitem" type="button" disabled={!contextMenu.libraryTrack} onClick={() => { runCommand(bridge?.playNext([contextMenu.track!.id])); setContextMenu(null); }}>Play next</button>
         <button role="menuitem" type="button" disabled={!contextMenu.libraryTrack} onClick={() => { runCommand(bridge?.addToQueue([contextMenu.track!.id])); setContextMenu(null); }}>Add to queue</button>
         <hr />
-        <button role="menuitem" type="button" disabled={!contextMenu.libraryTrack} onClick={() => { const item = contextMenu.track!; setPlaylistPickerSelection({ tracks: [item], title: `Add “${item.title}” to playlist` }); setContextMenu(null); }}>Add to playlist…</button>
-        <button role="menuitem" type="button" disabled={!contextMenu.libraryTrack} onClick={() => { createPlaylist([contextMenu.track!]); setContextMenu(null); }}>Add to new playlist…</button>
+        <button role="menuitem" type="button" disabled={!contextMenu.libraryTrack && !contextMenu.recommendationKey} onClick={() => { const item = contextMenu.track!; setPlaylistPickerSelection({ tracks: [item], title: `Add “${item.title}” to playlist`, recommendationKey: contextMenu.recommendationKey }); setContextMenu(null); }}>Add to playlist…</button>
+        <button role="menuitem" type="button" disabled={!contextMenu.libraryTrack && !contextMenu.recommendationKey} onClick={() => { const item = contextMenu.track!; const recommendationKey = contextMenu.recommendationKey; if (recommendationKey) createPlaylist([], (name) => saveRecommendationToPlaylist(recommendationKey, item.title, { id: `playlist:${name}`, name })); else createPlaylist([item]); setContextMenu(null); }}>Add to new playlist…</button>
         {contextMenu.libraryTrack && <button role="menuitem" type="button" onClick={() => { runCommand(bridge?.toggleFavorite(contextMenu.track!.id)); setContextMenu(null); }}>{contextMenu.track.favorite ? "Remove from favorites" : "Add to favorites"}</button>}
         {contextMenu.libraryTrack && <>
           <button role="menuitem" type="button" onClick={() => { const item = contextMenu.track!; setEditTrackError(null); setEditTrack(item); setContextMenu(null); }}>Edit song info…</button>
@@ -1889,7 +1947,7 @@ export function Shell({ views = {}, queue, player, bridge, backendProjection, ba
         <button className="is-danger" role="menuitem" type="button" onClick={() => { const item = contextMenu.playlist!; setContextMenu(null); askConfirm({ title: "Delete playlist", message: `Delete the playlist “${item.name}” and all files inside it?`, confirmLabel: "Delete playlist", danger: true, onConfirm: () => deletePlaylistWithReview(item) }); }}>Delete playlist…</button>
       </> : null}
     </div>}
-    {playlistPickerSelection && <PlaylistPicker title={playlistPickerSelection.title} playlists={(projection.library?.playlists ?? []).filter((playlist) => playlist.name.toLowerCase() !== "unsorted")} selectedTracks={playlistPickerSelection.tracks} tracksById={tracksByIdForQueue} onArtwork={artworkFetcher} onPick={(playlist) => { const items = playlistPickerSelection.tracks; setPlaylistPickerSelection(null); addTracksToPlaylist(items, playlist); }} onCreateNew={() => { const items = playlistPickerSelection.tracks; setPlaylistPickerSelection(null); createPlaylist(items); }} onDismiss={() => setPlaylistPickerSelection(null)} />}
+    {playlistPickerSelection && <PlaylistPicker title={playlistPickerSelection.title} playlists={(projection.library?.playlists ?? []).filter((playlist) => playlist.name.toLowerCase() !== "unsorted" && (!playlistPickerSelection.recommendationKey || !!playlist.path))} selectedTracks={playlistPickerSelection.tracks} tracksById={tracksByIdForQueue} onArtwork={artworkFetcher} onPick={(playlist) => { const items = playlistPickerSelection.tracks; const recommendationKey = playlistPickerSelection.recommendationKey; setPlaylistPickerSelection(null); if (recommendationKey) saveRecommendationToPlaylist(recommendationKey, items[0]?.title ?? "song", playlist); else addTracksToPlaylist(items, playlist); }} onCreateNew={() => { const items = playlistPickerSelection.tracks; const recommendationKey = playlistPickerSelection.recommendationKey; setPlaylistPickerSelection(null); if (recommendationKey) createPlaylist([], (name) => saveRecommendationToPlaylist(recommendationKey, items[0]?.title ?? "song", { id: `playlist:${name}`, name })); else createPlaylist(items); }} onDismiss={() => setPlaylistPickerSelection(null)} />}
     {editTrack && <EditTrackDialog track={editTrack} busy={editTrackBusy} error={editTrackError} onClose={() => { if (!editTrackBusy) { setEditTrack(null); setEditTrackError(null); } }} onSubmit={(value) => { if (!bridge || !available) return; setEditTrackBusy(true); setEditTrackError(null); void bridge.editTrackMetadata(editTrack.id, value.artist, value.title).then(() => { setEditTrackBusy(false); setEditTrack(null); setCommandNotice(`Updated “${[value.artist, value.title].filter(Boolean).join(" — ")}”.`); }).catch((error: unknown) => { setEditTrackBusy(false); setEditTrackError(normalizeRuntimeCommandError(error)); }); }} />}
     {confirmDialog && <ConfirmDialog title={confirmDialog.title} message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} danger={confirmDialog.danger} busy={confirmBusy} error={confirmError} onClose={() => { if (!confirmBusy) { setConfirmDialog(null); setConfirmError(null); } }} onConfirm={() => { const request = confirmDialog; setConfirmBusy(true); setConfirmError(null); void Promise.resolve().then(() => request.onConfirm()).then(() => { setConfirmBusy(false); setConfirmDialog(null); }).catch((error: unknown) => { setConfirmBusy(false); setConfirmError(normalizeRuntimeCommandError(error)); }); }} />}
     {finalCopyDelete && <FinalCopyDeleteDialog files={finalCopyDelete.files} verificationIncomplete={finalCopyDelete.verificationIncomplete} busy={finalCopyDeleteBusy} error={finalCopyDeleteError} onClose={() => { if (!finalCopyDeleteBusy) { setFinalCopyDelete(null); setFinalCopyDeleteError(null); } }} onConfirm={submitFinalCopyDelete} />}

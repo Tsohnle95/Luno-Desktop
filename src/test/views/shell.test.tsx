@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PlayerBar } from "../../components/PlayerBar";
 import { Queue, queueVirtualWindow } from "../../components/Queue";
-import { retainRecommendationTracks, recommendationTrackMap, discoverSessionAttempt, isBusyDownloadError, isMissingConfigurationError, isRetryableRuntimeCommandError, Shell, videoFullscreenClass } from "../../app/Shell";
+import { retainRecommendationTracks, recommendationTrackMap, discoverSessionAttempt, isBusyDownloadError, isMissingConfigurationError, isRetryableRuntimeCommandError, Shell, trackMenuTarget, videoFullscreenClass } from "../../app/Shell";
 import type { BackendProjection } from "../../state/backend_projection";
 
 const projectionTrack = { id: "t1", path: null, title: "Aurora", artist: "Gate Six", album: "Chaos 93", duration_ms: 3000, artwork_url: null, favorite: false, provider: null };
@@ -79,6 +79,18 @@ describe("Gate 6 player bar", () => {
     expect((html.match(/class="luno-queue-row"/g) ?? []).length).toBeLessThanOrEqual(40);
     expect(html).not.toContain("Track 4999");
     expect(queueVirtualWindow(5600, 0, 560, 5000)).toEqual({ start: 88, end: 122 });
+  });
+
+  it("keeps recommendation rows saveable to a playlist from the context menu", () => {
+    const recommendations = recommendationTrackMap([{ artist: "Skrillex", title: "Bangarang", match_score: 1, artwork_url: null }]);
+    const key = previewKey("Skrillex", "Bangarang");
+    const recommended = recommendations.get(key)!;
+
+    expect(trackMenuTarget(recommended, [projectionTrack], recommendations)).toEqual({ track: recommended, libraryTrack: false, recommendationKey: key });
+    // A real library file keeps file-only actions and never claims a recommendation key.
+    expect(trackMenuTarget(projectionTrack, [projectionTrack], recommendations)).toEqual({ track: projectionTrack, libraryTrack: true, recommendationKey: undefined });
+    // A dangling queue id has no save path either.
+    expect(trackMenuTarget({ ...projectionTrack, id: "stale-track" }, [projectionTrack], recommendations)).toEqual({ track: { ...projectionTrack, id: "stale-track" }, libraryTrack: false, recommendationKey: undefined });
   });
 
   it("exposes labeled transport, scrubber, and volume controls", () => {

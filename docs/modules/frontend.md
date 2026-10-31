@@ -241,8 +241,11 @@ envelope shapes (`docs/modules/contracts.md`).
   Import and Export controls have a separate flex gap.
 - The track context menu is available from every track surface that shows a
   real library track: library/recent rows, the queue, home cards, and the
-  footer now-playing track. Edit/delete are hidden for non-library
-  recommendation rows (they have no library file).
+  footer now-playing track. Edit/delete and queue actions are unavailable for
+  non-library recommendation rows (they have no library file), but those rows
+  can still be added to an existing or new physical playlist through the
+  discovery save path; the menu reports the terminal SaveState (promoted,
+  queued download, already present, or failed) instead of assuming success.
 - The Queue tab shows the authoritative current track followed only by its
   upcoming queue rows. Earlier plays are shown in Recently played, which is
   driven by backend TrackStarted events after output actually starts.
